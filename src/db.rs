@@ -1,0 +1,639 @@
+use rusqlite::{params, Connection};
+
+const SCHEMA_VERSION: i32 = 1;
+
+pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA foreign_keys = ON;
+    ",
+    )?;
+
+    conn.execute_batch(
+        "
+        -- Sessions: one per nsh wrap invocation
+        CREATE TABLE IF NOT EXISTS sessions (
+            id          TEXT PRIMARY KEY,
+            tty         TEXT NOT NULL,
+            shell       TEXT NOT NULL,
+            pid         INTEGER NOT NULL,
+            started_at  TEXT NOT NULL,
+            ended_at    TEXT,
+            hostname    TEXT,
+            username    TEXT
+        );
+
+        -- Individual commands within sessions
+        CREATE TABLE IF NOT EXISTS commands (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT NOT NULL REFERENCES sessions(id),
+            command     TEXT NOT NULL,
+            cwd         TEXT,
+            exit_code   INTEGER,
+            started_at  TEXT NOT NULL,
+            duration_ms INTEGER,
+            output      TEXT
+        );
+
+        -- FTS5 virtual table for full-text search
+        CREATE VIRTUAL TABLE IF NOT EXISTS commands_fts USING fts5(
+            command,
+            output,
+            cwd,
+            content='commands',
+            content_rowid='id',
+            tokenize='porter unicode61'
+        );
+
+        -- Triggers to keep FTS in sync
+        CREATE TRIGGER IF NOT EXISTS commands_ai AFTER INSERT ON commands BEGIN
+            INSERT INTO commands_fts(rowid, command, output, cwd)
+            VALUES (new.id, new.command, new.output, new.cwd);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS commands_ad AFTER DELETE ON commands BEGIN
+            INSERT INTO commands_fts(commands_fts, rowid, command, output, cwd)
+            VALUES ('delete', old.id, old.command, old.output, old.cwd);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS commands_au AFTER UPDATE ON commands BEGIN
+            INSERT INTO commands_fts(commands_fts, rowid, command, output, cwd)
+            VALUES ('delete', old.id, old.command, old.output, old.cwd);
+            INSERT INTO commands_fts(rowid, command, output, cwd)
+            VALUES (new.id, new.command, new.output, new.cwd);
+        END;
+
+        -- Conversation history per session (LLM exchanges)
+        CREATE TABLE IF NOT EXISTS conversations (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    TEXT NOT NULL REFERENCES sessions(id),
+            query         TEXT NOT NULL,
+            response_type TEXT NOT NULL,
+            response      TEXT NOT NULL,
+            explanation   TEXT,
+            executed      INTEGER DEFAULT 0,
+            pending       INTEGER DEFAULT 0,
+            created_at    TEXT NOT NULL
+        );
+
+        -- Indexes
+        CREATE INDEX IF NOT EXISTS idx_commands_session
+            ON commands(session_id, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_commands_started
+            ON commands(started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sessions_tty
+            ON sessions(tty, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_conversations_session
+            ON conversations(session_id, created_at DESC);
+
+        -- Schema version tracking
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+    ",
+    )?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) \
+         VALUES ('schema_version', ?)",
+        params![SCHEMA_VERSION],
+    )?;
+
+    Ok(())
+}
+
+pub struct Db {
+    conn: Connection,
+}
+
+impl Db {
+    pub fn open() -> anyhow::Result<Self> {
+        let dir = crate::config::Config::nsh_dir();
+        std::fs::create_dir_all(&dir)?;
+        let conn = Connection::open(dir.join("nsh.db"))?;
+        init_db(&conn)?;
+        Ok(Self { conn })
+    }
+
+    #[cfg(test)]
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        init_db(&conn)?;
+        Ok(Self { conn })
+    }
+
+    // ── Session management ─────────────────────────────────────────
+
+    pub fn create_session(
+        &self,
+        id: &str,
+        tty: &str,
+        shell: &str,
+        pid: i64,
+    ) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let hostname = gethostname();
+        let username =
+            std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sessions \
+             (id, tty, shell, pid, started_at, hostname, username) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![id, tty, shell, pid, now, hostname, username],
+        )?;
+        Ok(())
+    }
+
+    pub fn end_session(&self, session_id: &str) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE sessions SET ended_at = ? WHERE id = ?",
+            params![now, session_id],
+        )?;
+        Ok(())
+    }
+
+    // ── Command recording ──────────────────────────────────────────
+
+    pub fn insert_command(
+        &self,
+        session_id: &str,
+        command: &str,
+        cwd: &str,
+        exit_code: Option<i32>,
+        started_at: &str,
+        duration_ms: Option<i64>,
+        output: Option<&str>,
+    ) -> rusqlite::Result<i64> {
+        // Ensure the session exists (create a stub if needed, e.g. when
+        // record is called before a formal session start)
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sessions \
+             (id, tty, shell, pid, started_at) \
+             VALUES (?, '', '', 0, ?)",
+            params![session_id, started_at],
+        )?;
+
+        self.conn.execute(
+            "INSERT INTO commands \
+             (session_id, command, cwd, exit_code, \
+              started_at, duration_ms, output) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                session_id,
+                command,
+                cwd,
+                exit_code,
+                started_at,
+                duration_ms,
+                output
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    // ── FTS5 search ────────────────────────────────────────────────
+
+    pub fn search_history(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<HistoryMatch>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.id, c.session_id, c.command, c.cwd,
+                    c.exit_code, c.started_at, c.output,
+                    highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
+                    highlight(commands_fts, 1, '>>>', '<<<') as out_hl
+             FROM commands_fts f
+             JOIN commands c ON c.id = f.rowid
+             WHERE commands_fts MATCH ?
+             ORDER BY rank
+             LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![query, limit as i64], |row| {
+            Ok(HistoryMatch {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                command: row.get(2)?,
+                cwd: row.get(3)?,
+                exit_code: row.get(4)?,
+                started_at: row.get(5)?,
+                output: row.get(6)?,
+                cmd_highlight: row.get(7)?,
+                output_highlight: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    // ── Cross-TTY context ──────────────────────────────────────────
+
+    pub fn recent_commands_other_sessions(
+        &self,
+        current_session: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<OtherSessionCommand>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.command, c.cwd, c.exit_code, c.started_at,
+                    s.tty, c.session_id
+             FROM commands c
+             JOIN sessions s ON s.id = c.session_id
+             WHERE c.session_id != ?
+               AND s.ended_at IS NULL
+             ORDER BY c.started_at DESC
+             LIMIT ?",
+        )?;
+        let rows = stmt.query_map(
+            params![current_session, limit as i64],
+            |row| {
+                Ok(OtherSessionCommand {
+                    command: row.get(0)?,
+                    cwd: row.get(1)?,
+                    exit_code: row.get(2)?,
+                    started_at: row.get(3)?,
+                    tty: row.get(4)?,
+                    session_id: row.get(5)?,
+                })
+            },
+        )?;
+        rows.collect()
+    }
+
+    // ── Conversation history ───────────────────────────────────────
+
+    pub fn insert_conversation(
+        &self,
+        session_id: &str,
+        query: &str,
+        response_type: &str,
+        response: &str,
+        explanation: Option<&str>,
+        executed: bool,
+        pending: bool,
+    ) -> rusqlite::Result<i64> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO conversations \
+             (session_id, query, response_type, response, \
+              explanation, executed, pending, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                session_id,
+                query,
+                response_type,
+                response,
+                explanation,
+                executed as i32,
+                pending as i32,
+                now
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn get_conversations(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<ConversationExchange>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT query, response_type, response, explanation
+             FROM conversations
+             WHERE session_id = ?
+             ORDER BY created_at DESC
+             LIMIT ?",
+        )?;
+        let rows = stmt.query_map(
+            params![session_id, limit as i64],
+            |row| {
+                Ok(ConversationExchange {
+                    query: row.get(0)?,
+                    response_type: row.get(1)?,
+                    response: row.get(2)?,
+                    explanation: row.get(3)?,
+                })
+            },
+        )?;
+        let mut results: Vec<ConversationExchange> = rows.collect::<Result<_, _>>()?;
+        results.reverse(); // chronological order
+        Ok(results)
+    }
+
+    pub fn clear_conversations(
+        &self,
+        session_id: &str,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM conversations WHERE session_id = ?",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Prune old data beyond retention period
+    pub fn prune(&self, retention_days: u32) -> rusqlite::Result<usize> {
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::days(retention_days as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+        let deleted = self.conn.execute(
+            "DELETE FROM commands WHERE started_at < ?",
+            params![cutoff_str],
+        )?;
+        self.conn.execute(
+            "DELETE FROM sessions \
+             WHERE ended_at IS NOT NULL AND ended_at < ?",
+            params![cutoff_str],
+        )?;
+        Ok(deleted)
+    }
+}
+
+// ── Data types ─────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub struct HistoryMatch {
+    pub id: i64,
+    pub session_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub started_at: String,
+    pub output: Option<String>,
+    pub cmd_highlight: String,
+    pub output_highlight: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct OtherSessionCommand {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub started_at: String,
+    pub tty: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationExchange {
+    pub query: String,
+    pub response_type: String,
+    pub response: String,
+    pub explanation: Option<String>,
+}
+
+impl ConversationExchange {
+    pub fn to_user_message(&self) -> crate::provider::Message {
+        crate::provider::Message {
+            role: crate::provider::Role::User,
+            content: vec![crate::provider::ContentBlock::Text {
+                text: self.query.clone(),
+            }],
+        }
+    }
+
+    pub fn to_assistant_message(
+        &self,
+        tool_id: &str,
+    ) -> crate::provider::Message {
+        use crate::provider::{ContentBlock, Message, Role};
+
+        match self.response_type.as_str() {
+            "command" => {
+                let input = serde_json::json!({
+                    "command": self.response,
+                    "explanation": self.explanation
+                        .as_deref().unwrap_or(""),
+                });
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: tool_id.to_string(),
+                        name: "command".into(),
+                        input,
+                    }],
+                }
+            }
+            _ => {
+                let input = serde_json::json!({
+                    "response": self.response,
+                });
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: tool_id.to_string(),
+                        name: "chat".into(),
+                        input,
+                    }],
+                }
+            }
+        }
+    }
+
+    pub fn to_tool_result_message(
+        &self,
+        tool_id: &str,
+    ) -> crate::provider::Message {
+        use crate::provider::{ContentBlock, Message, Role};
+
+        let content = match self.response_type.as_str() {
+            "command" => format!(
+                "Command prefilled: {}",
+                self.response
+            ),
+            _ => self.response.clone(),
+        };
+        Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_id.to_string(),
+                content,
+                is_error: false,
+            }],
+        }
+    }
+}
+
+fn gethostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_db() -> Db {
+        Db::open_in_memory().expect("in-memory db")
+    }
+
+    #[test]
+    fn test_create_and_end_session() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
+        db.end_session("s1").unwrap();
+
+        let ended_at: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?",
+                params!["s1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            ended_at.is_some(),
+            "ended_at should be set after end_session"
+        );
+    }
+
+    #[test]
+    fn test_insert_and_search_command() {
+        let db = test_db();
+        db.insert_command(
+            "s1",
+            "cargo build --release",
+            "/home/user/project",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = db.search_history("cargo", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].cmd_highlight.contains("cargo"));
+    }
+
+    #[test]
+    fn test_search_no_results() {
+        let db = test_db();
+        db.insert_command(
+            "s1",
+            "ls -la",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results =
+            db.search_history("nonexistent_term_xyz", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_insert_and_get_conversations() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
+
+        db.insert_conversation(
+            "s1", "first query", "chat", "first response",
+            None, false, false,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.insert_conversation(
+            "s1", "second query", "command", "ls -la",
+            Some("list files"), false, false,
+        )
+        .unwrap();
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert_eq!(convos.len(), 2);
+        assert_eq!(convos[0].query, "first query");
+        assert_eq!(convos[1].query, "second query");
+        assert_eq!(convos[1].response, "ls -la");
+        assert_eq!(
+            convos[1].explanation.as_deref(),
+            Some("list files")
+        );
+    }
+
+    #[test]
+    fn test_clear_conversations() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
+        db.insert_conversation(
+            "s1", "query", "chat", "response",
+            None, false, false,
+        )
+        .unwrap();
+
+        db.clear_conversations("s1").unwrap();
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert!(convos.is_empty());
+    }
+
+    #[test]
+    fn test_prune_old_commands() {
+        let db = test_db();
+        db.insert_command(
+            "s1",
+            "old command",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1",
+            "recent command",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let deleted = db.prune(30).unwrap();
+        assert_eq!(deleted, 1, "should delete 1 old command");
+
+        let results = db.search_history("recent", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        let old = db.search_history("old", 10).unwrap();
+        assert!(old.is_empty());
+    }
+
+    #[test]
+    fn test_recent_commands_other_sessions() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 100)
+            .unwrap();
+        db.create_session("s2", "/dev/pts/1", "bash", 200)
+            .unwrap();
+
+        db.insert_command(
+            "s1", "cmd_in_s1", "/tmp", Some(0),
+            "2025-01-01T00:00:00Z", None, None,
+        )
+        .unwrap();
+        db.insert_command(
+            "s2", "cmd_in_s2", "/home", Some(0),
+            "2025-01-01T00:00:01Z", None, None,
+        )
+        .unwrap();
+
+        let other = db
+            .recent_commands_other_sessions("s1", 10)
+            .unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].command, "cmd_in_s2");
+        assert_eq!(other[0].tty, "/dev/pts/1");
+    }
+}
