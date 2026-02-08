@@ -3,8 +3,8 @@ name = "nsh"
 version = "0.1.0"
 edition = "2024"
 description = "Natural Shell — AI-powered shell assistant"
-license = "MIT"
-repository = "https://github.com/ArcticBear/nsh"
+license = "BSD-3-Clause"
+repository = "https://github.com/fluffypony/nsh"
 
 [dependencies]
 # CLI
