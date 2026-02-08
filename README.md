@@ -188,7 +188,7 @@ defaults below are from the source code.
 [provider]
 default = "openrouter"                           # LLM provider (openrouter, anthropic, or openai)
 model = "google/gemini-2.5-flash"                # Primary model
-fallback_model = "anthropic/claude-sonnet-4-20250514"  # Used if primary fails
+fallback_model = "anthropic/claude-sonnet-4.5"  # Used if primary fails
 web_search_model = "perplexity/sonar"            # Model for the web_search tool
 
 [provider.openrouter]

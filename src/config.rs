@@ -43,7 +43,7 @@ impl Default for ProviderConfig {
             default: "openrouter".into(),
             model: "google/gemini-2.5-flash".into(),
             fallback_model: Some(
-                "anthropic/claude-sonnet-4-20250514".into(),
+                "anthropic/claude-sonnet-4.5".into(),
             ),
             web_search_model: "perplexity/sonar".into(),
             openrouter: Some(ProviderAuth::default()),
