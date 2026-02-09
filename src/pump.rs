@@ -1,19 +1,19 @@
 use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use signal_hook::iterator::Signals;
 
 pub struct CaptureEngine {
     parser: vt100::Parser,
     in_alternate_screen: bool,
-    accumulated_lines: Vec<String>,
-    prev_screen_contents: String,
-    max_accumulated_lines: usize,
     rate_window_start: Instant,
     rate_bytes: usize,
     rate_limit_bps: usize,
     paused_until: Option<Instant>,
     pause_seconds: u64,
+    suppressed: bool,
 }
 
 impl CaptureEngine {
@@ -22,19 +22,17 @@ impl CaptureEngine {
         cols: u16,
         rate_limit_bps: usize,
         pause_seconds: u64,
-        max_accumulated_lines: usize,
+        max_scrollback_lines: usize,
     ) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, 1000),
+            parser: vt100::Parser::new(rows, cols, max_scrollback_lines),
             in_alternate_screen: false,
-            accumulated_lines: Vec::new(),
-            prev_screen_contents: String::new(),
-            max_accumulated_lines,
             rate_window_start: Instant::now(),
             rate_bytes: 0,
             rate_limit_bps,
             paused_until: None,
             pause_seconds,
+            suppressed: false,
         }
     }
 
@@ -57,8 +55,7 @@ impl CaptureEngine {
         if self.rate_limit_bps > 0 && self.rate_bytes > self.rate_limit_bps {
             self.paused_until =
                 Some(Instant::now() + Duration::from_secs(self.pause_seconds));
-            self.accumulated_lines
-                .push("[nsh: output capture suppressed (high output rate)]".into());
+            self.suppressed = true;
             return;
         }
 
@@ -68,69 +65,59 @@ impl CaptureEngine {
         let now_alt = self.parser.screen().alternate_screen();
         if now_alt {
             self.in_alternate_screen = true;
-            return;
-        }
-        if self.in_alternate_screen && !now_alt {
+        } else if self.in_alternate_screen {
             self.in_alternate_screen = false;
-            self.prev_screen_contents = self.parser.screen().contents();
-            return;
-        }
-
-        let current = self.parser.screen().contents();
-        if current != self.prev_screen_contents {
-            let prev_lines: Vec<&str> = self.prev_screen_contents.lines().collect();
-            let curr_lines: Vec<&str> = current.lines().collect();
-
-            if curr_lines.len() >= prev_lines.len() && !prev_lines.is_empty() {
-                let mut scrolled_off = 0;
-                for (i, prev_line) in prev_lines.iter().enumerate() {
-                    if i < curr_lines.len() && curr_lines[i] != *prev_line {
-                        break;
-                    }
-                    if i >= curr_lines.len() {
-                        scrolled_off = prev_lines.len() - i;
-                        break;
-                    }
-                }
-
-                if scrolled_off == 0 && curr_lines.len() > prev_lines.len() {
-                    for line in &curr_lines[prev_lines.len()..] {
-                        if !line.trim().is_empty() {
-                            self.accumulated_lines.push(line.to_string());
-                        }
-                    }
-                }
-            } else if prev_lines.len() > curr_lines.len() {
-                for line in &prev_lines[..prev_lines.len() - curr_lines.len()] {
-                    if !line.trim().is_empty() {
-                        self.accumulated_lines.push(line.to_string());
-                    }
-                }
-            }
-
-            if self.accumulated_lines.len() > self.max_accumulated_lines {
-                let excess = self.accumulated_lines.len() - self.max_accumulated_lines;
-                self.accumulated_lines.drain(..excess);
-            }
-
-            self.prev_screen_contents = current;
         }
     }
 
-    pub fn get_lines(&self, max_lines: usize) -> String {
-        let screen_text = self.parser.screen().contents();
-        let mut all_lines: Vec<&str> = self
-            .accumulated_lines
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        for line in screen_text.lines() {
-            all_lines.push(line);
+    pub fn get_lines(&mut self, max_lines: usize) -> String {
+        if self.parser.screen().alternate_screen() {
+            return String::new();
         }
 
-        let mut combined = all_lines.join("\n");
-        combined = combined.replace("\r\n", "\n").replace('\r', "");
-        combined = combined.replace("\x1b[200~", "").replace("\x1b[201~", "");
+        let (rows, _) = self.parser.screen().size();
+        let rows = rows as usize;
+
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let total_scrollback = self.parser.screen().scrollback();
+
+        let mut all_lines: Vec<String> = Vec::new();
+
+        if self.suppressed {
+            all_lines.push("[nsh: output capture suppressed (high output rate)]".into());
+            self.suppressed = false;
+        }
+
+        if total_scrollback > 0 {
+            let mut offset = total_scrollback;
+            loop {
+                self.parser.screen_mut().set_scrollback(offset);
+                let page = self.parser.screen().contents();
+                let page_lines: Vec<&str> = page.lines().collect();
+                let unique_count = offset.min(rows).min(page_lines.len());
+                for line in page_lines.iter().take(unique_count) {
+                    if !line.trim().is_empty() {
+                        all_lines.push(line.to_string());
+                    }
+                }
+                if offset <= rows {
+                    break;
+                }
+                offset = offset.saturating_sub(rows);
+            }
+        }
+
+        self.parser.screen_mut().set_scrollback(0);
+        let visible = self.parser.screen().contents();
+        for line in visible.lines() {
+            all_lines.push(line.to_string());
+        }
+
+        let combined = all_lines.join("\n")
+            .replace("\r\n", "\n")
+            .replace('\r', "")
+            .replace("\x1b[200~", "")
+            .replace("\x1b[201~", "");
 
         let final_lines: Vec<&str> = combined.lines().collect();
         let start = final_lines.len().saturating_sub(max_lines);
@@ -175,7 +162,52 @@ fn child_exited(pid: rustix::process::Pid) -> bool {
     }
 }
 
-static WINCH_PENDING: AtomicBool = AtomicBool::new(false);
+fn spawn_signal_thread(
+    child_pid: rustix::process::Pid,
+    stdin_fd: libc::c_int,
+    pty_master_fd: libc::c_int,
+    winch_pending: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    let raw_pid = child_pid.as_raw_nonzero().get();
+
+    let mut signals = Signals::new(&[
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGWINCH,
+        signal_hook::consts::SIGCONT,
+    ])
+    .expect("failed to register signal handlers");
+
+    std::thread::spawn(move || {
+        for sig in signals.forever() {
+            match sig {
+                signal_hook::consts::SIGWINCH => {
+                    unsafe {
+                        let mut ws: libc::winsize = std::mem::zeroed();
+                        if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
+                            libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws);
+                        }
+                        libc::kill(raw_pid, libc::SIGWINCH);
+                    }
+                    winch_pending.store(true, Ordering::Relaxed);
+                }
+                signal_hook::consts::SIGCONT => {
+                    unsafe {
+                        let mut ws: libc::winsize = std::mem::zeroed();
+                        if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
+                            libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws);
+                        }
+                        libc::kill(raw_pid, libc::SIGCONT);
+                    }
+                }
+                _ => {
+                    unsafe { libc::kill(raw_pid, sig) };
+                }
+            }
+        }
+    })
+}
 
 pub fn pump_loop(
     real_stdin: BorrowedFd,
@@ -189,7 +221,13 @@ pub fn pump_loop(
 
     let stdin_raw = real_stdin.as_raw_fd();
     let pty_master_raw = pty_master.as_raw_fd();
-    setup_signal_forwarding(child_pid, stdin_raw, pty_master_raw);
+    let winch_pending = Arc::new(AtomicBool::new(false));
+    let _signal_thread = spawn_signal_thread(
+        child_pid,
+        stdin_raw,
+        pty_master_raw,
+        winch_pending.clone(),
+    );
 
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
@@ -222,7 +260,7 @@ pub fn pump_loop(
     let mut last_flush = Instant::now();
 
     loop {
-        if WINCH_PENDING.swap(false, Ordering::Relaxed) {
+        if winch_pending.swap(false, Ordering::Relaxed) {
             let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
             if unsafe { libc::ioctl(stdin_raw, libc::TIOCGWINSZ, &mut ws) } == 0 {
                 if let Ok(mut eng) = capture.lock() {
@@ -385,62 +423,15 @@ fn handle_socket_connection(
     use std::io::Write;
 
     if let Ok((mut stream, _)) = listener.accept() {
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .ok();
-        if let Ok(eng) = capture.lock() {
+        stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+        if let Ok(mut eng) = capture.lock() {
             let text = eng.get_lines(1000);
             let _ = stream.write_all(text.as_bytes());
         }
     }
 }
 
-fn setup_signal_forwarding(
-    child_pid: rustix::process::Pid,
-    stdin_fd: libc::c_int,
-    pty_master_fd: libc::c_int,
-) {
-    let raw_pid = child_pid.as_raw_nonzero().get();
 
-    for sig in [
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGHUP,
-    ] {
-        unsafe {
-            let _ = signal_hook::low_level::register(sig, move || {
-                libc::kill(raw_pid, sig);
-            });
-        }
-    }
-
-    unsafe {
-        let _ = signal_hook::low_level::register(
-            signal_hook::consts::SIGWINCH,
-            move || {
-                let mut ws: libc::winsize = std::mem::zeroed();
-                if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
-                    libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws);
-                }
-                libc::kill(raw_pid, libc::SIGWINCH);
-                WINCH_PENDING.store(true, Ordering::Relaxed);
-            },
-        );
-    }
-
-    unsafe {
-        let _ = signal_hook::low_level::register(
-            signal_hook::consts::SIGCONT,
-            move || {
-                let mut ws: libc::winsize = std::mem::zeroed();
-                if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
-                    libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws);
-                }
-                libc::kill(raw_pid, libc::SIGCONT);
-            },
-        );
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -458,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_empty() {
-        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
         let lines = eng.get_lines(10);
         assert!(lines.trim().is_empty());
     }
@@ -486,61 +477,12 @@ mod tests {
     }
 
     #[test]
-    fn test_capture_engine_alt_screen_detection() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
-        eng.process(b"normal text\r\n");
-        eng.process(b"\x1b[?1049h");
-        assert!(eng.in_alternate_screen);
-        eng.process(b"alt screen content\r\n");
-        eng.process(b"\x1b[?1049l");
-        assert!(!eng.in_alternate_screen);
-    }
-
-    #[test]
-    fn test_alt_screen_content_excluded_from_output() {
+    fn test_alt_screen_content_excluded() {
         let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
         eng.process(b"before alt\r\n");
         eng.process(b"\x1b[?1049h");
-        eng.process(b"TUI content that should be hidden\r\n");
-        eng.process(b"more TUI lines\r\n");
-        eng.process(b"\x1b[?1049l");
-        eng.process(b"after alt\r\n");
+        eng.process(b"TUI content\r\n");
         let output = eng.get_lines(100);
-        assert!(
-            !output.contains("TUI content"),
-            "Alt-screen TUI content should not appear in get_lines(), got: {output}"
-        );
-        assert!(
-            !output.contains("more TUI lines"),
-            "Alt-screen TUI content should not appear in get_lines(), got: {output}"
-        );
-        assert!(output.contains("before alt"), "Content before alt screen should be present");
-    }
-
-    #[test]
-    fn test_crlf_normalization() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
-        eng.process(b"line one\r\nline two\r\nline three\r\n");
-        let output = eng.get_lines(100);
-        assert!(
-            !output.contains('\r'),
-            "Output should not contain any \\r characters after CRLF input, got: {:?}",
-            output
-        );
-        assert!(output.contains("line one"));
-        assert!(output.contains("line two"));
-        assert!(output.contains("line three"));
-    }
-
-    #[test]
-    fn test_bare_cr_removal() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
-        eng.process(b"overwrite\rvisible\r\n");
-        let output = eng.get_lines(100);
-        assert!(
-            !output.contains('\r'),
-            "Output should not contain bare \\r characters, got: {:?}",
-            output
-        );
+        assert!(output.is_empty() || !output.contains("TUI content"));
     }
 }

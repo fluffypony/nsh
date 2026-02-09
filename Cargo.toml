@@ -42,7 +42,7 @@ dirs = "6"
 anyhow = "1"
 
 # Signals
-signal-hook = "0.3"
+signal-hook = { version = "0.3", features = ["iterator"] }
 
 # Async traits (needed for dyn dispatch)
 async-trait = "0.1"

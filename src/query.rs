@@ -12,13 +12,8 @@ pub async fn handle_query(
     session_id: &str,
 ) -> anyhow::Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
-    let c = cancelled.clone();
-    unsafe {
-        signal_hook::low_level::register(signal_hook::consts::SIGINT, move || {
-            c.store(true, Ordering::SeqCst);
-        })
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
         .ok();
-    }
 
     let provider =
         create_provider(&config.provider.default, config)?;
