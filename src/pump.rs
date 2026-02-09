@@ -495,4 +495,40 @@ mod tests {
         eng.process(b"\x1b[?1049l");
         assert!(!eng.in_alternate_screen);
     }
+
+    #[test]
+    fn test_alt_screen_content_excluded_from_output() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        eng.process(b"before alt\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"TUI content that should be hidden\r\n");
+        eng.process(b"more TUI lines\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"after alt\r\n");
+        let output = eng.get_lines(100);
+        assert!(
+            !output.contains("TUI content"),
+            "Alt-screen TUI content should not appear in get_lines(), got: {output}"
+        );
+        assert!(
+            !output.contains("more TUI lines"),
+            "Alt-screen TUI content should not appear in get_lines(), got: {output}"
+        );
+        assert!(output.contains("before alt"), "Content before alt screen should be present");
+    }
+
+    #[test]
+    fn test_crlf_normalization() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        eng.process(b"line one\r\nline two\r\nline three\r\n");
+        let output = eng.get_lines(100);
+        assert!(
+            !output.contains('\r'),
+            "Output should not contain any \\r characters, got: {:?}",
+            output
+        );
+        assert!(output.contains("line one"));
+        assert!(output.contains("line two"));
+        assert!(output.contains("line three"));
+    }
 }

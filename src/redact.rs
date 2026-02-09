@@ -33,3 +33,66 @@ pub fn redact_secrets(text: &str, config: &RedactionConfig) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_redact_sk_pattern() {
+        let config = RedactionConfig::default();
+        let input = "my key is sk-abc123def456ghi789jkl012mno";
+        let result = redact_secrets(input, &config);
+        assert!(
+            !result.contains("sk-abc123"),
+            "sk- pattern should be redacted, got: {result}"
+        );
+        assert!(
+            result.contains("[REDACTED]"),
+            "should contain [REDACTED] marker, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_ghp_pattern() {
+        let config = RedactionConfig::default();
+        let input = "token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
+        let result = redact_secrets(input, &config);
+        assert!(
+            !result.contains("ghp_"),
+            "ghp_ pattern should be redacted, got: {result}"
+        );
+        assert!(
+            result.contains("[REDACTED]"),
+            "should contain [REDACTED] marker, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_aws_key_pattern() {
+        let config = RedactionConfig::default();
+        let input = "aws key: AKIAIOSFODNN7EXAMPLE";
+        let result = redact_secrets(input, &config);
+        assert!(
+            !result.contains("AKIAIOSFODNN7EXAMPLE"),
+            "AWS key pattern should be redacted, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_disabled() {
+        let mut config = RedactionConfig::default();
+        config.enabled = false;
+        let input = "my key is sk-abc123def456ghi789jkl012mno";
+        let result = redact_secrets(input, &config);
+        assert_eq!(result, input, "redaction should be skipped when disabled");
+    }
+
+    #[test]
+    fn test_redact_no_secrets_unchanged() {
+        let config = RedactionConfig::default();
+        let input = "just a normal string with no secrets";
+        let result = redact_secrets(input, &config);
+        assert_eq!(result, input, "text without secrets should be unchanged");
+    }
+}

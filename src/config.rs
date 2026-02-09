@@ -443,4 +443,30 @@ api_key = "old-key"
             "should reject commands with injection after allowed prefix"
         );
     }
+
+    #[test]
+    fn test_is_command_allowed_rejects_injection_patterns() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["echo".into(), "git status".into(), "*".into()],
+        };
+        // Even with wildcard, dangerous characters should be rejected
+        let injection_cases = [
+            ("echo hello && rm -rf /", "&&"),
+            ("echo hello || rm -rf /", "||"),
+            ("echo `whoami`", "backtick"),
+            ("echo $(whoami)", "$()"),
+            ("echo hello; rm -rf /", "semicolon"),
+            ("echo hello\nrm -rf /", "newline"),
+            ("git status | cat /etc/passwd", "pipe"),
+            ("echo hello > /etc/passwd", "redirect >"),
+            ("echo hello < /etc/passwd", "redirect <"),
+            ("echo ${PATH}", "variable expansion"),
+        ];
+        for (cmd, label) in injection_cases {
+            assert!(
+                !tools.is_command_allowed(cmd),
+                "should reject command with {label}: {cmd:?}"
+            );
+        }
+    }
 }

@@ -852,4 +852,135 @@ mod tests {
         assert_eq!(other[0].command, "cmd_in_s2");
         assert_eq!(other[0].tty, "/dev/pts/1");
     }
+
+    #[test]
+    fn test_orphaned_session_cleanup() {
+        let db = test_db();
+        // Use a PID that almost certainly doesn't exist
+        let dead_pid: i64 = 2_000_000_000;
+        db.create_session("orphan1", "/dev/pts/9", "zsh", dead_pid)
+            .unwrap();
+
+        let cleaned = db.cleanup_orphaned_sessions().unwrap();
+        assert!(cleaned >= 1, "should clean up at least 1 orphaned session");
+
+        let ended_at: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?",
+                params!["orphan1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            ended_at.is_some(),
+            "Orphaned session should have ended_at set after cleanup"
+        );
+    }
+
+    #[test]
+    fn test_fts5_rebuild() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo test", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1", "git push origin main", "/project", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        )
+        .unwrap();
+
+        // Rebuild the FTS index
+        db.rebuild_fts().unwrap();
+
+        // Verify search still works after rebuild
+        let results = db.search_history("cargo", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("cargo test"));
+
+        let results = db.search_history("git", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("git push"));
+    }
+
+    #[test]
+    fn test_output_truncation_over_max_bytes() {
+        let db = test_db();
+        // max_output_bytes defaults to 32768 in open_in_memory
+        let large_output = "x".repeat(50_000);
+        db.insert_command(
+            "s1", "big_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None,
+            Some(&large_output),
+            "", "", 0,
+        )
+        .unwrap();
+
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE command = 'big_cmd'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored = stored.expect("output should be stored");
+        assert!(
+            stored.len() < large_output.len(),
+            "stored output ({} bytes) should be truncated below original ({} bytes)",
+            stored.len(),
+            large_output.len()
+        );
+        assert!(
+            stored.contains("[truncated by nsh]"),
+            "truncated output should contain truncation marker"
+        );
+    }
+
+    #[test]
+    fn test_deduplication_via_insert() {
+        let db = test_db();
+        let session = "dedup_s1";
+        let cmd = "echo dedup_test";
+        let ts = "2025-06-01T12:00:00Z";
+
+        // Insert the same command twice with the same timestamp
+        let id1 = db
+            .insert_command(
+                session, cmd, "/tmp", Some(0), ts, None, None, "", "", 0,
+            )
+            .unwrap();
+        let id2 = db
+            .insert_command(
+                session, cmd, "/tmp", Some(0), ts, None, None, "", "", 0,
+            )
+            .unwrap();
+
+        // Both inserts succeed (DB doesn't deduplicate — shell hooks do)
+        // but we verify the dedup guard exists in shell scripts
+        assert_ne!(id1, id2, "DB assigns different IDs (dedup is in shell hooks)");
+
+        // Verify the shell dedup guard exists
+        let zsh_script = include_str!("../shell/nsh.zsh");
+        assert!(
+            zsh_script.contains("__NSH_LAST_RECORDED_CMD"),
+            "Zsh script should have deduplication guard variable"
+        );
+        assert!(
+            zsh_script.contains("__NSH_LAST_RECORDED_START"),
+            "Zsh script should have deduplication guard for timestamps"
+        );
+
+        let bash_script = include_str!("../shell/nsh.bash");
+        assert!(
+            bash_script.contains("__nsh_last_recorded_cmd"),
+            "Bash script should have deduplication guard variable"
+        );
+        assert!(
+            bash_script.contains("__nsh_last_recorded_start"),
+            "Bash script should have deduplication guard for timestamps"
+        );
+    }
 }
