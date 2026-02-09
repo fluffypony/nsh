@@ -63,6 +63,9 @@ pub fn build_context(
         ctx
     };
 
+    let other_tty_context =
+        crate::redact::redact_secrets(&other_tty_context, &config.redaction);
+
     Ok(QueryContext {
         os_info,
         shell,

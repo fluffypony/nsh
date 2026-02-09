@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::redact;
 use std::process::Command;
 
 pub fn execute(
@@ -42,7 +43,7 @@ pub fn execute(
         output.status.code().unwrap_or(-1)
     ));
 
-    Ok(result)
+    Ok(redact::redact_secrets(&result, &config.redaction))
 }
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
+use crate::config::Config;
 use crate::db::Db;
 
 pub fn execute(
     db: &Db,
     query: &str,
     limit: usize,
+    config: &Config,
 ) -> anyhow::Result<String> {
     let matches = db.search_history(query, limit)?;
 
@@ -33,5 +35,5 @@ pub fn execute(
         result.push('\n');
     }
 
-    Ok(result)
+    Ok(crate::redact::redact_secrets(&result, &config.redaction))
 }

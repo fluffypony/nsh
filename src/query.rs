@@ -132,7 +132,7 @@ pub async fn handle_query(
                             as usize;
                         let data =
                             tools::search_history::execute(
-                                db, q, limit,
+                                db, q, limit, config,
                             )?;
                         tool_results.push(
                             ContentBlock::ToolResult {
