@@ -5,7 +5,6 @@ pub mod grep_file;
 pub mod list_directory;
 pub mod man_page;
 pub mod run_command;
-pub mod scrollback;
 pub mod search_history;
 pub mod web_search;
 
@@ -70,27 +69,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
-            name: "scrollback".into(),
-            description: "Request recent terminal output from the \
-                          current session."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "lines": {
-                        "type": "integer",
-                        "description":
-                            "Number of recent lines (max 1000)",
-                        "default": 100
-                    }
-                },
-                "required": []
-            }),
-        },
-        ToolDefinition {
             name: "search_history".into(),
-            description: "Full-text search across all shell command \
-                          history and output across all sessions."
+            description: "Search command history across all sessions. \
+                          Searches commands, output, and AI-generated \
+                          summaries."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -98,15 +80,43 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "query": {
                         "type": "string",
                         "description":
-                            "Search query (FTS5 syntax)"
+                            "Search query (natural language or FTS5 syntax)"
+                    },
+                    "regex": {
+                        "type": "string",
+                        "description":
+                            "Regex pattern for precise matching (alternative to query)"
+                    },
+                    "since": {
+                        "type": "string",
+                        "description":
+                            "ISO timestamp or relative like '1h', '2d'"
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "ISO timestamp or relative"
+                    },
+                    "exit_code": {
+                        "type": "integer",
+                        "description": "Filter by specific exit code"
+                    },
+                    "failed_only": {
+                        "type": "boolean",
+                        "description":
+                            "Only show failed commands (exit != 0)"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description":
+                            "'current', 'all', or specific session ID"
                     },
                     "limit": {
                         "type": "integer",
                         "description": "Max results",
-                        "default": 10
+                        "default": 20
                     }
                 },
-                "required": ["query"]
+                "required": []
             }),
         },
         ToolDefinition {

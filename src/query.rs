@@ -175,23 +175,9 @@ pub async fn handle_query(
                     }
 
                     // ── Intermediate tools (loop continues) ────
-                    "scrollback" => {
-                        let lines = input["lines"]
-                            .as_u64()
-                            .unwrap_or(100)
-                            as usize;
-                        (tools::scrollback::execute(lines, config)?, false)
-                    }
                     "search_history" => {
-                        let q = input["query"]
-                            .as_str()
-                            .unwrap_or("");
-                        let limit = input["limit"]
-                            .as_u64()
-                            .unwrap_or(10)
-                            as usize;
                         (tools::search_history::execute(
-                            db, q, limit, config,
+                            db, input, config, session_id,
                         )?, false)
                     }
                     "grep_file" => {

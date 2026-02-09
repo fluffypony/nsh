@@ -16,6 +16,17 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
 
+    conn.create_scalar_function("regexp", 2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let pattern = ctx.get::<String>(0)?;
+            let text = ctx.get::<String>(1).unwrap_or_default();
+            let re = regex::Regex::new(&pattern)
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            Ok(re.is_match(&text))
+        }
+    )?;
+
     conn.execute_batch(
         "
         -- Sessions: one per nsh wrap invocation
@@ -621,6 +632,254 @@ impl Db {
         Ok(())
     }
 
+    pub fn commands_needing_summary(&self, limit: usize) -> rusqlite::Result<Vec<CommandForSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, command, cwd, exit_code, output
+             FROM commands
+             WHERE output IS NOT NULL
+               AND summary IS NULL
+               AND summary_status IS NULL
+             ORDER BY started_at DESC
+             LIMIT ?"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(CommandForSummary {
+                id: row.get(0)?,
+                command: row.get(1)?,
+                cwd: row.get(2)?,
+                exit_code: row.get(3)?,
+                output: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn update_summary(&self, id: i64, summary: &str) -> rusqlite::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE commands SET summary = ?, summary_status = 'done' WHERE id = ? AND summary IS NULL",
+            params![summary, id],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn mark_summary_error(&self, id: i64, error: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE commands SET summary_status = 'error', summary = ? WHERE id = ? AND summary IS NULL",
+            params![format!("[error: {}]", error), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn recent_commands_with_summaries(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CommandWithSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.command, c.cwd, c.exit_code, c.started_at,
+                    c.duration_ms, c.summary
+             FROM commands c
+             WHERE c.session_id = ?
+             ORDER BY c.started_at DESC
+             LIMIT ?"
+        )?;
+        let rows = stmt.query_map(params![session_id, limit as i64], |row| {
+            Ok(CommandWithSummary {
+                command: row.get(0)?,
+                cwd: row.get(1)?,
+                exit_code: row.get(2)?,
+                started_at: row.get(3)?,
+                duration_ms: row.get(4)?,
+                summary: row.get(5)?,
+            })
+        })?;
+        let mut results: Vec<CommandWithSummary> = rows.collect::<Result<_, _>>()?;
+        results.reverse();
+        Ok(results)
+    }
+
+    pub fn other_sessions_with_summaries(
+        &self,
+        current_session: &str,
+        max_ttys: usize,
+        summaries_per_tty: usize,
+    ) -> rusqlite::Result<Vec<OtherSessionSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.command, c.cwd, c.exit_code, c.started_at,
+                    c.summary, s.tty, s.shell, c.session_id
+             FROM commands c
+             JOIN sessions s ON s.id = c.session_id
+             WHERE c.session_id != ?
+               AND s.ended_at IS NULL
+               AND (s.last_heartbeat IS NULL
+                    OR s.last_heartbeat > datetime('now', '-5 minutes'))
+             ORDER BY c.started_at DESC
+             LIMIT ?"
+        )?;
+        let total_limit = max_ttys * summaries_per_tty;
+        let rows = stmt.query_map(params![current_session, total_limit as i64], |row| {
+            Ok(OtherSessionSummary {
+                command: row.get(0)?,
+                cwd: row.get(1)?,
+                exit_code: row.get(2)?,
+                started_at: row.get(3)?,
+                summary: row.get(4)?,
+                tty: row.get(5)?,
+                shell: row.get(6)?,
+                session_id: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn search_history_advanced(
+        &self,
+        fts_query: Option<&str>,
+        regex_pattern: Option<&str>,
+        since: Option<&str>,
+        until: Option<&str>,
+        exit_code: Option<i32>,
+        failed_only: bool,
+        session_filter: Option<&str>,
+        current_session: Option<&str>,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<HistoryMatch>> {
+        if let Some(fts) = fts_query {
+            let mut sql = String::from(
+                "SELECT c.id, c.session_id, c.command, c.cwd,
+                        c.exit_code, c.started_at, c.output,
+                        highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
+                        highlight(commands_fts, 1, '>>>', '<<<') as out_hl
+                 FROM commands_fts f
+                 JOIN commands c ON c.id = f.rowid
+                 WHERE commands_fts MATCH ?1"
+            );
+            let mut param_idx = 2;
+            let mut conditions = Vec::new();
+
+            if since.is_some() {
+                conditions.push(format!(" AND c.started_at >= ?{param_idx}"));
+                param_idx += 1;
+            }
+            if until.is_some() {
+                conditions.push(format!(" AND c.started_at <= ?{param_idx}"));
+                param_idx += 1;
+            }
+            if exit_code.is_some() {
+                conditions.push(format!(" AND c.exit_code = ?{param_idx}"));
+                param_idx += 1;
+            }
+            if failed_only {
+                conditions.push(" AND c.exit_code != 0".to_string());
+            }
+            if session_filter.is_some() {
+                conditions.push(format!(" AND c.session_id = ?{param_idx}"));
+                param_idx += 1;
+            }
+            let _ = param_idx;
+
+            for cond in &conditions {
+                sql.push_str(cond);
+            }
+            sql.push_str(" ORDER BY rank LIMIT ?");
+
+            // Build params dynamically - collect into Vec<Box<dyn rusqlite::types::ToSql>>
+            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+            params_vec.push(Box::new(fts.to_string()));
+            if let Some(s) = since { params_vec.push(Box::new(s.to_string())); }
+            if let Some(u) = until { params_vec.push(Box::new(u.to_string())); }
+            if let Some(ec) = exit_code { params_vec.push(Box::new(ec)); }
+            if let Some(sf) = session_filter { params_vec.push(Box::new(sf.to_string())); }
+            params_vec.push(Box::new(limit as i64));
+
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                Ok(HistoryMatch {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    command: row.get(2)?,
+                    cwd: row.get(3)?,
+                    exit_code: row.get(4)?,
+                    started_at: row.get(5)?,
+                    output: row.get(6)?,
+                    cmd_highlight: row.get(7)?,
+                    output_highlight: row.get(8)?,
+                })
+            })?;
+            let mut results: Vec<HistoryMatch> = rows.collect::<Result<_, _>>()?;
+
+            if let Some(pattern) = regex_pattern {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    results.retain(|r| re.is_match(&r.command) || r.output.as_deref().map_or(false, |o| re.is_match(o)));
+                }
+            }
+
+            return Ok(results);
+        }
+
+        // No FTS query - use regex or plain scan
+        let mut sql = String::from(
+            "SELECT c.id, c.session_id, c.command, c.cwd,
+                    c.exit_code, c.started_at, c.output,
+                    c.command as cmd_hl,
+                    c.output as out_hl
+             FROM commands c WHERE 1=1"
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(pattern) = regex_pattern {
+            sql.push_str(" AND (c.command REGEXP ? OR COALESCE(c.output, '') REGEXP ? OR COALESCE(c.summary, '') REGEXP ?)");
+            params_vec.push(Box::new(pattern.to_string()));
+            params_vec.push(Box::new(pattern.to_string()));
+            params_vec.push(Box::new(pattern.to_string()));
+        }
+        if let Some(s) = since {
+            sql.push_str(" AND c.started_at >= ?");
+            params_vec.push(Box::new(s.to_string()));
+        }
+        if let Some(u) = until {
+            sql.push_str(" AND c.started_at <= ?");
+            params_vec.push(Box::new(u.to_string()));
+        }
+        if let Some(ec) = exit_code {
+            sql.push_str(" AND c.exit_code = ?");
+            params_vec.push(Box::new(ec));
+        }
+        if failed_only {
+            sql.push_str(" AND c.exit_code != 0");
+        }
+        if let Some(sf) = session_filter {
+            let resolved = if sf == "current" {
+                current_session.unwrap_or("default")
+            } else {
+                sf
+            };
+            sql.push_str(" AND c.session_id = ?");
+            params_vec.push(Box::new(resolved.to_string()));
+        }
+        sql.push_str(" ORDER BY c.started_at DESC LIMIT ?");
+        params_vec.push(Box::new(limit as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(HistoryMatch {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                command: row.get(2)?,
+                cwd: row.get(3)?,
+                exit_code: row.get(4)?,
+                started_at: row.get(5)?,
+                output: row.get(6)?,
+                cmd_highlight: row.get(7)?,
+                output_highlight: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn run_doctor(&self) -> anyhow::Result<()> {
         eprintln!("nsh doctor: checking database integrity...");
 
@@ -685,6 +944,37 @@ pub struct OtherSessionCommand {
     pub exit_code: Option<i32>,
     pub started_at: String,
     pub tty: String,
+    pub session_id: String,
+}
+
+#[derive(Debug)]
+pub struct CommandForSummary {
+    pub id: i64,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub output: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandWithSummary {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub started_at: String,
+    pub duration_ms: Option<i64>,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct OtherSessionSummary {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub started_at: String,
+    pub summary: Option<String>,
+    pub tty: String,
+    pub shell: String,
     pub session_id: String,
 }
 
@@ -1098,5 +1388,44 @@ mod tests {
             bash_script.contains("__nsh_last_recorded_start"),
             "Bash script should have deduplication guard for timestamps"
         );
+    }
+
+    #[test]
+    fn test_regexp_function() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo test --release", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "git push origin main", "/project", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("cargo.*release"), None, None, None, false, None, None, 10,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_summary_lifecycle() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo build", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("Compiling nsh v0.1.0\nFinished in 5.2s"),
+            "", "", 0,
+        ).unwrap();
+
+        let needing = db.commands_needing_summary(5).unwrap();
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].command, "cargo build");
+
+        let updated = db.update_summary(needing[0].id, "Built nsh successfully in 5.2s").unwrap();
+        assert!(updated);
+
+        let needing_after = db.commands_needing_summary(5).unwrap();
+        assert!(needing_after.is_empty());
     }
 }
