@@ -524,11 +524,23 @@ mod tests {
         let output = eng.get_lines(100);
         assert!(
             !output.contains('\r'),
-            "Output should not contain any \\r characters, got: {:?}",
+            "Output should not contain any \\r characters after CRLF input, got: {:?}",
             output
         );
         assert!(output.contains("line one"));
         assert!(output.contains("line two"));
         assert!(output.contains("line three"));
+    }
+
+    #[test]
+    fn test_bare_cr_removal() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        eng.process(b"overwrite\rvisible\r\n");
+        let output = eng.get_lines(100);
+        assert!(
+            !output.contains('\r'),
+            "Output should not contain bare \\r characters, got: {:?}",
+            output
+        );
     }
 }
