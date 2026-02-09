@@ -35,6 +35,9 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Wrap { shell } => {
+            if let Ok(db) = db::Db::open() {
+                let _ = db.cleanup_orphaned_sessions();
+            }
             let shell = if shell.is_empty() {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
             } else {
@@ -63,6 +66,9 @@ async fn main() -> anyhow::Result<()> {
             cwd,
             exit_code,
             started_at,
+            tty,
+            pid,
+            shell,
         } => {
             let db = db::Db::open()?;
             db.insert_command(
@@ -73,10 +79,17 @@ async fn main() -> anyhow::Result<()> {
                 &started_at,
                 None,
                 None,
+                &tty,
+                &shell,
+                pid,
             )?;
         }
 
         Commands::Session { action } => match action {
+            SessionAction::Start { session, tty, shell, pid } => {
+                let db = db::Db::open()?;
+                db.create_session(&session, &tty, &shell, pid as i64)?;
+            }
             SessionAction::End { session } => {
                 let db = db::Db::open()?;
                 db.end_session(&session)?;
@@ -140,6 +153,25 @@ async fn main() -> anyhow::Result<()> {
                     .status()?;
             }
         },
+
+        Commands::Doctor => {
+            let db = db::Db::open()?;
+            db.run_doctor()?;
+        }
+
+        Commands::Heartbeat { session } => {
+            let db = db::Db::open()?;
+            db.update_heartbeat(&session)?;
+        }
+
+        Commands::RedactNext => {
+            let session_id = std::env::var("NSH_SESSION_ID")
+                .unwrap_or_else(|_| "default".into());
+            let flag_path = config::Config::nsh_dir()
+                .join(format!("redact_next_{session_id}"));
+            std::fs::write(&flag_path, "")?;
+            eprintln!("nsh: next command output will not be captured");
+        }
     }
 
     Ok(())

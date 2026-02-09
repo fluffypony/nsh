@@ -45,6 +45,12 @@ pub enum Commands {
         exit_code: i32,
         #[arg(long)]
         started_at: String,
+        #[arg(long, default_value = "")]
+        tty: String,
+        #[arg(long, default_value_t = 0)]
+        pid: i32,
+        #[arg(long, default_value = "")]
+        shell: String,
     },
 
     /// Session management
@@ -67,10 +73,33 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
+
+    /// Check and repair nsh database integrity
+    Doctor,
+
+    /// Update session heartbeat
+    Heartbeat {
+        #[arg(long)]
+        session: String,
+    },
+
+    /// Skip capturing the next command's output
+    RedactNext,
 }
 
 #[derive(Subcommand)]
 pub enum SessionAction {
+    /// Start a new session
+    Start {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        tty: String,
+        #[arg(long)]
+        shell: String,
+        #[arg(long)]
+        pid: i32,
+    },
     /// End a session
     End {
         #[arg(long)]

@@ -1,16 +1,20 @@
 use rusqlite::{params, Connection};
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        PRAGMA busy_timeout = 5000;
-        PRAGMA foreign_keys = ON;
-    ",
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
+    PRAGMA foreign_keys = ON;
+    PRAGMA auto_vacuum = INCREMENTAL;
+    PRAGMA wal_autocheckpoint = 1000;
+    PRAGMA journal_size_limit = 67108864;
+    PRAGMA temp_store = MEMORY;
+",
     )?;
+    conn.busy_timeout(std::time::Duration::from_millis(10000))?;
 
     conn.execute_batch(
         "
@@ -97,11 +101,34 @@ pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     ",
     )?;
 
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) \
-         VALUES ('schema_version', ?)",
-        params![SCHEMA_VERSION],
-    )?;
+    let current_version: i32 = conn
+        .query_row(
+            "SELECT COALESCE((SELECT value FROM meta WHERE key='schema_version'), '0')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    if current_version < 2 {
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN last_heartbeat TEXT;",
+        )
+        .ok();
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+            params![SCHEMA_VERSION],
+        )?;
+    }
+
+    if let Err(e) = conn.execute(
+        "SELECT count(*) FROM commands_fts WHERE commands_fts MATCH 'test'",
+        [],
+    ) {
+        tracing::warn!("FTS5 index may be corrupt, rebuilding: {e}");
+        conn.execute_batch(
+            "INSERT INTO commands_fts(commands_fts) VALUES('rebuild')",
+        )?;
+    }
 
     Ok(())
 }
@@ -114,9 +141,12 @@ impl Db {
     pub fn open() -> anyhow::Result<Self> {
         let dir = crate::config::Config::nsh_dir();
         std::fs::create_dir_all(&dir)?;
-        let conn = Connection::open(dir.join("nsh.db"))?;
+        let mut conn = Connection::open(dir.join("nsh.db"))?;
         init_db(&conn)?;
-        Ok(Self { conn })
+        conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+        let db = Self { conn };
+        let _ = db.cleanup_orphaned_sessions();
+        Ok(db)
     }
 
     #[cfg(test)]
@@ -141,9 +171,9 @@ impl Db {
             std::env::var("USER").unwrap_or_else(|_| "unknown".into());
         self.conn.execute(
             "INSERT OR IGNORE INTO sessions \
-             (id, tty, shell, pid, started_at, hostname, username) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![id, tty, shell, pid, now, hostname, username],
+             (id, tty, shell, pid, started_at, hostname, username, last_heartbeat) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![id, tty, shell, pid, now, hostname, username, now],
         )?;
         Ok(())
     }
@@ -168,17 +198,38 @@ impl Db {
         started_at: &str,
         duration_ms: Option<i64>,
         output: Option<&str>,
+        tty: &str,
+        shell: &str,
+        pid: i32,
     ) -> rusqlite::Result<i64> {
-        // Ensure the session exists (create a stub if needed, e.g. when
-        // record is called before a formal session start)
-        self.conn.execute(
-            "INSERT OR IGNORE INTO sessions \
-             (id, tty, shell, pid, started_at) \
-             VALUES (?, '', '', 0, ?)",
-            params![session_id, started_at],
+        let now = chrono::Utc::now().to_rfc3339();
+        let max_output_bytes = 32768;
+        let truncated_output = output.map(|s| {
+            if s.len() > max_output_bytes {
+                let mut end = max_output_bytes;
+                while end > 0 && !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}\n... [truncated by nsh]", &s[..end])
+            } else {
+                s.to_string()
+            }
+        });
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "INSERT INTO sessions (id, tty, shell, pid, started_at, last_heartbeat) \
+             VALUES (?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+               tty=excluded.tty, \
+               shell=excluded.shell, \
+               pid=excluded.pid, \
+               last_heartbeat=excluded.last_heartbeat",
+            params![session_id, tty, shell, pid, started_at, now],
         )?;
 
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO commands \
              (session_id, command, cwd, exit_code, \
               started_at, duration_ms, output) \
@@ -190,10 +241,13 @@ impl Db {
                 exit_code,
                 started_at,
                 duration_ms,
-                output
+                truncated_output.as_deref()
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let rowid = tx.last_insert_rowid();
+
+        tx.commit()?;
+        Ok(rowid)
     }
 
     // ── FTS5 search ────────────────────────────────────────────────
@@ -276,7 +330,8 @@ impl Db {
         pending: bool,
     ) -> rusqlite::Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO conversations \
              (session_id, query, response_type, response, \
               explanation, executed, pending, created_at) \
@@ -292,7 +347,9 @@ impl Db {
                 now
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let rowid = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(rowid)
     }
 
     pub fn get_conversations(
@@ -348,7 +405,135 @@ impl Db {
              WHERE ended_at IS NOT NULL AND ended_at < ?",
             params![cutoff_str],
         )?;
+        self.conn.execute_batch(
+            "INSERT INTO commands_fts(commands_fts) VALUES('optimize');
+             PRAGMA incremental_vacuum;",
+        )?;
         Ok(deleted)
+    }
+
+    pub fn update_heartbeat(&self, session_id: &str) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE sessions SET last_heartbeat = ? WHERE id = ?",
+            params![now, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn cleanup_orphaned_sessions(&self) -> rusqlite::Result<usize> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pid FROM sessions WHERE ended_at IS NULL",
+        )?;
+        let orphans: Vec<(String, i64)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut cleaned = 0usize;
+        for (id, pid) in &orphans {
+            if *pid <= 0 {
+                continue;
+            }
+            let alive = unsafe { libc::kill(*pid as i32, 0) };
+            if alive == -1 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::ESRCH) {
+                    self.conn.execute(
+                        "UPDATE sessions SET ended_at = ? WHERE id = ?",
+                        params![now, id],
+                    )?;
+                    cleaned += 1;
+                }
+            }
+        }
+        Ok(cleaned)
+    }
+
+    pub fn rebuild_fts(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch(
+            "INSERT INTO commands_fts(commands_fts) VALUES('rebuild')",
+        )
+    }
+
+    pub fn optimize_fts(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch(
+            "INSERT INTO commands_fts(commands_fts) VALUES('optimize')",
+        )
+    }
+
+    pub fn check_fts_integrity(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch(
+            "INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')",
+        )
+    }
+
+    pub fn prune_if_due(&self, retention_days: u32) -> rusqlite::Result<()> {
+        let should_prune: bool = self
+            .conn
+            .query_row(
+                "SELECT COALESCE( \
+                   (SELECT value FROM meta WHERE key='last_prune_at'), \
+                   '2000-01-01T00:00:00Z' \
+                 ) < datetime('now', '-1 day')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(true);
+
+        if should_prune {
+            self.prune(retention_days)?;
+            let now = chrono::Utc::now().to_rfc3339();
+            self.conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_prune_at', ?)",
+                params![now],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn run_doctor(&self) -> anyhow::Result<()> {
+        eprintln!("nsh doctor: checking database integrity...");
+
+        eprint!("  FTS5 integrity... ");
+        match self.check_fts_integrity() {
+            Ok(()) => eprintln!("OK"),
+            Err(e) => {
+                eprintln!("FAILED: {e}");
+                eprint!("  Rebuilding FTS5 index... ");
+                self.rebuild_fts()?;
+                eprintln!("done");
+            }
+        }
+
+        eprint!("  FTS5 optimize... ");
+        self.optimize_fts()?;
+        eprintln!("OK");
+
+        eprint!("  Orphaned sessions... ");
+        let cleaned = self.cleanup_orphaned_sessions()?;
+        eprintln!("{cleaned} cleaned");
+
+        eprint!("  Pruning old data (90 days)... ");
+        let pruned = self.prune(90)?;
+        eprintln!("{pruned} commands removed");
+
+        eprint!("  Incremental vacuum... ");
+        self.conn.execute_batch("PRAGMA incremental_vacuum")?;
+        eprintln!("OK");
+
+        eprint!("  Integrity check... ");
+        let result: String = self.conn.query_row(
+            "PRAGMA integrity_check",
+            [],
+            |row| row.get(0),
+        )?;
+        eprintln!("{result}");
+
+        Ok(())
     }
 }
 
@@ -505,6 +690,9 @@ mod tests {
             "2025-01-01T00:00:00Z",
             None,
             None,
+            "",
+            "",
+            0,
         )
         .unwrap();
 
@@ -524,6 +712,9 @@ mod tests {
             "2025-01-01T00:00:00Z",
             None,
             None,
+            "",
+            "",
+            0,
         )
         .unwrap();
 
@@ -588,6 +779,9 @@ mod tests {
             "2020-01-01T00:00:00Z",
             None,
             None,
+            "",
+            "",
+            0,
         )
         .unwrap();
         db.insert_command(
@@ -598,6 +792,9 @@ mod tests {
             "2099-01-01T00:00:00Z",
             None,
             None,
+            "",
+            "",
+            0,
         )
         .unwrap();
 
@@ -621,11 +818,13 @@ mod tests {
         db.insert_command(
             "s1", "cmd_in_s1", "/tmp", Some(0),
             "2025-01-01T00:00:00Z", None, None,
+            "/dev/pts/0", "zsh", 100,
         )
         .unwrap();
         db.insert_command(
             "s2", "cmd_in_s2", "/home", Some(0),
             "2025-01-01T00:00:01Z", None, None,
+            "/dev/pts/1", "bash", 200,
         )
         .unwrap();
 
