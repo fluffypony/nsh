@@ -4,6 +4,7 @@ mod config;
 mod context;
 mod db;
 mod init;
+mod json_extract;
 mod provider;
 mod pty;
 mod pump;

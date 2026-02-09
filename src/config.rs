@@ -45,6 +45,7 @@ pub struct ProviderConfig {
     pub openrouter: Option<ProviderAuth>,
     pub anthropic: Option<ProviderAuth>,
     pub openai: Option<ProviderAuth>,
+    pub ollama: Option<ProviderAuth>,
 }
 
 impl Default for ProviderConfig {
@@ -59,6 +60,7 @@ impl Default for ProviderConfig {
             openrouter: Some(ProviderAuth::default()),
             anthropic: None,
             openai: None,
+            ollama: None,
         }
     }
 }

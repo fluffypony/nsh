@@ -15,6 +15,12 @@ pub async fn handle_query(
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
         .ok();
 
+    let query = if query == "__NSH_CONTINUE__" {
+        "Continue the previous pending task. Use scrollback to see the latest output."
+    } else {
+        query
+    };
+
     let provider =
         create_provider(&config.provider.default, config)?;
     let model = &config.provider.model;
@@ -23,12 +29,7 @@ pub async fn handle_query(
     let ctx = context::build_context(db, session_id, config)?;
 
     // 2. Build system prompt + messages
-    let system = build_system_prompt(
-        &ctx.os_info,
-        &ctx.shell,
-        &ctx.cwd,
-        &ctx.username,
-    );
+    let system = build_system_prompt(&ctx);
     let mut messages: Vec<Message> = Vec::new();
 
     // Conversation history from this session
@@ -103,6 +104,51 @@ pub async fn handle_query(
 
         let response =
             streaming::consume_stream(&mut rx, &cancelled).await?;
+
+        let has_tool_calls = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let response = if !has_tool_calls {
+            let text_content: String = response.content.iter()
+                .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+                .collect::<Vec<_>>().join("");
+            if let Some(json) = crate::json_extract::extract_json(&text_content) {
+                if let Some(name) = json.get("tool").or(json.get("name")).and_then(|v| v.as_str()) {
+                    let input = json.get("input").or(json.get("arguments")).cloned().unwrap_or(json.clone());
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::ToolUse {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            name: name.to_string(),
+                            input,
+                        }],
+                    }
+                } else if json.get("command").is_some() {
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::ToolUse {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            name: "command".to_string(),
+                            input: json,
+                        }],
+                    }
+                } else if json.get("response").is_some() {
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::ToolUse {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            name: "chat".to_string(),
+                            input: json,
+                        }],
+                    }
+                } else {
+                    response
+                }
+            } else {
+                response
+            }
+        } else {
+            response
+        };
+
         messages.push(response.clone());
 
         // Dispatch tool calls
@@ -244,24 +290,34 @@ pub async fn handle_query(
     Ok(())
 }
 
-pub fn build_system_prompt(
-    os_info: &str,
-    shell: &str,
-    cwd: &str,
-    username: &str,
-) -> String {
+pub fn build_system_prompt(ctx: &crate::context::QueryContext) -> String {
     format!(
         r#"You are nsh (Natural Shell), an AI assistant embedded in the
 user's terminal. You help with shell commands, debugging, and system
 administration.
 
 ## Environment
-- OS: {os_info}
+- OS: {os}
+- Arch/Hardware: {machine}
 - Shell: {shell}
 - CWD: {cwd}
-- User: {username}
+- User: {user}
+- Hostname: {host}
+- Date/Time: {datetime}
+- Timezone: {tz}
+- Locale: {locale}
 
-## Scrollback Notes
+## Scrollback Notes"#,
+        os = ctx.os_info,
+        machine = ctx.machine_info,
+        shell = ctx.shell,
+        cwd = ctx.cwd,
+        user = ctx.username,
+        host = ctx.hostname,
+        datetime = ctx.datetime_info,
+        tz = ctx.timezone_info,
+        locale = ctx.locale_info,
+    ) + r#"
 - Scrollback captures cleaned terminal output. Content from full-screen TUI apps (vim, htop, less, man) is automatically excluded.
 - Output may still contain minor rendering artifacts from readline editing.
 - Secrets and API keys in scrollback are automatically redacted.
@@ -309,10 +365,13 @@ output without bothering the user.
 - Use long flags (--recursive) over short flags (-r) for generated commands
   unless the short form is universally known.
 - For multi-step tasks, use pending=true and guide step by step.
+- When the user's locale suggests a non-English language, you may respond
+  in that language for chat responses, but always generate commands in
+  English/ASCII.
+- Tailor commands to the detected OS and available package managers.
 
 ## Multi-step sequences
 When you set pending=true on a command, you'll receive a continuation
 message after the user executes it. The LAST command in a sequence must NOT
 have pending=true."#
-    )
 }

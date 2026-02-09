@@ -8,6 +8,11 @@ pub struct QueryContext {
     pub username: String,
     pub conversation_history: Vec<ConversationExchange>,
     pub other_tty_context: String,
+    pub hostname: String,
+    pub machine_info: String,
+    pub datetime_info: String,
+    pub timezone_info: String,
+    pub locale_info: String,
 }
 
 pub fn build_context(
@@ -66,6 +71,12 @@ pub fn build_context(
     let other_tty_context =
         crate::redact::redact_secrets(&other_tty_context, &config.redaction);
 
+    let hostname = detect_hostname();
+    let machine_info = detect_machine_info();
+    let datetime_info = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string();
+    let timezone_info = detect_timezone();
+    let locale_info = detect_locale();
+
     Ok(QueryContext {
         os_info,
         shell,
@@ -73,6 +84,11 @@ pub fn build_context(
         username,
         conversation_history,
         other_tty_context,
+        hostname,
+        machine_info,
+        datetime_info,
+        timezone_info,
+        locale_info,
     })
 }
 
@@ -114,4 +130,90 @@ fn detect_os() -> String {
     {
         format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
     }
+}
+
+fn detect_hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn detect_machine_info() -> String {
+    let arch = std::env::consts::ARCH;
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+
+    #[cfg(target_os = "macos")]
+    let mem = {
+        std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+            .map(|b| format!("{:.0}GB RAM", b as f64 / 1_073_741_824.0))
+            .unwrap_or_default()
+    };
+
+    #[cfg(target_os = "linux")]
+    let mem = {
+        std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("MemTotal:"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|kb| format!("{:.0}GB RAM", kb as f64 / 1_048_576.0))
+            })
+            .unwrap_or_default()
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let mem = String::new();
+
+    let mut parts = vec![arch.to_string()];
+    if cpus > 0 { parts.push(format!("{cpus} cores")); }
+    if !mem.is_empty() { parts.push(mem); }
+
+    let pkg_mgrs: Vec<&str> = ["brew", "apt", "dnf", "yum", "pacman", "nix", "apk"]
+        .iter()
+        .filter(|cmd| which_exists(cmd))
+        .copied()
+        .collect();
+    if !pkg_mgrs.is_empty() {
+        parts.push(format!("pkg: {}", pkg_mgrs.join(", ")));
+    }
+
+    parts.join(", ")
+}
+
+fn which_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn detect_locale() -> String {
+    std::env::var("LANG")
+        .or_else(|_| std::env::var("LC_ALL"))
+        .unwrap_or_else(|_| "en_US.UTF-8".into())
+}
+
+fn detect_timezone() -> String {
+    std::env::var("TZ").unwrap_or_else(|_| {
+        std::fs::read_link("/etc/localtime")
+            .ok()
+            .and_then(|p| {
+                let s = p.to_string_lossy().to_string();
+                s.find("zoneinfo/").map(|i| s[i + 9..].to_string())
+            })
+            .unwrap_or_else(|| "unknown".into())
+    })
 }
