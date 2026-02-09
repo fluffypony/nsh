@@ -10,6 +10,9 @@ pub struct PtyPair {
     pub slave: OwnedFd,
 }
 
+// Note: rustix::pty::ptsname() calls the non-thread-safe macOS ptsname(3).
+// Currently safe because PTY creation happens before fork(). If PTY creation
+// ever moves to a threaded context, a Mutex around ptsname would be needed.
 pub fn create_pty() -> anyhow::Result<PtyPair> {
     let master = openpt(
         rustix::pty::OpenptFlags::RDWR
@@ -50,6 +53,11 @@ pub fn copy_winsize(
 /// Run the user's shell inside a PTY, capturing output into a scrollback
 /// buffer. This is the `nsh wrap` entrypoint.
 pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
+    if std::env::var("NSH_PTY_ACTIVE").is_ok() {
+        let err = exec::execvp(shell, &[shell, "-l"]);
+        anyhow::bail!("exec failed (already wrapped): {err}");
+    }
+
     let pty = create_pty()?;
 
     let config = crate::config::Config::load().unwrap_or_default();
@@ -67,6 +75,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
         cols,
         config.context.scrollback_rate_limit_bps,
         config.context.scrollback_pause_seconds,
+        config.context.scrollback_lines.max(1000),
     ));
 
     // Fork
@@ -103,10 +112,14 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             }
             drop(pty.slave);
 
-            // Exec the shell
+            unsafe { std::env::set_var("NSH_PTY_ACTIVE", "1") };
+
+            // Login shell convention: prepend '-' to basename in argv[0]
+            let basename = shell.rsplit('/').next().unwrap_or(shell);
+            let argv0 = format!("-{basename}");
             let err = exec::execvp(
                 shell,
-                &[shell, "-l"],
+                &[&argv0],
             );
             eprintln!("nsh: exec failed: {err}");
             unsafe { libc::_exit(127) };

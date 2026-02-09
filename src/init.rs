@@ -4,11 +4,11 @@ pub fn generate_init_script(shell: &str) -> String {
         "zsh" => include_str!("../shell/nsh.zsh"),
         "bash" => include_str!("../shell/nsh.bash"),
         other => {
-            eprintln!(
-                "nsh: unsupported shell '{other}'. \
-                 Supported: zsh, bash"
+            return format!(
+                "# nsh: unsupported shell '{}'. Supported: zsh, bash\n\
+                 echo 'nsh: unsupported shell' >&2",
+                other
             );
-            std::process::exit(1);
         }
     };
     template.replace("__SESSION_ID__", &session_id)

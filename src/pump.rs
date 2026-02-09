@@ -17,13 +17,19 @@ pub struct CaptureEngine {
 }
 
 impl CaptureEngine {
-    pub fn new(rows: u16, cols: u16, rate_limit_bps: usize, pause_seconds: u64) -> Self {
+    pub fn new(
+        rows: u16,
+        cols: u16,
+        rate_limit_bps: usize,
+        pause_seconds: u64,
+        max_accumulated_lines: usize,
+    ) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, 1000),
             in_alternate_screen: false,
             accumulated_lines: Vec::new(),
             prev_screen_contents: String::new(),
-            max_accumulated_lines: 10_000,
+            max_accumulated_lines,
             rate_window_start: Instant::now(),
             rate_bytes: 0,
             rate_limit_bps,
@@ -437,7 +443,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_basic() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
         eng.process(b"line one\r\nline two\r\nline three\r\n");
         let lines = eng.get_lines(10);
         assert!(lines.contains("line one"));
@@ -447,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_empty() {
-        let eng = CaptureEngine::new(24, 80, 0, 2);
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
         let lines = eng.get_lines(10);
         assert!(lines.trim().is_empty());
     }
@@ -468,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_rate_limit() {
-        let mut eng = CaptureEngine::new(24, 80, 100, 2);
+        let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000);
         eng.process(&vec![b'A'; 200]);
         let lines = eng.get_lines(100);
         assert!(lines.contains("[nsh: output capture suppressed"));
@@ -476,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_alt_screen_detection() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
         eng.process(b"normal text\r\n");
         eng.process(b"\x1b[?1049h");
         assert!(eng.in_alternate_screen);
