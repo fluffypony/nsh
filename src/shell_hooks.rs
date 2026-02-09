@@ -16,4 +16,10 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(
         dir.join(format!("scrollback_{session_id}")),
     );
+    let _ = std::fs::remove_file(
+        dir.join(format!("scrollback_{session_id}.sock")),
+    );
+    let _ = std::fs::remove_file(
+        dir.join(format!("redact_next_{session_id}")),
+    );
 }
