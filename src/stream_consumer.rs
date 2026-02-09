@@ -73,6 +73,8 @@ pub async fn consume_stream(
                 current_tool_input.clear();
             }
 
+            StreamEvent::GenerationId(_) => {}
+
             StreamEvent::Done { usage: u } => {
                 usage = u;
                 break;

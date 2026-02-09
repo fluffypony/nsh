@@ -15,6 +15,7 @@ impl OpenRouterProvider {
                 ("HTTP-Referer".into(), "https://github.com/fluffypony/nsh".into()),
                 ("X-Title".into(), "nsh".into()),
             ],
+            config.provider.timeout_seconds,
         )?))
     }
 }

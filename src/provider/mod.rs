@@ -40,7 +40,7 @@ pub enum ContentBlock {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
     pub system: String,
@@ -49,9 +49,10 @@ pub struct ChatRequest {
     pub tool_choice: ToolChoice,
     pub max_tokens: u32,
     pub stream: bool,
+    pub extra_body: Option<serde_json::Value>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ToolChoice {
     Auto,
     Required,
@@ -64,11 +65,12 @@ pub enum StreamEvent {
     ToolUseStart { id: String, name: String },
     ToolUseDelta(String),
     ToolUseEnd,
+    GenerationId(String),
     Done { usage: Option<Usage> },
     Error(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -102,6 +104,17 @@ pub fn create_provider(
         "openai" => {
             Ok(Box::new(openai::OpenAIProvider::new(config)?))
         }
+        "gemini" => {
+            let auth = config.provider.gemini.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Gemini not configured"))?;
+            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
+                auth.resolve_api_key("gemini")?,
+                "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+                None,
+                vec![],
+                config.provider.timeout_seconds,
+            )?))
+        }
         "ollama" => {
             let auth = config.provider.ollama.as_ref();
             let base_url = auth
@@ -112,6 +125,7 @@ pub fn create_provider(
                 .unwrap_or_else(|| zeroize::Zeroizing::new("ollama".into()));
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
                 api_key, base_url, config.provider.fallback_model.clone(), vec![],
+                config.provider.timeout_seconds,
             )?))
         }
         _ => anyhow::bail!("Unknown provider: {provider_name}"),

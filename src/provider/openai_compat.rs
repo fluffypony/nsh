@@ -18,10 +18,11 @@ impl OpenAICompatProvider {
         base_url: String,
         fallback_model: Option<String>,
         extra_headers: Vec<(String, String)>,
+        timeout_seconds: u64,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(timeout_seconds))
                 .build()?,
             api_key,
             base_url,
@@ -32,16 +33,23 @@ impl OpenAICompatProvider {
 
     fn build_request_body(&self, request: &ChatRequest) -> serde_json::Value {
         let messages = build_openai_messages(&request.messages, &request.system);
-        let tools = build_openai_tools(&request.tools);
+        let mut tools = build_openai_tools(&request.tools);
+
+        let model = request.model.as_str();
 
         let mut body = json!({
-            "model": request.model,
+            "model": model,
             "messages": messages,
             "max_tokens": request.max_tokens,
             "stream": request.stream,
         });
 
         if !tools.is_empty() {
+            if is_anthropic_model(model) {
+                if let Some(last) = tools.last_mut() {
+                    last["cache_control"] = json!({"type": "ephemeral"});
+                }
+            }
             body["tools"] = json!(tools);
         }
 
@@ -51,16 +59,35 @@ impl OpenAICompatProvider {
             ToolChoice::Auto => { body["tool_choice"] = json!("auto"); }
         }
 
+        if is_anthropic_model(model) {
+            body["system"] = json!([{
+                "type": "text",
+                "text": &request.system,
+                "cache_control": {"type": "ephemeral"}
+            }]);
+        }
+
+        if let Some(extra) = &request.extra_body {
+            if let serde_json::Value::Object(map) = extra {
+                for (k, v) in map {
+                    body[k] = v.clone();
+                }
+            }
+        }
+
         body
     }
 
-    fn build_http_request(&self, body: &serde_json::Value) -> reqwest::RequestBuilder {
+    fn build_http_request(&self, body: &serde_json::Value, model: &str) -> reqwest::RequestBuilder {
         let mut req = self.client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", &*self.api_key))
             .json(body);
         for (k, v) in &self.extra_headers {
             req = req.header(k.as_str(), v.as_str());
+        }
+        if is_anthropic_model(model) && self.base_url.contains("openrouter") {
+            req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
         }
         req
     }
@@ -70,12 +97,36 @@ fn is_retryable(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
+fn is_anthropic_model(model: &str) -> bool {
+    model.contains("claude") || model.starts_with("anthropic/")
+}
+
+pub fn apply_thinking_mode(body: &mut serde_json::Value, model: &str, think: bool) {
+    if !think {
+        if model.starts_with("google/gemini-3") {
+            body["reasoning"] = json!({"effort": "low"});
+        }
+        return;
+    }
+    if model.starts_with("google/gemini-2.5") {
+        let current = body["model"].as_str().unwrap_or(model).to_string();
+        if !current.ends_with(":thinking") {
+            body["model"] = json!(format!("{current}:thinking"));
+        }
+    } else if model.starts_with("google/gemini-3") {
+        body["reasoning"] = json!({"effort": "high"});
+    } else if model.contains("claude") && model.contains("sonnet") {
+        body["reasoning"] = json!({"enabled": true, "budget_tokens": 32768});
+    }
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for OpenAICompatProvider {
     async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
+        let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(false);
-        let resp = self.build_http_request(&body).send().await?;
+        let resp = self.build_http_request(&body, &model).send().await?;
         let status = resp.status();
 
         if !status.is_success() {
@@ -84,7 +135,7 @@ impl LlmProvider for OpenAICompatProvider {
                     tracing::warn!("Primary model failed ({status}), trying fallback: {fallback}");
                     let mut fb = body.clone();
                     fb["model"] = json!(fallback);
-                    let resp2 = self.build_http_request(&fb).send().await?;
+                    let resp2 = self.build_http_request(&fb, fallback).send().await?;
                     let status2 = resp2.status();
                     if !status2.is_success() {
                         let text = resp2.text().await.unwrap_or_default();
@@ -101,10 +152,11 @@ impl LlmProvider for OpenAICompatProvider {
     }
 
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+        let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(true);
 
-        let resp = self.build_http_request(&body).send().await?;
+        let resp = self.build_http_request(&body, &model).send().await?;
         let status = resp.status();
 
         if !status.is_success() {
@@ -113,7 +165,7 @@ impl LlmProvider for OpenAICompatProvider {
                     tracing::warn!("Primary failed ({status}), stream fallback: {fallback}");
                     let mut fb = body.clone();
                     fb["model"] = json!(fallback);
-                    let resp2 = self.build_http_request(&fb).send().await?;
+                    let resp2 = self.build_http_request(&fb, fallback).send().await?;
                     let status2 = resp2.status();
                     if !status2.is_success() {
                         let text = resp2.text().await.unwrap_or_default();
@@ -186,6 +238,7 @@ pub fn spawn_openai_stream(resp: reqwest::Response) -> anyhow::Result<tokio::syn
         use futures::StreamExt;
         let mut stream = resp.bytes_stream().eventsource();
         let mut current_tool_index: Option<usize> = None;
+        let mut generation_id: Option<String> = None;
         while let Some(event) = stream.next().await {
             let event = match event {
                 Ok(e) => e,
@@ -201,6 +254,14 @@ pub fn spawn_openai_stream(resp: reqwest::Response) -> anyhow::Result<tokio::syn
             let chunk: serde_json::Value = match serde_json::from_str(&event.data) {
                 Ok(v) => v, Err(_) => continue,
             };
+
+            if generation_id.is_none() {
+                if let Some(id) = chunk["id"].as_str() {
+                    let _ = tx.send(StreamEvent::GenerationId(id.to_string())).await;
+                    generation_id = Some(id.to_string());
+                }
+            }
+
             let delta = &chunk["choices"][0]["delta"];
             if let Some(content) = delta["content"].as_str() {
                 if !content.is_empty() {

@@ -78,6 +78,7 @@ pub async fn handle_query(
             },
             max_tokens: 4096,
             stream: true,
+            extra_body: None,
         };
 
         let _spinner = streaming::SpinnerGuard::new();

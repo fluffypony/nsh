@@ -12,6 +12,7 @@ impl OpenAIProvider {
             auth.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".into()),
             config.provider.fallback_model.clone(),
             vec![],
+            config.provider.timeout_seconds,
         )?))
     }
 }
