@@ -8,6 +8,7 @@ pub struct OpenRouterProvider {
     client: Client,
     api_key: Zeroizing<String>,
     base_url: String,
+    fallback_model: Option<String>,
 }
 
 impl OpenRouterProvider {
@@ -32,6 +33,7 @@ impl OpenRouterProvider {
                 .unwrap_or_else(|| {
                     "https://openrouter.ai/api/v1".into()
                 }),
+            fallback_model: config.provider.fallback_model.clone(),
         })
     }
 
@@ -178,6 +180,11 @@ impl OpenRouterProvider {
     }
 }
 
+fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for OpenRouterProvider {
     async fn complete(
@@ -203,6 +210,39 @@ impl LlmProvider for OpenRouterProvider {
 
         let status = resp.status();
         if !status.is_success() {
+            if is_retryable_status(status) {
+                if let Some(fallback) = &self.fallback_model {
+                    tracing::warn!(
+                        "Primary model failed ({status}), retrying with fallback: {fallback}"
+                    );
+                    let mut fallback_body = body.clone();
+                    fallback_body["model"] = json!(fallback);
+                    let resp2 = self
+                        .client
+                        .post(format!("{}/chat/completions", self.base_url))
+                        .header(
+                            "Authorization",
+                            format!("Bearer {}", &*self.api_key),
+                        )
+                        .header(
+                            "HTTP-Referer",
+                            "https://github.com/ArcticBear/nsh",
+                        )
+                        .header("X-Title", "nsh")
+                        .json(&fallback_body)
+                        .send()
+                        .await?;
+                    let status2 = resp2.status();
+                    if !status2.is_success() {
+                        let text = resp2.text().await.unwrap_or_default();
+                        anyhow::bail!(
+                            "OpenRouter API error (fallback {status2}): {text}"
+                        );
+                    }
+                    let json: serde_json::Value = resp2.json().await?;
+                    return parse_openai_response(&json);
+                }
+            }
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!(
                 "OpenRouter API error ({status}): {text}"
@@ -240,12 +280,53 @@ impl LlmProvider for OpenRouterProvider {
 
         let status = resp.status();
         if !status.is_success() {
+            if is_retryable_status(status) {
+                if let Some(fallback) = &self.fallback_model {
+                    tracing::warn!(
+                        "Primary model failed ({status}), retrying stream with fallback: {fallback}"
+                    );
+                    let mut fallback_body = body.clone();
+                    fallback_body["model"] = json!(fallback);
+                    let resp2 = self
+                        .client
+                        .post(format!("{}/chat/completions", self.base_url))
+                        .header(
+                            "Authorization",
+                            format!("Bearer {}", &*self.api_key),
+                        )
+                        .header(
+                            "HTTP-Referer",
+                            "https://github.com/ArcticBear/nsh",
+                        )
+                        .header("X-Title", "nsh")
+                        .json(&fallback_body)
+                        .send()
+                        .await?;
+                    let status2 = resp2.status();
+                    if !status2.is_success() {
+                        let text = resp2.text().await.unwrap_or_default();
+                        anyhow::bail!(
+                            "OpenRouter API error (fallback {status2}): {text}"
+                        );
+                    }
+                    return self.spawn_stream_task(resp2);
+                }
+            }
             let text = resp.text().await.unwrap_or_default();
             anyhow::bail!(
                 "OpenRouter API error ({status}): {text}"
             );
         }
 
+        self.spawn_stream_task(resp)
+    }
+}
+
+impl OpenRouterProvider {
+    fn spawn_stream_task(
+        &self,
+        resp: reqwest::Response,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
         tokio::spawn(async move {
@@ -283,7 +364,6 @@ impl LlmProvider for OpenRouterProvider {
 
                 let delta = &chunk["choices"][0]["delta"];
 
-                // Text content
                 if let Some(content) = delta["content"].as_str() {
                     if !content.is_empty() {
                         let _ = tx
@@ -294,7 +374,6 @@ impl LlmProvider for OpenRouterProvider {
                     }
                 }
 
-                // Tool calls
                 if let Some(tool_calls) =
                     delta["tool_calls"].as_array()
                 {
@@ -303,7 +382,6 @@ impl LlmProvider for OpenRouterProvider {
                             tc["index"].as_u64().unwrap_or(0)
                                 as usize;
 
-                        // New tool call
                         if current_tool_index != Some(idx) {
                             if current_tool_index.is_some() {
                                 let _ = tx
@@ -333,7 +411,6 @@ impl LlmProvider for OpenRouterProvider {
                             }
                         }
 
-                        // Arguments delta
                         if let Some(args) =
                             tc["function"]["arguments"].as_str()
                         {
@@ -350,7 +427,6 @@ impl LlmProvider for OpenRouterProvider {
                     }
                 }
 
-                // Finish reason
                 if chunk["choices"][0]["finish_reason"]
                     .as_str()
                     .is_some()

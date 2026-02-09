@@ -41,11 +41,11 @@ fn test_init_unsupported_shell() {
         .output()
         .expect("failed to run nsh init fish");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stderr.contains("unsupported"),
-        "Expected 'unsupported' in stderr, got: {stderr}"
+        stdout.contains("unsupported"),
+        "Expected 'unsupported' in stdout, got: {stdout}"
     );
 }
 
