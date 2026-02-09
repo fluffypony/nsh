@@ -441,7 +441,7 @@ fn check_project_markers(dir: &std::path::Path, types: &mut Vec<&'static str>) {
 }
 
 fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
-    let mut child = std::process::Command::new("git")
+    let child = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
@@ -450,28 +450,23 @@ fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
         .ok()?;
 
     let timeout = Duration::from_secs(2);
-    let start = Instant::now();
+    let args_display = args.join(" ");
+    let handle = std::thread::spawn(move || child.wait_with_output());
 
+    let start = Instant::now();
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
-                let output = child.wait_with_output().ok()?;
-                return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        if handle.is_finished() {
+            let output = handle.join().ok()?.ok()?;
+            if !output.status.success() {
+                return None;
             }
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    tracing::warn!("git command timed out: git {}", args.join(" "));
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return None,
+            return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
         }
+        if start.elapsed() >= timeout {
+            tracing::warn!("git command timed out: git {args_display}");
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -548,25 +543,41 @@ fn list_project_files_with_ignore(cwd: &std::path::Path, max_files: usize) -> Op
         .build();
 
     let mut entries = Vec::new();
-    for entry in walker.flatten() {
+    let mut had_errors = false;
+    for result in walker {
         if entries.len() >= max_files {
             break;
         }
+        let entry = match result {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!("file walk error: {e}");
+                had_errors = true;
+                continue;
+            }
+        };
         if entry.depth() == 0 {
             continue;
         }
         let rel = entry.path().strip_prefix(cwd).unwrap_or(entry.path());
-        let is_dir = entry.file_type().map_or(false, |ft| ft.is_dir());
-        let size = if is_dir {
+        let ft = entry.file_type();
+        let is_dir = ft.as_ref().map_or(false, |ft| ft.is_dir());
+        let is_symlink = ft.as_ref().map_or(false, |ft| ft.is_symlink());
+        let kind = if is_symlink { "symlink" } else if is_dir { "dir" } else { "file" };
+        let size = if is_dir || is_symlink {
             String::new()
         } else {
             entry.metadata().map(|m| format_size(m.len())).unwrap_or_default()
         };
         entries.push(FileEntry {
             path: rel.to_string_lossy().to_string(),
-            kind: if is_dir { "dir".into() } else { "file".into() },
+            kind: kind.into(),
             size,
         });
+    }
+
+    if entries.is_empty() && had_errors {
+        return None;
     }
 
     Some(entries)
@@ -595,26 +606,31 @@ fn list_project_files_fallback(cwd: &std::path::Path, max_files: usize) -> Vec<F
                 break;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            let meta = entry.metadata().ok();
-            let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+            let meta = match entry.path().symlink_metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let is_symlink = meta.file_type().is_symlink();
+            let is_dir = meta.file_type().is_dir();
 
             if is_dir && SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
 
             let rel = entry.path().strip_prefix(cwd).unwrap_or(&entry.path()).to_path_buf();
-            let size = if is_dir {
+            let kind = if is_symlink { "symlink" } else if is_dir { "dir" } else { "file" };
+            let size = if is_dir || is_symlink {
                 String::new()
             } else {
-                meta.map(|m| format_size(m.len())).unwrap_or_default()
+                format_size(meta.len())
             };
             entries.push(FileEntry {
                 path: rel.to_string_lossy().to_string(),
-                kind: if is_dir { "dir".into() } else { "file".into() },
+                kind: kind.into(),
                 size,
             });
 
-            if is_dir {
+            if is_dir && !is_symlink {
                 queue.push_back((entry.path(), depth + 1));
             }
         }
@@ -755,10 +771,12 @@ fn detect_locale() -> String {
 }
 
 fn detect_ssh_context() -> Option<String> {
-    let ssh_client = std::env::var("SSH_CLIENT").ok()?;
+    let ssh_client = std::env::var("SSH_CLIENT")
+        .or_else(|_| std::env::var("SSH_CONNECTION"))
+        .ok()?;
     let parts: Vec<&str> = ssh_client.split_whitespace().collect();
     let remote_ip = parts.first().unwrap_or(&"unknown");
-    Some(format!("<ssh remote_ip=\"{remote_ip}\" />"))
+    Some(format!("<ssh remote_ip=\"{}\" />", xml_escape(remote_ip)))
 }
 
 fn detect_container() -> Option<String> {

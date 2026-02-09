@@ -320,40 +320,21 @@ fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
 }
 
 fn sanitize_project_config(value: &mut toml::Value) {
-    let sensitive_keys = ["api_key", "api_key_cmd"];
+    const ALLOWED_SECTIONS: &[&str] = &["context", "display"];
 
     if let toml::Value::Table(table) = value {
-        if let Some(provider) = table.get_mut("provider") {
-            if let toml::Value::Table(provider_table) = provider {
-                let mut found_sensitive = Vec::new();
-                for (key, val) in provider_table.iter() {
-                    if sensitive_keys.contains(&key.as_str()) {
-                        found_sensitive.push(key.clone());
-                    }
-                    if let toml::Value::Table(sub) = val {
-                        for sub_key in sub.keys() {
-                            if sensitive_keys.contains(&sub_key.as_str()) {
-                                found_sensitive.push(format!("{key}.{sub_key}"));
-                            }
-                        }
-                    }
-                }
-                if !found_sensitive.is_empty() {
-                    eprintln!(
-                        "nsh: warning: project config contains sensitive fields ({}), ignoring them",
-                        found_sensitive.join(", ")
-                    );
-                }
-                for key in &sensitive_keys {
-                    provider_table.remove(*key);
-                }
-                for (_name, val) in provider_table.iter_mut() {
-                    if let toml::Value::Table(sub) = val {
-                        for key in &sensitive_keys {
-                            sub.remove(*key);
-                        }
-                    }
-                }
+        let disallowed: Vec<String> = table
+            .keys()
+            .filter(|k| !ALLOWED_SECTIONS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        if !disallowed.is_empty() {
+            eprintln!(
+                "nsh: warning: project config contains disallowed sections ({}), ignoring them",
+                disallowed.join(", ")
+            );
+            for key in &disallowed {
+                table.remove(key);
             }
         }
     }
@@ -389,10 +370,20 @@ impl Config {
         // Merge project-level config if found
         if let Some(project_path) = find_project_config() {
             tracing::debug!("Found project config at {}", project_path.display());
-            if let Ok(project_content) = std::fs::read_to_string(&project_path) {
-                if let Ok(mut project_value) = toml::from_str::<toml::Value>(&project_content) {
-                    sanitize_project_config(&mut project_value);
-                    deep_merge_toml(&mut base_value, &project_value);
+            match std::fs::read_to_string(&project_path) {
+                Ok(project_content) => {
+                    match toml::from_str::<toml::Value>(&project_content) {
+                        Ok(mut project_value) => {
+                            sanitize_project_config(&mut project_value);
+                            deep_merge_toml(&mut base_value, &project_value);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse project config {}: {e}", project_path.display());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read project config {}: {e}", project_path.display());
                 }
             }
         }
@@ -582,16 +573,23 @@ model = "custom-model"
 api_key = "secret-key"
 base_url = "https://custom.url"
 
+[tools]
+run_command_allowlist = ["*"]
+
 [context]
 git_commits = 5
+
+[display]
+chat_color = "red"
 "#).unwrap();
 
         sanitize_project_config(&mut value);
-        let provider = value.get("provider").unwrap().as_table().unwrap();
-        let openrouter = provider.get("openrouter").unwrap().as_table().unwrap();
-        assert!(openrouter.get("api_key").is_none());
-        assert!(openrouter.get("base_url").is_some());
-        assert!(value.get("context").is_some());
+        assert!(value.get("provider").is_none(), "provider section should be stripped");
+        assert!(value.get("tools").is_none(), "tools section should be stripped");
+        assert!(value.get("context").is_some(), "context section should be kept");
+        assert!(value.get("display").is_some(), "display section should be kept");
+        let ctx = value.get("context").unwrap().as_table().unwrap();
+        assert_eq!(ctx.get("git_commits").unwrap().as_integer(), Some(5));
     }
 
     #[test]
