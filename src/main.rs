@@ -2,6 +2,8 @@ mod ansi;
 mod cli;
 mod config;
 mod context;
+mod daemon;
+mod daemon_client;
 mod db;
 mod display;
 mod init;
