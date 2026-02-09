@@ -16,7 +16,7 @@ impl AnthropicProvider {
             .ok_or_else(|| anyhow::anyhow!("Anthropic not configured"))?;
         Ok(Self {
             client: Client::builder().timeout(std::time::Duration::from_secs(120)).build()?,
-            api_key: auth.resolve_api_key()?,
+            api_key: auth.resolve_api_key("anthropic")?,
             base_url: auth.base_url.clone()
                 .unwrap_or_else(|| "https://api.anthropic.com".into()),
         })

@@ -108,7 +108,7 @@ pub fn create_provider(
                 .and_then(|a| a.base_url.clone())
                 .unwrap_or_else(|| "http://localhost:11434/v1".into());
             let api_key = auth
-                .and_then(|a| a.resolve_api_key().ok())
+                .and_then(|a| a.resolve_api_key("ollama").ok())
                 .unwrap_or_else(|| zeroize::Zeroizing::new("ollama".into()));
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
                 api_key, base_url, config.provider.fallback_model.clone(), vec![],

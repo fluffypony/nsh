@@ -15,7 +15,7 @@ pub async fn execute(
                 "OpenRouter not configured (needed for web search)"
             )
         })?;
-    let api_key = auth.resolve_api_key()?;
+    let api_key = auth.resolve_api_key("openrouter")?;
     let base_url = auth
         .base_url
         .as_deref()

@@ -10,7 +10,9 @@ pub struct Config {
     pub context: ContextConfig,
     pub tools: ToolsConfig,
     #[serde(default)]
-    pub web_search: Option<toml::Value>,
+    pub models: ModelsConfig,
+    #[serde(default)]
+    pub web_search: WebSearchConfig,
     pub display: DisplayConfig,
     #[serde(default)]
     pub redaction: RedactionConfig,
@@ -26,11 +28,51 @@ impl Default for Config {
             provider: ProviderConfig::default(),
             context: ContextConfig::default(),
             tools: ToolsConfig::default(),
-            web_search: None,
+            models: ModelsConfig::default(),
+            web_search: WebSearchConfig::default(),
             display: DisplayConfig::default(),
             redaction: RedactionConfig::default(),
             capture: CaptureConfig::default(),
             db: DbConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct ModelsConfig {
+    pub main: Vec<String>,
+    pub fast: Vec<String>,
+}
+
+impl Default for ModelsConfig {
+    fn default() -> Self {
+        Self {
+            main: vec![
+                "google/gemini-2.5-flash".into(),
+                "google/gemini-3-flash-preview".into(),
+                "anthropic/claude-sonnet-4.5".into(),
+            ],
+            fast: vec![
+                "google/gemini-2.5-flash-lite".into(),
+                "anthropic/claude-haiku-4.5".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct WebSearchConfig {
+    pub provider: String,
+    pub model: String,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            provider: "openrouter".into(),
+            model: "perplexity/sonar".into(),
         }
     }
 }
@@ -46,6 +88,8 @@ pub struct ProviderConfig {
     pub anthropic: Option<ProviderAuth>,
     pub openai: Option<ProviderAuth>,
     pub ollama: Option<ProviderAuth>,
+    pub gemini: Option<ProviderAuth>,
+    pub timeout_seconds: u64,
 }
 
 impl Default for ProviderConfig {
@@ -61,6 +105,8 @@ impl Default for ProviderConfig {
             anthropic: None,
             openai: None,
             ollama: None,
+            gemini: None,
+            timeout_seconds: 120,
         }
     }
 }
@@ -84,7 +130,7 @@ impl Default for ProviderAuth {
 }
 
 impl ProviderAuth {
-    pub fn resolve_api_key(&self) -> anyhow::Result<Zeroizing<String>> {
+    pub fn resolve_api_key(&self, provider_name: &str) -> anyhow::Result<Zeroizing<String>> {
         if let Some(key) = &self.api_key {
             if !key.is_empty() {
                 return Ok(Zeroizing::new(key.clone()));
@@ -105,7 +151,21 @@ impl ProviderAuth {
             }
             return Ok(Zeroizing::new(key));
         }
-        anyhow::bail!("No API key configured")
+        let env_var = match provider_name {
+            "openrouter" => "OPENROUTER_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            "openai" => "OPENAI_API_KEY",
+            "gemini" => "GEMINI_API_KEY",
+            _ => "",
+        };
+        if !env_var.is_empty() {
+            if let Ok(key) = std::env::var(env_var) {
+                if !key.is_empty() {
+                    return Ok(Zeroizing::new(key));
+                }
+            }
+        }
+        anyhow::bail!("No API key for {provider_name} (tried config, api_key_cmd, ${env_var})")
     }
 }
 
@@ -492,11 +552,12 @@ default = "openrouter"
 
 [web_search]
 provider = "brave"
-api_key = "old-key"
+model = "some-model"
 "#;
         let config: Config =
             toml::from_str(toml_str).unwrap();
-        assert!(config.web_search.is_some());
+        assert_eq!(config.web_search.provider, "brave");
+        assert_eq!(config.web_search.model, "some-model");
     }
 
     #[test]

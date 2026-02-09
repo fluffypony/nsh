@@ -8,7 +8,7 @@ impl OpenRouterProvider {
         let auth = config.provider.openrouter.as_ref()
             .ok_or_else(|| anyhow::anyhow!("OpenRouter not configured"))?;
         Ok(Self(OpenAICompatProvider::new(
-            auth.resolve_api_key()?,
+            auth.resolve_api_key("openrouter")?,
             auth.base_url.clone().unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
             config.provider.fallback_model.clone(),
             vec![

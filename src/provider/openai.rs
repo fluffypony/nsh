@@ -8,7 +8,7 @@ impl OpenAIProvider {
         let auth = config.provider.openai.as_ref()
             .ok_or_else(|| anyhow::anyhow!("OpenAI not configured"))?;
         Ok(Self(OpenAICompatProvider::new(
-            auth.resolve_api_key()?,
+            auth.resolve_api_key("openai")?,
             auth.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".into()),
             config.provider.fallback_model.clone(),
             vec![],
