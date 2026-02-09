@@ -115,6 +115,7 @@ pub fn handle_daemon_request(
             if db_tx.send(cmd).is_err() {
                 return DaemonResponse::error("DB thread unavailable");
             }
+            let _ = db_tx.send(DbCommand::GenerateSummaries);
             match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(Ok(())) => DaemonResponse::ok(),
                 Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
@@ -164,9 +165,13 @@ pub fn handle_daemon_request(
             }))
         }
 
+        DaemonRequest::SummarizeCheck { .. } => {
+            let _ = db_tx.send(DbCommand::GenerateSummaries);
+            DaemonResponse::ok()
+        }
+
         DaemonRequest::Context { .. }
-        | DaemonRequest::McpToolCall { .. }
-        | DaemonRequest::SummarizeCheck { .. } => {
+        | DaemonRequest::McpToolCall { .. } => {
             DaemonResponse::error("not yet implemented")
         }
     }
@@ -205,6 +210,7 @@ pub enum DbCommand {
         limit: usize,
         reply: std::sync::mpsc::Sender<anyhow::Result<Vec<crate::db::HistoryMatch>>>,
     },
+    GenerateSummaries,
     Shutdown,
 }
 
@@ -223,11 +229,24 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                 session, command, cwd, exit_code, started_at,
                 tty, pid, shell, duration_ms, output, reply,
             } => {
+                let cmd_text = command.clone();
+                let ec = exit_code;
+                let out = output.clone();
+
                 let result = db.insert_command(
                     &session, &command, &cwd, Some(exit_code),
                     &started_at, duration_ms, output.as_deref(),
                     &tty, &shell, pid,
                 );
+                match &result {
+                    Ok(id) => {
+                        let output_text = out.as_deref().unwrap_or("");
+                        if let Some(trivial) = crate::summary::trivial_summary(&cmd_text, ec, output_text) {
+                            let _ = db.update_summary(*id, &trivial);
+                        }
+                    }
+                    Err(_) => {}
+                }
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!("{e}")));
             }
 
@@ -252,7 +271,28 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!("{e}")));
             }
 
+            DbCommand::GenerateSummaries => {
+                generate_summaries_sync(&db);
+            }
+
             DbCommand::Shutdown => break,
+        }
+    }
+}
+
+fn generate_summaries_sync(db: &crate::db::Db) {
+    let commands = match db.commands_needing_summary(5) {
+        Ok(cmds) => cmds,
+        Err(e) => {
+            tracing::debug!("daemon: failed to fetch commands for summary: {e}");
+            return;
+        }
+    };
+
+    for cmd in &commands {
+        let output = cmd.output.as_deref().unwrap_or("");
+        if let Some(trivial) = crate::summary::trivial_summary(&cmd.command, cmd.exit_code.unwrap_or(-1), output) {
+            let _ = db.update_summary(cmd.id, &trivial);
         }
     }
 }

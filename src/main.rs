@@ -15,6 +15,7 @@ mod pump;
 mod query;
 mod redact;
 mod shell_hooks;
+mod summary;
 mod stream_consumer;
 mod streaming;
 mod tools;
