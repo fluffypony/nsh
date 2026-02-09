@@ -3,7 +3,7 @@ use rustix::termios::{self, Termios};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::Mutex;
 
-use crate::pump::{pump_loop, ScrollbackBuffer};
+use crate::pump::{pump_loop, CaptureEngine};
 
 pub struct PtyPair {
     pub master: OwnedFd,
@@ -58,8 +58,9 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     let original_termios = make_raw(real_stdin)?;
     copy_winsize(real_stdin, pty.master.as_fd())?;
 
-    let scrollback_capacity = 1_048_576; // 1 MB default
-    let scrollback = Mutex::new(ScrollbackBuffer::new(scrollback_capacity));
+    let ws = termios::tcgetwinsize(real_stdin).ok();
+    let (rows, cols) = ws.map(|w| (w.ws_row, w.ws_col)).unwrap_or((24, 80));
+    let capture = Mutex::new(CaptureEngine::new(rows, cols, 10_485_760, 2));
 
     // Fork
     match unsafe { libc::fork() } {
@@ -114,7 +115,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
                 real_stdin,
                 real_stdout,
                 pty.master.as_fd(),
-                &scrollback,
+                &capture,
                 pid,
             );
 

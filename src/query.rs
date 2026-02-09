@@ -113,7 +113,7 @@ pub async fn handle_query(
                             .unwrap_or(100)
                             as usize;
                         let data =
-                            tools::scrollback::execute(lines)?;
+                            tools::scrollback::execute(lines, config)?;
                         tool_results.push(
                             ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
