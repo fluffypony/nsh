@@ -22,7 +22,7 @@ mod tools;
 mod util;
 
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, SessionAction};
+use cli::{Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, ProviderAction, SessionAction};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
             pty::run_wrapped_shell(&shell)?;
         }
 
-        Commands::Query { words } => {
+        Commands::Query { words, think } => {
             if words.is_empty() {
                 eprintln!("Usage: ? <your question>");
                 std::process::exit(1);
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID")
                 .unwrap_or_else(|_| "default".into());
-            query::handle_query(&query_text, &config, &db, &session_id)
+            query::handle_query(&query_text, &config, &db, &session_id, think)
                 .await?;
         }
 
@@ -159,6 +159,71 @@ async fn main() -> anyhow::Result<()> {
                 std::process::Command::new(&editor)
                     .arg(&path)
                     .status()?;
+            }
+        },
+
+        Commands::Cost { period } => {
+            let db = db::Db::open()?;
+            let since = match period.as_str() {
+                "today" => Some("datetime('now', '-1 day')"),
+                "week" => Some("datetime('now', '-7 days')"),
+                "month" => Some("datetime('now', '-30 days')"),
+                "all" => None,
+                _ => Some("datetime('now', '-30 days')"),
+            };
+            let stats = db.get_usage_stats(since)?;
+            if stats.is_empty() {
+                eprintln!("No usage data recorded yet.");
+            } else {
+                eprintln!("Model                               Calls  Input Tok  Output Tok  Cost (USD)");
+                eprintln!("─────────────────────────────────────────────────────────────────────────────");
+                let mut total_cost = 0.0_f64;
+                let mut total_calls = 0_i64;
+                for (model, calls, input_tok, output_tok, cost) in &stats {
+                    eprintln!(
+                        "{:<35} {:>5}  {:>9}  {:>10}  ${:.4}",
+                        model, calls, input_tok, output_tok, cost
+                    );
+                    total_cost += cost;
+                    total_calls += calls;
+                }
+                eprintln!("─────────────────────────────────────────────────────────────────────────────");
+                eprintln!("{:<35} {:>5}                        ${:.4}", "TOTAL", total_calls, total_cost);
+            }
+        }
+
+        Commands::Provider { action } => match action {
+            ProviderAction::ListLocal => {
+                let base_url = config::Config::load()
+                    .ok()
+                    .and_then(|c| c.provider.ollama.as_ref().and_then(|a| a.base_url.clone()))
+                    .unwrap_or_else(|| "http://localhost:11434".into());
+                let url = format!("{}/api/tags", base_url.trim_end_matches("/v1"));
+                match reqwest::get(&url).await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let json: serde_json::Value = resp.json().await?;
+                        if let Some(models) = json["models"].as_array() {
+                            if models.is_empty() {
+                                eprintln!("No models found. Pull one with: ollama pull <model>");
+                            } else {
+                                eprintln!("Available Ollama models:");
+                                for m in models {
+                                    let name = m["name"].as_str().unwrap_or("?");
+                                    let size = m["size"].as_u64().unwrap_or(0);
+                                    let size_gb = size as f64 / 1_073_741_824.0;
+                                    eprintln!("  {name} ({size_gb:.1} GB)");
+                                }
+                            }
+                        }
+                    }
+                    Ok(resp) => {
+                        eprintln!("Ollama API error: {}", resp.status());
+                    }
+                    Err(_) => {
+                        eprintln!("Could not connect to Ollama at {url}");
+                        eprintln!("Is Ollama running? Start it with: ollama serve");
+                    }
+                }
             }
         },
 

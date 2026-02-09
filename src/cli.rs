@@ -28,6 +28,9 @@ pub enum Commands {
 
     /// Handle a natural language query (called by ? / ?? alias)
     Query {
+        /// Enable thinking/reasoning mode
+        #[arg(long, default_value_t = false)]
+        think: bool,
         /// The natural language query
         #[arg(trailing_var_arg = true)]
         words: Vec<String>,
@@ -72,6 +75,19 @@ pub enum Commands {
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
+    },
+
+    /// Show cost/usage statistics
+    Cost {
+        /// Time period: today, week, month, or all
+        #[arg(default_value = "month")]
+        period: String,
+    },
+
+    /// Provider management
+    Provider {
+        #[command(subcommand)]
+        action: ProviderAction,
     },
 
     /// Check and repair nsh database integrity
@@ -137,6 +153,12 @@ pub enum ConfigAction {
     Show,
     /// Open config in $EDITOR
     Edit,
+}
+
+#[derive(Subcommand)]
+pub enum ProviderAction {
+    /// List locally available models (Ollama)
+    ListLocal,
 }
 
 #[derive(Subcommand)]

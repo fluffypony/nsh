@@ -7,7 +7,7 @@ if set -q NSH_SESSION_ID
         nsh query -- $argv
     end
     abbr -a '?' -- 'nsh query --'
-    abbr -a '??' -- 'nsh query --'
+    abbr -a '??' -- 'nsh query --think --'
     return 0
 end
 
@@ -23,7 +23,7 @@ function nsh_query --wraps='nsh query --'
     nsh query -- $argv
 end
 abbr -a '?' -- 'nsh query --'
-abbr -a '??' -- 'nsh query --'
+abbr -a '??' -- 'nsh query --think --'
 
 # ── State variables ─────────────────────────────────────
 set -g __nsh_cmd ""

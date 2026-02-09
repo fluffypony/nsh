@@ -1,63 +1,61 @@
 use crate::config::Config;
-use reqwest::Client;
+use crate::provider::{self, ChatRequest, ContentBlock, Message, Role, ToolChoice};
 use serde_json::json;
 
 pub async fn execute(
     query: &str,
     config: &Config,
 ) -> anyhow::Result<String> {
-    let auth = config
-        .provider
-        .openrouter
-        .as_ref()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "OpenRouter not configured (needed for web search)"
-            )
-        })?;
-    let api_key = auth.resolve_api_key("openrouter")?;
-    let base_url = auth
-        .base_url
-        .as_deref()
-        .unwrap_or("https://openrouter.ai/api/v1");
+    let ws_provider_name = &config.web_search.provider;
+    let ws_model = &config.web_search.model;
 
-    let body = json!({
-        "model": config.provider.web_search_model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "Provide a concise factual answer with sources. Be brief."
-            },
-            {
-                "role": "user",
-                "content": query
+    let provider = match provider::create_provider(ws_provider_name, config) {
+        Ok(p) => p,
+        Err(e) => {
+            if ws_provider_name == "ollama" {
+                anyhow::bail!(
+                    "Web search not available with provider ollama. \
+                     Configure [web_search] provider to use openrouter or another search-capable provider."
+                );
             }
-        ],
-        "max_tokens": 1024,
-        "stream": false
-    });
+            return Err(e);
+        }
+    };
 
-    let client = Client::new();
-    let resp = client
-        .post(format!("{base_url}/chat/completions"))
-        .header("Authorization", format!("Bearer {}", &*api_key))
-        .header("HTTP-Referer", "https://github.com/fluffypony/nsh")
-        .header("X-Title", "nsh")
-        .json(&body)
-        .send()
-        .await?;
+    let request = ChatRequest {
+        model: ws_model.clone(),
+        system: "Provide a concise factual answer with sources. Be brief.".into(),
+        messages: vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: query.to_string(),
+            }],
+        }],
+        tools: vec![],
+        tool_choice: ToolChoice::None,
+        max_tokens: 1024,
+        stream: false,
+        extra_body: None,
+    };
 
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Web search error ({status}): {text}");
+    let response = provider.complete(request).await?;
+
+    let text = response
+        .content
+        .iter()
+        .filter_map(|b| {
+            if let ContentBlock::Text { text } = b {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if text.is_empty() {
+        Ok("No results returned.".into())
+    } else {
+        Ok(text)
     }
-
-    let json: serde_json::Value = resp.json().await?;
-
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("No results returned.");
-
-    Ok(content.to_string())
 }

@@ -10,6 +10,7 @@ pub async fn handle_query(
     config: &Config,
     db: &Db,
     session_id: &str,
+    think: bool,
 ) -> anyhow::Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
@@ -23,7 +24,7 @@ pub async fn handle_query(
 
     let provider =
         create_provider(&config.provider.default, config)?;
-    let model = &config.provider.model;
+    let chain = &config.models.main;
 
     // 1. Assemble context
     let ctx = context::build_context(db, session_id, config)?;
@@ -58,6 +59,7 @@ pub async fn handle_query(
     // 3. Agentic tool loop
     let tool_defs = tools::all_tool_definitions();
     let max_iterations = 10;
+    let mut force_json_next = false;
 
     for iteration in 0..max_iterations {
         if cancelled.load(Ordering::SeqCst) {
@@ -66,8 +68,15 @@ pub async fn handle_query(
             std::process::exit(130);
         }
 
+        let extra_body = if force_json_next {
+            force_json_next = false;
+            Some(serde_json::json!({"response_format": {"type": "json_object"}}))
+        } else {
+            None
+        };
+
         let request = ChatRequest {
-            model: model.clone(),
+            model: chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()),
             system: system.clone(),
             messages: messages.clone(),
             tools: tool_defs.clone(),
@@ -78,11 +87,13 @@ pub async fn handle_query(
             },
             max_tokens: 4096,
             stream: true,
-            extra_body: None,
+            extra_body,
         };
 
         let _spinner = streaming::SpinnerGuard::new();
-        let mut rx = provider.stream(request).await?;
+        let (mut rx, _used_model) = chain::call_chain_with_fallback_think(
+            provider.as_ref(), request, chain, think,
+        ).await?;
         drop(_spinner);
 
         let response =
@@ -90,6 +101,7 @@ pub async fn handle_query(
 
         let has_tool_calls = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         let response = if !has_tool_calls {
+            force_json_next = true;
             let text_content: String = response.content.iter()
                 .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                 .collect::<Vec<_>>().join("");
