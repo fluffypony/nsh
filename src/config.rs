@@ -448,7 +448,14 @@ impl Config {
             }
         }
 
-        let config: Config = base_value.try_into()?;
+        let mut config: Config = base_value.try_into()?;
+
+        if config.web_search.model == WebSearchConfig::default().model
+            && config.provider.web_search_model != ProviderConfig::default().web_search_model
+        {
+            config.web_search.model = config.provider.web_search_model.clone();
+        }
+
         Ok(config)
     }
 

@@ -24,7 +24,12 @@ pub async fn handle_query(
 
     let provider =
         create_provider(&config.provider.default, config)?;
-    let chain = &config.models.main;
+    let chain: Vec<String> = if config.models.main.is_empty() {
+        vec![config.provider.model.clone()]
+    } else {
+        config.models.main.clone()
+    };
+    let chain = &chain;
 
     // 1. Assemble context
     let ctx = context::build_context(db, session_id, config)?;

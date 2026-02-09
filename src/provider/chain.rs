@@ -92,19 +92,11 @@ pub async fn call_chain_with_fallback_think(
 ) -> anyhow::Result<(mpsc::Receiver<StreamEvent>, String)> {
     for (i, model) in chain.iter().enumerate() {
         let mut req = request.clone();
-        req.model = model.clone();
-        if think {
-            let mut extra = req.extra_body.take().unwrap_or(serde_json::json!({}));
-            super::openai_compat::apply_thinking_mode(&mut extra, model, true);
-            if extra.as_object().is_some_and(|m| !m.is_empty()) {
-                req.extra_body = Some(extra);
-            }
-        } else if model.starts_with("google/gemini-3") {
-            let mut extra = req.extra_body.take().unwrap_or(serde_json::json!({}));
-            super::openai_compat::apply_thinking_mode(&mut extra, model, false);
-            if extra.as_object().is_some_and(|m| !m.is_empty()) {
-                req.extra_body = Some(extra);
-            }
+        req.model = super::openai_compat::thinking_model_name(model, think);
+        let mut extra = req.extra_body.take().unwrap_or(serde_json::json!({}));
+        super::openai_compat::apply_thinking_mode(&mut extra, model, think);
+        if extra.as_object().is_some_and(|m| !m.is_empty()) {
+            req.extra_body = Some(extra);
         }
         for attempt in 0..2 {
             match stream_with_complete_fallback(provider, req.clone()).await {

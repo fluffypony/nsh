@@ -32,10 +32,15 @@ impl OpenAICompatProvider {
     }
 
     fn build_request_body(&self, request: &ChatRequest) -> serde_json::Value {
-        let messages = build_openai_messages(&request.messages, &request.system);
-        let mut tools = build_openai_tools(&request.tools);
-
         let model = request.model.as_str();
+        let anthropic = is_anthropic_model(model);
+
+        let messages = if anthropic {
+            build_openai_messages(&request.messages, "")
+        } else {
+            build_openai_messages(&request.messages, &request.system)
+        };
+        let mut tools = build_openai_tools(&request.tools);
 
         let mut body = json!({
             "model": model,
@@ -45,7 +50,7 @@ impl OpenAICompatProvider {
         });
 
         if !tools.is_empty() {
-            if is_anthropic_model(model) {
+            if anthropic {
                 if let Some(last) = tools.last_mut() {
                     last["cache_control"] = json!({"type": "ephemeral"});
                 }
@@ -59,7 +64,7 @@ impl OpenAICompatProvider {
             ToolChoice::Auto => { body["tool_choice"] = json!("auto"); }
         }
 
-        if is_anthropic_model(model) {
+        if anthropic {
             body["system"] = json!([{
                 "type": "text",
                 "text": &request.system,
@@ -108,15 +113,18 @@ pub fn apply_thinking_mode(body: &mut serde_json::Value, model: &str, think: boo
         }
         return;
     }
-    if model.starts_with("google/gemini-2.5") {
-        let current = body["model"].as_str().unwrap_or(model).to_string();
-        if !current.ends_with(":thinking") {
-            body["model"] = json!(format!("{current}:thinking"));
-        }
-    } else if model.starts_with("google/gemini-3") {
+    if model.starts_with("google/gemini-3") {
         body["reasoning"] = json!({"effort": "high"});
     } else if model.contains("claude") && model.contains("sonnet") {
         body["reasoning"] = json!({"enabled": true, "budget_tokens": 32768});
+    }
+}
+
+pub fn thinking_model_name(model: &str, think: bool) -> String {
+    if think && model.starts_with("google/gemini-2.5") && !model.ends_with(":thinking") {
+        format!("{model}:thinking")
+    } else {
+        model.to_string()
     }
 }
 
@@ -182,7 +190,10 @@ impl LlmProvider for OpenAICompatProvider {
 }
 
 pub fn build_openai_messages(messages: &[Message], system: &str) -> Vec<serde_json::Value> {
-    let mut out = vec![json!({"role": "system", "content": system})];
+    let mut out = Vec::new();
+    if !system.is_empty() {
+        out.push(json!({"role": "system", "content": system}));
+    }
     for msg in messages {
         match msg.role {
             Role::User => {
