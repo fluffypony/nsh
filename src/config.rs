@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use zeroize::Zeroizing;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub provider: ProviderConfig,
@@ -38,7 +38,7 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ModelsConfig {
     pub main: Vec<String>,
@@ -61,7 +61,7 @@ impl Default for ModelsConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct WebSearchConfig {
     pub provider: String,
@@ -77,7 +77,7 @@ impl Default for WebSearchConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub default: String,
@@ -169,7 +169,7 @@ impl ProviderAuth {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ContextConfig {
     pub scrollback_lines: usize,
@@ -209,7 +209,7 @@ impl Default for ContextConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ToolsConfig {
     pub run_command_allowlist: Vec<String>,
@@ -268,7 +268,7 @@ impl ToolsConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
     pub chat_color: String,
@@ -313,7 +313,7 @@ impl Default for RedactionConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
     pub mode: String,
@@ -329,7 +329,7 @@ impl Default for CaptureConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct DbConfig {
     pub busy_timeout_ms: u64,

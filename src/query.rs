@@ -158,9 +158,11 @@ pub async fn handle_query(
 
         messages.push(response.clone());
 
-        // Dispatch tool calls
+        // Classify tool calls
         let mut has_terminal_tool = false;
         let mut tool_results: Vec<ContentBlock> = Vec::new();
+        let mut parallel_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
+        let mut ask_user_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
 
         for block in &response.content {
             if let ContentBlock::ToolUse { id, name, input } = block {
@@ -176,28 +178,24 @@ pub async fn handle_query(
                     continue;
                 }
 
-                let (content, is_error) = match name.as_str() {
-                    // ── Terminal tools (end the loop) ──────────
+                match name.as_str() {
                     "command" => {
                         has_terminal_tool = true;
                         tools::command::execute(
                             input, query, db, session_id,
                         )?;
-                        continue;
                     }
                     "chat" => {
                         has_terminal_tool = true;
                         tools::chat::execute(
                             input, query, db, session_id,
                         )?;
-                        continue;
                     }
                     "write_file" => {
                         has_terminal_tool = true;
                         tools::write_file::execute(
                             input, query, db, session_id,
                         )?;
-                        continue;
                     }
                     "patch_file" => {
                         match tools::patch_file::execute(
@@ -205,101 +203,137 @@ pub async fn handle_query(
                         )? {
                             None => {
                                 has_terminal_tool = true;
-                                continue;
                             }
                             Some(err_msg) => {
-                                (err_msg, true)
+                                let wrapped = format!(
+                                    "<tool_result name=\"{name}\">\n{err_msg}\n</tool_result>"
+                                );
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: wrapped,
+                                    is_error: true,
+                                });
                             }
                         }
-                    }
-
-                    // ── Intermediate tools (loop continues) ────
-                    "search_history" => {
-                        (tools::search_history::execute(
-                            db, input, config, session_id,
-                        )?, false)
-                    }
-                    "grep_file" => {
-                        (tools::grep_file::execute(input)?, false)
-                    }
-                    "read_file" => {
-                        (tools::read_file::execute(input)?, false)
-                    }
-                    "list_directory" => {
-                        (tools::list_directory::execute(input)?, false)
-                    }
-                    "web_search" => {
-                        let q = input["query"]
-                            .as_str()
-                            .unwrap_or("");
-                        match tools::web_search::execute(
-                            q, config,
-                        )
-                        .await
-                        {
-                            Ok(result) => (result, false),
-                            Err(e) => {
-                                (format!("Error: {e}"), true)
-                            }
-                        }
-                    }
-                    "run_command" => {
-                        let cmd = input["command"]
-                            .as_str()
-                            .unwrap_or("");
-                        (tools::run_command::execute(
-                            cmd, config,
-                        )?, false)
                     }
                     "ask_user" => {
-                        let question = input["question"]
-                            .as_str()
-                            .unwrap_or("");
-                        let options =
-                            input["options"].as_array().map(|a| {
-                                a.iter()
-                                    .filter_map(|v| {
-                                        v.as_str()
-                                            .map(String::from)
-                                    })
-                                    .collect::<Vec<_>>()
-                            });
-                        (tools::ask_user::execute(
-                            question,
-                            options.as_deref(),
-                        )?, false)
+                        ask_user_calls.push((
+                            id.clone(), name.clone(), input.clone(),
+                        ));
                     }
-                    "man_page" => {
-                        let cmd = input["command"]
-                            .as_str()
-                            .unwrap_or("");
-                        let section =
-                            input["section"].as_u64().map(|s| s as u8);
-                        (tools::man_page::execute(cmd, section)?, false)
+                    _ => {
+                        parallel_calls.push((
+                            id.clone(), name.clone(), input.clone(),
+                        ));
                     }
-                    unknown => {
-                        (format!("Unknown tool: {unknown}"), true)
-                    }
-                };
+                }
+            }
+        }
 
+        if has_terminal_tool {
+            break;
+        }
+
+        // Execute intermediate tools — parallelize where possible
+        if !parallel_calls.is_empty() {
+            let mut futs: Vec<std::pin::Pin<Box<dyn std::future::Future<
+                Output = (String, String, Result<String, String>),
+            >>>> = Vec::new();
+
+            for (id, name, input) in parallel_calls {
+                match name.as_str() {
+                    "search_history" => {
+                        let (content, is_error) = match tools::search_history::execute(
+                            db, &input, config, session_id,
+                        ) {
+                            Ok(c) => (c, false),
+                            Err(e) => (format!("{e}"), true),
+                        };
+                        let redacted = crate::redact::redact_secrets(
+                            &content, &config.redaction,
+                        );
+                        let wrapped = format!(
+                            "<tool_result name=\"{name}\">\n{redacted}\n</tool_result>"
+                        );
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: wrapped,
+                            is_error,
+                        });
+                    }
+                    "web_search" => {
+                        let q = input["query"].as_str().unwrap_or("").to_string();
+                        let ws_cfg = config.clone();
+                        futs.push(Box::pin(async move {
+                            let r = tools::web_search::execute(&q, &ws_cfg).await;
+                            let result = r.map_err(|e| format!("{e}"));
+                            (id, name, result)
+                        }));
+                    }
+                    _ => {
+                        let cfg_clone = config.clone();
+                        let name_for_exec = name.clone();
+                        let id_ret = id.clone();
+                        let name_ret = name;
+                        futs.push(Box::pin(async move {
+                            let r = tokio::task::spawn_blocking(move || {
+                                execute_sync_tool(&name_for_exec, &input, &cfg_clone)
+                            }).await;
+                            let result = match r {
+                                Ok(inner) => inner.map_err(|e| format!("{e}")),
+                                Err(e) => Err(format!("task panicked: {e}")),
+                            };
+                            (id_ret, name_ret, result)
+                        }));
+                    }
+                }
+            }
+
+            let results = futures::future::join_all(futs).await;
+            for (id, name, result) in results {
+                let (content, is_error) = match result {
+                    Ok(c) => (c, false),
+                    Err(e) => (e, true),
+                };
                 let redacted = crate::redact::redact_secrets(
-                    &content,
-                    &config.redaction,
+                    &content, &config.redaction,
                 );
                 let wrapped = format!(
                     "<tool_result name=\"{name}\">\n{redacted}\n</tool_result>"
                 );
-
                 tool_results.push(ContentBlock::ToolResult {
-                    tool_use_id: id.clone(),
+                    tool_use_id: id,
                     content: wrapped,
                     is_error,
                 });
             }
         }
 
-        if has_terminal_tool {
-            break;
+        // Execute ask_user sequentially (requires stdin)
+        for (id, name, input) in ask_user_calls {
+            let question = input["question"].as_str().unwrap_or("");
+            let options = input["options"].as_array().map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+            });
+            let (content, is_error) = match tools::ask_user::execute(
+                question, options.as_deref(),
+            ) {
+                Ok(c) => (c, false),
+                Err(e) => (format!("Error: {e}"), true),
+            };
+            let redacted = crate::redact::redact_secrets(
+                &content, &config.redaction,
+            );
+            let wrapped = format!(
+                "<tool_result name=\"{name}\">\n{redacted}\n</tool_result>"
+            );
+            tool_results.push(ContentBlock::ToolResult {
+                tool_use_id: id,
+                content: wrapped,
+                is_error,
+            });
         }
 
         if tool_results.is_empty() {
@@ -385,6 +419,28 @@ have pending=true.
 
 "#;
     format!("{base}{xml_context}")
+}
+
+fn execute_sync_tool(
+    name: &str,
+    input: &serde_json::Value,
+    config: &Config,
+) -> anyhow::Result<String> {
+    match name {
+        "grep_file" => tools::grep_file::execute(input),
+        "read_file" => tools::read_file::execute(input),
+        "list_directory" => tools::list_directory::execute(input),
+        "run_command" => {
+            let cmd = input["command"].as_str().unwrap_or("");
+            tools::run_command::execute(cmd, config)
+        }
+        "man_page" => {
+            let cmd = input["command"].as_str().unwrap_or("");
+            let section = input["section"].as_u64().map(|s| s as u8);
+            tools::man_page::execute(cmd, section)
+        }
+        unknown => Ok(format!("Unknown tool: {unknown}")),
+    }
 }
 
 fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), String> {
