@@ -402,7 +402,20 @@ seeing the output.
 or you need to find past commands. Supports FTS5, regex, date ranges,
 exit code filters, and session scoping.
 
-**grep_file** — To search within or read a local file.
+**write_file** — Write content to a file on disk. The user will see a
+diff (for existing files) or preview (for new files) and must confirm.
+Existing files are backed up to trash. Use this when the user asks you
+to create or overwrite a file.
+
+**patch_file** — Apply a surgical text replacement to an existing file.
+Provide the exact text to find (search) and what to replace it with.
+The user will see a diff and must confirm. Use this instead of write_file
+when changing only a small part of a file.
+
+**read_file** — Read lines from a file with line numbers. Supports
+start_line and end_line parameters. Use this for quick file reads.
+
+**grep_file** — To search within a file using regex patterns.
 
 **list_directory** — To see what files exist at a path.
 
