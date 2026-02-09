@@ -3,10 +3,13 @@ pub mod chat;
 pub mod command;
 pub mod grep_file;
 pub mod list_directory;
+pub mod read_file;
 pub mod man_page;
+pub mod patch_file;
 pub mod run_command;
 pub mod search_history;
 pub mod web_search;
+pub mod write_file;
 
 use serde::Serialize;
 use serde_json::json;
@@ -152,6 +155,31 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "read_file".into(),
+            description: "Read lines from a file with line numbers."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "First line to read (1-indexed)",
+                        "default": 1
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Last line to read (1-indexed)",
+                        "default": 200
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDefinition {
             name: "list_directory".into(),
             description: "List files and directories at a path \
                           with metadata."
@@ -229,6 +257,71 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["question"]
+            }),
+        },
+        ToolDefinition {
+            name: "write_file".into(),
+            description: "Write content to a file on disk. \
+                          The user will be shown a diff (or \
+                          preview for new files) and must \
+                          confirm before the write proceeds. \
+                          Existing files are backed up to \
+                          trash."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or ~-relative file path"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file content to write"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description":
+                            "Brief explanation of why this file is being written"
+                    }
+                },
+                "required": ["path", "content", "reason"]
+            }),
+        },
+        ToolDefinition {
+            name: "patch_file".into(),
+            description: "Apply a surgical text replacement \
+                          to an existing file. The user will \
+                          be shown a diff and must confirm. \
+                          Use this instead of write_file when \
+                          changing a small part of a file."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description":
+                            "Absolute or ~-relative file path"
+                    },
+                    "search": {
+                        "type": "string",
+                        "description":
+                            "Exact text to find in the file \
+                             (must match verbatim)"
+                    },
+                    "replace": {
+                        "type": "string",
+                        "description":
+                            "Text to replace the search match with"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description":
+                            "Brief explanation of the change"
+                    }
+                },
+                "required": ["path", "search", "replace", "reason"]
             }),
         },
         ToolDefinition {

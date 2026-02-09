@@ -173,6 +173,26 @@ pub async fn handle_query(
                         )?;
                         continue;
                     }
+                    "write_file" => {
+                        has_terminal_tool = true;
+                        tools::write_file::execute(
+                            input, query, db, session_id,
+                        )?;
+                        continue;
+                    }
+                    "patch_file" => {
+                        match tools::patch_file::execute(
+                            input, query, db, session_id,
+                        )? {
+                            None => {
+                                has_terminal_tool = true;
+                                continue;
+                            }
+                            Some(err_msg) => {
+                                (err_msg, true)
+                            }
+                        }
+                    }
 
                     // ── Intermediate tools (loop continues) ────
                     "search_history" => {
@@ -182,6 +202,9 @@ pub async fn handle_query(
                     }
                     "grep_file" => {
                         (tools::grep_file::execute(input)?, false)
+                    }
+                    "read_file" => {
+                        (tools::read_file::execute(input)?, false)
                     }
                     "list_directory" => {
                         (tools::list_directory::execute(input)?, false)

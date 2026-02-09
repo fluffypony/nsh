@@ -1,0 +1,231 @@
+use crate::db::Db;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+fn trash_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().unwrap().join(".Trash")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap().join(".local/share"))
+            .join("Trash/files")
+    }
+}
+
+fn is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        dirs::home_dir().unwrap().join(rest)
+    } else if p == "~" {
+        dirs::home_dir().unwrap()
+    } else {
+        PathBuf::from(p)
+    }
+}
+
+fn validate_path(path: &Path) -> anyhow::Result<()> {
+    let s = path.to_string_lossy();
+
+    if s.as_bytes().contains(&0) {
+        anyhow::bail!("path contains NUL byte");
+    }
+
+    if s.contains("..") {
+        anyhow::bail!("path traversal (..) not allowed");
+    }
+
+    let home = dirs::home_dir().unwrap();
+    let canonical_target = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    let ssh_dir = home.join(".ssh");
+    let nsh_dir = home.join(".nsh");
+
+    if canonical_target.starts_with(&ssh_dir) {
+        anyhow::bail!("writes to ~/.ssh/ are blocked");
+    }
+    if canonical_target.starts_with(&nsh_dir) {
+        anyhow::bail!("writes to ~/.nsh/ are blocked");
+    }
+    if canonical_target.starts_with("/etc") && !is_root() {
+        anyhow::bail!("writes to /etc/ require root");
+    }
+
+    if path.exists() {
+        let meta = std::fs::symlink_metadata(path)?;
+        if !meta.file_type().is_file() {
+            anyhow::bail!(
+                "target exists but is not a regular file"
+            );
+        }
+    }
+
+    if let Some(parent) = canonical_target.parent() {
+        if parent.exists() {
+            let real_parent = parent.canonicalize()?;
+            if real_parent.starts_with(&ssh_dir)
+                || real_parent.starts_with(&nsh_dir)
+            {
+                anyhow::bail!(
+                    "symlink resolves to a blocked directory"
+                );
+            }
+            if real_parent.starts_with("/etc") && !is_root() {
+                anyhow::bail!(
+                    "symlink resolves to /etc/ (requires root)"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
+    let trash = trash_dir();
+    std::fs::create_dir_all(&trash)?;
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let stamp =
+        chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let backup_name =
+        format!("{filename}.{stamp}.nsh_backup");
+    let dest = trash.join(&backup_name);
+
+    std::fs::copy(path, &dest)?;
+    Ok(dest)
+}
+
+pub fn execute(
+    input: &serde_json::Value,
+    original_query: &str,
+    db: &Db,
+    session_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let raw_path = input["path"]
+        .as_str()
+        .unwrap_or("");
+    let search = input["search"]
+        .as_str()
+        .unwrap_or("");
+    let replace = input["replace"]
+        .as_str()
+        .unwrap_or("");
+    let reason = input["reason"]
+        .as_str()
+        .unwrap_or("");
+
+    if raw_path.is_empty() {
+        return Ok(Some("path is required".into()));
+    }
+    if search.is_empty() {
+        return Ok(Some("search is required".into()));
+    }
+
+    let path = expand_tilde(raw_path);
+
+    if let Err(e) = validate_path(&path) {
+        return Ok(Some(format!("{e}")));
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(Some(format!(
+                "cannot read '{}': {e}",
+                path.display()
+            )));
+        }
+    };
+
+    if !content.contains(search) {
+        return Ok(Some(format!(
+            "search text not found in '{}'",
+            path.display()
+        )));
+    }
+
+    let occurrences = content.matches(search).count();
+    let modified = content.replacen(search, replace, 1);
+
+    let cyan_italic = "\x1b[3;36m";
+    let red = "\x1b[31m";
+    let green = "\x1b[32m";
+    let bold_yellow = "\x1b[1;33m";
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+
+    if !reason.is_empty() {
+        eprintln!("{cyan_italic}{reason}{reset}");
+    }
+
+    eprintln!("{dim}--- {}{reset}", path.display());
+    eprintln!("{dim}+++ {}{reset}", path.display());
+
+    for line in search.lines() {
+        eprintln!("{red}-{line}{reset}");
+    }
+    for line in replace.lines() {
+        eprintln!("{green}+{line}{reset}");
+    }
+
+    if occurrences > 1 {
+        eprintln!(
+            "{bold_yellow}warning:{reset} search text appears \
+             {occurrences} times; only the first occurrence \
+             will be replaced"
+        );
+    }
+
+    eprintln!();
+    eprint!("{bold_yellow}Apply this patch? [y/N]{reset} ");
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim().to_lowercase();
+
+    if answer != "y" && answer != "yes" {
+        eprintln!("{dim}patch declined{reset}");
+        db.insert_conversation(
+            session_id,
+            original_query,
+            "patch_file",
+            &format!("declined: {}", path.display()),
+            Some(reason),
+            false,
+            false,
+        )?;
+        return Ok(None);
+    }
+
+    let backup = backup_to_trash(&path)?;
+    eprintln!("  Backup: {}", backup.display());
+
+    std::fs::write(&path, &modified)?;
+    eprintln!("{green}✓ patched {}{reset}", path.display());
+
+    db.insert_conversation(
+        session_id,
+        original_query,
+        "patch_file",
+        &format!("patched: {}", path.display()),
+        Some(reason),
+        true,
+        false,
+    )?;
+
+    Ok(None)
+}

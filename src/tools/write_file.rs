@@ -1,0 +1,255 @@
+use crate::db::Db;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+fn trash_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().unwrap().join(".Trash")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        dirs::data_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap().join(".local/share"))
+            .join("Trash/files")
+    }
+}
+
+fn is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        dirs::home_dir().unwrap().join(rest)
+    } else if p == "~" {
+        dirs::home_dir().unwrap()
+    } else {
+        PathBuf::from(p)
+    }
+}
+
+fn validate_path(path: &Path) -> anyhow::Result<()> {
+    let s = path.to_string_lossy();
+
+    if s.as_bytes().contains(&0) {
+        anyhow::bail!("path contains NUL byte");
+    }
+
+    if s.contains("..") {
+        anyhow::bail!("path traversal (..) not allowed");
+    }
+
+    let home = dirs::home_dir().unwrap();
+    let canonical_target = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+
+    let ssh_dir = home.join(".ssh");
+    let nsh_dir = home.join(".nsh");
+
+    if canonical_target.starts_with(&ssh_dir) {
+        anyhow::bail!("writes to ~/.ssh/ are blocked");
+    }
+    if canonical_target.starts_with(&nsh_dir) {
+        anyhow::bail!("writes to ~/.nsh/ are blocked");
+    }
+    if canonical_target.starts_with("/etc") && !is_root() {
+        anyhow::bail!("writes to /etc/ require root");
+    }
+
+    if path.exists() {
+        let meta = std::fs::symlink_metadata(path)?;
+        if !meta.file_type().is_file() {
+            anyhow::bail!(
+                "target exists but is not a regular file"
+            );
+        }
+    }
+
+    if let Some(parent) = canonical_target.parent() {
+        if parent.exists() {
+            let real_parent = parent.canonicalize()?;
+            if real_parent.starts_with(&ssh_dir)
+                || real_parent.starts_with(&nsh_dir)
+            {
+                anyhow::bail!(
+                    "symlink resolves to a blocked directory"
+                );
+            }
+            if real_parent.starts_with("/etc") && !is_root() {
+                anyhow::bail!(
+                    "symlink resolves to /etc/ (requires root)"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
+    let trash = trash_dir();
+    std::fs::create_dir_all(&trash)?;
+
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let stamp =
+        chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let backup_name =
+        format!("{filename}.{stamp}.nsh_backup");
+    let dest = trash.join(&backup_name);
+
+    std::fs::copy(path, &dest)?;
+    Ok(dest)
+}
+
+fn print_diff(old: &str, new: &str) {
+    let red = "\x1b[31m";
+    let green = "\x1b[32m";
+    let reset = "\x1b[0m";
+
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let max = old_lines.len().max(new_lines.len()).min(100);
+
+    for i in 0..max {
+        let ol = old_lines.get(i).copied();
+        let nl = new_lines.get(i).copied();
+
+        match (ol, nl) {
+            (Some(o), Some(n)) if o == n => {
+                eprintln!("  {o}");
+            }
+            (Some(o), Some(n)) => {
+                eprintln!("{red}- {o}{reset}");
+                eprintln!("{green}+ {n}{reset}");
+            }
+            (Some(o), None) => {
+                eprintln!("{red}- {o}{reset}");
+            }
+            (None, Some(n)) => {
+                eprintln!("{green}+ {n}{reset}");
+            }
+            (None, None) => {}
+        }
+    }
+
+    let total = old_lines.len().max(new_lines.len());
+    if total > 100 {
+        eprintln!("  ... ({} more lines)", total - 100);
+    }
+}
+
+fn print_preview(content: &str) {
+    let green = "\x1b[32m";
+    let reset = "\x1b[0m";
+
+    for (i, line) in content.lines().enumerate() {
+        if i >= 50 {
+            let total = content.lines().count();
+            eprintln!(
+                "  ... ({} more lines)",
+                total - 50
+            );
+            break;
+        }
+        eprintln!("{green}+ {line}{reset}");
+    }
+}
+
+pub fn execute(
+    input: &serde_json::Value,
+    original_query: &str,
+    db: &Db,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let raw_path = input["path"]
+        .as_str()
+        .unwrap_or("");
+    let content = input["content"]
+        .as_str()
+        .unwrap_or("");
+    let reason = input["reason"]
+        .as_str()
+        .unwrap_or("");
+
+    if raw_path.is_empty() {
+        anyhow::bail!("write_file: path is required");
+    }
+
+    let path = expand_tilde(raw_path);
+    validate_path(&path)?;
+
+    let cyan_italic = "\x1b[3;36m";
+    let bold = "\x1b[1m";
+    let reset = "\x1b[0m";
+
+    if !reason.is_empty() {
+        eprintln!("{cyan_italic}{reason}{reset}");
+    }
+
+    eprintln!(
+        "{bold}File:{reset} {}",
+        path.display()
+    );
+    eprintln!();
+
+    let existing = if path.exists() {
+        Some(std::fs::read_to_string(&path)?)
+    } else {
+        None
+    };
+
+    if let Some(ref old) = existing {
+        eprintln!("{bold}Diff:{reset}");
+        print_diff(old, content);
+    } else {
+        eprintln!("{bold}New file:{reset}");
+        print_preview(content);
+    }
+
+    eprintln!();
+    eprint!("Write this file? [y/N] ");
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    let answer = answer.trim().to_lowercase();
+
+    if answer != "y" && answer != "yes" {
+        eprintln!("Aborted.");
+        return Ok(());
+    }
+
+    if existing.is_some() {
+        let backup = backup_to_trash(&path)?;
+        eprintln!(
+            "  Backup: {}",
+            backup.display()
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(&path, content)?;
+    eprintln!("  Written: {}", path.display());
+
+    db.insert_conversation(
+        session_id,
+        original_query,
+        "write_file",
+        &path.to_string_lossy(),
+        Some(reason),
+        true,
+        false,
+    )?;
+
+    Ok(())
+}
