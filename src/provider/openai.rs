@@ -1,60 +1,28 @@
-use zeroize::Zeroizing;
-
 use crate::provider::*;
+use super::openai_compat::OpenAICompatProvider;
 
-pub struct OpenAIProvider {
-    client: reqwest::Client,
-    api_key: Zeroizing<String>,
-    base_url: String,
-}
+pub struct OpenAIProvider(OpenAICompatProvider);
 
 impl OpenAIProvider {
-    pub fn new(
-        config: &crate::config::Config,
-    ) -> anyhow::Result<Self> {
-        let auth = config
-            .provider
-            .openai
-            .as_ref()
-            .ok_or_else(|| {
-                anyhow::anyhow!("OpenAI not configured")
-            })?;
-        Ok(Self {
-            client: reqwest::Client::new(),
-            api_key: auth.resolve_api_key()?,
-            base_url: auth
-                .base_url
-                .clone()
-                .unwrap_or_else(|| {
-                    "https://api.openai.com".into()
-                }),
-        })
+    pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
+        let auth = config.provider.openai.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("OpenAI not configured"))?;
+        Ok(Self(OpenAICompatProvider::new(
+            auth.resolve_api_key()?,
+            auth.base_url.clone().unwrap_or_else(|| "https://api.openai.com/v1".into()),
+            config.provider.fallback_model.clone(),
+            vec![],
+        )?))
     }
 }
 
 #[async_trait::async_trait]
 impl LlmProvider for OpenAIProvider {
-    async fn complete(
-        &self,
-        _request: ChatRequest,
-    ) -> anyhow::Result<Message> {
-        // TODO: Implement — very similar to OpenRouter since
-        // OpenRouter uses the OpenAI-compatible format.
-        anyhow::bail!(
-            "OpenAI native API not yet implemented. \
-             Use OpenRouter with an OpenAI model instead."
-        )
+    async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
+        self.0.complete(request).await
     }
 
-    async fn stream(
-        &self,
-        _request: ChatRequest,
-    ) -> anyhow::Result<
-        tokio::sync::mpsc::Receiver<StreamEvent>,
-    > {
-        anyhow::bail!(
-            "OpenAI native API not yet implemented. \
-             Use OpenRouter with an OpenAI model instead."
-        )
+    async fn stream(&self, request: ChatRequest) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+        self.0.stream(request).await
     }
 }
