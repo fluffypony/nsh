@@ -180,7 +180,7 @@ impl Default for ToolsConfig {
 
 impl ToolsConfig {
     pub fn is_command_allowed(&self, cmd: &str) -> bool {
-        let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n'];
+        let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\'];
         if cmd.chars().any(|c| dangerous_chars.contains(&c)) {
             return false;
         }

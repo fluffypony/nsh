@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
             SessionAction::End { session } => {
                 let db = db::Db::open()?;
                 db.end_session(&session)?;
+                shell_hooks::cleanup_pending_files(&session);
             }
         },
 

@@ -82,6 +82,23 @@ __nsh_precmd() {
         --tty "$(tty)" \
         --pid "$$" \
         --shell "zsh" >/dev/null 2>&1 &!
+
+    # Heartbeat for cross-TTY detection (~60s)
+    local now=$(date +%s)
+    if (( now - ${__NSH_LAST_HEARTBEAT:-0} > 60 )); then
+        __NSH_LAST_HEARTBEAT=$now
+        nsh heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &!
+    fi
+
+    # Auto-continue pending multi-step task
+    local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
+    if [[ -f "$pending_flag" ]]; then
+        rm -f "$pending_flag"
+        if [[ -n "${__NSH_PENDING_CMD:-}" && "$cmd" == "$__NSH_PENDING_CMD" ]]; then
+            __NSH_PENDING_CMD=""
+            nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &!
+        fi
+    fi
 }
 
 # ── Check for pending commands from nsh query ───────────
@@ -91,6 +108,7 @@ __nsh_check_pending() {
         local cmd="$(cat "$cmd_file")"
         rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
+            __NSH_PENDING_CMD="$cmd"
             # print -z pushes text onto the editing buffer
             print -z "$cmd"
         fi

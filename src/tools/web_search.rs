@@ -41,7 +41,7 @@ pub async fn execute(
     let resp = client
         .post(format!("{base_url}/chat/completions"))
         .header("Authorization", format!("Bearer {}", &*api_key))
-        .header("HTTP-Referer", "https://github.com/ArcticBear/nsh")
+        .header("HTTP-Referer", "https://github.com/fluffypony/nsh")
         .header("X-Title", "nsh")
         .json(&body)
         .send()

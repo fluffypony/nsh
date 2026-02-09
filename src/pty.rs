@@ -112,7 +112,15 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             }
             drop(pty.slave);
 
-            unsafe { std::env::set_var("NSH_PTY_ACTIVE", "1") };
+            unsafe {
+                let key = b"NSH_PTY_ACTIVE\0";
+                let val = b"1\0";
+                libc::setenv(
+                    key.as_ptr() as *const libc::c_char,
+                    val.as_ptr() as *const libc::c_char,
+                    1,
+                );
+            }
 
             // Login shell convention: prepend '-' to basename in argv[0]
             let basename = shell.rsplit('/').next().unwrap_or(shell);
@@ -152,15 +160,17 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     }
 }
 
-// Note: `exec` crate provides execvp. If unavailable, use libc::execvp
-// directly. For the initial build, this module compiles with a stub — the
-// full PTY wrapping can be iterated on.
 mod exec {
-    pub fn execvp(_cmd: &str, _args: &[&str]) -> std::io::Error {
+    pub fn execvp(cmd: &str, args: &[&str]) -> std::io::Error {
         use std::ffi::CString;
-        let cmd = CString::new(_cmd).unwrap();
-        let args: Vec<CString> =
-            _args.iter().map(|a| CString::new(*a).unwrap()).collect();
+        let cmd = match CString::new(cmd) {
+            Ok(c) => c,
+            Err(_) => return std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "command path contains null byte",
+            ),
+        };
+        let args: Vec<CString> = args.iter().filter_map(|a| CString::new(*a).ok()).collect();
         let arg_ptrs: Vec<*const libc::c_char> = args
             .iter()
             .map(|a| a.as_ptr())

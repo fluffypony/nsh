@@ -5,9 +5,12 @@
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     alias '?'='nsh query --'
     alias '??'='nsh query --'
-    # reinstall hooks only
+    # Only reinstall hooks if not already present
+    case ";${PROMPT_COMMAND:-};" in
+        *";__nsh_prompt_command;"*) ;;
+        *) PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+    esac
     trap '__nsh_debug_trap' DEBUG
-    PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     return 0
 fi
 
@@ -87,17 +90,42 @@ __nsh_prompt_command() {
             --shell "bash" >/dev/null 2>&1 &
         disown 2>/dev/null
     fi
+
+    # Heartbeat for cross-TTY detection (~60s)
+    local now
+    now=$(date +%s)
+    if (( now - ${__nsh_last_heartbeat:-0} > 60 )); then
+        __nsh_last_heartbeat=$now
+        nsh heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &
+        disown 2>/dev/null
+    fi
+
+    # Auto-continue pending multi-step task
+    local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
+    if [[ -f "$pending_flag" ]]; then
+        rm -f "$pending_flag"
+        if [[ -n "${__nsh_pending_cmd:-}" && "$cmd" == "$__nsh_pending_cmd" ]]; then
+            __nsh_pending_cmd=""
+            nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &
+            disown 2>/dev/null
+        fi
+    fi
 }
 
 # ── Check for pending commands from nsh query ───────────
 __nsh_check_pending() {
     local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
     if [[ -f "$cmd_file" ]]; then
-        local cmd="$(cat "$cmd_file")"
+        local cmd
+        cmd="$(cat "$cmd_file")"
         rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
+            __nsh_pending_cmd="$cmd"
+            # Method 1: READLINE_LINE (bash 5.1+)
             READLINE_LINE="$cmd"
             READLINE_POINT=${#cmd}
+            # Method 2: Fallback — push to history so user presses Up
+            history -s -- "$cmd"
         fi
     fi
 }
