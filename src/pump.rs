@@ -215,6 +215,7 @@ pub fn pump_loop(
     };
 
     let scrollback_path = nsh_dir.join(format!("scrollback_{session_id}"));
+    let redact_active_path = nsh_dir.join(format!("redact_active_{session_id}"));
 
     let mut buf = [0u8; 8192];
     let mut last_activity = Instant::now();
@@ -263,7 +264,7 @@ pub fn pump_loop(
                     if handle_io(
                         &fds[0], &fds[1], &real_stdin, &real_stdout, &pty_master,
                         &mut buf, capture, &mut last_activity, &mut last_flush,
-                        &scrollback_path,
+                        &scrollback_path, &redact_active_path,
                     ) {
                         break;
                     }
@@ -298,7 +299,7 @@ pub fn pump_loop(
                     if handle_io(
                         &fds[0], &fds[1], &real_stdin, &real_stdout, &pty_master,
                         &mut buf, capture, &mut last_activity, &mut last_flush,
-                        &scrollback_path,
+                        &scrollback_path, &redact_active_path,
                     ) {
                         break;
                     }
@@ -328,6 +329,7 @@ fn handle_io(
     last_activity: &mut Instant,
     last_flush: &mut Instant,
     scrollback_path: &std::path::Path,
+    redact_active_path: &std::path::Path,
 ) -> bool {
     use rustix::event::PollFlags;
 
@@ -349,15 +351,18 @@ fn handle_io(
             Ok(n) => {
                 let _ = write_all(real_stdout, &buf[..n]);
                 *last_activity = Instant::now();
-                if let Ok(mut eng) = capture.lock() {
-                    eng.process(&buf[..n]);
-                    if last_flush.elapsed() >= Duration::from_secs(2) {
-                        let text = eng.get_lines(1000);
-                        let tmp = scrollback_path.with_extension("tmp");
-                        if let Ok(()) = std::fs::write(&tmp, &text) {
-                            let _ = std::fs::rename(&tmp, scrollback_path);
+                let redacting = redact_active_path.exists();
+                if !redacting {
+                    if let Ok(mut eng) = capture.lock() {
+                        eng.process(&buf[..n]);
+                        if last_flush.elapsed() >= Duration::from_secs(2) {
+                            let text = eng.get_lines(1000);
+                            let tmp = scrollback_path.with_extension("tmp");
+                            if let Ok(()) = std::fs::write(&tmp, &text) {
+                                let _ = std::fs::rename(&tmp, scrollback_path);
+                            }
+                            *last_flush = Instant::now();
                         }
-                        *last_flush = Instant::now();
                     }
                 }
             }
