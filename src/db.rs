@@ -306,6 +306,8 @@ impl Db {
              JOIN sessions s ON s.id = c.session_id
              WHERE c.session_id != ?
                AND s.ended_at IS NULL
+               AND (s.last_heartbeat IS NULL
+                    OR s.last_heartbeat > datetime('now', '-5 minutes'))
              ORDER BY c.started_at DESC
              LIMIT ?",
         )?;
@@ -632,13 +634,20 @@ impl ConversationExchange {
     ) -> crate::provider::Message {
         use crate::provider::{ContentBlock, Message, Role};
 
-        let content = match self.response_type.as_str() {
+        let tool_name = match self.response_type.as_str() {
+            "command" => "command",
+            _ => "chat",
+        };
+        let raw_content = match self.response_type.as_str() {
             "command" => format!(
                 "Command prefilled: {}",
                 self.response
             ),
             _ => self.response.clone(),
         };
+        let content = format!(
+            "<tool_result name=\"{tool_name}\">\n{raw_content}\n</tool_result>"
+        );
         Message {
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult {

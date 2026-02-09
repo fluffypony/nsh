@@ -22,4 +22,7 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(
         dir.join(format!("redact_next_{session_id}")),
     );
+    let _ = std::fs::remove_file(
+        dir.join(format!("redact_active_{session_id}")),
+    );
 }

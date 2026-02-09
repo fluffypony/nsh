@@ -21,5 +21,6 @@ pub fn execute(
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(crate::util::truncate(&text, 4000))
+    let truncated = crate::util::truncate(&text, 4000);
+    Ok(format!("[OS: {}] {}", std::env::consts::OS, truncated))
 }

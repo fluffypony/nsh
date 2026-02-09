@@ -79,7 +79,7 @@ pub fn build_context(
 fn detect_os() -> String {
     #[cfg(target_os = "macos")]
     {
-        let version = std::process::Command::new("sw_vers")
+        let version_str = std::process::Command::new("sw_vers")
             .arg("-productVersion")
             .output()
             .ok()
@@ -87,8 +87,13 @@ fn detect_os() -> String {
                 String::from_utf8_lossy(&o.stdout).trim().to_string()
             })
             .unwrap_or_default();
+        let version = version_str.trim();
         let arch = std::env::consts::ARCH;
-        format!("macOS {version} {arch}")
+        if version.is_empty() {
+            "macOS (unknown version)".into()
+        } else {
+            format!("macOS {} {}", version, arch)
+        }
     }
     #[cfg(target_os = "linux")]
     {
