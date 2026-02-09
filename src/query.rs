@@ -475,8 +475,8 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "command" => &["command", "explanation"],
         "chat" => &["response"],
         "grep_file" | "read_file" => &["path"],
-        "write_file" => &["path", "content"],
-        "patch_file" => &["path", "search", "replace"],
+        "write_file" => &["path"],
+        "patch_file" => &["path", "search"],
         "run_command" => &["command", "reason"],
         "web_search" => &["query"],
         "ask_user" => &["question"],
@@ -484,11 +484,7 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         _ => &[],
     };
     for field in required_fields {
-        let missing = match input.get(field) {
-            None => true,
-            Some(v) => v.as_str().is_some_and(|s| s.is_empty()),
-        };
-        if missing {
+        if input.get(field).is_none() {
             return Err(format!(
                 "Missing required field '{field}' for tool '{name}'"
             ));

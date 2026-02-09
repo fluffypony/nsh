@@ -1,20 +1,54 @@
 use std::fs;
+use std::path::{Path, PathBuf};
+
+fn expand_tilde(p: &str) -> PathBuf {
+    if let Some(rest) = p.strip_prefix("~/") {
+        dirs::home_dir().unwrap().join(rest)
+    } else if p == "~" {
+        dirs::home_dir().unwrap()
+    } else {
+        PathBuf::from(p)
+    }
+}
+
+fn is_sensitive_path(path: &Path) -> bool {
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+
+    if let Some(home) = dirs::home_dir() {
+        let ssh_dir = home.join(".ssh");
+        if resolved.starts_with(&ssh_dir) {
+            return true;
+        }
+    }
+
+    false
+}
 
 pub fn execute(
     input: &serde_json::Value,
 ) -> anyhow::Result<String> {
-    let path = input["path"]
+    let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+
+    let path = expand_tilde(raw_path);
+
+    if is_sensitive_path(&path) {
+        return Ok(format!("Access denied: '{}' is in a sensitive directory", raw_path));
+    }
 
     let start_line =
         (input["start_line"].as_u64().unwrap_or(1) as usize).max(1);
     let end_line =
         input["end_line"].as_u64().unwrap_or(200) as usize;
 
-    let bytes = match fs::read(path) {
+    let bytes = match fs::read(&path) {
         Ok(b) => b,
-        Err(e) => return Ok(format!("Error reading '{path}': {e}")),
+        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
     };
 
     if bytes.iter().take(8192).any(|&b| b == 0) {
@@ -33,7 +67,8 @@ pub fn execute(
 
     if start_line > total_lines {
         return Ok(format!(
-            "\n[{path}: {total_lines} total lines]\n"
+            "\n[{}: {total_lines} total lines]\n",
+            path.display()
         ));
     }
 
@@ -52,8 +87,10 @@ pub fn execute(
     }
 
     if capped_end < total_lines {
-        result
-            .push_str(&format!("\n[{path}: {total_lines} total lines]\n"));
+        result.push_str(&format!(
+            "\n[{}: {total_lines} total lines]\n",
+            path.display()
+        ));
     }
 
     Ok(result)

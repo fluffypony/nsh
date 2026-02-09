@@ -16,6 +16,14 @@ struct JsonRpcRequest {
     params: Option<serde_json::Value>,
 }
 
+#[derive(Serialize)]
+struct JsonRpcNotification {
+    jsonrpc: &'static str,
+    method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<serde_json::Value>,
+}
+
 #[derive(Deserialize)]
 struct JsonRpcResponse {
     #[allow(dead_code)]
@@ -75,6 +83,23 @@ impl McpServer {
         }
 
         Ok(response.result.unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn send_notification(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<()> {
+        let notification = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: method.to_string(),
+            params,
+        };
+        let mut line = serde_json::to_string(&notification)?;
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.flush().await?;
+        Ok(())
     }
 
     async fn read_response(&mut self) -> anyhow::Result<JsonRpcResponse> {
@@ -165,7 +190,7 @@ impl McpClient {
             .await?;
 
         server
-            .send_request("notifications/initialized", None)
+            .send_notification("notifications/initialized", None)
             .await
             .ok();
 

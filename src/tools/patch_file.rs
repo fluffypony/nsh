@@ -36,7 +36,7 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("path contains NUL byte");
     }
 
-    if s.contains("..") {
+    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         anyhow::bail!("path traversal (..) not allowed");
     }
 
