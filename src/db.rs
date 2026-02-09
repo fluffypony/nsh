@@ -233,6 +233,18 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     Ok(())
 }
 
+pub async fn with_db<F, T>(f: F) -> anyhow::Result<T>
+where
+    F: FnOnce(&Db) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let db = Db::open()?;
+        f(&db)
+    })
+    .await?
+}
+
 pub struct Db {
     conn: Connection,
     max_output_bytes: usize,
