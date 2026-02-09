@@ -133,6 +133,8 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     ",
     )?;
 
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+
     let current_version: i32 = conn
         .query_row(
             "SELECT COALESCE((SELECT value FROM meta WHERE key='schema_version'), '0')",
@@ -219,6 +221,8 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             params![SCHEMA_VERSION],
         )?;
     }
+
+    conn.execute_batch("COMMIT;")?;
 
     if let Err(e) = conn.execute(
         "SELECT count(*) FROM commands_fts WHERE commands_fts MATCH 'test'",

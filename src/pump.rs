@@ -470,22 +470,28 @@ fn handle_daemon_connection(
     use std::io::{BufRead, BufReader, Write};
 
     if let Ok((stream, _)) = listener.accept() {
-        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-        stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+        stream.set_read_timeout(Some(Duration::from_millis(500))).ok();
+        stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
 
         let mut reader = BufReader::new(&stream);
         let mut line = String::new();
-        if reader.read_line(&mut line).is_ok() && !line.is_empty() {
-            let response = match serde_json::from_str::<crate::daemon::DaemonRequest>(&line) {
+        let read_result = reader.read_line(&mut line);
+        let response = match read_result {
+            Ok(0) => return,
+            Ok(n) if n > 256 * 1024 => {
+                crate::daemon::DaemonResponse::error("request too large")
+            }
+            Ok(_) => match serde_json::from_str::<crate::daemon::DaemonRequest>(&line) {
                 Ok(request) => crate::daemon::handle_daemon_request(request, capture, db_tx),
                 Err(e) => crate::daemon::DaemonResponse::error(format!("invalid request: {e}")),
-            };
-            if let Ok(json) = serde_json::to_string(&response) {
-                let mut writer = stream;
-                let _ = writer.write_all(json.as_bytes());
-                let _ = writer.write_all(b"\n");
-                let _ = writer.flush();
-            }
+            },
+            Err(_) => return,
+        };
+        if let Ok(json) = serde_json::to_string(&response) {
+            let mut writer = stream;
+            let _ = writer.write_all(json.as_bytes());
+            let _ = writer.write_all(b"\n");
+            let _ = writer.flush();
         }
     }
 }

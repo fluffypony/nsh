@@ -51,9 +51,30 @@ pub struct SpinnerGuard {
 
 impl SpinnerGuard {
     pub fn new() -> Self {
-        let already_active = SPINNER_ACTIVE.load(Ordering::SeqCst);
-        if !already_active {
-            show_spinner();
+        let was_inactive = SPINNER_ACTIVE.compare_exchange(
+            false, true, Ordering::SeqCst, Ordering::SeqCst
+        ).is_ok();
+        if was_inactive {
+            let handle = std::thread::spawn(move || {
+                let frames = [
+                    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}",
+                    "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+                    "\u{2807}", "\u{280f}",
+                ];
+                let mut i = 0;
+                while SPINNER_ACTIVE.load(Ordering::SeqCst) {
+                    eprint!(
+                        "\r\x1b[2m{} thinking...\x1b[0m",
+                        frames[i % frames.len()]
+                    );
+                    std::io::Write::flush(&mut std::io::stderr()).ok();
+                    i += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                }
+            });
+            if let Ok(mut guard) = SPINNER_HANDLE.lock() {
+                *guard = Some(handle);
+            }
             Self { did_start: true }
         } else {
             Self { did_start: false }

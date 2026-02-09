@@ -96,9 +96,10 @@ pub fn handle_daemon_request(
             if db_tx.send(cmd).is_err() {
                 return DaemonResponse::error("DB thread unavailable");
             }
-            match reply_rx.recv() {
+            match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(Ok(id)) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
                 Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => DaemonResponse::error("DB timeout"),
                 Err(_) => DaemonResponse::error("DB thread hung up"),
             }
         }
@@ -109,9 +110,10 @@ pub fn handle_daemon_request(
             if db_tx.send(cmd).is_err() {
                 return DaemonResponse::error("DB thread unavailable");
             }
-            match reply_rx.recv() {
+            match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(Ok(())) => DaemonResponse::ok(),
                 Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => DaemonResponse::error("DB timeout"),
                 Err(_) => DaemonResponse::error("DB thread hung up"),
             }
         }
