@@ -9,8 +9,8 @@ history, browsing the web, and more.
 
 - **Natural language queries** — type `?` or `??` followed by what you want
 - **Command prefill** — suggested commands appear at your prompt for review before execution
-- **Context-aware** — captures scrollback, command history, and cross-session activity
-- **Tool-augmented AI** — the LLM can read files, search history, browse the web, list directories, run safe commands, read man pages, and ask you questions
+- **Context-aware** — captures per-command output with AI summaries, scrollback, project info, and cross-session activity via XML context injection
+- **Tool-augmented AI** — the LLM can search history (FTS5/regex), read files, browse the web, list directories, run safe commands, read man pages, and ask you questions
 - **Multi-step workflows** — the AI chains investigative steps before suggesting a command (up to 10 iterations)
 - **Full-text search** — SQLite FTS5-backed search across all command history and output
 - **Multi-session awareness** — sees what you're doing in other active terminal sessions
@@ -170,8 +170,7 @@ nsh config edit       # Open in $EDITOR (defaults to vi)
    - `command` — writes the suggested command to a pending file; the shell hook prefills it at your prompt
    - `chat` — displays a text response for knowledge questions
 5. **Intermediate tools** gather more context and the loop continues:
-   - `scrollback` — reads recent terminal output (requires PTY wrap mode)
-   - `search_history` — FTS5 search across all command history
+   - `search_history` — FTS5/regex search across all command history, output, and summaries
    - `grep_file` — regex search or read a local file
    - `list_directory` — list files with metadata
    - `web_search` — search the web via Perplexity/Sonar on OpenRouter
@@ -197,11 +196,17 @@ api_key_cmd = "pass show openrouter"             # Or retrieve from command
 base_url = "https://openrouter.ai/api/v1"        # Custom base URL
 
 [context]
-scrollback_bytes = 1048576    # Scrollback buffer size in bytes (default: 1 MB)
-scrollback_lines = 1000       # Max scrollback lines to send to LLM
+scrollback_lines = 1000       # Max scrollback lines in capture buffer
+scrollback_pages = 10         # Pages of scrollback to inject into context
+history_summaries = 100       # Max command summaries in session context
 history_limit = 20            # Conversation history entries per session
-token_budget = 8192           # Token budget for context
-retention_days = 90           # Auto-prune commands older than this
+other_tty_summaries = 10      # Summaries per other TTY session
+max_other_ttys = 20           # Max other TTY sessions to include
+project_files_limit = 100     # Max project files in context
+git_commits = 10              # Recent git commits in context
+retention_days = 1095         # Auto-prune commands older than this (3 years)
+include_other_tty = false     # Include other terminal sessions in context
+custom_instructions = ""      # Custom instructions for the AI
 
 [tools]
 run_command_allowlist = [     # Commands the AI can run without approval
@@ -352,11 +357,14 @@ src/
 ├── config.rs            # TOML config parsing with defaults
 ├── db.rs                # SQLite schema, CRUD, FTS5 search
 ├── query.rs             # Agentic LLM tool loop (max 10 iterations)
-├── context.rs           # Environment context builder (OS, shell, CWD, cross-TTY)
+├── context.rs           # XML context builder (environment, project, history, scrollback)
+├── summary.rs           # Command summary generation (trivial + LLM)
+├── daemon.rs            # Daemon request/response types + DB thread
+├── daemon_client.rs     # Thin Unix socket client for daemon
 ├── streaming.rs         # SSE stream consumer + spinner display
 ├── init.rs              # Shell init script generator (zsh/bash)
 ├── pty.rs               # PTY creation and shell wrapping (fork/exec)
-├── pump.rs              # PTY I/O pump + scrollback ring buffer
+├── pump.rs              # PTY I/O pump + incremental capture engine
 ├── ansi.rs              # ANSI escape sequence stripping
 ├── shell_hooks.rs       # Pending command file path constants + cleanup
 ├── util.rs              # String truncation helper
@@ -366,11 +374,10 @@ src/
 │   ├── anthropic.rs     # Anthropic provider (stub)
 │   └── openai.rs        # OpenAI provider (stub)
 └── tools/
-    ├── mod.rs           # Tool definitions + registry
+    ├── mod.rs           # Tool definitions + registry (9 tools)
     ├── command.rs       # Prefill command at prompt
     ├── chat.rs          # Text response display
-    ├── scrollback.rs    # Read terminal scrollback
-    ├── search_history.rs # FTS5 history search
+    ├── search_history.rs # Advanced history search (FTS5/regex/date/exit code)
     ├── grep_file.rs     # Regex search / file read
     ├── list_directory.rs # Directory listing with metadata
     ├── web_search.rs    # Web search via Perplexity/Sonar
