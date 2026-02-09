@@ -112,27 +112,39 @@ impl ProviderAuth {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct ContextConfig {
-    pub scrollback_bytes: usize,
     pub scrollback_lines: usize,
+    pub scrollback_pages: usize,
+    pub history_summaries: usize,
     pub history_limit: usize,
-    pub token_budget: usize,
+    pub other_tty_summaries: usize,
+    pub max_other_ttys: usize,
+    pub project_files_limit: usize,
+    pub git_commits: usize,
     pub retention_days: u32,
     pub max_output_storage_bytes: usize,
     pub scrollback_rate_limit_bps: usize,
     pub scrollback_pause_seconds: u64,
+    pub include_other_tty: bool,
+    pub custom_instructions: Option<String>,
 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
-            scrollback_bytes: 1_048_576, // 1 MB
             scrollback_lines: 1000,
+            scrollback_pages: 10,
+            history_summaries: 100,
             history_limit: 20,
-            token_budget: 8192,
-            retention_days: 90,
-            max_output_storage_bytes: 32768,
+            other_tty_summaries: 10,
+            max_other_ttys: 20,
+            project_files_limit: 100,
+            git_commits: 10,
+            retention_days: 1095,
+            max_output_storage_bytes: 65536,
             scrollback_rate_limit_bps: 10_485_760,
             scrollback_pause_seconds: 2,
+            include_other_tty: false,
+            custom_instructions: None,
         }
     }
 }
@@ -330,7 +342,10 @@ mod tests {
             "perplexity/sonar"
         );
         assert_eq!(config.context.history_limit, 20);
-        assert_eq!(config.context.retention_days, 90);
+        assert_eq!(config.context.retention_days, 1095);
+        assert_eq!(config.context.history_summaries, 100);
+        assert_eq!(config.context.scrollback_pages, 10);
+        assert!(!config.context.include_other_tty);
         assert!(!config.tools.run_command_allowlist.is_empty());
     }
 
@@ -380,6 +395,8 @@ chat_color = "red"
         );
         assert_eq!(config.context.history_limit, 50);
         assert_eq!(config.context.retention_days, 180);
+        assert_eq!(config.context.history_summaries, 100);
+        assert!(!config.context.include_other_tty);
         assert_eq!(
             config.tools.run_command_allowlist,
             vec!["echo", "ls"]
