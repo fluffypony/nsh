@@ -133,6 +133,7 @@ pub fn skill_tool_definitions(skills: &[Skill]) -> Vec<ToolDefinition> {
 
 const SHELL_METACHARACTERS: &[char] = &[
     ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\',
+    '\'', '"',
 ];
 
 fn validate_param_value(value: &str) -> anyhow::Result<()> {
