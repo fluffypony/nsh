@@ -120,6 +120,8 @@ pub fn build_context(
     let ssh_context = detect_ssh_context();
     let container_context = detect_container();
 
+    let custom_instructions = gather_custom_instructions(config, &cwd);
+
     Ok(QueryContext {
         os_info: sys.os_info,
         shell,
@@ -134,7 +136,7 @@ pub fn build_context(
         session_history,
         other_sessions,
         scrollback_text,
-        custom_instructions: config.context.custom_instructions.clone(),
+        custom_instructions,
         project_info,
         ssh_context,
         container_context,
@@ -346,6 +348,38 @@ fn read_scrollback_file(session_id: &str, nsh_dir: &std::path::Path) -> String {
         std::fs::read_to_string(&file_path).unwrap_or_default()
     } else {
         String::new()
+    }
+}
+
+fn find_git_root(cwd: &str) -> Option<std::path::PathBuf> {
+    let mut dir = std::path::PathBuf::from(cwd);
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+fn gather_custom_instructions(config: &Config, cwd: &str) -> Option<String> {
+    let global = config.context.custom_instructions.clone();
+
+    let project_instructions = find_git_root(cwd).and_then(|root| {
+        let path = root.join(".nsh").join("instructions.md");
+        if path.exists() {
+            std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        } else {
+            None
+        }
+    });
+
+    match (global, project_instructions) {
+        (Some(g), Some(p)) => Some(format!("{g}\n\n--- Project-specific instructions ---\n\n{p}")),
+        (Some(g), None) => Some(g),
+        (None, Some(p)) => Some(p),
+        (None, None) => None,
     }
 }
 

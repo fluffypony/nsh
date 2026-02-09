@@ -283,10 +283,86 @@ impl Default for DbConfig {
     }
 }
 
+fn find_project_config() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        for name in [".nsh.toml", ".nsh/config.toml"] {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        if dir.join(".git").exists() {
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
+            for (key, overlay_val) in overlay_table {
+                if let Some(base_val) = base_table.get_mut(key) {
+                    deep_merge_toml(base_val, overlay_val);
+                } else {
+                    base_table.insert(key.clone(), overlay_val.clone());
+                }
+            }
+        }
+        (base, overlay) => {
+            *base = overlay.clone();
+        }
+    }
+}
+
+fn sanitize_project_config(value: &mut toml::Value) {
+    let sensitive_keys = ["api_key", "api_key_cmd"];
+
+    if let toml::Value::Table(table) = value {
+        if let Some(provider) = table.get_mut("provider") {
+            if let toml::Value::Table(provider_table) = provider {
+                let mut found_sensitive = Vec::new();
+                for (key, val) in provider_table.iter() {
+                    if sensitive_keys.contains(&key.as_str()) {
+                        found_sensitive.push(key.clone());
+                    }
+                    if let toml::Value::Table(sub) = val {
+                        for sub_key in sub.keys() {
+                            if sensitive_keys.contains(&sub_key.as_str()) {
+                                found_sensitive.push(format!("{key}.{sub_key}"));
+                            }
+                        }
+                    }
+                }
+                if !found_sensitive.is_empty() {
+                    eprintln!(
+                        "nsh: warning: project config contains sensitive fields ({}), ignoring them",
+                        found_sensitive.join(", ")
+                    );
+                }
+                for key in &sensitive_keys {
+                    provider_table.remove(*key);
+                }
+                for (_name, val) in provider_table.iter_mut() {
+                    if let toml::Value::Table(sub) = val {
+                        for key in &sensitive_keys {
+                            sub.remove(*key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::path();
-        if path.exists() {
+        let mut base_value: toml::Value = if path.exists() {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -301,14 +377,28 @@ impl Config {
                 }
             }
             let content = std::fs::read_to_string(&path)?;
-            Ok(toml::from_str(&content)?)
+            toml::from_str(&content)?
         } else {
             tracing::debug!(
                 "No config at {}, using defaults",
                 path.display()
             );
-            Ok(Self::default())
+            toml::Value::Table(toml::map::Map::new())
+        };
+
+        // Merge project-level config if found
+        if let Some(project_path) = find_project_config() {
+            tracing::debug!("Found project config at {}", project_path.display());
+            if let Ok(project_content) = std::fs::read_to_string(&project_path) {
+                if let Ok(mut project_value) = toml::from_str::<toml::Value>(&project_content) {
+                    sanitize_project_config(&mut project_value);
+                    deep_merge_toml(&mut base_value, &project_value);
+                }
+            }
         }
+
+        let config: Config = base_value.try_into()?;
+        Ok(config)
     }
 
     pub fn path() -> PathBuf {
@@ -461,6 +551,47 @@ api_key = "old-key"
             !tools.is_command_allowed("git status; rm -rf /"),
             "should reject commands with injection after allowed prefix"
         );
+    }
+
+    #[test]
+    fn test_deep_merge_toml() {
+        let mut base: toml::Value = toml::from_str(r#"
+[context]
+history_limit = 20
+git_commits = 10
+"#).unwrap();
+
+        let overlay: toml::Value = toml::from_str(r#"
+[context]
+history_limit = 50
+"#).unwrap();
+
+        deep_merge_toml(&mut base, &overlay);
+        let config: Config = base.try_into().unwrap();
+        assert_eq!(config.context.history_limit, 50);
+        assert_eq!(config.context.git_commits, 10);
+    }
+
+    #[test]
+    fn test_sanitize_project_config() {
+        let mut value: toml::Value = toml::from_str(r#"
+[provider]
+model = "custom-model"
+
+[provider.openrouter]
+api_key = "secret-key"
+base_url = "https://custom.url"
+
+[context]
+git_commits = 5
+"#).unwrap();
+
+        sanitize_project_config(&mut value);
+        let provider = value.get("provider").unwrap().as_table().unwrap();
+        let openrouter = provider.get("openrouter").unwrap().as_table().unwrap();
+        assert!(openrouter.get("api_key").is_none());
+        assert!(openrouter.get("base_url").is_some());
+        assert!(value.get("context").is_some());
     }
 
     #[test]
