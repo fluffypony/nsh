@@ -95,6 +95,8 @@ impl CaptureEngine {
                 let page = self.parser.screen().contents();
                 let page_lines: Vec<&str> = page.lines().collect();
                 let unique_count = offset.min(rows).min(page_lines.len());
+                // Intentionally drop blank lines from scrollback history
+                // to reduce noise; visible screen lines are kept as-is.
                 for line in page_lines.iter().take(unique_count) {
                     if !line.trim().is_empty() {
                         all_lines.push(line.to_string());
@@ -162,12 +164,26 @@ fn child_exited(pid: rustix::process::Pid) -> bool {
     }
 }
 
+use signal_hook::iterator::backend::Handle as SignalHandle;
+
+struct SignalThread {
+    handle: SignalHandle,
+    join: std::thread::JoinHandle<()>,
+}
+
+impl SignalThread {
+    fn close_and_join(self) {
+        self.handle.close();
+        let _ = self.join.join();
+    }
+}
+
 fn spawn_signal_thread(
     child_pid: rustix::process::Pid,
     stdin_fd: libc::c_int,
     pty_master_fd: libc::c_int,
     winch_pending: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
+) -> SignalThread {
     let raw_pid = child_pid.as_raw_nonzero().get();
 
     let mut signals = Signals::new(&[
@@ -179,7 +195,9 @@ fn spawn_signal_thread(
     ])
     .expect("failed to register signal handlers");
 
-    std::thread::spawn(move || {
+    let handle = signals.handle();
+
+    let join = std::thread::spawn(move || {
         for sig in signals.forever() {
             match sig {
                 signal_hook::consts::SIGWINCH => {
@@ -207,7 +225,9 @@ fn spawn_signal_thread(
                 }
             }
         }
-    })
+    });
+
+    SignalThread { handle, join }
 }
 
 pub fn pump_loop(
@@ -223,7 +243,7 @@ pub fn pump_loop(
     let stdin_raw = real_stdin.as_raw_fd();
     let pty_master_raw = pty_master.as_raw_fd();
     let winch_pending = Arc::new(AtomicBool::new(false));
-    let _signal_thread = spawn_signal_thread(
+    let signal_thread = spawn_signal_thread(
         child_pid,
         stdin_raw,
         pty_master_raw,
@@ -353,6 +373,7 @@ pub fn pump_loop(
         }
     }
 
+    signal_thread.close_and_join();
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&scrollback_path);
 }
