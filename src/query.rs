@@ -41,7 +41,13 @@ pub async fn handle_query(
         let tool_id = uuid::Uuid::new_v4().to_string();
         messages.push(exchange.to_user_message());
         messages.push(exchange.to_assistant_message(&tool_id));
-        messages.push(exchange.to_tool_result_message(&tool_id));
+        let mut tool_msg = exchange.to_tool_result_message(&tool_id);
+        for block in &mut tool_msg.content {
+            if let ContentBlock::ToolResult { content, .. } = block {
+                *content = crate::redact::redact_secrets(content, &config.redaction);
+            }
+        }
+        messages.push(tool_msg);
     }
 
     // Cross-TTY context
