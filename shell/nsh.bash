@@ -83,6 +83,16 @@ __nsh_prompt_command() {
         __nsh_last_recorded_cmd="$cmd"
         __nsh_last_recorded_start="$start"
 
+        # Hint after failure
+        if [[ $exit_code -ne 0 ]]; then
+            case "$cmd" in
+                grep*|test*|"["*|diff*|cmp*|nsh*) ;; # benign failures
+                *)
+                    printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
+                    ;;
+            esac
+        fi
+
         nsh daemon-send record \
             --session "$NSH_SESSION_ID" \
             --command "$cmd" \

@@ -72,6 +72,16 @@ function __nsh_postexec --on-event fish_postexec
     set -g __nsh_last_recorded_cmd $cmd
     set -g __nsh_last_recorded_start $start
 
+    # Hint after failure
+    if test $exit_code -ne 0
+        switch "$cmd"
+            case 'grep*' 'test*' '\[*' 'diff*' 'cmp*' 'nsh*'
+                # benign failures
+            case '*'
+                printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' $exit_code >&2
+        end
+    end
+
     nsh daemon-send record \
         --session $NSH_SESSION_ID \
         --command "$cmd" \

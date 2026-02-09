@@ -75,6 +75,16 @@ __nsh_precmd() {
     __NSH_LAST_RECORDED_CMD="$cmd"
     __NSH_LAST_RECORDED_START="$start"
 
+    # Hint after failure
+    if [[ $exit_code -ne 0 && -n "$cmd" ]]; then
+        case "$cmd" in
+            grep*|test*|"["*|diff*|cmp*|nsh*) ;; # benign failures
+            *)
+                printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
+                ;;
+        esac
+    fi
+
     # Record command asynchronously (daemon-send with fallback to record)
     nsh daemon-send record \
         --session "$NSH_SESSION_ID" \

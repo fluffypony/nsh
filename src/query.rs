@@ -22,6 +22,13 @@ pub async fn handle_query(
         query
     };
 
+    let query = match query.trim().to_lowercase().as_str() {
+        "fix" | "fix it" | "fix this" | "fix last" | "wtf" =>
+            "The previous command failed. Analyze the error output from the terminal context, \
+             diagnose the problem, and suggest a corrected command.",
+        _ => query,
+    };
+
     let provider =
         create_provider(&config.provider.default, config)?;
     let chain: Vec<String> = if config.models.main.is_empty() {
