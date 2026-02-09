@@ -37,9 +37,9 @@ fn test_init_bash_generates_session_id() {
 #[test]
 fn test_init_unsupported_shell() {
     let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "fish"])
+        .args(["run", "--", "init", "tcsh"])
         .output()
-        .expect("failed to run nsh init fish");
+        .expect("failed to run nsh init tcsh");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -47,6 +47,18 @@ fn test_init_unsupported_shell() {
         stdout.contains("unsupported"),
         "Expected 'unsupported' in stdout, got: {stdout}"
     );
+}
+
+#[test]
+fn test_init_fish_generates_session_id() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "init", "fish"])
+        .output()
+        .expect("failed to run nsh init fish");
+
+    let script = String::from_utf8_lossy(&output.stdout);
+    assert!(!script.contains("__SESSION_ID__"));
+    assert!(script.contains("NSH_SESSION_ID"));
 }
 
 #[test]

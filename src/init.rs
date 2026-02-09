@@ -3,9 +3,10 @@ pub fn generate_init_script(shell: &str) -> String {
     let template = match shell {
         "zsh" => include_str!("../shell/nsh.zsh"),
         "bash" => include_str!("../shell/nsh.bash"),
+        "fish" => include_str!("../shell/nsh.fish"),
         other => {
             return format!(
-                "# nsh: unsupported shell '{}'. Supported: zsh, bash\n\
+                "# nsh: unsupported shell '{}'. Supported: zsh, bash, fish\n\
                  echo 'nsh: unsupported shell' >&2",
                 other
             );
@@ -47,6 +48,13 @@ mod tests {
             guard_pos < export_pos,
             "Nested shell guard should come before session ID export"
         );
+    }
+
+    #[test]
+    fn test_session_id_placeholder_replaced_fish() {
+        let script = generate_init_script("fish");
+        assert!(!script.contains("__SESSION_ID__"));
+        assert!(script.contains("NSH_SESSION_ID"));
     }
 
     #[test]
