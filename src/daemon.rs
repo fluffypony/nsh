@@ -87,11 +87,9 @@ pub fn handle_daemon_request(
             session, command, cwd, exit_code, started_at,
             tty, pid, shell, duration_ms, output,
         } => {
-            let final_output = if output.is_some() {
-                output
-            } else {
-                capture.lock().ok().and_then(|mut eng| eng.capture_since_mark(65536))
-            };
+            let captured = capture.lock().ok()
+                .and_then(|mut eng| eng.capture_since_mark(65536));
+            let final_output = output.or(captured);
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let cmd = DbCommand::Record {
                 session, command, cwd, exit_code, started_at,

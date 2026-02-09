@@ -21,11 +21,11 @@ pub fn execute(
     let resolved_until = until.map(|u| resolve_relative_time(u));
 
     // Resolve session filter
-    let session_filter = session.map(|s| {
-        if s == "current" {
-            session_id.to_string()
-        } else {
-            s.to_string()
+    let session_filter = session.and_then(|s| {
+        match s {
+            "current" => Some(session_id.to_string()),
+            "all" | "" => None,
+            other => Some(other.to_string()),
         }
     });
 
@@ -99,5 +99,6 @@ fn resolve_relative_time(input: &str) -> String {
         _ => return input.to_string(),
     };
 
-    (chrono::Utc::now() - duration).to_rfc3339()
+    (chrono::Utc::now() - duration)
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
