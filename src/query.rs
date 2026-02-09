@@ -69,7 +69,9 @@ pub async fn handle_query(
     });
 
     // 3. Agentic tool loop
-    let tool_defs = tools::all_tool_definitions();
+    let skills = crate::skills::load_skills();
+    let mut tool_defs = tools::all_tool_definitions();
+    tool_defs.extend(crate::skills::skill_tool_definitions(&skills));
     let max_iterations = 10;
     let mut force_json_next = false;
 
@@ -275,16 +277,28 @@ pub async fn handle_query(
                         let name_for_exec = name.clone();
                         let id_ret = id.clone();
                         let name_ret = name;
-                        futs.push(Box::pin(async move {
-                            let r = tokio::task::spawn_blocking(move || {
-                                execute_sync_tool(&name_for_exec, &input, &cfg_clone)
-                            }).await;
-                            let result = match r {
-                                Ok(inner) => inner.map_err(|e| format!("{e}")),
-                                Err(e) => Err(format!("task panicked: {e}")),
-                            };
-                            (id_ret, name_ret, result)
-                        }));
+                        let matched_skill = skills.iter()
+                            .find(|s| format!("skill_{}", s.name) == name_for_exec)
+                            .cloned();
+                        if let Some(skill) = matched_skill {
+                            futs.push(Box::pin(async move {
+                                let result = crate::skills::execute_skill_async(
+                                    skill, input,
+                                ).await.map_err(|e| format!("{e}"));
+                                (id_ret, name_ret, result)
+                            }));
+                        } else {
+                            futs.push(Box::pin(async move {
+                                let r = tokio::task::spawn_blocking(move || {
+                                    execute_sync_tool(&name_for_exec, &input, &cfg_clone)
+                                }).await;
+                                let result = match r {
+                                    Ok(inner) => inner.map_err(|e| format!("{e}")),
+                                    Err(e) => Err(format!("task panicked: {e}")),
+                                };
+                                (id_ret, name_ret, result)
+                            }));
+                        }
                     }
                 }
             }
