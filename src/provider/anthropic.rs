@@ -1,8 +1,10 @@
+use zeroize::Zeroizing;
+
 use crate::provider::*;
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
-    api_key: String,
+    api_key: Zeroizing<String>,
     base_url: String,
 }
 

@@ -8,6 +8,7 @@ mod provider;
 mod pty;
 mod pump;
 mod query;
+mod redact;
 mod shell_hooks;
 mod streaming;
 mod tools;

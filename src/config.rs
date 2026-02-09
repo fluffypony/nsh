@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::process::Command;
+use zeroize::Zeroizing;
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -11,6 +12,12 @@ pub struct Config {
     #[serde(default)]
     pub web_search: Option<toml::Value>,
     pub display: DisplayConfig,
+    #[serde(default)]
+    pub redaction: RedactionConfig,
+    #[serde(default)]
+    pub capture: CaptureConfig,
+    #[serde(default)]
+    pub db: DbConfig,
 }
 
 impl Default for Config {
@@ -21,6 +28,9 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             web_search: None,
             display: DisplayConfig::default(),
+            redaction: RedactionConfig::default(),
+            capture: CaptureConfig::default(),
+            db: DbConfig::default(),
         }
     }
 }
@@ -72,10 +82,10 @@ impl Default for ProviderAuth {
 }
 
 impl ProviderAuth {
-    pub fn resolve_api_key(&self) -> anyhow::Result<String> {
+    pub fn resolve_api_key(&self) -> anyhow::Result<Zeroizing<String>> {
         if let Some(key) = &self.api_key {
             if !key.is_empty() {
-                return Ok(key.clone());
+                return Ok(Zeroizing::new(key.clone()));
             }
         }
         if let Some(cmd) = &self.api_key_cmd {
@@ -91,7 +101,7 @@ impl ProviderAuth {
             if key.is_empty() {
                 anyhow::bail!("api_key_cmd returned empty string");
             }
-            return Ok(key);
+            return Ok(Zeroizing::new(key));
         }
         anyhow::bail!("No API key configured")
     }
@@ -105,6 +115,9 @@ pub struct ContextConfig {
     pub history_limit: usize,
     pub token_budget: usize,
     pub retention_days: u32,
+    pub max_output_storage_bytes: usize,
+    pub scrollback_rate_limit_bps: usize,
+    pub scrollback_pause_seconds: u64,
 }
 
 impl Default for ContextConfig {
@@ -115,6 +128,9 @@ impl Default for ContextConfig {
             history_limit: 20,
             token_budget: 8192,
             retention_days: 90,
+            max_output_storage_bytes: 32768,
+            scrollback_rate_limit_bps: 10_485_760,
+            scrollback_pause_seconds: 2,
         }
     }
 }
@@ -162,6 +178,10 @@ impl Default for ToolsConfig {
 
 impl ToolsConfig {
     pub fn is_command_allowed(&self, cmd: &str) -> bool {
+        let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n'];
+        if cmd.chars().any(|c| dangerous_chars.contains(&c)) {
+            return false;
+        }
         if self.run_command_allowlist.contains(&"*".to_string()) {
             return true;
         }
@@ -191,10 +211,81 @@ impl Default for DisplayConfig {
     }
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct RedactionConfig {
+    pub enabled: bool,
+    pub patterns: Vec<String>,
+    pub replacement: String,
+}
+
+impl Default for RedactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            patterns: vec![
+                r"sk-[a-zA-Z0-9]{20,}".into(),
+                r"ghp_[a-zA-Z0-9]{36}".into(),
+                r"gho_[a-zA-Z0-9]{36}".into(),
+                r"AKIA[A-Z0-9]{16}".into(),
+                r"xoxb-[a-zA-Z0-9-]+".into(),
+                r"xoxp-[a-zA-Z0-9-]+".into(),
+                r"glpat-[a-zA-Z0-9-]+".into(),
+                r"ghu_[a-zA-Z0-9]+".into(),
+                r"Bearer [a-zA-Z0-9._-]{20,}".into(),
+            ],
+            replacement: "[REDACTED]".into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct CaptureConfig {
+    pub mode: String,
+    pub alt_screen: String,
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            mode: "vt100".into(),
+            alt_screen: "drop".into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct DbConfig {
+    pub busy_timeout_ms: u64,
+}
+
+impl Default for DbConfig {
+    fn default() -> Self {
+        Self {
+            busy_timeout_ms: 10000,
+        }
+    }
+}
+
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
         let path = Self::path();
         if path.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if meta.permissions().mode() & 0o077 != 0 {
+                        eprintln!(
+                            "nsh: warning: {} is readable by other users. Consider: chmod 600 {}",
+                            path.display(),
+                            path.display()
+                        );
+                    }
+                }
+            }
             let content = std::fs::read_to_string(&path)?;
             Ok(toml::from_str(&content)?)
         } else {

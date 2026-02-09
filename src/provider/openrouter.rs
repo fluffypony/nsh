@@ -1,11 +1,12 @@
 use reqwest::Client;
 use serde_json::json;
+use zeroize::Zeroizing;
 
 use crate::provider::*;
 
 pub struct OpenRouterProvider {
     client: Client,
-    api_key: String,
+    api_key: Zeroizing<String>,
     base_url: String,
 }
 
@@ -187,7 +188,7 @@ impl LlmProvider for OpenRouterProvider {
             .post(format!("{}/chat/completions", self.base_url))
             .header(
                 "Authorization",
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", &*self.api_key),
             )
             .header(
                 "HTTP-Referer",
@@ -224,7 +225,7 @@ impl LlmProvider for OpenRouterProvider {
             .post(format!("{}/chat/completions", self.base_url))
             .header(
                 "Authorization",
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", &*self.api_key),
             )
             .header(
                 "HTTP-Referer",

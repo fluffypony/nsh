@@ -50,6 +50,9 @@ async-trait = "0.1"
 # Regex (for grep_file tool)
 regex = "1"
 
+# Security
+zeroize = { version = "1", features = ["derive"] }
+
 # Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -57,6 +60,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 strip-ansi-escapes = "0.2"
+vt100 = "0.16"
 
 [profile.release]
 lto = true
