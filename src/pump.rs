@@ -273,6 +273,27 @@ pub fn pump_loop(
         Err(_) => None,
     };
 
+    let daemon_socket_path = crate::daemon::daemon_socket_path(&session_id);
+    let _ = std::fs::remove_file(&daemon_socket_path);
+    let daemon_listener = match std::os::unix::net::UnixListener::bind(&daemon_socket_path) {
+        Ok(l) => {
+            l.set_nonblocking(true).ok();
+            Some(l)
+        }
+        Err(_) => None,
+    };
+
+    let (db_tx, db_rx) = std::sync::mpsc::channel();
+    let db_thread = std::thread::spawn(move || {
+        crate::daemon::run_db_thread(db_rx);
+    });
+
+    let pid_path = crate::daemon::daemon_pid_path(&session_id);
+    let tmp_pid = pid_path.with_extension("tmp");
+    if let Ok(()) = std::fs::write(&tmp_pid, format!("{}", std::process::id())) {
+        let _ = std::fs::rename(&tmp_pid, &pid_path);
+    }
+
     let scrollback_path = nsh_dir.join(format!("scrollback_{session_id}"));
     let redact_active_path = nsh_dir.join(format!("redact_active_{session_id}"));
 
@@ -292,89 +313,77 @@ pub fn pump_loop(
 
         let idle = last_activity.elapsed() > Duration::from_secs(5);
         let timeout_ns = if idle { 1_000_000_000 } else { 10_000_000 };
+        let timeout = Timespec {
+            tv_sec: timeout_ns / 1_000_000_000,
+            tv_nsec: timeout_ns % 1_000_000_000,
+        };
 
-        let has_listener = listener.is_some();
-        if has_listener {
-            let listener_fd = listener.as_ref().unwrap();
-            let mut fds = [
-                PollFd::new(&real_stdin, PollFlags::IN),
-                PollFd::new(&pty_master, PollFlags::IN),
-                PollFd::from_borrowed_fd(
-                    unsafe {
-                        BorrowedFd::borrow_raw(
-                            std::os::fd::AsRawFd::as_raw_fd(listener_fd),
-                        )
-                    },
-                    PollFlags::IN,
-                ),
-            ];
-            let timeout = Timespec {
-                tv_sec: timeout_ns / 1_000_000_000,
-                tv_nsec: timeout_ns % 1_000_000_000,
-            };
-            match poll(&mut fds, Some(&timeout)) {
-                Ok(0) => {
-                    if child_exited(child_pid) {
-                        break;
-                    }
-                    continue;
+        let mut poll_fds: Vec<PollFd> = vec![
+            PollFd::new(&real_stdin, PollFlags::IN),
+            PollFd::new(&pty_master, PollFlags::IN),
+        ];
+
+        let legacy_idx = listener.as_ref().map(|l| {
+            let idx = poll_fds.len();
+            poll_fds.push(PollFd::from_borrowed_fd(
+                unsafe { BorrowedFd::borrow_raw(std::os::fd::AsRawFd::as_raw_fd(l)) },
+                PollFlags::IN,
+            ));
+            idx
+        });
+
+        let daemon_idx = daemon_listener.as_ref().map(|l| {
+            let idx = poll_fds.len();
+            poll_fds.push(PollFd::from_borrowed_fd(
+                unsafe { BorrowedFd::borrow_raw(std::os::fd::AsRawFd::as_raw_fd(l)) },
+                PollFlags::IN,
+            ));
+            idx
+        });
+
+        match poll(&mut poll_fds, Some(&timeout)) {
+            Ok(0) => {
+                if child_exited(child_pid) {
+                    break;
                 }
-                Ok(_) => {
-                    if handle_io(
-                        &fds[0], &fds[1], &real_stdin, &real_stdout, &pty_master,
-                        &mut buf, capture, &mut last_activity, &mut last_flush,
-                        &scrollback_path, &redact_active_path,
-                    ) {
-                        break;
-                    }
-                    if fds[2].revents().contains(PollFlags::IN) {
-                        handle_socket_connection(listener_fd, capture);
+                continue;
+            }
+            Ok(_) => {
+                if handle_io(
+                    &poll_fds[0], &poll_fds[1], &real_stdin, &real_stdout, &pty_master,
+                    &mut buf, capture, &mut last_activity, &mut last_flush,
+                    &scrollback_path, &redact_active_path,
+                ) {
+                    break;
+                }
+
+                if let (Some(idx), Some(l)) = (legacy_idx, listener.as_ref()) {
+                    if poll_fds[idx].revents().contains(PollFlags::IN) {
+                        handle_socket_connection(l, capture);
                     }
                 }
-                Err(e) => {
-                    if e == rustix::io::Errno::INTR {
-                        continue;
+
+                if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
+                    if poll_fds[idx].revents().contains(PollFlags::IN) {
+                        handle_daemon_connection(l, capture, &db_tx);
                     }
-                    continue;
                 }
             }
-        } else {
-            let mut fds = [
-                PollFd::new(&real_stdin, PollFlags::IN),
-                PollFd::new(&pty_master, PollFlags::IN),
-            ];
-            let timeout = Timespec {
-                tv_sec: timeout_ns / 1_000_000_000,
-                tv_nsec: timeout_ns % 1_000_000_000,
-            };
-            match poll(&mut fds, Some(&timeout)) {
-                Ok(0) => {
-                    if child_exited(child_pid) {
-                        break;
-                    }
+            Err(e) => {
+                if e == rustix::io::Errno::INTR {
                     continue;
                 }
-                Ok(_) => {
-                    if handle_io(
-                        &fds[0], &fds[1], &real_stdin, &real_stdout, &pty_master,
-                        &mut buf, capture, &mut last_activity, &mut last_flush,
-                        &scrollback_path, &redact_active_path,
-                    ) {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    if e == rustix::io::Errno::INTR {
-                        continue;
-                    }
-                    continue;
-                }
+                continue;
             }
         }
     }
 
+    let _ = db_tx.send(crate::daemon::DbCommand::Shutdown);
+    let _ = db_thread.join();
     signal_thread.close_and_join();
     let _ = std::fs::remove_file(&socket_path);
+    let _ = std::fs::remove_file(&daemon_socket_path);
+    let _ = std::fs::remove_file(&pid_path);
     let _ = std::fs::remove_file(&scrollback_path);
 }
 
@@ -449,6 +458,34 @@ fn handle_socket_connection(
         if let Ok(mut eng) = capture.lock() {
             let text = eng.get_lines(1000);
             let _ = stream.write_all(text.as_bytes());
+        }
+    }
+}
+
+fn handle_daemon_connection(
+    listener: &std::os::unix::net::UnixListener,
+    capture: &Mutex<CaptureEngine>,
+    db_tx: &std::sync::mpsc::Sender<crate::daemon::DbCommand>,
+) {
+    use std::io::{BufRead, BufReader, Write};
+
+    if let Ok((stream, _)) = listener.accept() {
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+
+        let mut reader = BufReader::new(&stream);
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_ok() && !line.is_empty() {
+            let response = match serde_json::from_str::<crate::daemon::DaemonRequest>(&line) {
+                Ok(request) => crate::daemon::handle_daemon_request(request, capture, db_tx),
+                Err(e) => crate::daemon::DaemonResponse::error(format!("invalid request: {e}")),
+            };
+            if let Ok(json) = serde_json::to_string(&response) {
+                let mut writer = stream;
+                let _ = writer.write_all(json.as_bytes());
+                let _ = writer.write_all(b"\n");
+                let _ = writer.flush();
+            }
         }
     }
 }

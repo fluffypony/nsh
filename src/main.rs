@@ -21,7 +21,7 @@ mod tools;
 mod util;
 
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, HistoryAction, SessionAction};
+use cli::{Cli, Commands, ConfigAction, DaemonSendAction, HistoryAction, SessionAction};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -178,6 +178,67 @@ async fn main() -> anyhow::Result<()> {
                 .join(format!("redact_next_{session_id}"));
             std::fs::write(&flag_path, "")?;
             eprintln!("nsh: next command output will not be captured");
+        }
+
+        Commands::DaemonSend { action } => {
+            let session_id = match &action {
+                DaemonSendAction::Record { session, .. } => session.clone(),
+                DaemonSendAction::Heartbeat { session } => session.clone(),
+                DaemonSendAction::Status => {
+                    std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
+                }
+            };
+
+            let request = match &action {
+                DaemonSendAction::Record {
+                    session, command, cwd, exit_code, started_at,
+                    tty, pid, shell,
+                } => daemon::DaemonRequest::Record {
+                    session: session.clone(),
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    exit_code: *exit_code,
+                    started_at: started_at.clone(),
+                    tty: tty.clone(),
+                    pid: *pid,
+                    shell: shell.clone(),
+                    duration_ms: None,
+                    output: None,
+                },
+                DaemonSendAction::Heartbeat { session } => {
+                    daemon::DaemonRequest::Heartbeat { session: session.clone() }
+                }
+                DaemonSendAction::Status => daemon::DaemonRequest::Status,
+            };
+
+            match daemon_client::try_send_request(&session_id, &request) {
+                Some(resp) => {
+                    if let daemon::DaemonResponse::Error { message } = resp {
+                        eprintln!("nsh: daemon error: {message}");
+                    }
+                }
+                None => {
+                    match action {
+                        DaemonSendAction::Record {
+                            session, command, cwd, exit_code, started_at,
+                            tty, pid, shell,
+                        } => {
+                            let db = db::Db::open()?;
+                            db.insert_command(
+                                &session, &command, &cwd, Some(exit_code),
+                                &started_at, None, None, &tty, &shell, pid,
+                            )?;
+                        }
+                        DaemonSendAction::Heartbeat { session } => {
+                            let db = db::Db::open()?;
+                            db.update_heartbeat(&session)?;
+                        }
+                        DaemonSendAction::Status => {
+                            eprintln!("nsh: daemon not running");
+                        }
+                    }
+                }
+            }
         }
     }
 

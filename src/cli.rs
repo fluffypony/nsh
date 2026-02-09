@@ -85,6 +85,12 @@ pub enum Commands {
 
     /// Skip capturing the next command's output
     RedactNext,
+
+    /// Send a message to the daemon (thin client)
+    DaemonSend {
+        #[command(subcommand)]
+        action: DaemonSendAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -125,4 +131,34 @@ pub enum ConfigAction {
     Show,
     /// Open config in $EDITOR
     Edit,
+}
+
+#[derive(Subcommand)]
+pub enum DaemonSendAction {
+    /// Record a command via daemon
+    Record {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        cwd: String,
+        #[arg(long)]
+        exit_code: i32,
+        #[arg(long)]
+        started_at: String,
+        #[arg(long, default_value = "")]
+        tty: String,
+        #[arg(long, default_value_t = 0)]
+        pid: i32,
+        #[arg(long, default_value = "")]
+        shell: String,
+    },
+    /// Send heartbeat via daemon
+    Heartbeat {
+        #[arg(long)]
+        session: String,
+    },
+    /// Get daemon status
+    Status,
 }
