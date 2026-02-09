@@ -53,6 +53,8 @@ pub struct QueryContext {
     pub scrollback_text: String,
     pub custom_instructions: Option<String>,
     pub project_info: ProjectInfo,
+    pub ssh_context: Option<String>,
+    pub container_context: Option<String>,
 }
 
 pub struct ProjectInfo {
@@ -115,6 +117,9 @@ pub fn build_context(
     let scrollback_text = read_scrollback(session_id, config);
     let project_info = detect_project_info(&cwd, config);
 
+    let ssh_context = detect_ssh_context();
+    let container_context = detect_container();
+
     Ok(QueryContext {
         os_info: sys.os_info,
         shell,
@@ -131,6 +136,8 @@ pub fn build_context(
         scrollback_text,
         custom_instructions: config.context.custom_instructions.clone(),
         project_info,
+        ssh_context,
+        container_context,
     })
 }
 
@@ -153,6 +160,16 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         xml_escape(&ctx.locale_info),
         xml_escape(&ctx.machine_info),
     ));
+
+    // SSH context
+    if let Some(ref ssh) = ctx.ssh_context {
+        xml.push_str(&format!("  {ssh}\n"));
+    }
+
+    // Container context
+    if let Some(ref container) = ctx.container_context {
+        xml.push_str(&format!("  {container}\n"));
+    }
 
     // Custom instructions
     if let Some(ref instructions) = ctx.custom_instructions {
@@ -355,18 +372,20 @@ fn detect_project_info(cwd: &str, config: &Config) -> ProjectInfo {
 }
 
 fn detect_project_type(cwd: &str) -> String {
-    let path = std::path::Path::new(cwd);
     let mut types = Vec::new();
+    let mut dir = std::path::PathBuf::from(cwd);
 
-    if path.join("Cargo.toml").exists() { types.push("Rust/Cargo"); }
-    if path.join("package.json").exists() { types.push("Node.js"); }
-    if path.join("pyproject.toml").exists() || path.join("setup.py").exists() { types.push("Python"); }
-    if path.join("go.mod").exists() { types.push("Go"); }
-    if path.join("Makefile").exists() { types.push("Make"); }
-    if path.join("Dockerfile").exists() || path.join("docker-compose.yml").exists() { types.push("Docker"); }
-    if path.join("Gemfile").exists() { types.push("Ruby"); }
-    if path.join("pom.xml").exists() || path.join("build.gradle").exists() { types.push("Java"); }
+    loop {
+        check_project_markers(&dir, &mut types);
+        if dir.join(".git").exists() {
+            break;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
 
+    types.dedup();
     if types.is_empty() {
         "unknown".into()
     } else {
@@ -374,28 +393,69 @@ fn detect_project_type(cwd: &str) -> String {
     }
 }
 
-fn detect_git_info(cwd: &str, max_commits: usize) -> (Option<String>, Option<String>, Vec<GitCommit>) {
-    let branch = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+fn check_project_markers(dir: &std::path::Path, types: &mut Vec<&'static str>) {
+    if dir.join("Cargo.toml").exists() { types.push("Rust/Cargo"); }
+    if dir.join("package.json").exists() { types.push("Node.js"); }
+    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() { types.push("Python"); }
+    if dir.join("go.mod").exists() { types.push("Go"); }
+    if dir.join("Makefile").exists() { types.push("Make"); }
+    if dir.join("Dockerfile").exists() || dir.join("docker-compose.yml").exists() || dir.join("compose.yml").exists() { types.push("Docker"); }
+    if dir.join("Gemfile").exists() { types.push("Ruby"); }
+    if dir.join("pom.xml").exists() || dir.join("build.gradle").exists() || dir.join("build.gradle.kts").exists() { types.push("Java"); }
+    if dir.join("CMakeLists.txt").exists() { types.push("C/C++ (CMake)"); }
+    if dir.join("flake.nix").exists() || dir.join("shell.nix").exists() { types.push("Nix"); }
+}
 
+fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
+    let mut child = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let timeout = Duration::from_secs(2);
+    let start = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let output = child.wait_with_output().ok()?;
+                return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!("git command timed out: git {}", args.join(" "));
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+fn detect_git_info(cwd: &str, max_commits: usize) -> (Option<String>, Option<String>, Vec<GitCommit>) {
+    // Check if we're inside a git work tree
+    let check = run_git_with_timeout(&["rev-parse", "--is-inside-work-tree"], cwd);
+    if check.as_deref() != Some("true") {
+        return (None, None, Vec::new());
+    }
+
+    let branch = run_git_with_timeout(&["rev-parse", "--abbrev-ref", "HEAD"], cwd);
     if branch.is_none() {
         return (None, None, Vec::new());
     }
 
-    let status = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            let lines = String::from_utf8_lossy(&o.stdout);
-            let count = lines.lines().count();
+    let status = run_git_with_timeout(&["status", "--porcelain"], cwd)
+        .map(|output| {
+            let count = output.lines().count();
             if count == 0 {
                 "clean".to_string()
             } else {
@@ -403,67 +463,129 @@ fn detect_git_info(cwd: &str, max_commits: usize) -> (Option<String>, Option<Str
             }
         });
 
-    let commits_output = std::process::Command::new("git")
-        .args([
-            "log", "--oneline", "--no-decorate",
-            &format!("-{max_commits}"),
-            "--format=%h|%s|%cr",
-        ])
-        .current_dir(cwd)
-        .output()
-        .ok()
-        .filter(|o| o.status.success());
-
-    let commits = commits_output
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let parts: Vec<&str> = line.splitn(3, '|').collect();
-                    if parts.len() == 3 {
-                        Some(GitCommit {
-                            hash: parts[0].to_string(),
-                            message: parts[1].to_string(),
-                            relative_time: parts[2].to_string(),
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let limit_arg = format!("-{max_commits}");
+    let commits = run_git_with_timeout(
+        &["log", "--oneline", "--no-decorate", &limit_arg, "--format=%h|%s|%cr"],
+        cwd,
+    )
+    .map(|output| {
+        output
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.splitn(3, '|').collect();
+                if parts.len() == 3 {
+                    Some(GitCommit {
+                        hash: parts[0].to_string(),
+                        message: parts[1].to_string(),
+                        relative_time: parts[2].to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    })
+    .unwrap_or_default();
 
     (branch, status, commits)
 }
 
 fn list_project_files(cwd: &str, limit: usize) -> Vec<FileEntry> {
     let path = std::path::Path::new(cwd);
-    let mut entries = Vec::new();
 
-    if let Ok(dir) = std::fs::read_dir(path) {
-        for entry in dir.flatten() {
-            if entries.len() >= limit {
+    // Try using ignore crate for .gitignore-aware walking
+    if let Some(entries) = list_project_files_with_ignore(path, limit) {
+        return entries;
+    }
+
+    // Fallback: manual BFS with hardcoded skip list
+    list_project_files_fallback(path, limit)
+}
+
+fn list_project_files_with_ignore(cwd: &std::path::Path, max_files: usize) -> Option<Vec<FileEntry>> {
+    use ignore::WalkBuilder;
+
+    let walker = WalkBuilder::new(cwd)
+        .max_depth(Some(5))
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
+
+    let mut entries = Vec::new();
+    for entry in walker.flatten() {
+        if entries.len() >= max_files {
+            break;
+        }
+        if entry.depth() == 0 {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(cwd).unwrap_or(entry.path());
+        let is_dir = entry.file_type().map_or(false, |ft| ft.is_dir());
+        let size = if is_dir {
+            String::new()
+        } else {
+            entry.metadata().map(|m| format_size(m.len())).unwrap_or_default()
+        };
+        entries.push(FileEntry {
+            path: rel.to_string_lossy().to_string(),
+            kind: if is_dir { "dir".into() } else { "file".into() },
+            size,
+        });
+    }
+
+    Some(entries)
+}
+
+fn list_project_files_fallback(cwd: &std::path::Path, max_files: usize) -> Vec<FileEntry> {
+    const SKIP_DIRS: &[&str] = &[
+        ".git", "target", "node_modules", "__pycache__", ".venv", "venv",
+        "dist", "build", ".next", ".cache", "vendor",
+    ];
+
+    let mut entries = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back((cwd.to_path_buf(), 0_usize));
+
+    while let Some((dir, depth)) = queue.pop_front() {
+        if depth > 5 || entries.len() >= max_files {
+            break;
+        }
+        let Ok(read_dir) = std::fs::read_dir(&dir) else { continue };
+        let mut children: Vec<_> = read_dir.flatten().collect();
+        children.sort_by_key(|e| e.file_name());
+
+        for entry in children {
+            if entries.len() >= max_files {
                 break;
             }
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') && name != ".github" {
+            let meta = entry.metadata().ok();
+            let is_dir = meta.as_ref().is_some_and(|m| m.is_dir());
+
+            if is_dir && SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
-            let meta = entry.metadata().ok();
-            let kind = if meta.as_ref().is_some_and(|m| m.is_dir()) {
-                "dir".to_string()
+
+            let rel = entry.path().strip_prefix(cwd).unwrap_or(&entry.path()).to_path_buf();
+            let size = if is_dir {
+                String::new()
             } else {
-                "file".to_string()
+                meta.map(|m| format_size(m.len())).unwrap_or_default()
             };
-            let size = meta
-                .map(|m| format_size(m.len()))
-                .unwrap_or_default();
-            entries.push(FileEntry { path: name, kind, size });
+            entries.push(FileEntry {
+                path: rel.to_string_lossy().to_string(),
+                kind: if is_dir { "dir".into() } else { "file".into() },
+                size,
+            });
+
+            if is_dir {
+                queue.push_back((entry.path(), depth + 1));
+            }
         }
     }
 
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
     entries
 }
 
@@ -596,6 +718,25 @@ fn detect_locale() -> String {
     std::env::var("LC_ALL")
         .or_else(|_| std::env::var("LANG"))
         .unwrap_or_else(|_| "en_US.UTF-8".into())
+}
+
+fn detect_ssh_context() -> Option<String> {
+    let ssh_client = std::env::var("SSH_CLIENT").ok()?;
+    let parts: Vec<&str> = ssh_client.split_whitespace().collect();
+    let remote_ip = parts.first().unwrap_or(&"unknown");
+    Some(format!("<ssh remote_ip=\"{remote_ip}\" />"))
+}
+
+fn detect_container() -> Option<String> {
+    if std::path::Path::new("/.dockerenv").exists() {
+        return Some("<container type=\"docker\" />".into());
+    }
+    if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup") {
+        if cgroup.contains("docker") || cgroup.contains("containerd") {
+            return Some("<container type=\"docker\" />".into());
+        }
+    }
+    None
 }
 
 fn detect_timezone() -> String {
