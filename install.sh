@@ -45,7 +45,7 @@ install_from_release() {
 
     local TMP
     TMP="$(mktemp -d)"
-    trap 'rm -rf "$TMP"' EXIT
+    trap 'rm -rf "$TMP"' RETURN
 
     if curl -fsSL "$URL" -o "$TMP/nsh.tar.gz" 2>/dev/null; then
         tar xzf "$TMP/nsh.tar.gz" -C "$TMP"
@@ -70,7 +70,7 @@ install_from_source() {
     info "Building nsh from source (this may take a minute)..."
     local TMP
     TMP="$(mktemp -d)"
-    trap 'rm -rf "$TMP"' EXIT
+    trap 'rm -rf "$TMP"' RETURN
 
     if command -v git &>/dev/null; then
         git clone --depth 1 "https://github.com/${REPO}.git" "$TMP/nsh" 2>&1 | tail -1

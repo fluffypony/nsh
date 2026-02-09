@@ -200,6 +200,7 @@ fn spawn_signal_thread(
                         }
                         libc::kill(raw_pid, libc::SIGCONT);
                     }
+                    winch_pending.store(true, Ordering::Relaxed);
                 }
                 _ => {
                     unsafe { libc::kill(raw_pid, sig) };
