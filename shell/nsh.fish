@@ -72,7 +72,7 @@ function __nsh_postexec --on-event fish_postexec
     set -g __nsh_last_recorded_cmd $cmd
     set -g __nsh_last_recorded_start $start
 
-    nsh record \
+    nsh daemon-send record \
         --session $NSH_SESSION_ID \
         --command "$cmd" \
         --cwd "$cwd" \
@@ -87,7 +87,7 @@ function __nsh_postexec --on-event fish_postexec
     set -l now (date +%s)
     if test (math "$now - $__nsh_last_heartbeat") -gt 60
         set -g __nsh_last_heartbeat $now
-        nsh heartbeat --session $NSH_SESSION_ID &>/dev/null &
+        nsh daemon-send heartbeat --session $NSH_SESSION_ID &>/dev/null &
         disown 2>/dev/null
     end
 

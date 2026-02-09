@@ -79,7 +79,7 @@ __nsh_prompt_command() {
         __nsh_last_recorded_cmd="$cmd"
         __nsh_last_recorded_start="$start"
 
-        nsh record \
+        nsh daemon-send record \
             --session "$NSH_SESSION_ID" \
             --command "$cmd" \
             --cwd "$PWD" \
@@ -96,7 +96,7 @@ __nsh_prompt_command() {
     now=$(date +%s)
     if (( now - ${__nsh_last_heartbeat:-0} > 60 )); then
         __nsh_last_heartbeat=$now
-        nsh heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &
+        nsh daemon-send heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &
         disown 2>/dev/null
     fi
 

@@ -72,8 +72,8 @@ __nsh_precmd() {
     __NSH_LAST_RECORDED_CMD="$cmd"
     __NSH_LAST_RECORDED_START="$start"
 
-    # Record command asynchronously
-    nsh record \
+    # Record command asynchronously (daemon-send with fallback to record)
+    nsh daemon-send record \
         --session "$NSH_SESSION_ID" \
         --command "$cmd" \
         --cwd "$cwd" \
@@ -87,7 +87,7 @@ __nsh_precmd() {
     local now=$(date +%s)
     if (( now - ${__NSH_LAST_HEARTBEAT:-0} > 60 )); then
         __NSH_LAST_HEARTBEAT=$now
-        nsh heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &!
+        nsh daemon-send heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &!
     fi
 
     # Auto-continue pending multi-step task
