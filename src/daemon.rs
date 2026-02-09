@@ -87,10 +87,15 @@ pub fn handle_daemon_request(
             session, command, cwd, exit_code, started_at,
             tty, pid, shell, duration_ms, output,
         } => {
+            let final_output = if output.is_some() {
+                output
+            } else {
+                capture.lock().ok().and_then(|mut eng| eng.capture_since_mark(65536))
+            };
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let cmd = DbCommand::Record {
                 session, command, cwd, exit_code, started_at,
-                tty, pid, shell, duration_ms, output,
+                tty, pid, shell, duration_ms, output: final_output,
                 reply: reply_tx,
             };
             if db_tx.send(cmd).is_err() {
@@ -118,11 +123,35 @@ pub fn handle_daemon_request(
             }
         }
 
-        DaemonRequest::Scrollback { max_lines } | DaemonRequest::CaptureRead { max_lines, .. } => {
+        DaemonRequest::Scrollback { max_lines } => {
             match capture.lock() {
-                Ok(mut eng) => {
+                Ok(eng) => {
                     let text = eng.get_lines(max_lines);
                     DaemonResponse::ok_with_data(serde_json::json!({"scrollback": text}))
+                }
+                Err(_) => DaemonResponse::error("capture lock poisoned"),
+            }
+        }
+
+        DaemonRequest::CaptureMark { .. } => {
+            match capture.lock() {
+                Ok(mut eng) => {
+                    eng.mark();
+                    DaemonResponse::ok()
+                }
+                Err(_) => DaemonResponse::error("capture lock poisoned"),
+            }
+        }
+
+        DaemonRequest::CaptureRead { max_lines, .. } => {
+            match capture.lock() {
+                Ok(mut eng) => {
+                    let text = eng.capture_since_mark(65536)
+                        .unwrap_or_default();
+                    let lines: Vec<&str> = text.lines().collect();
+                    let start = lines.len().saturating_sub(max_lines);
+                    let result = lines[start..].join("\n");
+                    DaemonResponse::ok_with_data(serde_json::json!({"output": result}))
                 }
                 Err(_) => DaemonResponse::error("capture lock poisoned"),
             }
@@ -135,8 +164,7 @@ pub fn handle_daemon_request(
             }))
         }
 
-        DaemonRequest::CaptureMark { .. }
-        | DaemonRequest::Context { .. }
+        DaemonRequest::Context { .. }
         | DaemonRequest::McpToolCall { .. }
         | DaemonRequest::SummarizeCheck { .. } => {
             DaemonResponse::error("not yet implemented")

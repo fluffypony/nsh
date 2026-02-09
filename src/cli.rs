@@ -91,6 +91,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: DaemonSendAction,
     },
+
+    /// Read data from the daemon (synchronous)
+    DaemonRead {
+        #[command(subcommand)]
+        action: DaemonReadAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,6 +165,27 @@ pub enum DaemonSendAction {
         #[arg(long)]
         session: String,
     },
+    /// Mark current scrollback position for per-command capture
+    CaptureMark {
+        #[arg(long)]
+        session: String,
+    },
     /// Get daemon status
     Status,
+}
+
+#[derive(Subcommand)]
+pub enum DaemonReadAction {
+    /// Read captured output since last mark
+    CaptureRead {
+        #[arg(long)]
+        session: String,
+        #[arg(long, default_value = "1000")]
+        max_lines: usize,
+    },
+    /// Read current scrollback
+    Scrollback {
+        #[arg(long, default_value = "1000")]
+        max_lines: usize,
+    },
 }

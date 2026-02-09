@@ -14,6 +14,9 @@ pub struct CaptureEngine {
     paused_until: Option<Instant>,
     pause_seconds: u64,
     suppressed: bool,
+    history_lines: Vec<String>,
+    prev_visible: Vec<String>,
+    mark_state: Option<(usize, Vec<String>)>,
 }
 
 impl CaptureEngine {
@@ -33,6 +36,9 @@ impl CaptureEngine {
             paused_until: None,
             pause_seconds,
             suppressed: false,
+            history_lines: Vec::new(),
+            prev_visible: Vec::new(),
+            mark_state: None,
         }
     }
 
@@ -55,7 +61,12 @@ impl CaptureEngine {
         if self.rate_limit_bps > 0 && self.rate_bytes > self.rate_limit_bps {
             self.paused_until =
                 Some(Instant::now() + Duration::from_secs(self.pause_seconds));
-            self.suppressed = true;
+            if !self.suppressed {
+                self.suppressed = true;
+                self.history_lines.push(
+                    "[nsh: output capture suppressed (high output rate)]".into(),
+                );
+            }
             return;
         }
 
@@ -65,69 +76,142 @@ impl CaptureEngine {
         let now_alt = self.parser.screen().alternate_screen();
         if now_alt {
             self.in_alternate_screen = true;
+            return;
         } else if self.in_alternate_screen {
             self.in_alternate_screen = false;
-        }
-    }
-
-    pub fn get_lines(&mut self, max_lines: usize) -> String {
-        if self.parser.screen().alternate_screen() {
-            return String::new();
-        }
-
-        let (rows, _) = self.parser.screen().size();
-        let rows = rows as usize;
-
-        self.parser.screen_mut().set_scrollback(usize::MAX);
-        let total_scrollback = self.parser.screen().scrollback();
-
-        let mut all_lines: Vec<String> = Vec::new();
-
-        if self.suppressed {
-            all_lines.push("[nsh: output capture suppressed (high output rate)]".into());
-            self.suppressed = false;
-        }
-
-        if total_scrollback > 0 {
-            let mut offset = total_scrollback;
-            loop {
-                self.parser.screen_mut().set_scrollback(offset);
-                let page = self.parser.screen().contents();
-                let page_lines: Vec<&str> = page.lines().collect();
-                let unique_count = offset.min(rows).min(page_lines.len());
-                // Intentionally drop blank lines from scrollback history
-                // to reduce noise; visible screen lines are kept as-is.
-                for line in page_lines.iter().take(unique_count) {
-                    if !line.trim().is_empty() {
-                        all_lines.push(line.to_string());
-                    }
-                }
-                if offset <= rows {
-                    break;
-                }
-                offset = offset.saturating_sub(rows);
-            }
+            self.prev_visible.clear();
         }
 
         self.parser.screen_mut().set_scrollback(0);
         let visible = self.parser.screen().contents();
-        for line in visible.lines() {
-            all_lines.push(line.to_string());
+        let cur_lines: Vec<String> = visible.lines().map(|l| l.to_string()).collect();
+
+        if !self.prev_visible.is_empty() {
+            let scrolled = detect_scrolled_lines(&self.prev_visible, &cur_lines);
+            for line in scrolled {
+                if !line.trim().is_empty() {
+                    self.history_lines.push(line);
+                }
+            }
         }
 
-        let combined = all_lines.join("\n")
+        self.prev_visible = cur_lines;
+    }
+
+    pub fn get_lines(&self, max_lines: usize) -> String {
+        if self.parser.screen().alternate_screen() {
+            return String::new();
+        }
+
+        let visible = self.parser.screen().contents();
+        let vis_lines: Vec<&str> = visible.lines().collect();
+
+        let history_needed = max_lines.saturating_sub(vis_lines.len());
+        let history_start = self.history_lines.len().saturating_sub(history_needed);
+        let mut result: Vec<&str> = self.history_lines[history_start..]
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        result.extend(vis_lines);
+
+        let final_start = result.len().saturating_sub(max_lines);
+        let combined = result[final_start..].join("\n");
+
+        combined
             .replace("\r\n", "\n")
             .replace('\r', "")
             .replace("\x1b[200~", "")
-            .replace("\x1b[201~", "");
+            .replace("\x1b[201~", "")
+    }
 
-        let final_lines: Vec<&str> = combined.lines().collect();
-        let start = final_lines.len().saturating_sub(max_lines);
-        final_lines[start..].join("\n")
+    pub fn total_line_count(&self) -> usize {
+        self.history_lines.len()
+    }
+
+    pub fn mark(&mut self) {
+        self.parser.screen_mut().set_scrollback(0);
+        let visible = self.parser.screen().contents();
+        let cur_lines: Vec<String> = visible.lines().map(|l| l.to_string()).collect();
+        self.mark_state = Some((self.history_lines.len(), cur_lines));
+    }
+
+    pub fn capture_since_mark(&mut self, max_bytes: usize) -> Option<String> {
+        let (mark_hist_len, mark_visible) = self.mark_state.take()?;
+
+        self.parser.screen_mut().set_scrollback(0);
+        let visible = self.parser.screen().contents();
+        let cur_visible: Vec<&str> = visible.lines().collect();
+
+        let new_history: Vec<&str> = self.history_lines[mark_hist_len..]
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+
+        let overlap = longest_suffix_prefix_overlap(
+            &mark_visible.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            &cur_visible,
+        );
+        let trimmed_visible = if overlap < cur_visible.len() {
+            &cur_visible[overlap..]
+        } else {
+            &[]
+        };
+
+        let mut all: Vec<&str> = Vec::new();
+        all.extend_from_slice(&new_history);
+        all.extend_from_slice(trimmed_visible);
+
+        if all.is_empty() {
+            return Some(String::new());
+        }
+
+        let joined = all.join("\n");
+        Some(truncate_for_storage(&joined, max_bytes))
     }
 
     pub fn set_size(&mut self, rows: u16, cols: u16) {
         self.parser.screen_mut().set_size(rows, cols);
+        self.prev_visible.clear();
+    }
+}
+
+fn detect_scrolled_lines(prev: &[String], cur: &[String]) -> Vec<String> {
+    let overlap = longest_suffix_prefix_overlap(
+        &prev.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        &cur.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    );
+    if overlap == 0 && !prev.is_empty() && !cur.is_empty() {
+        return prev.to_vec();
+    }
+    let scrolled_count = prev.len().saturating_sub(overlap);
+    prev[..scrolled_count].to_vec()
+}
+
+fn longest_suffix_prefix_overlap(a: &[&str], b: &[&str]) -> usize {
+    let max_possible = a.len().min(b.len());
+    for len in (1..=max_possible).rev() {
+        let suffix_start = a.len() - len;
+        if a[suffix_start..] == b[..len] {
+            return len;
+        }
+    }
+    0
+}
+
+pub fn truncate_for_storage(output: &str, max_bytes: usize) -> String {
+    let lines: Vec<&str> = output.lines().collect();
+    let result = if lines.len() <= 150 {
+        output.to_string()
+    } else {
+        let first = lines[..100].join("\n");
+        let last = lines[lines.len() - 50..].join("\n");
+        format!("{first}\n[... {} lines omitted ...]\n{last}", lines.len() - 150)
+    };
+    if result.len() <= max_bytes {
+        result
+    } else {
+        crate::util::truncate_bytes(&result, max_bytes).to_string()
+            + "\n[... truncated by nsh]"
     }
 }
 
@@ -455,7 +539,7 @@ fn handle_socket_connection(
 
     if let Ok((mut stream, _)) = listener.accept() {
         stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
-        if let Ok(mut eng) = capture.lock() {
+        if let Ok(eng) = capture.lock() {
             let text = eng.get_lines(1000);
             let _ = stream.write_all(text.as_bytes());
         }
@@ -514,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_empty() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
         let lines = eng.get_lines(10);
         assert!(lines.trim().is_empty());
     }
@@ -549,5 +633,67 @@ mod tests {
         eng.process(b"TUI content\r\n");
         let output = eng.get_lines(100);
         assert!(output.is_empty() || !output.contains("TUI content"));
+    }
+
+    #[test]
+    fn test_mark_and_capture() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        eng.process(b"before mark\r\n");
+        eng.mark();
+        eng.process(b"after mark line 1\r\nafter mark line 2\r\n");
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.contains("after mark line 1"));
+        assert!(captured.contains("after mark line 2"));
+        assert!(!captured.contains("before mark"));
+    }
+
+    #[test]
+    fn test_capture_without_mark_returns_none() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        eng.process(b"some output\r\n");
+        assert!(eng.capture_since_mark(65536).is_none());
+    }
+
+    #[test]
+    fn test_total_line_count() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000);
+        for i in 0..10 {
+            eng.process(format!("line {i}\r\n").as_bytes());
+        }
+        assert!(eng.total_line_count() > 0);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_short() {
+        let input = "line 1\nline 2\nline 3";
+        let result = truncate_for_storage(input, 65536);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_many_lines() {
+        let lines: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert!(result.contains("line 0"));
+        assert!(result.contains("line 99"));
+        assert!(result.contains("lines omitted"));
+        assert!(result.contains("line 199"));
+        assert!(!result.contains("line 100\n"));
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap() {
+        let a = vec!["a", "b", "c", "d"];
+        let b = vec!["c", "d", "e", "f"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
+
+        let c = vec!["x", "y"];
+        let d = vec!["a", "b"];
+        assert_eq!(longest_suffix_prefix_overlap(&c, &d), 0);
+
+        let e = vec!["a", "b", "c"];
+        let f = vec!["a", "b", "c"];
+        assert_eq!(longest_suffix_prefix_overlap(&e, &f), 3);
     }
 }

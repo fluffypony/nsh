@@ -21,7 +21,7 @@ mod tools;
 mod util;
 
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, DaemonSendAction, HistoryAction, SessionAction};
+use cli::{Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, SessionAction};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -184,6 +184,7 @@ async fn main() -> anyhow::Result<()> {
             let session_id = match &action {
                 DaemonSendAction::Record { session, .. } => session.clone(),
                 DaemonSendAction::Heartbeat { session } => session.clone(),
+                DaemonSendAction::CaptureMark { session } => session.clone(),
                 DaemonSendAction::Status => {
                     std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
                 }
@@ -207,6 +208,9 @@ async fn main() -> anyhow::Result<()> {
                 },
                 DaemonSendAction::Heartbeat { session } => {
                     daemon::DaemonRequest::Heartbeat { session: session.clone() }
+                }
+                DaemonSendAction::CaptureMark { session } => {
+                    daemon::DaemonRequest::CaptureMark { session: session.clone() }
                 }
                 DaemonSendAction::Status => daemon::DaemonRequest::Status,
             };
@@ -233,11 +237,47 @@ async fn main() -> anyhow::Result<()> {
                             let db = db::Db::open()?;
                             db.update_heartbeat(&session)?;
                         }
+                        DaemonSendAction::CaptureMark { .. } => {}
                         DaemonSendAction::Status => {
                             eprintln!("nsh: daemon not running");
                         }
                     }
                 }
+            }
+        }
+
+        Commands::DaemonRead { action } => {
+            let session_id = match &action {
+                DaemonReadAction::CaptureRead { session, .. } => session.clone(),
+                DaemonReadAction::Scrollback { .. } => {
+                    std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
+                }
+            };
+
+            let request = match &action {
+                DaemonReadAction::CaptureRead { session, max_lines } => {
+                    daemon::DaemonRequest::CaptureRead {
+                        session: session.clone(),
+                        max_lines: *max_lines,
+                    }
+                }
+                DaemonReadAction::Scrollback { max_lines } => {
+                    daemon::DaemonRequest::Scrollback { max_lines: *max_lines }
+                }
+            };
+
+            match daemon_client::try_send_request(&session_id, &request) {
+                Some(daemon::DaemonResponse::Ok { data: Some(d) }) => {
+                    let text = d.get("output")
+                        .or_else(|| d.get("scrollback"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    print!("{text}");
+                }
+                Some(daemon::DaemonResponse::Error { message }) => {
+                    eprintln!("nsh: daemon error: {message}");
+                }
+                _ => {}
             }
         }
     }

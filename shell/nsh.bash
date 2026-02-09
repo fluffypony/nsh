@@ -39,6 +39,10 @@ __nsh_debug_trap() {
         __nsh_cmd="$(HISTTIMEFORMAT='' history 1 | sed 's/^ *[0-9]* *//')"
         HISTCONTROL="$hist_control"
         __nsh_cmd_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        # Mark scrollback position for per-command output capture
+        nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null &
+        disown 2>/dev/null
     fi
 
     # Redact-next-command mechanism
