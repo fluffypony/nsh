@@ -2,7 +2,7 @@ use rusqlite::{params, Connection};
 
 const SCHEMA_VERSION: i32 = 2;
 
-pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
+pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
     PRAGMA journal_mode = WAL;
@@ -14,7 +14,7 @@ pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
     PRAGMA temp_store = MEMORY;
 ",
     )?;
-    conn.busy_timeout(std::time::Duration::from_millis(10000))?;
+    conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
 
     conn.execute_batch(
         "
@@ -135,16 +135,21 @@ pub fn init_db(conn: &Connection) -> rusqlite::Result<()> {
 
 pub struct Db {
     conn: Connection,
+    max_output_bytes: usize,
 }
 
 impl Db {
     pub fn open() -> anyhow::Result<Self> {
         let dir = crate::config::Config::nsh_dir();
         std::fs::create_dir_all(&dir)?;
+        let config = crate::config::Config::load().unwrap_or_default();
         let mut conn = Connection::open(dir.join("nsh.db"))?;
-        init_db(&conn)?;
+        init_db(&conn, config.db.busy_timeout_ms)?;
         conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
-        let db = Self { conn };
+        let db = Self {
+            conn,
+            max_output_bytes: config.context.max_output_storage_bytes,
+        };
         let _ = db.cleanup_orphaned_sessions();
         Ok(db)
     }
@@ -152,8 +157,11 @@ impl Db {
     #[cfg(test)]
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
-        init_db(&conn)?;
-        Ok(Self { conn })
+        init_db(&conn, 10000)?;
+        Ok(Self {
+            conn,
+            max_output_bytes: 32768,
+        })
     }
 
     // ── Session management ─────────────────────────────────────────
@@ -203,10 +211,10 @@ impl Db {
         pid: i32,
     ) -> rusqlite::Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
-        let max_output_bytes = 32768;
+        let max_bytes = self.max_output_bytes;
         let truncated_output = output.map(|s| {
-            if s.len() > max_output_bytes {
-                let mut end = max_output_bytes;
+            if s.len() > max_bytes {
+                let mut end = max_bytes;
                 while end > 0 && !s.is_char_boundary(end) {
                     end -= 1;
                 }

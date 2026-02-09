@@ -52,6 +52,8 @@ pub fn copy_winsize(
 pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     let pty = create_pty()?;
 
+    let config = crate::config::Config::load().unwrap_or_default();
+
     // Save original terminal state
     let real_stdin = rustix::stdio::stdin();
     let real_stdout = rustix::stdio::stdout();
@@ -60,7 +62,12 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
 
     let ws = termios::tcgetwinsize(real_stdin).ok();
     let (rows, cols) = ws.map(|w| (w.ws_row, w.ws_col)).unwrap_or((24, 80));
-    let capture = Mutex::new(CaptureEngine::new(rows, cols, 10_485_760, 2));
+    let capture = Mutex::new(CaptureEngine::new(
+        rows,
+        cols,
+        config.context.scrollback_rate_limit_bps,
+        config.context.scrollback_pause_seconds,
+    ));
 
     // Fork
     match unsafe { libc::fork() } {

@@ -153,6 +153,7 @@ fn write_all(fd: &BorrowedFd, mut data: &[u8]) -> std::io::Result<()> {
     while !data.is_empty() {
         match rustix::io::write(fd, data) {
             Ok(n) => data = &data[n..],
+            Err(e) if e == rustix::io::Errno::INTR => continue,
             Err(e) => return Err(std::io::Error::from_raw_os_error(e.raw_os_error())),
         }
     }
@@ -163,6 +164,7 @@ fn child_exited(pid: rustix::process::Pid) -> bool {
     match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG) {
         Ok(Some(_status)) => true,
         Ok(None) => false,
+        Err(e) if e == rustix::io::Errno::INTR => false,
         Err(_) => true,
     }
 }
@@ -192,7 +194,10 @@ pub fn pump_loop(
     let session_id =
         std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
 
-    let socket_path = crate::config::Config::nsh_dir()
+    let nsh_dir = crate::config::Config::nsh_dir();
+    let _ = std::fs::create_dir_all(&nsh_dir);
+
+    let socket_path = nsh_dir
         .join(format!("scrollback_{session_id}.sock"));
     let _ = std::fs::remove_file(&socket_path);
     let listener = match std::os::unix::net::UnixListener::bind(&socket_path) {
@@ -203,8 +208,7 @@ pub fn pump_loop(
         Err(_) => None,
     };
 
-    let scrollback_path =
-        crate::config::Config::nsh_dir().join(format!("scrollback_{session_id}"));
+    let scrollback_path = nsh_dir.join(format!("scrollback_{session_id}"));
 
     let mut buf = [0u8; 8192];
     let mut last_activity = Instant::now();
@@ -328,6 +332,7 @@ fn handle_io(
                 let _ = write_all(pty_master, &buf[..n]);
                 *last_activity = Instant::now();
             }
+            Err(e) if e == rustix::io::Errno::INTR || e == rustix::io::Errno::AGAIN => {}
             Err(_) => return true,
         }
     }
@@ -350,6 +355,7 @@ fn handle_io(
                     }
                 }
             }
+            Err(e) if e == rustix::io::Errno::INTR || e == rustix::io::Errno::AGAIN => {}
             Err(_) => return true,
         }
     }
