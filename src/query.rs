@@ -164,6 +164,18 @@ pub async fn handle_query(
 
         for block in &response.content {
             if let ContentBlock::ToolUse { id, name, input } = block {
+                if let Err(msg) = validate_tool_input(name, input) {
+                    let wrapped = format!(
+                        "<tool_result name=\"{name}\">\n{msg}\n</tool_result>"
+                    );
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: id.clone(),
+                        content: wrapped,
+                        is_error: true,
+                    });
+                    continue;
+                }
+
                 let (content, is_error) = match name.as_str() {
                     // ── Terminal tools (end the loop) ──────────
                     "command" => {
@@ -373,4 +385,31 @@ have pending=true.
 
 "#;
     format!("{base}{xml_context}")
+}
+
+fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), String> {
+    let required_fields: &[&str] = match name {
+        "command" => &["command", "explanation"],
+        "chat" => &["response"],
+        "grep_file" | "read_file" => &["path"],
+        "write_file" => &["path", "content"],
+        "patch_file" => &["path", "search", "replace"],
+        "run_command" => &["command", "reason"],
+        "web_search" => &["query"],
+        "ask_user" => &["question"],
+        "man_page" => &["command"],
+        _ => &[],
+    };
+    for field in required_fields {
+        let missing = match input.get(field) {
+            None => true,
+            Some(v) => v.as_str().is_some_and(|s| s.is_empty()),
+        };
+        if missing {
+            return Err(format!(
+                "Missing required field '{field}' for tool '{name}'"
+            ));
+        }
+    }
+    Ok(())
 }
