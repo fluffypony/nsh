@@ -84,7 +84,8 @@ impl AnthropicProvider {
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
     async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
-        let body = self.build_body(&request);
+        let mut body = self.build_body(&request);
+        body["stream"] = json!(false);
         let resp = self.client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &*self.api_key)
@@ -184,6 +185,10 @@ impl LlmProvider for AnthropicProvider {
                         }
                     }
                     "message_stop" => {
+                        if in_tool_use {
+                            let _ = tx.send(StreamEvent::ToolUseEnd).await;
+                            in_tool_use = false;
+                        }
                         let _ = tx.send(StreamEvent::Done { usage: None }).await;
                         break;
                     }

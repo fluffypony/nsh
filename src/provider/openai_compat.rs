@@ -73,7 +73,8 @@ fn is_retryable(status: reqwest::StatusCode) -> bool {
 #[async_trait::async_trait]
 impl LlmProvider for OpenAICompatProvider {
     async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
-        let body = self.build_request_body(&request);
+        let mut body = self.build_request_body(&request);
+        body["stream"] = json!(false);
         let resp = self.build_http_request(&body).send().await?;
         let status = resp.status();
 

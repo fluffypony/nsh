@@ -15,7 +15,7 @@ set -gx NSH_SESSION_ID "__SESSION_ID__"
 set -gx NSH_TTY (tty)
 
 # Start session asynchronously
-nsh session start --session $NSH_SESSION_ID --tty (tty) --shell fish --pid %self &>/dev/null &
+nsh session start --session $NSH_SESSION_ID --tty $NSH_TTY --shell fish --pid $fish_pid &>/dev/null &
 disown 2>/dev/null
 
 # ── Abbreviations for ? and ?? ──────────────────────────
@@ -78,8 +78,8 @@ function __nsh_postexec --on-event fish_postexec
         --cwd "$cwd" \
         --exit-code $exit_code \
         --started-at "$start" \
-        --tty (tty) \
-        --pid %self \
+        --tty $NSH_TTY \
+        --pid $fish_pid \
         --shell fish &>/dev/null &
     disown 2>/dev/null
 
@@ -111,7 +111,7 @@ function __nsh_check_pending --on-event fish_prompt
         rm -f $cmd_file
         if test -n "$cmd"
             set -g __nsh_pending_cmd $cmd
-            commandline -r -- $cmd
+            commandline -r -- "$cmd"
             commandline -f repaint
         end
     end
