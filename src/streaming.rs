@@ -1,7 +1,7 @@
 use crate::provider::{ContentBlock, Message, Role, StreamEvent};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 static SPINNER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -49,6 +49,7 @@ pub fn hide_spinner() {
 /// and accumulate the full Message for the conversation.
 pub async fn consume_stream(
     rx: &mut mpsc::Receiver<StreamEvent>,
+    cancelled: &Arc<AtomicBool>,
 ) -> anyhow::Result<Message> {
     let mut content_blocks = Vec::new();
     let mut current_text = String::new();
@@ -57,7 +58,23 @@ pub async fn consume_stream(
     let mut current_tool_input = String::new();
     let mut is_streaming_text = false;
 
-    while let Some(event) = rx.recv().await {
+    loop {
+        let event = tokio::select! {
+            ev = rx.recv() => {
+                match ev {
+                    Some(e) => e,
+                    None => break,
+                }
+            }
+            _ = check_cancelled(cancelled) => {
+                if is_streaming_text {
+                    eprint!("\x1b[0m");
+                }
+                eprintln!("\nnsh: interrupted");
+                std::process::exit(130);
+            }
+        };
+
         match event {
             StreamEvent::TextDelta(text) => {
                 if !is_streaming_text {
@@ -119,4 +136,13 @@ pub async fn consume_stream(
         role: Role::Assistant,
         content: content_blocks,
     })
+}
+
+async fn check_cancelled(cancelled: &Arc<AtomicBool>) {
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }

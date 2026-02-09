@@ -22,7 +22,9 @@ impl OpenRouterProvider {
                 anyhow::anyhow!("OpenRouter not configured")
             })?;
         Ok(Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(60))
+                .build()?,
             api_key: auth.resolve_api_key()?,
             base_url: auth
                 .base_url
