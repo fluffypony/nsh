@@ -1,5 +1,41 @@
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
 use crate::config::Config;
 use crate::db::{ConversationExchange, Db};
+
+#[derive(Clone)]
+struct CachedSystemInfo {
+    os_info: String,
+    hostname: String,
+    machine_info: String,
+    timezone_info: String,
+    locale_info: String,
+    cached_at: Instant,
+}
+
+static SYSTEM_INFO_CACHE: LazyLock<Mutex<Option<CachedSystemInfo>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+fn get_cached_system_info() -> CachedSystemInfo {
+    let mut cache = SYSTEM_INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ref cached) = *cache {
+        if cached.cached_at.elapsed() < Duration::from_secs(30) {
+            return cached.clone();
+        }
+    }
+    let fresh = CachedSystemInfo {
+        os_info: detect_os(),
+        hostname: detect_hostname(),
+        machine_info: detect_machine_info(),
+        timezone_info: detect_timezone(),
+        locale_info: detect_locale(),
+        cached_at: Instant::now(),
+    };
+    let result = fresh.clone();
+    *cache = Some(fresh);
+    result
+}
 
 pub struct QueryContext {
     pub os_info: String,
@@ -20,7 +56,8 @@ pub fn build_context(
     session_id: &str,
     config: &Config,
 ) -> anyhow::Result<QueryContext> {
-    let os_info = detect_os();
+    let sys = get_cached_system_info();
+    let os_info = sys.os_info;
 
     let shell = std::env::var("SHELL")
         .unwrap_or_else(|_| "bash".into())
@@ -71,11 +108,11 @@ pub fn build_context(
     let other_tty_context =
         crate::redact::redact_secrets(&other_tty_context, &config.redaction);
 
-    let hostname = detect_hostname();
-    let machine_info = detect_machine_info();
+    let hostname = sys.hostname;
+    let machine_info = sys.machine_info;
     let datetime_info = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string();
-    let timezone_info = detect_timezone();
-    let locale_info = detect_locale();
+    let timezone_info = sys.timezone_info;
+    let locale_info = sys.locale_info;
 
     Ok(QueryContext {
         os_info,

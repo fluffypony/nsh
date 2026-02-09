@@ -1,9 +1,11 @@
 use rustix::pty::{grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{self, Termios};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::Mutex;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::sync::{Mutex, OnceLock};
 
 use crate::pump::{pump_loop, CaptureEngine};
+
+static RESTORE_TERMIOS: OnceLock<(libc::c_int, Termios)> = OnceLock::new();
 
 pub struct PtyPair {
     pub master: OwnedFd,
@@ -66,6 +68,24 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     let real_stdin = rustix::stdio::stdin();
     let real_stdout = rustix::stdio::stdout();
     let original_termios = make_raw(real_stdin)?;
+    RESTORE_TERMIOS.set((real_stdin.as_raw_fd(), original_termios.clone())).ok();
+
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some((fd, termios)) = RESTORE_TERMIOS.get() {
+            let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
+            let _ = rustix::termios::tcsetattr(borrowed, rustix::termios::OptionalActions::Now, termios);
+        }
+        let reset = "\x1b[0m\x1b[?25h\x1b[?1049l\n";
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), reset.as_bytes());
+        prev_hook(info);
+        let _ = std::io::Write::write_all(
+            &mut std::io::stderr(),
+            b"\nnsh: terminal should be restored. If not, run: reset\n\
+              Please report this at https://github.com/fluffypony/nsh/issues\n",
+        );
+    }));
+
     copy_winsize(real_stdin, pty.master.as_fd())?;
 
     let ws = termios::tcgetwinsize(real_stdin).ok();

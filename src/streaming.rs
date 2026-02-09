@@ -45,6 +45,30 @@ pub fn hide_spinner() {
     io::stderr().flush().ok();
 }
 
+pub struct SpinnerGuard {
+    did_start: bool,
+}
+
+impl SpinnerGuard {
+    pub fn new() -> Self {
+        let already_active = SPINNER_ACTIVE.load(Ordering::SeqCst);
+        if !already_active {
+            show_spinner();
+            Self { did_start: true }
+        } else {
+            Self { did_start: false }
+        }
+    }
+}
+
+impl Drop for SpinnerGuard {
+    fn drop(&mut self) {
+        if self.did_start {
+            hide_spinner();
+        }
+    }
+}
+
 /// Consume a streaming response, display chat text in real-time,
 /// and accumulate the full Message for the conversation.
 pub async fn consume_stream(

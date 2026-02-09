@@ -98,9 +98,9 @@ pub async fn handle_query(
             stream: true,
         };
 
-        streaming::show_spinner();
+        let _spinner = streaming::SpinnerGuard::new();
         let mut rx = provider.stream(request).await?;
-        streaming::hide_spinner();
+        drop(_spinner);
 
         let response =
             streaming::consume_stream(&mut rx, &cancelled).await?;
