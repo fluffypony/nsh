@@ -201,8 +201,8 @@ fn which_exists(cmd: &str) -> bool {
 }
 
 fn detect_locale() -> String {
-    std::env::var("LANG")
-        .or_else(|_| std::env::var("LC_ALL"))
+    std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LANG"))
         .unwrap_or_else(|_| "en_US.UTF-8".into())
 }
 

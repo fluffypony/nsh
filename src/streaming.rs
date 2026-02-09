@@ -97,13 +97,10 @@ pub async fn consume_stream(
             }
 
             StreamEvent::ToolUseEnd => {
-                let input: serde_json::Value =
-                    serde_json::from_str(&current_tool_input)
-                        .or_else(|_| {
-                            crate::json_extract::extract_json(&current_tool_input)
-                                .ok_or_else(|| serde_json::from_str::<serde_json::Value>("{}").unwrap_err())
-                        })
-                        .unwrap_or_default();
+                let input = serde_json::from_str::<serde_json::Value>(&current_tool_input)
+                    .ok()
+                    .or_else(|| crate::json_extract::extract_json(&current_tool_input))
+                    .unwrap_or_else(|| serde_json::json!({}));
                 content_blocks.push(ContentBlock::ToolUse {
                     id: current_tool_id.clone(),
                     name: current_tool_name.clone(),
@@ -128,13 +125,10 @@ pub async fn consume_stream(
     }
 
     if !current_tool_name.is_empty() && !current_tool_input.is_empty() {
-        let input: serde_json::Value =
-            serde_json::from_str(&current_tool_input)
-                .or_else(|_| {
-                    crate::json_extract::extract_json(&current_tool_input)
-                        .ok_or_else(|| serde_json::from_str::<serde_json::Value>("{}").unwrap_err())
-                })
-                .unwrap_or_default();
+        let input = serde_json::from_str::<serde_json::Value>(&current_tool_input)
+            .ok()
+            .or_else(|| crate::json_extract::extract_json(&current_tool_input))
+            .unwrap_or_else(|| serde_json::json!({}));
         content_blocks.push(ContentBlock::ToolUse {
             id: current_tool_id.clone(),
             name: current_tool_name.clone(),
