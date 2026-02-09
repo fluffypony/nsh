@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use zeroize::Zeroizing;
@@ -20,6 +21,8 @@ pub struct Config {
     pub capture: CaptureConfig,
     #[serde(default)]
     pub db: DbConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 impl Default for Config {
@@ -34,6 +37,7 @@ impl Default for Config {
             redaction: RedactionConfig::default(),
             capture: CaptureConfig::default(),
             db: DbConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -341,6 +345,27 @@ impl Default for DbConfig {
             busy_timeout_ms: 10000,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: HashMap<String, McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_mcp_timeout")]
+    pub timeout_seconds: u64,
+}
+
+fn default_mcp_timeout() -> u64 {
+    30
 }
 
 fn find_project_config() -> Option<PathBuf> {

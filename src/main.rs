@@ -9,6 +9,7 @@ mod display;
 mod init;
 mod json_display;
 mod json_extract;
+mod mcp;
 mod provider;
 mod pty;
 mod pump;
