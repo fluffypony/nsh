@@ -50,8 +50,7 @@ __nsh_debug_trap() {
         __nsh_cmd_start_epoch=$(date +%s)
 
         # Mark scrollback position for per-command output capture
-        nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null &
-        disown 2>/dev/null
+        nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null
     fi
 
     # Redact-next-command mechanism

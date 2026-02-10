@@ -322,6 +322,7 @@ pub struct RedactionConfig {
     pub enabled: bool,
     pub patterns: Vec<String>,
     pub replacement: String,
+    pub disable_builtin: bool,
 }
 
 impl Default for RedactionConfig {
@@ -352,6 +353,7 @@ impl Default for RedactionConfig {
                 r"npm_[a-zA-Z0-9]{36}".into(),
             ],
             replacement: "[REDACTED]".into(),
+            disable_builtin: false,
         }
     }
 }

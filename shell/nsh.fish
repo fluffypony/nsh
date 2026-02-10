@@ -43,6 +43,9 @@ function __nsh_preexec --on-event fish_preexec
     set -g __nsh_cmd_start_epoch (date +%s)
     set -g __nsh_cwd $PWD
 
+    # Mark scrollback position for per-command output capture
+    nsh daemon-send capture-mark --session $NSH_SESSION_ID 2>/dev/null
+
     # Redact-next-command mechanism
     set -l redact_next "$HOME/.nsh/redact_next_$NSH_SESSION_ID"
     if test -f $redact_next

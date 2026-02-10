@@ -10,7 +10,11 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
 
-    let mut json = serde_json::to_string(request)?;
+    let mut json_val = serde_json::to_value(request)?;
+    if let serde_json::Value::Object(ref mut map) = json_val {
+        map.insert("v".into(), serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION));
+    }
+    let mut json = serde_json::to_string(&json_val)?;
     json.push('\n');
     stream.write_all(json.as_bytes())?;
     stream.flush()?;

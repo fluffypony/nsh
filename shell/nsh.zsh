@@ -38,7 +38,7 @@ __nsh_preexec() {
     export __NSH_CWD="$PWD"
 
     # Mark scrollback position for per-command output capture
-    nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null &!
+    nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null
 
     # Redact-next-command mechanism
     local redact_next="$HOME/.nsh/redact_next_${NSH_SESSION_ID}"
