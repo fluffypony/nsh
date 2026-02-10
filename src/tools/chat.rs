@@ -6,6 +6,7 @@ pub fn execute(
     original_query: &str,
     db: &Db,
     session_id: &str,
+    private: bool,
 ) -> anyhow::Result<()> {
     let response = input["response"].as_str().unwrap_or("");
 
@@ -13,15 +14,19 @@ pub fn execute(
     let reset = "\x1b[0m";
     eprintln!("{color}{response}{reset}");
 
-    db.insert_conversation(
-        session_id,
-        original_query,
-        "chat",
-        response,
-        None,
-        false,
-        false,
-    )?;
+    if !private {
+        let redacted_query = crate::redact::redact_secrets(original_query, &crate::config::RedactionConfig::default());
+        let redacted_response = crate::redact::redact_secrets(response, &crate::config::RedactionConfig::default());
+        db.insert_conversation(
+            session_id,
+            &redacted_query,
+            "chat",
+            &redacted_response,
+            None,
+            false,
+            false,
+        )?;
+    }
 
     Ok(())
 }

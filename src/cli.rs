@@ -31,6 +31,9 @@ pub enum Commands {
         /// Enable thinking/reasoning mode
         #[arg(long, default_value_t = false)]
         think: bool,
+        /// Private mode: don't store query/response in history
+        #[arg(long, default_value_t = false)]
+        private: bool,
         /// The natural language query
         #[arg(trailing_var_arg = true)]
         words: Vec<String>,

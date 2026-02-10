@@ -113,6 +113,7 @@ pub fn execute(
     original_query: &str,
     db: &Db,
     session_id: &str,
+    private: bool,
 ) -> anyhow::Result<Option<String>> {
     let raw_path = input["path"]
         .as_str()
@@ -199,15 +200,17 @@ pub fn execute(
 
     if answer != "y" && answer != "yes" {
         eprintln!("{dim}patch declined{reset}");
-        db.insert_conversation(
-            session_id,
-            original_query,
-            "patch_file",
-            &format!("declined: {}", path.display()),
-            Some(reason),
-            false,
-            false,
-        )?;
+        if !private {
+            db.insert_conversation(
+                session_id,
+                original_query,
+                "patch_file",
+                &format!("declined: {}", path.display()),
+                Some(reason),
+                false,
+                false,
+            )?;
+        }
         return Ok(None);
     }
 
@@ -217,15 +220,17 @@ pub fn execute(
     std::fs::write(&path, &modified)?;
     eprintln!("{green}✓ patched {}{reset}", path.display());
 
-    db.insert_conversation(
-        session_id,
-        original_query,
-        "patch_file",
-        &format!("patched: {}", path.display()),
-        Some(reason),
-        true,
-        false,
-    )?;
+    if !private {
+        db.insert_conversation(
+            session_id,
+            original_query,
+            "patch_file",
+            &format!("patched: {}", path.display()),
+            Some(reason),
+            true,
+            false,
+        )?;
+    }
 
     Ok(None)
 }

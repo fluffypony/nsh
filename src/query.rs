@@ -11,10 +11,13 @@ pub async fn handle_query(
     db: &Db,
     session_id: &str,
     think: bool,
+    private: bool,
 ) -> anyhow::Result<()> {
     let cancelled = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
         .ok();
+
+    let boundary = crate::security::generate_boundary();
 
     let query = if query == "__NSH_CONTINUE__" {
         "Continue the previous pending task. The latest output is in the context above."
@@ -43,7 +46,7 @@ pub async fn handle_query(
 
     // 2. Build system prompt with XML context
     let xml_context = context::build_xml_context(&ctx, config);
-    let system = build_system_prompt(&ctx, &xml_context);
+    let system = build_system_prompt(&ctx, &xml_context, &boundary);
     let mut messages: Vec<Message> = Vec::new();
 
     // Conversation history from this session
@@ -169,9 +172,7 @@ pub async fn handle_query(
         for block in &response.content {
             if let ContentBlock::ToolUse { id, name, input } = block {
                 if let Err(msg) = validate_tool_input(name, input) {
-                    let wrapped = format!(
-                        "<tool_result name=\"{name}\">\n{msg}\n</tool_result>"
-                    );
+                    let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: wrapped,
@@ -184,32 +185,30 @@ pub async fn handle_query(
                     "command" => {
                         has_terminal_tool = true;
                         tools::command::execute(
-                            input, query, db, session_id,
+                            input, query, db, session_id, private,
                         )?;
                     }
                     "chat" => {
                         has_terminal_tool = true;
                         tools::chat::execute(
-                            input, query, db, session_id,
+                            input, query, db, session_id, private,
                         )?;
                     }
                     "write_file" => {
                         has_terminal_tool = true;
                         tools::write_file::execute(
-                            input, query, db, session_id,
+                            input, query, db, session_id, private,
                         )?;
                     }
                     "patch_file" => {
                         match tools::patch_file::execute(
-                            input, query, db, session_id,
+                            input, query, db, session_id, private,
                         )? {
                             None => {
                                 has_terminal_tool = true;
                             }
                             Some(err_msg) => {
-                                let wrapped = format!(
-                                    "<tool_result name=\"{name}\">\n{err_msg}\n</tool_result>"
-                                );
+                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -254,9 +253,8 @@ pub async fn handle_query(
                         let redacted = crate::redact::redact_secrets(
                             &content, &config.redaction,
                         );
-                        let wrapped = format!(
-                            "<tool_result name=\"{name}\">\n{redacted}\n</tool_result>"
-                        );
+                        let sanitized = crate::security::sanitize_tool_output(&redacted);
+                        let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id,
                             content: wrapped,
@@ -312,9 +310,8 @@ pub async fn handle_query(
                 let redacted = crate::redact::redact_secrets(
                     &content, &config.redaction,
                 );
-                let wrapped = format!(
-                    "<tool_result name=\"{name}\">\n{redacted}\n</tool_result>"
-                );
+                let sanitized = crate::security::sanitize_tool_output(&redacted);
+                let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
                 tool_results.push(ContentBlock::ToolResult {
                     tool_use_id: id,
                     content: wrapped,
@@ -340,9 +337,8 @@ pub async fn handle_query(
             let redacted = crate::redact::redact_secrets(
                 &content, &config.redaction,
             );
-            let wrapped = format!(
-                "<tool_result name=\"{name}\">\n{redacted}\n</tool_result>"
-            );
+            let sanitized = crate::security::sanitize_tool_output(&redacted);
+            let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: id,
                 content: wrapped,
@@ -366,7 +362,7 @@ pub async fn handle_query(
     Ok(())
 }
 
-pub fn build_system_prompt(_ctx: &crate::context::QueryContext, xml_context: &str) -> String {
+pub fn build_system_prompt(_ctx: &crate::context::QueryContext, xml_context: &str, boundary: &str) -> String {
     let base = r#"You are nsh (Natural Shell), an AI assistant embedded in the
 user's terminal. You help with shell commands, debugging, and system
 administration.
@@ -445,7 +441,8 @@ message after the user executes it. The LAST command in a sequence must NOT
 have pending=true.
 
 "#;
-    format!("{base}{xml_context}")
+    let boundary_note = crate::security::boundary_system_prompt_addition(boundary);
+    format!("{base}\n{boundary_note}\n\n{xml_context}")
 }
 
 fn execute_sync_tool(

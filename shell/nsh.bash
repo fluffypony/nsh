@@ -5,6 +5,7 @@
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     alias '?'='nsh query --'
     alias '??'='nsh query --think --'
+    alias '?!'='nsh query --private --'
     # Only reinstall hooks if not already present
     case ";${PROMPT_COMMAND:-};" in
         *";__nsh_prompt_command;"*) ;;
@@ -24,6 +25,7 @@ disown 2>/dev/null
 # ── Aliases ─────────────────────────────────────────────
 alias '?'='nsh query --'
 alias '??'='nsh query --think --'
+alias '?!'='nsh query --private --'
 
 # ── State variables ─────────────────────────────────────
 __nsh_cmd=""

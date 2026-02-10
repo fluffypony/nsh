@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
             pty::run_wrapped_shell(&shell)?;
         }
 
-        Commands::Query { words, think } => {
+        Commands::Query { words, think, private } => {
             if words.is_empty() {
                 eprintln!("Usage: ? <your question>");
                 std::process::exit(1);
@@ -67,7 +67,10 @@ async fn main() -> anyhow::Result<()> {
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID")
                 .unwrap_or_else(|_| "default".into());
-            query::handle_query(&query_text, &config, &db, &session_id, think)
+            if private {
+                eprintln!("\x1b[2m🔒 private mode\x1b[0m");
+            }
+            query::handle_query(&query_text, &config, &db, &session_id, think, private)
                 .await?;
         }
 

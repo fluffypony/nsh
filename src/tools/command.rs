@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::security::RiskLevel;
 
 /// Handle the `command` tool: display explanation, write command to
 /// pending file for shell hook to prefill.
@@ -7,10 +8,33 @@ pub fn execute(
     original_query: &str,
     db: &Db,
     session_id: &str,
+    private: bool,
 ) -> anyhow::Result<()> {
     let command = input["command"].as_str().unwrap_or("");
     let explanation = input["explanation"].as_str().unwrap_or("");
     let pending = input["pending"].as_bool().unwrap_or(false);
+
+    let (risk, reason) = crate::security::assess_command(command);
+
+    match &risk {
+        RiskLevel::Dangerous => {
+            let reason_str = reason.unwrap_or("potentially destructive command");
+            eprintln!("\x1b[1;31m⚠ DANGEROUS: {reason_str}\x1b[0m");
+            eprintln!("\x1b[1;31mCommand: {command}\x1b[0m");
+            eprint!("\x1b[1;31mType 'yes' to proceed: \x1b[0m");
+            let mut input_line = String::new();
+            std::io::stdin().read_line(&mut input_line)?;
+            if input_line.trim() != "yes" {
+                eprintln!("Aborted.");
+                return Ok(());
+            }
+        }
+        RiskLevel::Elevated => {
+            let reason_str = reason.unwrap_or("elevated privileges");
+            eprintln!("\x1b[33m⚡ {reason_str}\x1b[0m");
+        }
+        RiskLevel::Safe => {}
+    }
 
     // Display explanation
     let color = "\x1b[3;36m"; // cyan italic
@@ -29,16 +53,22 @@ pub fn execute(
         std::fs::write(&pending_file, "1")?;
     }
 
-    // Record in conversation history
-    db.insert_conversation(
-        session_id,
-        original_query,
-        "command",
-        command,
-        Some(explanation),
-        false,
-        pending,
-    )?;
+    if !private {
+        let redacted_query = crate::redact::redact_secrets(original_query, &crate::config::RedactionConfig::default());
+        let redacted_response = crate::redact::redact_secrets(command, &crate::config::RedactionConfig::default());
+        let redacted_explanation = Some(crate::redact::redact_secrets(explanation, &crate::config::RedactionConfig::default()));
+        db.insert_conversation(
+            session_id,
+            &redacted_query,
+            "command",
+            &redacted_response,
+            redacted_explanation.as_deref(),
+            false,
+            pending,
+        )?;
+    }
+
+    crate::audit::audit_log(session_id, original_query, "command", command, &risk.to_string());
 
     Ok(())
 }

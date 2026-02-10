@@ -6,6 +6,7 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     # Already inside nsh — only reinstall hooks, skip session init
     alias '?'='noglob nsh query --'
     alias '??'='noglob nsh query --think --'
+    alias '?!'='noglob nsh query --private --'
     autoload -Uz add-zsh-hook
     add-zsh-hook preexec __nsh_preexec
     add-zsh-hook precmd __nsh_precmd
@@ -23,6 +24,7 @@ nsh session start --session "$NSH_SESSION_ID" --tty "$(tty)" --shell "zsh" --pid
 # ── Aliases for ? and ?? ────────────────────────────────
 alias '?'='noglob nsh query --'
 alias '??'='noglob nsh query --think --'
+alias '?!'='noglob nsh query --private --'
 
 # ── State variables ─────────────────────────────────────
 __NSH_LAST_RECORDED_CMD=""

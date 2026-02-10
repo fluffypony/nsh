@@ -167,6 +167,7 @@ pub fn execute(
     original_query: &str,
     db: &Db,
     session_id: &str,
+    private: bool,
 ) -> anyhow::Result<()> {
     let raw_path = input["path"]
         .as_str()
@@ -241,15 +242,17 @@ pub fn execute(
     std::fs::write(&path, content)?;
     eprintln!("  Written: {}", path.display());
 
-    db.insert_conversation(
-        session_id,
-        original_query,
-        "write_file",
-        &path.to_string_lossy(),
-        Some(reason),
-        true,
-        false,
-    )?;
+    if !private {
+        db.insert_conversation(
+            session_id,
+            original_query,
+            "write_file",
+            &path.to_string_lossy(),
+            Some(reason),
+            true,
+            false,
+        )?;
+    }
 
     Ok(())
 }
