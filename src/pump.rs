@@ -558,7 +558,11 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
                 &mut len,
             )
         };
-        if rc == 0 && cred.uid != unsafe { libc::getuid() } {
+        if rc != 0 {
+            tracing::warn!("Rejecting daemon connection: SO_PEERCRED failed");
+            return false;
+        }
+        if cred.uid != unsafe { libc::getuid() } {
             tracing::warn!("Rejecting daemon connection from uid {}", cred.uid);
             return false;
         }
@@ -569,7 +573,11 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
         let mut euid: libc::uid_t = 0;
         let mut egid: libc::gid_t = 0;
         let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut euid, &mut egid) };
-        if rc == 0 && euid != unsafe { libc::getuid() } {
+        if rc != 0 {
+            tracing::warn!("Rejecting daemon connection: getpeereid failed");
+            return false;
+        }
+        if euid != unsafe { libc::getuid() } {
             tracing::warn!("Rejecting daemon connection from uid {}", euid);
             return false;
         }
