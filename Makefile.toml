@@ -43,6 +43,13 @@ install_crate_args = ["--locked"]
 command = "cargo"
 args = ["geiger", "--output-format", "Ascii"]
 
+[tasks.coverage]
+description = "Generate test coverage report via cargo-tarpaulin"
+install_crate = "cargo-tarpaulin"
+install_crate_args = ["--locked"]
+command = "cargo"
+args = ["tarpaulin", "--engine", "llvm", "--skip-clean", "--timeout", "120"]
+
 [tasks.quality]
 description = "Run the full quality pipeline: format, check, lint, test, audit"
 dependencies = [
