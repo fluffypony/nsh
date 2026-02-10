@@ -249,7 +249,7 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         for cmd in &ctx.session_history {
             let duration_attr = cmd
                 .duration_ms
-                .map(|d| format!(" duration=\"{}ms\"", d))
+                .map(|d| format!(" duration=\"{d}ms\""))
                 .unwrap_or_default();
             xml.push_str(&format!(
                 "    <cmd ts=\"{}\" exit=\"{}\"{} cwd=\"{}\">\n",
@@ -613,8 +613,8 @@ fn list_project_files_with_ignore(
         }
         let rel = entry.path().strip_prefix(cwd).unwrap_or(entry.path());
         let ft = entry.file_type();
-        let is_dir = ft.as_ref().map_or(false, |ft| ft.is_dir());
-        let is_symlink = ft.as_ref().map_or(false, |ft| ft.is_symlink());
+        let is_dir = ft.as_ref().is_some_and(|ft| ft.is_dir());
+        let is_symlink = ft.as_ref().is_some_and(|ft| ft.is_symlink());
         let kind = if is_symlink {
             "symlink"
         } else if is_dir {
@@ -752,7 +752,7 @@ fn detect_os() -> String {
         if version.is_empty() {
             "macOS (unknown version)".into()
         } else {
-            format!("macOS {} {}", version, arch)
+            format!("macOS {version} {arch}")
         }
     }
     #[cfg(target_os = "linux")]

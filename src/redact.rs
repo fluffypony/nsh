@@ -807,6 +807,7 @@ pub fn redact_secrets(text: &str, config: &RedactionConfig) -> String {
     result
 }
 
+#[allow(dead_code)]
 const SENSITIVE_URL_PARAMS: &[&str] = &[
     "token",
     "key",
@@ -824,6 +825,7 @@ const SENSITIVE_URL_PARAMS: &[&str] = &[
     "sid",
 ];
 
+#[allow(dead_code)]
 pub fn redact_url(url: &str) -> String {
     if let Some(qmark) = url.find('?') {
         let (base, query) = url.split_at(qmark);

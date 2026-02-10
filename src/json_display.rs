@@ -1,8 +1,10 @@
 use crate::stream_consumer::DisplayEvent;
 use std::io::{self, Write};
 
+#[allow(dead_code)]
 pub struct JsonDisplay;
 
+#[allow(dead_code)]
 impl JsonDisplay {
     pub fn new() -> Self {
         Self

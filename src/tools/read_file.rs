@@ -37,8 +37,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 
     if is_sensitive_path(&path) {
         return Ok(format!(
-            "Access denied: '{}' is in a sensitive directory",
-            raw_path
+            "Access denied: '{raw_path}' is in a sensitive directory"
         ));
     }
 

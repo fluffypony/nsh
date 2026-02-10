@@ -140,7 +140,7 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
     let reset = "\x1b[0m";
     let dim = "\x1b[2m";
 
-    let content_width = command.len().max(explanation.len()).max(20).min(60);
+    let content_width = command.len().max(explanation.len()).clamp(20, 60);
     let box_width = content_width + 4;
 
     let top_label = " nsh ";

@@ -313,7 +313,7 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        for (_, server) in &mut self.servers {
+        for server in self.servers.values_mut() {
             let _ = server.child.start_kill();
         }
     }

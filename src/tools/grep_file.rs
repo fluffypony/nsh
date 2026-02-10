@@ -30,13 +30,13 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
                 if re.is_match(line) {
                     let start = i.saturating_sub(context_lines);
                     let end = (i + context_lines + 1).min(lines.len());
-                    for j in start..end {
+                    for (j, line) in lines.iter().enumerate().take(end).skip(start) {
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
                             return Ok(result);
                         }
                         let marker = if j == i { ">>>" } else { "   " };
-                        result.push_str(&format!("{marker} {:>4}: {}\n", j + 1, lines[j]));
+                        result.push_str(&format!("{marker} {:>4}: {}\n", j + 1, line));
                         output_lines += 1;
                     }
                     result.push_str("---\n");

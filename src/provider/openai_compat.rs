@@ -78,11 +78,9 @@ impl OpenAICompatProvider {
             }]);
         }
 
-        if let Some(extra) = &request.extra_body {
-            if let serde_json::Value::Object(map) = extra {
-                for (k, v) in map {
-                    body[k] = v.clone();
-                }
+        if let Some(serde_json::Value::Object(map)) = &request.extra_body {
+            for (k, v) in map {
+                body[k] = v.clone();
             }
         }
 

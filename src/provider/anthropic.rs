@@ -248,7 +248,6 @@ impl LlmProvider for AnthropicProvider {
                     "message_stop" => {
                         if in_tool_use {
                             let _ = tx.send(StreamEvent::ToolUseEnd).await;
-                            in_tool_use = false;
                         }
                         let _ = tx.send(StreamEvent::Done { usage: None }).await;
                         break;

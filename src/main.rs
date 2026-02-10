@@ -10,6 +10,7 @@ mod display;
 mod init;
 mod json_display;
 mod json_extract;
+#[allow(dead_code)]
 mod mcp;
 mod provider;
 mod pty;
@@ -19,6 +20,7 @@ mod redact;
 mod security;
 mod shell_hooks;
 mod skills;
+#[allow(dead_code)]
 mod stream_consumer;
 mod streaming;
 mod summary;
@@ -248,8 +250,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut total_calls = 0_i64;
                 for (model, calls, input_tok, output_tok, cost) in &stats {
                     eprintln!(
-                        "{:<35} {:>5}  {:>9}  {:>10}  ${:.4}",
-                        model, calls, input_tok, output_tok, cost
+                        "{model:<35} {calls:>5}  {input_tok:>9}  {output_tok:>10}  ${cost:.4}"
                     );
                     total_cost += cost;
                     total_calls += calls;

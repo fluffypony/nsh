@@ -19,6 +19,7 @@ pub fn is_retryable_error(e: &anyhow::Error) -> bool {
         || msg.contains("timed out")
 }
 
+#[allow(dead_code)]
 pub async fn call_with_chain(
     provider: &dyn LlmProvider,
     request: ChatRequest,
@@ -85,6 +86,7 @@ pub async fn stream_with_complete_fallback(
     }
 }
 
+#[allow(dead_code)]
 pub async fn call_chain_with_fallback(
     provider: &dyn LlmProvider,
     request: ChatRequest,

@@ -33,6 +33,7 @@ pub fn try_send_request(session_id: &str, request: &DaemonRequest) -> Option<Dae
     send_request(session_id, request).ok()
 }
 
+#[allow(dead_code)]
 pub fn is_daemon_running(session_id: &str) -> bool {
     let socket_path = crate::daemon::daemon_socket_path(session_id);
     if !socket_path.exists() {

@@ -2,11 +2,13 @@ use crate::config::DisplayConfig;
 use crate::stream_consumer::DisplayEvent;
 use std::io::{self, Write};
 
+#[allow(dead_code)]
 pub struct TerminalDisplay {
     is_streaming_text: bool,
     chat_color: String,
 }
 
+#[allow(dead_code)]
 impl TerminalDisplay {
     pub fn new(config: &DisplayConfig) -> Self {
         Self {

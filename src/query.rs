@@ -267,6 +267,7 @@ pub async fn handle_query(
 
         // Execute intermediate tools — parallelize where possible
         if !parallel_calls.is_empty() {
+            #[allow(clippy::type_complexity)]
             let mut futs: Vec<
                 std::pin::Pin<
                     Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>,

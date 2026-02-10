@@ -173,7 +173,7 @@ pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result
     check_project_skill_approval(skill)?;
 
     let mut command = skill.command.clone();
-    for (param_name, _param) in &skill.parameters {
+    for param_name in skill.parameters.keys() {
         let value = input.get(param_name).and_then(|v| v.as_str()).unwrap_or("");
 
         validate_param_value(value)?;

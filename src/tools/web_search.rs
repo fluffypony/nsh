@@ -1,6 +1,5 @@
 use crate::config::Config;
 use crate::provider::{self, ChatRequest, ContentBlock, Message, Role, ToolChoice};
-use serde_json::json;
 
 pub async fn execute(query: &str, config: &Config) -> anyhow::Result<String> {
     let ws_provider_name = &config.web_search.provider;

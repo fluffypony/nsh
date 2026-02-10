@@ -17,6 +17,7 @@ pub struct CaptureEngine {
     history_lines: Vec<String>,
     prev_visible: Vec<String>,
     mark_state: Option<(usize, Vec<String>)>,
+    #[allow(dead_code)]
     capture_mode: String,
     alt_screen_mode: String,
 }
@@ -130,6 +131,7 @@ impl CaptureEngine {
             .replace("\x1b[201~", "")
     }
 
+    #[allow(dead_code)]
     pub fn total_line_count(&self) -> usize {
         self.history_lines.len()
     }
@@ -278,7 +280,7 @@ fn spawn_signal_thread(
 ) -> SignalThread {
     let raw_pid = child_pid.as_raw_nonzero().get();
 
-    let mut signals = Signals::new(&[
+    let mut signals = Signals::new([
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGHUP,
@@ -491,6 +493,7 @@ pub fn pump_loop(
     let _ = std::fs::remove_file(&scrollback_path);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_io(
     stdin_poll: &rustix::event::PollFd,
     pty_poll: &rustix::event::PollFd,

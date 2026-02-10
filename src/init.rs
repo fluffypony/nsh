@@ -6,9 +6,8 @@ pub fn generate_init_script(shell: &str) -> String {
         "fish" => include_str!("../shell/nsh.fish"),
         other => {
             return format!(
-                "# nsh: unsupported shell '{}'. Supported: zsh, bash, fish\n\
-                 echo 'nsh: unsupported shell' >&2",
-                other
+                "# nsh: unsupported shell '{other}'. Supported: zsh, bash, fish\n\
+                 echo 'nsh: unsupported shell' >&2"
             );
         }
     };

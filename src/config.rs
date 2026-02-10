@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use zeroize::Zeroizing;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub provider: ProviderConfig,
@@ -21,28 +21,12 @@ pub struct Config {
     pub capture: CaptureConfig,
     #[serde(default)]
     pub db: DbConfig,
+    #[allow(dead_code)]
     #[serde(default)]
     pub mcp: McpConfig,
+    #[allow(dead_code)]
     #[serde(default)]
     pub execution: ExecutionConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            context: ContextConfig::default(),
-            tools: ToolsConfig::default(),
-            models: ModelsConfig::default(),
-            web_search: WebSearchConfig::default(),
-            display: DisplayConfig::default(),
-            redaction: RedactionConfig::default(),
-            capture: CaptureConfig::default(),
-            db: DbConfig::default(),
-            mcp: McpConfig::default(),
-            execution: ExecutionConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,22 +114,12 @@ impl Default for ProviderConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct ProviderAuth {
     pub api_key: Option<String>,
     pub api_key_cmd: Option<String>,
     pub base_url: Option<String>,
-}
-
-impl Default for ProviderAuth {
-    fn default() -> Self {
-        Self {
-            api_key: None,
-            api_key_cmd: None,
-            base_url: None,
-        }
-    }
 }
 
 impl ProviderAuth {
@@ -389,10 +363,12 @@ impl Default for DbConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct McpConfig {
+    #[allow(dead_code)]
     #[serde(default)]
     pub servers: HashMap<String, McpServerConfig>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct McpServerConfig {
     pub command: String,

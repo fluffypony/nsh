@@ -215,6 +215,7 @@ pub enum DbCommand {
         session: String,
         reply: std::sync::mpsc::Sender<anyhow::Result<()>>,
     },
+    #[allow(dead_code)]
     InsertConversation {
         session_id: String,
         query: String,
@@ -225,6 +226,7 @@ pub enum DbCommand {
         pending: bool,
         reply: std::sync::mpsc::Sender<anyhow::Result<i64>>,
     },
+    #[allow(dead_code)]
     SearchHistory {
         query: String,
         limit: usize,
@@ -274,31 +276,28 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                     &shell,
                     pid,
                 );
-                match &result {
-                    Ok(id) => {
-                        let output_text = out.as_deref().unwrap_or("");
-                        if let Some(trivial) =
-                            crate::summary::trivial_summary(&cmd_text, ec, output_text)
-                        {
-                            let _ = db.update_summary(*id, &trivial);
-                        }
-                        // Conversation feedback loop: if this command matches
-                        // a pending conversation suggestion, record the result
-                        if let Ok(Some((conv_id, suggested_cmd))) =
-                            db.find_pending_conversation(&session)
-                        {
-                            if cmd_text.trim() == suggested_cmd.trim() {
-                                let snippet = crate::util::truncate(output_text, 500);
-                                let snippet_ref = if snippet.is_empty() {
-                                    None
-                                } else {
-                                    Some(snippet.as_str())
-                                };
-                                let _ = db.update_conversation_result(conv_id, ec, snippet_ref);
-                            }
+                if let Ok(id) = &result {
+                    let output_text = out.as_deref().unwrap_or("");
+                    if let Some(trivial) =
+                        crate::summary::trivial_summary(&cmd_text, ec, output_text)
+                    {
+                        let _ = db.update_summary(*id, &trivial);
+                    }
+                    // Conversation feedback loop: if this command matches
+                    // a pending conversation suggestion, record the result
+                    if let Ok(Some((conv_id, suggested_cmd))) =
+                        db.find_pending_conversation(&session)
+                    {
+                        if cmd_text.trim() == suggested_cmd.trim() {
+                            let snippet = crate::util::truncate(output_text, 500);
+                            let snippet_ref = if snippet.is_empty() {
+                                None
+                            } else {
+                                Some(snippet.as_str())
+                            };
+                            let _ = db.update_conversation_result(conv_id, ec, snippet_ref);
                         }
                     }
-                    Err(_) => {}
                 }
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!("{e}")));
             }

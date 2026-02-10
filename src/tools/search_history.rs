@@ -23,8 +23,8 @@ pub fn execute(
     let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
     // Resolve relative time strings like "1h", "2d", "1w"
-    let resolved_since = since.map(|s| resolve_relative_time(s));
-    let resolved_until = until.map(|u| resolve_relative_time(u));
+    let resolved_since = since.map(resolve_relative_time);
+    let resolved_until = until.map(resolve_relative_time);
 
     // Resolve session filter
     let session_filter = session.and_then(|s| match s {

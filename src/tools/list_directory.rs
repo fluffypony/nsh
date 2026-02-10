@@ -58,8 +58,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 
         let size_str = human_size(size);
         entries.push(format!(
-            "{:<5} {:>8}  {}  {}",
-            kind, size_str, modified, name
+            "{kind:<5} {size_str:>8}  {modified}  {name}"
         ));
     }
 

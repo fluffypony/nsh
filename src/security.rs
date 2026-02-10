@@ -112,6 +112,7 @@ pub fn boundary_system_prompt_addition(boundary: &str) -> String {
     )
 }
 
+#[allow(dead_code)]
 pub fn is_example_context(source_path: Option<&str>) -> bool {
     let patterns = [
         ".example",

@@ -252,6 +252,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn with_db<F, T>(f: F) -> anyhow::Result<T>
 where
     F: FnOnce(&Db) -> anyhow::Result<T> + Send + 'static,
@@ -349,6 +350,7 @@ impl Db {
 
     // ── Command recording ──────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_command(
         &self,
         session_id: &str,
@@ -442,6 +444,7 @@ impl Db {
 
     // ── Cross-TTY context ──────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn recent_commands_other_sessions(
         &self,
         current_session: &str,
@@ -474,6 +477,7 @@ impl Db {
 
     // ── Conversation history ───────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_conversation(
         &self,
         session_id: &str,
@@ -619,6 +623,7 @@ impl Db {
             .execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')")
     }
 
+    #[allow(dead_code)]
     pub fn prune_if_due(&self, retention_days: u32) -> rusqlite::Result<()> {
         let should_prune: bool = self
             .conn
@@ -643,6 +648,8 @@ impl Db {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_usage(
         &self,
         session_id: &str,
@@ -674,6 +681,7 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
+    #[allow(dead_code)]
     pub fn update_usage_cost(&self, generation_id: &str, cost_usd: f64) -> rusqlite::Result<bool> {
         let updated = self.conn.execute(
             "UPDATE usage SET cost_usd = ? WHERE generation_id = ?",
@@ -682,6 +690,7 @@ impl Db {
         Ok(updated > 0)
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn get_usage_stats(
         &self,
         since: Option<&str>,
@@ -716,6 +725,7 @@ impl Db {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn get_pending_generation_ids(&self) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT generation_id FROM usage \
@@ -860,6 +870,7 @@ impl Db {
         rows.collect()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_history_advanced(
         &self,
         fts_query: Option<&str>,
@@ -951,7 +962,7 @@ impl Db {
                 if let Ok(re) = regex::Regex::new(pattern) {
                     results.retain(|r| {
                         re.is_match(&r.command)
-                            || r.output.as_deref().map_or(false, |o| re.is_match(o))
+                            || r.output.as_deref().is_some_and(|o| re.is_match(o))
                     });
                 }
             }
@@ -1248,7 +1259,9 @@ impl Db {
 
 #[derive(Debug)]
 pub struct HistoryMatch {
+    #[allow(dead_code)]
     pub id: i64,
+    #[allow(dead_code)]
     pub session_id: String,
     pub command: String,
     pub cwd: Option<String>,
@@ -1259,6 +1272,7 @@ pub struct HistoryMatch {
     pub output_highlight: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct OtherSessionCommand {
     pub command: String,
@@ -1291,12 +1305,14 @@ pub struct CommandWithSummary {
 #[derive(Debug)]
 pub struct OtherSessionSummary {
     pub command: String,
+    #[allow(dead_code)]
     pub cwd: Option<String>,
     pub exit_code: Option<i32>,
     pub started_at: String,
     pub summary: Option<String>,
     pub tty: String,
     pub shell: String,
+    #[allow(dead_code)]
     pub session_id: String,
 }
 

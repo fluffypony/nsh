@@ -38,6 +38,7 @@ fn spinner_frames() -> &'static [String] {
     })
 }
 
+#[allow(dead_code)]
 pub fn show_spinner() {
     SPINNER_ACTIVE.store(true, Ordering::SeqCst);
     let handle = std::thread::spawn(move || {

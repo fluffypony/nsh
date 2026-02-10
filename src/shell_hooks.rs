@@ -1,4 +1,4 @@
-/// Shell hook-related constants and helpers.
+//! Shell hook-related constants and helpers.
 
 /// Marker used to identify nsh-generated pending commands.
 pub const PENDING_CMD_PREFIX: &str = "pending_cmd_";
