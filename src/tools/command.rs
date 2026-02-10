@@ -23,8 +23,27 @@ pub fn execute(
             eprintln!("\x1b[1;31m⚠ DANGEROUS: {reason_str}\x1b[0m");
             eprintln!("\x1b[1;31mCommand: {command}\x1b[0m");
             eprint!("\x1b[1;31mType 'yes' to proceed: \x1b[0m");
-            let mut input_line = String::new();
-            std::io::stdin().read_line(&mut input_line)?;
+            let input_line = {
+                use std::io::{BufRead, IsTerminal};
+                if std::io::stdin().is_terminal() {
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line
+                } else {
+                    match std::fs::File::open("/dev/tty") {
+                        Ok(tty) => {
+                            let mut reader = std::io::BufReader::new(tty);
+                            let mut line = String::new();
+                            reader.read_line(&mut line)?;
+                            line
+                        }
+                        Err(_) => {
+                            eprintln!("Cannot confirm — stdin is piped. Aborting dangerous command.");
+                            return Ok(());
+                        }
+                    }
+                }
+            };
             if input_line.trim() != "yes" {
                 eprintln!("Aborted.");
                 return Ok(());
@@ -74,6 +93,12 @@ pub fn execute(
             f.write_all(b"1")?;
         }
         std::fs::rename(&tmp, &pending_file)?;
+    }
+
+    if !pending {
+        // Clear any stale pending_flag from a previous sequence
+        let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
+        let _ = std::fs::remove_file(&stale_flag);
     }
 
     if !private {

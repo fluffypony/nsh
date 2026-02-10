@@ -69,9 +69,10 @@ async fn main() -> anyhow::Result<()> {
             // Pipe/stdin support
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() {
-                let mut piped = String::new();
                 use std::io::Read;
-                std::io::stdin().read_to_string(&mut piped)?;
+                let max_pipe_bytes: u64 = 33000; // slightly over 32k to detect truncation
+                let mut piped = String::new();
+                std::io::stdin().take(max_pipe_bytes).read_to_string(&mut piped)?;
                 if !piped.is_empty() {
                     let truncated = crate::util::truncate(&piped, 32000);
                     query_text = format!("<piped_input>\n{truncated}\n</piped_input>\n\n{query_text}");
