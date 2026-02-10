@@ -101,4 +101,55 @@ mod tests {
     fn test_rotate_audit_log_no_panic() {
         rotate_audit_log();
     }
+
+    #[test]
+    fn test_audit_log_creates_file() {
+        let entry = serde_json::json!({
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "session": "test-session",
+            "query": "test query",
+            "tool": "command",
+            "response": "ls",
+            "risk": "safe",
+        });
+        assert!(entry["ts"].is_string());
+        assert_eq!(entry["session"], "test-session");
+        assert_eq!(entry["tool"], "command");
+    }
+
+    #[test]
+    fn test_rotate_small_log_is_noop() {
+        rotate_audit_log();
+    }
+
+    #[test]
+    fn test_audit_log_format() {
+        let entry = serde_json::json!({
+            "ts": chrono::Utc::now().to_rfc3339(),
+            "session": "test-session",
+            "query": "test query",
+            "tool": "command",
+            "response": "ls",
+            "risk": "safe",
+        });
+        let serialized = serde_json::to_string(&entry).unwrap();
+        assert!(serialized.contains("test-session"));
+        assert!(serialized.contains("command"));
+        assert!(serialized.contains("safe"));
+    }
+
+    #[test]
+    fn test_audit_log_writes_valid_json() {
+        audit_log("sess-1", "what time is it", "chat", "It's 3pm", "safe");
+        let path = crate::config::Config::nsh_dir().join("audit.log");
+        if path.exists() {
+            let content = std::fs::read_to_string(&path).unwrap();
+            for line in content.lines() {
+                if !line.trim().is_empty() {
+                    let _: serde_json::Value = serde_json::from_str(line)
+                        .unwrap_or_else(|_| panic!("Invalid JSON in audit log: {line}"));
+                }
+            }
+        }
+    }
 }

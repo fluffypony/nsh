@@ -442,6 +442,462 @@ mod tests {
         let result = thinking_model_name("gpt-4", true);
         assert_eq!(result, "gpt-4");
     }
+
+    #[test]
+    fn build_openai_messages_empty() {
+        let result = build_openai_messages(&[], "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn build_openai_messages_empty_with_system() {
+        let result = build_openai_messages(&[], "sys prompt");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "system");
+        assert_eq!(result[0]["content"], "sys prompt");
+    }
+
+    #[test]
+    fn build_openai_messages_user_multiple_text_blocks() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text { text: "line1".into() },
+                ContentBlock::Text { text: "line2".into() },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["content"], "line1\nline2");
+    }
+
+    #[test]
+    fn build_openai_messages_user_filters_non_text() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::Text { text: "hello".into() },
+                ContentBlock::ToolUse {
+                    id: "x".into(),
+                    name: "y".into(),
+                    input: json!({}),
+                },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result[0]["content"], "hello");
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_tool_only() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "run".into(),
+                input: json!({"cmd": "ls"}),
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+        assert!(result[0].get("content").is_none());
+        let tc = result[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0]["function"]["name"], "run");
+        assert_eq!(tc[0]["function"]["arguments"], r#"{"cmd":"ls"}"#);
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_multiple_tool_calls() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "a".into(),
+                    name: "foo".into(),
+                    input: json!({}),
+                },
+                ContentBlock::ToolUse {
+                    id: "b".into(),
+                    name: "bar".into(),
+                    input: json!({"x": 1}),
+                },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        let tc = result[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tc.len(), 2);
+        assert_eq!(tc[0]["id"], "a");
+        assert_eq!(tc[1]["id"], "b");
+    }
+
+    #[test]
+    fn build_openai_messages_tool_multiple_results() {
+        let msgs = vec![Message {
+            role: Role::Tool,
+            content: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: "result1".into(),
+                    is_error: false,
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "c2".into(),
+                    content: "result2".into(),
+                    is_error: true,
+                },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["tool_call_id"], "c1");
+        assert_eq!(result[0]["content"], "result1");
+        assert_eq!(result[1]["tool_call_id"], "c2");
+        assert_eq!(result[1]["content"], "result2");
+    }
+
+    #[test]
+    fn build_openai_messages_tool_ignores_non_tool_result() {
+        let msgs = vec![Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::Text {
+                text: "ignored".into(),
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn build_openai_messages_system_role_ignored() {
+        let msgs = vec![Message {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "sys".into(),
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn build_openai_messages_mixed_conversation() {
+        let msgs = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "question".into(),
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "let me check".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "search".into(),
+                        input: json!({"q": "test"}),
+                    },
+                ],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "found it".into(),
+                    is_error: false,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "here you go".into(),
+                }],
+            },
+        ];
+        let result = build_openai_messages(&msgs, "Be helpful");
+        assert_eq!(result.len(), 5); // system + 4 messages
+        assert_eq!(result[0]["role"], "system");
+        assert_eq!(result[1]["role"], "user");
+        assert_eq!(result[2]["role"], "assistant");
+        assert_eq!(result[3]["role"], "tool");
+        assert_eq!(result[4]["role"], "assistant");
+    }
+
+    #[test]
+    fn build_openai_tools_multiple() {
+        let tools = vec![
+            ToolDefinition {
+                name: "alpha".into(),
+                description: "First".into(),
+                parameters: json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "beta".into(),
+                description: "Second".into(),
+                parameters: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+            },
+        ];
+        let result = build_openai_tools(&tools);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["function"]["name"], "alpha");
+        assert_eq!(result[1]["function"]["name"], "beta");
+        assert_eq!(
+            result[1]["function"]["parameters"]["properties"]["x"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn is_retryable_429() {
+        assert!(is_retryable(reqwest::StatusCode::TOO_MANY_REQUESTS));
+    }
+
+    #[test]
+    fn is_retryable_500() {
+        assert!(is_retryable(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn is_retryable_502() {
+        assert!(is_retryable(reqwest::StatusCode::BAD_GATEWAY));
+    }
+
+    #[test]
+    fn is_retryable_200_false() {
+        assert!(!is_retryable(reqwest::StatusCode::OK));
+    }
+
+    #[test]
+    fn is_retryable_400_false() {
+        assert!(!is_retryable(reqwest::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn is_retryable_401_false() {
+        assert!(!is_retryable(reqwest::StatusCode::UNAUTHORIZED));
+    }
+
+    fn make_provider() -> OpenAICompatProvider {
+        OpenAICompatProvider::new(
+            Zeroizing::new("test-key".into()),
+            "https://api.example.com".into(),
+            None,
+            vec![],
+            30,
+        )
+        .unwrap()
+    }
+
+    fn make_chat_request(
+        model: &str,
+        system: &str,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        tool_choice: ToolChoice,
+        extra_body: Option<serde_json::Value>,
+    ) -> ChatRequest {
+        ChatRequest {
+            model: model.into(),
+            system: system.into(),
+            messages,
+            tools,
+            tool_choice,
+            max_tokens: 1024,
+            stream: false,
+            extra_body,
+        }
+    }
+
+    #[test]
+    fn build_request_body_basic() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "Be helpful",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hi".into(),
+                }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["model"], "gpt-4");
+        assert_eq!(body["max_tokens"], 1024);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["tool_choice"], "auto");
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "Be helpful");
+        assert_eq!(msgs[1]["role"], "user");
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn build_request_body_with_tools() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "do it".into(),
+                }],
+            }],
+            vec![ToolDefinition {
+                name: "my_tool".into(),
+                description: "does stuff".into(),
+                parameters: json!({"type": "object"}),
+            }],
+            ToolChoice::Required,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["tool_choice"], "required");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "my_tool");
+    }
+
+    #[test]
+    fn build_request_body_tool_choice_none() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::None,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["tool_choice"], "none");
+    }
+
+    #[test]
+    fn build_request_body_anthropic_system_as_array() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "claude-3.5-sonnet",
+            "You are an assistant",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys.len(), 1);
+        assert_eq!(sys[0]["type"], "text");
+        assert_eq!(sys[0]["text"], "You are an assistant");
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(
+            !msgs.iter().any(|m| m["role"] == "system"),
+            "anthropic model should not have system in messages"
+        );
+    }
+
+    #[test]
+    fn build_request_body_anthropic_tool_cache_control() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "anthropic/claude-3-opus",
+            "sys",
+            vec![],
+            vec![
+                ToolDefinition {
+                    name: "first".into(),
+                    description: "d1".into(),
+                    parameters: json!({}),
+                },
+                ToolDefinition {
+                    name: "second".into(),
+                    description: "d2".into(),
+                    parameters: json!({}),
+                },
+            ],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert!(tools[0].get("cache_control").is_none());
+        assert_eq!(tools[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn build_request_body_extra_body_merged() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(json!({"temperature": 0.5, "top_p": 0.9})),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["top_p"], 0.9);
+    }
+
+    #[test]
+    fn build_request_body_extra_body_none() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_mode_non_gemini3_no_think() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "gpt-4", false);
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_mode_claude_opus_think_no_reasoning() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "claude-3-opus", true);
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn thinking_model_name_gemini_3_not_affected() {
+        let result = thinking_model_name("google/gemini-3-pro", true);
+        assert_eq!(result, "google/gemini-3-pro");
+    }
+
+    #[test]
+    fn is_anthropic_model_edge_cases() {
+        assert!(is_anthropic_model("anthropic/something-else"));
+        assert!(!is_anthropic_model("not-anthropic-model"));
+        assert!(!is_anthropic_model(""));
+        assert!(is_anthropic_model("my-claude-variant"));
+    }
 }
 
 pub fn spawn_openai_stream(

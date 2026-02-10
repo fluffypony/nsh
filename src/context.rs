@@ -1439,4 +1439,362 @@ mod tests {
         let t = detect_project_type(tmp.path().to_str().unwrap());
         assert!(t.contains("C") || t.contains("CMake") || t.contains("cmake"));
     }
+
+    // --- XML escape ---
+
+    #[test]
+    fn test_xml_escape_all_special_chars() {
+        assert_eq!(xml_escape("a & b"), "a &amp; b");
+        assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
+        assert_eq!(xml_escape("say \"hello\""), "say &quot;hello&quot;");
+        assert_eq!(xml_escape("no specials"), "no specials");
+        assert_eq!(xml_escape(""), "");
+        assert_eq!(
+            xml_escape("a < b & c > d \"e\""),
+            "a &lt; b &amp; c &gt; d &quot;e&quot;"
+        );
+    }
+
+    // --- build_xml_context: scrollback closing tag ---
+
+    #[test]
+    fn test_build_xml_scrollback_closing_tag() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "$ ls\nfoo.rs  bar.rs\n".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("</recent_terminal>"));
+    }
+
+    // --- build_xml_context: custom_instructions escapes special chars ---
+
+    #[test]
+    fn test_build_xml_custom_instructions_escaping() {
+        let mut ctx = make_minimal_ctx();
+        ctx.custom_instructions = Some("Use <brackets> & \"quotes\"".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<custom_instructions>"));
+        assert!(xml.contains("&lt;brackets&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;quotes&quot;"));
+    }
+
+    // --- build_xml_context: ssh + container combined ---
+
+    #[test]
+    fn test_build_xml_ssh_and_container_combined() {
+        let mut ctx = make_minimal_ctx();
+        ctx.ssh_context = Some("<ssh client=\"10.0.0.1\" />".into());
+        ctx.container_context = Some("<container runtime=\"podman\" />".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<ssh client=\"10.0.0.1\" />"));
+        assert!(xml.contains("<container runtime=\"podman\" />"));
+    }
+
+    // --- build_xml_context: session_history with multiple entries, duration/cwd edge cases ---
+
+    #[test]
+    fn test_build_xml_session_history_edge_cases() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![
+            CommandWithSummary {
+                command: "cargo build".into(),
+                cwd: Some("/project".into()),
+                exit_code: Some(0),
+                started_at: "2025-01-01T00:00:00Z".into(),
+                duration_ms: Some(1234),
+                summary: Some("Compiled successfully".into()),
+            },
+            CommandWithSummary {
+                command: "cargo test".into(),
+                cwd: None,
+                exit_code: Some(1),
+                started_at: "2025-01-01T00:01:00Z".into(),
+                duration_ms: None,
+                summary: None,
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("count=\"2\""));
+        assert!(xml.contains("duration=\"1234ms\""));
+        assert!(xml.contains("cwd=\"/project\""));
+        assert!(xml.contains("<summary>Compiled successfully</summary>"));
+        assert!(xml.contains("<input>cargo test</input>"));
+        assert!(xml.contains("exit=\"1\""));
+        assert!(xml.contains("cwd=\"?\""));
+        let second_cmd_section = xml.split("<input>cargo test</input>").next().unwrap();
+        assert!(
+            !second_cmd_section.ends_with("duration="),
+            "no duration attr when None"
+        );
+    }
+
+    // --- build_xml_context: other_sessions with multiple TTYs and session grouping ---
+
+    #[test]
+    fn test_build_xml_other_sessions_multi_tty_grouping() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![
+            OtherSessionSummary {
+                command: "vim foo.rs".into(),
+                cwd: Some("/home/user".into()),
+                exit_code: Some(0),
+                started_at: "2025-01-01T00:00:00Z".into(),
+                summary: Some("Edited file".into()),
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "sess1".into(),
+            },
+            OtherSessionSummary {
+                command: "make".into(),
+                cwd: Some("/home/user".into()),
+                exit_code: Some(2),
+                started_at: "2025-01-01T00:02:00Z".into(),
+                summary: None,
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "sess1".into(),
+            },
+            OtherSessionSummary {
+                command: "python app.py".into(),
+                cwd: None,
+                exit_code: None,
+                started_at: "2025-01-01T00:03:00Z".into(),
+                summary: Some("Started server".into()),
+                tty: "/dev/ttys002".into(),
+                shell: "zsh".into(),
+                session_id: "sess2".into(),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<other_sessions>"));
+        assert!(xml.contains("<input>vim foo.rs</input>"));
+        assert!(xml.contains("<summary>Edited file</summary>"));
+        assert!(xml.contains("<input>make</input>"));
+        assert!(xml.contains("exit=\"2\""));
+        assert!(xml.contains("tty=\"/dev/ttys002\""));
+        assert!(xml.contains("shell=\"zsh\""));
+        assert!(xml.contains("<input>python app.py</input>"));
+        assert!(xml.contains("<summary>Started server</summary>"));
+        assert!(xml.contains("</other_sessions>"));
+        let ttys001_count = xml.matches("tty=\"/dev/ttys001\"").count();
+        assert_eq!(ttys001_count, 1, "should group commands under same tty session");
+        let session_tags = xml.matches("<session tty=").count();
+        assert_eq!(session_tags, 2, "should have 2 session elements for 2 TTYs");
+    }
+
+    // --- check_project_markers for more project types ---
+
+    #[test]
+    fn test_check_project_markers_go() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("go.mod"), "module example").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Go"), "expected Go, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_python_pyproject() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("pyproject.toml"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Python"), "expected Python, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_python_setup_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("setup.py"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Python"), "expected Python, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_ruby() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Gemfile"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Ruby"), "expected Ruby, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_nix_flake() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("flake.nix"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Nix"), "expected Nix, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_nix_shell() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("shell.nix"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Nix"), "expected Nix, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_docker_compose() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("docker-compose.yml"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Docker"), "expected Docker, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_compose_yml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("compose.yml"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Docker"), "expected Docker, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_gradle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("build.gradle"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Java"), "expected Java, got: {t}");
+    }
+
+    #[test]
+    fn test_check_project_markers_gradle_kts() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("build.gradle.kts"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Java"), "expected Java, got: {t}");
+    }
+
+    // --- detect_project_info ---
+
+    #[test]
+    fn test_detect_project_info_with_known_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").ok();
+        let config = Config::default();
+        let info = detect_project_info(tmp.path().to_str().unwrap(), &config);
+        assert!(info.root.is_some());
+        assert!(info.project_type.contains("Rust"));
+    }
+
+    #[test]
+    fn test_detect_project_info_unknown_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config = Config::default();
+        let info = detect_project_info(tmp.path().to_str().unwrap(), &config);
+        assert!(info.root.is_none());
+        assert_eq!(info.project_type, "unknown");
+        assert!(info.files.is_empty());
+    }
+
+    // --- detect_git_info / run_git_with_timeout ---
+
+    #[test]
+    fn test_detect_git_info_in_git_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("file.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "Initial commit"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let (branch, status, commits) = detect_git_info(dir, 5);
+        assert!(branch.is_some());
+        assert!(status.is_some());
+        assert!(!commits.is_empty());
+        assert_eq!(commits[0].message, "Initial commit");
+    }
+
+    #[test]
+    fn test_detect_git_info_not_a_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (branch, status, commits) = detect_git_info(tmp.path().to_str().unwrap(), 5);
+        assert!(branch.is_none());
+        assert!(status.is_none());
+        assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn test_run_git_with_timeout_valid_command() {
+        let result = run_git_with_timeout(&["--version"], "/tmp");
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("git version"));
+    }
+
+    #[test]
+    fn test_run_git_with_timeout_invalid_command() {
+        let result = run_git_with_timeout(&["nonexistent-subcommand-xyz"], "/tmp");
+        assert!(result.is_none());
+    }
+
+    // --- gather_custom_instructions with project instructions ---
+
+    #[test]
+    fn test_gather_custom_instructions_project_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nsh")).unwrap();
+        std::fs::write(
+            tmp.path().join(".nsh").join("instructions.md"),
+            "Use tabs not spaces",
+        )
+        .unwrap();
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Use tabs not spaces"));
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_global_and_project() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nsh")).unwrap();
+        std::fs::write(
+            tmp.path().join(".nsh").join("instructions.md"),
+            "Project rule: use tabs",
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.context.custom_instructions = Some("Global rule: be concise".into());
+        let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
+        assert!(result.is_some());
+        let text = result.unwrap();
+        assert!(text.contains("Global rule: be concise"));
+        assert!(text.contains("Project rule: use tabs"));
+        assert!(text.contains("Project-specific instructions"));
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_empty_project_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nsh")).unwrap();
+        std::fs::write(tmp.path().join(".nsh").join("instructions.md"), "   ").unwrap();
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
+        assert!(result.is_none());
+    }
 }

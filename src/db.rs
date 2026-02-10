@@ -3077,4 +3077,588 @@ mod tests {
         let updated = db.update_usage_cost("nonexistent_gen_id", 1.0).unwrap();
         assert!(!updated);
     }
+
+    #[test]
+    fn test_cleanup_orphaned_sessions_skips_zero_pid() {
+        let db = test_db();
+        db.conn
+            .execute(
+                "INSERT INTO sessions (id, tty, shell, pid, started_at) \
+                 VALUES ('zero_pid', '/dev/pts/0', 'zsh', 0, '2025-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        let cleaned = db.cleanup_orphaned_sessions().unwrap();
+        assert_eq!(cleaned, 0, "should skip sessions with pid <= 0");
+
+        let ended_at: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = 'zero_pid'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(ended_at.is_none());
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_sessions_skips_negative_pid() {
+        let db = test_db();
+        db.conn
+            .execute(
+                "INSERT INTO sessions (id, tty, shell, pid, started_at) \
+                 VALUES ('neg_pid', '/dev/pts/0', 'zsh', -1, '2025-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        let cleaned = db.cleanup_orphaned_sessions().unwrap();
+        assert_eq!(cleaned, 0);
+    }
+
+    #[test]
+    fn test_get_usage_stats_with_since_filter() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        db.insert_usage(
+            "s1", Some("old query"), "gpt-4", "openai",
+            Some(100), Some(50), Some(0.01), None,
+        ).unwrap();
+        db.insert_usage(
+            "s1", Some("new query"), "gpt-4", "openai",
+            Some(200), Some(100), Some(0.02), None,
+        ).unwrap();
+
+        let stats = db.get_usage_stats(Some("datetime('now', '-1 hour')")).unwrap();
+        assert_eq!(stats.len(), 1);
+        let (model, calls, _, _, _) = &stats[0];
+        assert_eq!(model, "gpt-4");
+        assert_eq!(*calls, 2);
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_since() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "early cargo build", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "late cargo test", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("cargo"), None,
+            Some("2025-01-01T00:00:00Z"), None,
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("late"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_until() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "early cargo build", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "late cargo test", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("cargo"), None,
+            None, Some("2025-01-01T00:00:00Z"),
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("early"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_exit_code() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo build ok", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "cargo build fail", "/tmp", Some(1),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("cargo"), None, None, None,
+            Some(1), false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("fail"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_session_filter() {
+        let db = test_db();
+        db.insert_command(
+            "sess_x", "cargo run alpha", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "sess_y", "cargo run beta", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("cargo"), None, None, None,
+            None, false, Some("sess_x"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("alpha"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_all_filters() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "npm test pass", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "npm test fail", "/app", Some(1),
+            "2025-06-01T12:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s2", "npm test other", "/app", Some(1),
+            "2025-06-01T12:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("npm"), None,
+            Some("2025-06-01T06:00:00Z"),
+            Some("2025-06-01T18:00:00Z"),
+            Some(1), false, Some("s1"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("npm test fail"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_failed_only() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "make build success", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "make build failure", "/project", Some(2),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("make"), None, None, None,
+            None, true, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("failure"));
+    }
+
+    #[test]
+    fn test_update_command_truncation() {
+        let db = Db {
+            conn: Connection::open_in_memory().unwrap(),
+            max_output_bytes: 20,
+        };
+        init_db(&db.conn, 10000).unwrap();
+
+        let id = db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let long_output = "a".repeat(100);
+        let updated = db.update_command(id, None, Some(&long_output)).unwrap();
+        assert!(updated);
+
+        let stored: Option<String> = db.conn.query_row(
+            "SELECT output FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        let stored = stored.unwrap();
+        assert!(stored.contains("[truncated by nsh]"));
+        assert!(stored.len() < long_output.len());
+    }
+
+    #[test]
+    fn test_update_command_truncation_multibyte() {
+        let db = Db {
+            conn: Connection::open_in_memory().unwrap(),
+            max_output_bytes: 8,
+        };
+        init_db(&db.conn, 10000).unwrap();
+
+        let id = db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let output = "aaa日本語bbb";
+        let updated = db.update_command(id, None, Some(output)).unwrap();
+        assert!(updated);
+
+        let stored: Option<String> = db.conn.query_row(
+            "SELECT output FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        let stored = stored.unwrap();
+        assert!(stored.contains("[truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_since_and_until() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "git commit early", "/repo", Some(0),
+            "2025-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "git commit middle", "/repo", Some(0),
+            "2025-06-15T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "git commit late", "/repo", Some(0),
+            "2025-12-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("git"), None,
+            Some("2025-03-01T00:00:00Z"),
+            Some("2025-09-01T00:00:00Z"),
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("middle"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_session_filter_literal() {
+        let db = test_db();
+        db.insert_command(
+            "my_session", "docker build target", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "other_session", "docker push target", "/app", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("docker"), None, None, None,
+            None, false, Some("my_session"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("docker build"));
+    }
+
+    #[test]
+    fn test_insert_command_output_truncation_boundary_exact() {
+        let db = Db {
+            conn: Connection::open_in_memory().unwrap(),
+            max_output_bytes: 5,
+        };
+        init_db(&db.conn, 10000).unwrap();
+
+        let output = "hello";
+        let id = db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some(output), "", "", 0,
+        ).unwrap();
+
+        let stored: Option<String> = db.conn.query_row(
+            "SELECT output FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_insert_command_output_truncation_one_over() {
+        let db = Db {
+            conn: Connection::open_in_memory().unwrap(),
+            max_output_bytes: 5,
+        };
+        init_db(&db.conn, 10000).unwrap();
+
+        let output = "hello!";
+        let id = db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some(output), "", "", 0,
+        ).unwrap();
+
+        let stored: Option<String> = db.conn.query_row(
+            "SELECT output FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        let stored = stored.unwrap();
+        assert!(stored.contains("[truncated by nsh]"));
+        assert!(stored.starts_with("hello"));
+    }
+
+    #[test]
+    fn test_prune_if_due_skips_when_recently_pruned() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "old cmd", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        db.prune_if_due(30).unwrap();
+        let count1: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count1, 0);
+
+        db.insert_command(
+            "s1", "another old cmd", "/tmp", Some(0),
+            "2020-02-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        db.prune_if_due(30).unwrap();
+        let count2: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count2, 1, "should NOT prune again since last_prune_at is recent");
+    }
+
+    #[test]
+    fn test_recent_commands_with_summaries_limit() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        for i in 0..10 {
+            db.insert_command(
+                "s1", &format!("cmd_{i}"), "/tmp", Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"), None, None, "", "", 0,
+            ).unwrap();
+        }
+
+        let cmds = db.recent_commands_with_summaries("s1", 3).unwrap();
+        assert_eq!(cmds.len(), 3);
+    }
+
+    #[test]
+    fn test_recent_commands_with_summaries_empty() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn test_get_usage_stats_empty() {
+        let db = test_db();
+        let stats = db.get_usage_stats(None).unwrap();
+        assert!(stats.is_empty());
+    }
+
+    #[test]
+    fn test_get_usage_stats_multiple_models() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        db.insert_usage("s1", None, "gpt-4", "openai", Some(100), Some(50), Some(0.01), None).unwrap();
+        db.insert_usage("s1", None, "claude", "anthropic", Some(200), Some(100), Some(0.05), None).unwrap();
+        db.insert_usage("s1", None, "gpt-4", "openai", Some(150), Some(75), Some(0.02), None).unwrap();
+
+        let stats = db.get_usage_stats(None).unwrap();
+        assert_eq!(stats.len(), 2);
+        let gpt4 = stats.iter().find(|(m, _, _, _, _)| m == "gpt-4").unwrap();
+        assert_eq!(gpt4.1, 2);
+        assert_eq!(gpt4.2, 250);
+        assert_eq!(gpt4.3, 125);
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_regex_filters_output() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "run script1", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None,
+            Some("error: connection refused"), "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "run script2", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None,
+            Some("success: all good"), "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("run"), Some("connection"), None, None,
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("script1"));
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_sessions_ignores_ended() {
+        let db = test_db();
+        db.create_session("ended_sess", "/dev/pts/0", "zsh", 2_000_000_000).unwrap();
+        db.end_session("ended_sess").unwrap();
+
+        let cleaned = db.cleanup_orphaned_sessions().unwrap();
+        assert_eq!(cleaned, 0, "ended sessions should not be counted");
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_user_message() {
+        let exchange = ConversationExchange {
+            query: "what is rust".to_string(),
+            response_type: "chat".to_string(),
+            response: "A systems language".to_string(),
+            explanation: None,
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_user_message();
+        assert!(matches!(msg.role, crate::provider::Role::User));
+        match &msg.content[0] {
+            crate::provider::ContentBlock::Text { text } => {
+                assert_eq!(text, "what is rust");
+            }
+            _ => panic!("expected Text content block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_assistant_message_command() {
+        let exchange = ConversationExchange {
+            query: "build it".to_string(),
+            response_type: "command".to_string(),
+            response: "cargo build".to_string(),
+            explanation: Some("builds the project".to_string()),
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_assistant_message("tool_1");
+        assert!(matches!(msg.role, crate::provider::Role::Assistant));
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "tool_1");
+                assert_eq!(name, "command");
+                assert_eq!(input["command"], "cargo build");
+                assert_eq!(input["explanation"], "builds the project");
+            }
+            _ => panic!("expected ToolUse content block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_assistant_message_chat() {
+        let exchange = ConversationExchange {
+            query: "explain".to_string(),
+            response_type: "chat".to_string(),
+            response: "here is the explanation".to_string(),
+            explanation: None,
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_assistant_message("tool_2");
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { name, input, .. } => {
+                assert_eq!(name, "chat");
+                assert_eq!(input["response"], "here is the explanation");
+            }
+            _ => panic!("expected ToolUse content block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_tool_result_command_with_result() {
+        let exchange = ConversationExchange {
+            query: "run tests".to_string(),
+            response_type: "command".to_string(),
+            response: "cargo test".to_string(),
+            explanation: None,
+            result_exit_code: Some(0),
+            result_output_snippet: Some("all passed".to_string()),
+        };
+        let msg = exchange.to_tool_result_message("tool_3");
+        assert!(matches!(msg.role, crate::provider::Role::Tool));
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                assert_eq!(tool_use_id, "tool_3");
+                assert!(content.contains("command"));
+                assert!(content.contains("cargo test"));
+                assert!(content.contains("Exit 0"));
+                assert!(content.contains("all passed"));
+                assert!(!is_error);
+            }
+            _ => panic!("expected ToolResult content block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_tool_result_command_no_output() {
+        let exchange = ConversationExchange {
+            query: "deploy".to_string(),
+            response_type: "command".to_string(),
+            response: "kubectl apply".to_string(),
+            explanation: None,
+            result_exit_code: Some(1),
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_tool_result_message("tool_4");
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolResult { content, .. } => {
+                assert!(content.contains("Exit 1"));
+                assert!(!content.contains("Output:"));
+            }
+            _ => panic!("expected ToolResult content block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_tool_result_chat() {
+        let exchange = ConversationExchange {
+            query: "hi".to_string(),
+            response_type: "chat".to_string(),
+            response: "hello there".to_string(),
+            explanation: None,
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_tool_result_message("tool_5");
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolResult { content, .. } => {
+                assert!(content.contains("chat"));
+                assert!(content.contains("hello there"));
+            }
+            _ => panic!("expected ToolResult content block"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_assistant_command_no_explanation() {
+        let exchange = ConversationExchange {
+            query: "list".to_string(),
+            response_type: "command".to_string(),
+            response: "ls".to_string(),
+            explanation: None,
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_assistant_message("t1");
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { input, .. } => {
+                assert_eq!(input["explanation"], "");
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
 }

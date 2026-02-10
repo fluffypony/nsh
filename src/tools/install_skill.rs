@@ -93,4 +93,50 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("alphanumeric"));
     }
+
+    #[test]
+    fn test_execute_empty_name() {
+        let input = json!({"description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required"));
+    }
+
+    #[test]
+    fn test_execute_empty_description() {
+        let input = json!({"name": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required"));
+    }
+
+    #[test]
+    fn test_execute_empty_command() {
+        let input = json!({"name": "test", "description": "test"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required"));
+    }
+
+    #[test]
+    fn test_name_validation_with_special_chars() {
+        let input = json!({"name": "bad.name", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_name_validation_with_spaces() {
+        let input = json!({"name": "bad name", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_name_validation_with_hyphens_rejected() {
+        let input = json!({"name": "bad-name", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+    }
 }

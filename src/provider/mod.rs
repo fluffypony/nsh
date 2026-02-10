@@ -289,6 +289,67 @@ mod tests {
     }
 
     #[test]
+    fn create_provider_unknown_name_returns_error() {
+        let config = crate::config::Config::default();
+        let result = create_provider("nonexistent", &config);
+        let err = result.err().expect("should be an error");
+        assert!(err.to_string().contains("Unknown provider"));
+    }
+
+    #[test]
+    fn create_provider_openrouter_with_api_key() {
+        let mut config = crate::config::Config::default();
+        config.provider.openrouter = Some(crate::config::ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let result = create_provider("openrouter", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_provider_anthropic_with_api_key() {
+        let mut config = crate::config::Config::default();
+        config.provider.anthropic = Some(crate::config::ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let result = create_provider("anthropic", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_provider_openai_with_api_key() {
+        let mut config = crate::config::Config::default();
+        config.provider.openai = Some(crate::config::ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let result = create_provider("openai", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_provider_gemini_without_config_returns_error() {
+        let mut config = crate::config::Config::default();
+        config.provider.gemini = None;
+        let result = create_provider("gemini", &config);
+        let err = result.err().expect("should be an error");
+        assert!(err.to_string().contains("Gemini not configured"));
+    }
+
+    #[test]
+    fn create_provider_ollama_without_config_uses_defaults() {
+        let mut config = crate::config::Config::default();
+        config.provider.ollama = None;
+        let result = create_provider("ollama", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn content_block_serialization_roundtrip() {
         let blocks = vec![
             ContentBlock::Text {

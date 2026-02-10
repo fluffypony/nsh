@@ -426,4 +426,145 @@ mod tests {
             .unwrap();
         assert!(result.contains("hello"));
     }
+
+    #[test]
+    fn test_load_skills_from_dir_with_valid_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_content = r#"
+name = "test_skill"
+description = "A test skill"
+command = "echo test"
+timeout_seconds = 10
+"#;
+        std::fs::write(tmp.path().join("test_skill.toml"), skill_content).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert_eq!(skills.len(), 1);
+        let skill = skills.get("test_skill").unwrap();
+        assert_eq!(skill.name, "test_skill");
+        assert_eq!(skill.description, "A test skill");
+        assert_eq!(skill.command, "echo test");
+        assert_eq!(skill.timeout_seconds, 10);
+        assert!(!skill.is_project);
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_with_parameters() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_content = r#"
+name = "param_skill"
+description = "Skill with params"
+command = "echo {query}"
+timeout_seconds = 15
+
+[parameters.query]
+type = "string"
+description = "search query"
+"#;
+        std::fs::write(tmp.path().join("param_skill.toml"), skill_content).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert_eq!(skills.len(), 1);
+        let skill = skills.get("param_skill").unwrap();
+        assert_eq!(skill.parameters.len(), 1);
+        let param = skill.parameters.get("query").unwrap();
+        assert_eq!(param.param_type, "string");
+        assert_eq!(param.description, "search query");
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_skips_non_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("readme.txt"), "not a skill").unwrap();
+        std::fs::write(tmp.path().join("data.json"), "{}").unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_handles_invalid_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bad.toml"), "this is not valid [[[ toml").unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_project_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_content = r#"
+name = "proj_skill"
+description = "A project skill"
+command = "echo project"
+"#;
+        std::fs::write(tmp.path().join("proj.toml"), skill_content).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), true, &mut skills);
+        assert_eq!(skills.len(), 1);
+        let skill = skills.get("proj_skill").unwrap();
+        assert!(skill.is_project);
+        assert_eq!(skill.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_multiple_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            let content = format!(
+                "name = \"skill_{i}\"\ndescription = \"Skill {i}\"\ncommand = \"echo {i}\"\n"
+            );
+            std::fs::write(tmp.path().join(format!("skill_{i}.toml")), content).unwrap();
+        }
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert_eq!(skills.len(), 3);
+    }
+
+    #[test]
+    fn test_execute_skill_truncates_large_output() {
+        let skill = Skill {
+            name: "big_output".to_string(),
+            description: "test".to_string(),
+            command: "python3 -c \"print('x' * 10000)\"".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.len() <= 8100);
+        assert!(result.contains("truncated"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_skill_async_timeout() {
+        let skill = Skill {
+            name: "slow".to_string(),
+            description: "test".to_string(),
+            command: "sleep 10".to_string(),
+            timeout_seconds: 1,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill_async(skill, serde_json::json!({})).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn test_check_project_skill_approval_global_skill() {
+        let skill = Skill {
+            name: "global_test".to_string(),
+            description: "test".to_string(),
+            command: "echo hi".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        assert!(check_project_skill_approval(&skill).is_ok());
+    }
 }

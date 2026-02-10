@@ -134,6 +134,134 @@ pub async fn call_chain_with_fallback_think(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{ChatRequest, ContentBlock, LlmProvider, Message, Role, StreamEvent, ToolChoice};
+    use std::sync::Arc;
+
+    struct MockProvider {
+        complete_result: Arc<dyn Fn() -> anyhow::Result<Message> + Send + Sync>,
+        stream_result: Arc<dyn Fn() -> anyhow::Result<mpsc::Receiver<StreamEvent>> + Send + Sync>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for MockProvider {
+        async fn complete(&self, _request: ChatRequest) -> anyhow::Result<Message> {
+            (self.complete_result)()
+        }
+        async fn stream(
+            &self,
+            _request: ChatRequest,
+        ) -> anyhow::Result<mpsc::Receiver<StreamEvent>> {
+            (self.stream_result)()
+        }
+    }
+
+    fn dummy_request() -> ChatRequest {
+        ChatRequest {
+            model: "test".into(),
+            system: "test".into(),
+            messages: vec![],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+            max_tokens: 100,
+            stream: true,
+            extra_body: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_stream_ok() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!("complete should not be called")),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::TextDelta("hello".into())).await;
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let mut rx = stream_with_complete_fallback(&provider, dummy_request())
+            .await
+            .unwrap();
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "hello"));
+        let done = rx.recv().await.unwrap();
+        assert!(matches!(done, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_falls_back() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| {
+                Ok(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "fallback".into(),
+                    }],
+                })
+            }),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("stream not supported"))),
+        };
+        let mut rx = stream_with_complete_fallback(&provider, dummy_request())
+            .await
+            .unwrap();
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "fallback"));
+        let done = rx.recv().await.unwrap();
+        assert!(matches!(done, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_first_succeeds() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!("complete should not be called")),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::TextDelta("ok".into())).await;
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-a");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_falls_back_to_second() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("complete also fails"))),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 1 {
+                    Err(anyhow::anyhow!("model not available"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("from-b".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-b");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "from-b"));
+    }
 
     #[test]
     fn retryable_429() {

@@ -264,3 +264,223 @@ impl LlmProvider for AnthropicProvider {
         Ok(rx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::*;
+    use crate::tools::ToolDefinition;
+    use serde_json::json;
+
+    fn make_provider() -> AnthropicProvider {
+        let mut config = crate::config::Config::default();
+        config.provider.anthropic = Some(crate::config::ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        AnthropicProvider::new(&config).unwrap()
+    }
+
+    fn make_request(messages: Vec<Message>, tools: Vec<ToolDefinition>, tool_choice: ToolChoice) -> ChatRequest {
+        ChatRequest {
+            model: "claude-3-haiku".into(),
+            system: "You are helpful".into(),
+            messages,
+            tools,
+            tool_choice,
+            max_tokens: 1024,
+            stream: false,
+            extra_body: None,
+        }
+    }
+
+    #[test]
+    fn test_build_body_empty_messages() {
+        let provider = make_provider();
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let body = provider.build_body(&req);
+        assert_eq!(body["model"], "claude-3-haiku");
+        assert_eq!(body["system"], "You are helpful");
+        assert_eq!(body["max_tokens"], 1024);
+        assert!(body["messages"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_build_body_user_message() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "hello".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "hello");
+    }
+
+    #[test]
+    fn test_build_body_assistant_message_with_text() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "sure thing".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "assistant");
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "sure thing");
+    }
+
+    #[test]
+    fn test_build_body_assistant_with_tool_use() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tu1".into(),
+                    name: "search".into(),
+                    input: json!({"q": "test"}),
+                }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_use");
+        assert_eq!(content[0]["name"], "search");
+        assert_eq!(content[0]["input"]["q"], "test");
+    }
+
+    #[test]
+    fn test_build_body_tool_result_message() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu1".into(),
+                    content: "result data".into(),
+                    is_error: false,
+                }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "user");
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "tu1");
+        assert_eq!(content[0]["is_error"], false);
+    }
+
+    #[test]
+    fn test_build_body_with_tools() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![],
+            vec![ToolDefinition {
+                name: "run_command".into(),
+                description: "Run a command".into(),
+                parameters: json!({"type": "object", "properties": {"cmd": {"type": "string"}}}),
+            }],
+            ToolChoice::Required,
+        );
+        let body = provider.build_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "run_command");
+        assert_eq!(body["tool_choice"]["type"], "any");
+    }
+
+    #[test]
+    fn test_build_body_tool_choice_auto() {
+        let provider = make_provider();
+        let req = make_request(vec![], vec![ToolDefinition {
+            name: "t".into(),
+            description: "d".into(),
+            parameters: json!({}),
+        }], ToolChoice::Auto);
+        let body = provider.build_body(&req);
+        assert_eq!(body["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn test_build_body_tool_choice_none() {
+        let provider = make_provider();
+        let req = make_request(vec![], vec![ToolDefinition {
+            name: "t".into(),
+            description: "d".into(),
+            parameters: json!({}),
+        }], ToolChoice::None);
+        let body = provider.build_body(&req);
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_build_body_no_tools_no_tool_choice() {
+        let provider = make_provider();
+        let req = make_request(vec![], vec![], ToolChoice::Required);
+        let body = provider.build_body(&req);
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_build_body_system_role_ignored() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::System,
+                content: vec![ContentBlock::Text { text: "system msg".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        assert!(body["messages"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_new_missing_config() {
+        let mut config = crate::config::Config::default();
+        config.provider.anthropic = None;
+        let result = AnthropicProvider::new(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_body_multiple_text_in_user_joined() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text { text: "hello".into() },
+                    ContentBlock::Text { text: "world".into() },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["content"], "hello\nworld");
+    }
+}

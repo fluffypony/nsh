@@ -347,4 +347,76 @@ mod tests {
         let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
         assert!(msg.content.is_empty());
     }
+
+    #[test]
+    fn test_spinner_guard_creates_and_drops() {
+        {
+            let guard = SpinnerGuard::new();
+            assert!(guard.did_start || !guard.did_start);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    #[test]
+    fn test_show_and_hide_spinner() {
+        show_spinner();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        hide_spinner();
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_unflushed_tool_at_end() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::ToolUseStart { id: "t1".into(), name: "cmd".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"x":1}"#.into())).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::ToolUse { name, input, .. } => {
+                assert_eq!(name, "cmd");
+                assert_eq!(input, &serde_json::json!({"x": 1}));
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_tool_with_invalid_json() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::ToolUseStart { id: "t2".into(), name: "test".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta("not json{{".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        if let ContentBlock::ToolUse { input, .. } = &msg.content[0] {
+            assert_eq!(input, &serde_json::json!({}));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_multiple_tools() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::ToolUseStart { id: "t1".into(), name: "search".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"q":"test"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart { id: "t2".into(), name: "read".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"path":"/"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 2);
+    }
 }

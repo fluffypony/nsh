@@ -124,3 +124,210 @@ async fn check_cancelled(cancelled: &Arc<AtomicBool>) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{StreamEvent, Usage};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use tokio::sync::mpsc;
+
+    fn not_cancelled() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_text_only() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::TextDelta("hello ".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("world".into())).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let (msg, usage) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert!(matches!(msg.role, crate::provider::Role::Assistant));
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            crate::provider::ContentBlock::Text { text } => assert_eq!(text, "hello world"),
+            _ => panic!("expected Text block"),
+        }
+        assert!(usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_tool_use() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::ToolUseStart { id: "t1".into(), name: "run_command".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"cmd":"ls"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let (msg, _) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "t1");
+                assert_eq!(name, "run_command");
+                assert_eq!(input, &serde_json::json!({"cmd": "ls"}));
+            }
+            _ => panic!("expected ToolUse block"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_text_and_tool() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::TextDelta("thinking...".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart { id: "t2".into(), name: "chat".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"response":"hi"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let (msg, _) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(&msg.content[0], crate::provider::ContentBlock::Text { text } if text == "thinking..."));
+        assert!(matches!(&msg.content[1], crate::provider::ContentBlock::ToolUse { name, .. } if name == "chat"));
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_with_usage() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::TextDelta("ok".into())).await.unwrap();
+        tx.send(StreamEvent::Done { usage: Some(Usage { input_tokens: 100, output_tokens: 50 }) }).await.unwrap();
+        drop(tx);
+
+        let (_, usage) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        let u = usage.unwrap();
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 50);
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_error() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::Error("connection lost".into())).await.unwrap();
+        drop(tx);
+
+        let result = consume_stream(&mut rx, &cancel, &mut |_| {}).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("connection lost"));
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_cancelled() {
+        let (_tx, mut rx) = mpsc::channel::<StreamEvent>(16);
+        let cancel = Arc::new(AtomicBool::new(true));
+
+        let result = consume_stream(&mut rx, &cancel, &mut |_| {}).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("interrupted"));
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_generation_id_ignored() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::GenerationId("gen-123".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("hi".into())).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let (msg, _) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_empty() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+        drop(tx);
+
+        let (msg, usage) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert!(msg.content.is_empty());
+        assert!(usage.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_tool_with_invalid_json_fallback() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::ToolUseStart { id: "t3".into(), name: "test".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta("not valid json{{{".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let (msg, _) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { input, .. } => {
+                assert_eq!(input, &serde_json::json!({}));
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_unflushed_tool_at_end() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+
+        tx.send(StreamEvent::ToolUseStart { id: "t4".into(), name: "cmd".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"x":1}"#.into())).await.unwrap();
+        // No ToolUseEnd — channel just closes
+        drop(tx);
+
+        let (msg, _) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { name, input, .. } => {
+                assert_eq!(name, "cmd");
+                assert_eq!(input, &serde_json::json!({"x": 1}));
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_display_events() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let cancel = not_cancelled();
+        let mut event_names = vec![];
+
+        tx.send(StreamEvent::TextDelta("hi".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart { id: "t5".into(), name: "search".into() }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta("{}".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        consume_stream(&mut rx, &cancel, &mut |e| {
+            match e {
+                DisplayEvent::TextChunk(_) => event_names.push("text"),
+                DisplayEvent::ToolStarted { .. } => event_names.push("tool_start"),
+                DisplayEvent::ToolFinished { .. } => event_names.push("tool_end"),
+                DisplayEvent::Done => event_names.push("done"),
+            }
+        }).await.unwrap();
+
+        assert!(event_names.contains(&"text"));
+        assert!(event_names.contains(&"tool_start"));
+        assert!(event_names.contains(&"tool_end"));
+        assert!(event_names.contains(&"done"));
+    }
+}

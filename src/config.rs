@@ -1762,4 +1762,130 @@ model = "search-model"
     fn test_default_mcp_timeout() {
         assert_eq!(default_mcp_timeout(), 30);
     }
+
+    #[test]
+    fn test_resolve_api_key_via_env_and_fallback() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: None,
+            base_url: None,
+        };
+
+        // Test env var lookup for each known provider
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", "ant-env-key") };
+        assert_eq!(*auth.resolve_api_key("anthropic").unwrap(), "ant-env-key");
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+
+        unsafe { std::env::set_var("OPENAI_API_KEY", "oai-env-key") };
+        assert_eq!(*auth.resolve_api_key("openai").unwrap(), "oai-env-key");
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+
+        unsafe { std::env::set_var("GEMINI_API_KEY", "gem-env-key") };
+        assert_eq!(*auth.resolve_api_key("gemini").unwrap(), "gem-env-key");
+        unsafe { std::env::remove_var("GEMINI_API_KEY") };
+
+        // Unknown provider: no env var mapping, should bail
+        let result = auth.resolve_api_key("unknown_provider");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No API key for unknown_provider"));
+
+        // Known provider with no env var set: should bail with env var name in message
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+        let result = auth.resolve_api_key("anthropic");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("No API key for anthropic"));
+        assert!(err_msg.contains("ANTHROPIC_API_KEY"));
+    }
+
+    #[test]
+    fn test_is_command_allowed_empty_allowlist_entry() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["".into(), "ls".into()],
+        };
+        assert!(tools.is_command_allowed("ls"));
+        assert!(!tools.is_command_allowed("rm foo"));
+    }
+
+    #[test]
+    fn test_is_command_allowed_empty_command() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["ls".into()],
+        };
+        assert!(!tools.is_command_allowed(""));
+        assert!(!tools.is_command_allowed("   "));
+    }
+
+    #[test]
+    fn test_build_config_xml_with_not_started_mcp_servers() {
+        let toml_str = r#"
+[mcp.servers.my_server]
+command = "my-cmd"
+args = ["--flag"]
+
+[mcp.servers.http_server]
+url = "https://example.com/mcp"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let skills = vec![];
+        let started_servers: Vec<(String, usize)> = vec![];
+        let xml = build_config_xml(&config, &skills, &started_servers);
+        assert!(xml.contains("status=\"not_started\""));
+        assert!(xml.contains("my_server") || xml.contains("http_server"));
+    }
+
+    #[test]
+    fn test_build_config_xml_mcp_partial_started() {
+        let toml_str = r#"
+[mcp.servers.started_one]
+command = "cmd1"
+
+[mcp.servers.not_started_one]
+command = "cmd2"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let skills = vec![];
+        let started = vec![("started_one".to_string(), 5)];
+        let xml = build_config_xml(&config, &skills, &started);
+        assert!(xml.contains("tools=\"5\""));
+        assert!(xml.contains("not_started_one"));
+        assert!(xml.contains("status=\"not_started\""));
+    }
+
+    #[test]
+    fn test_build_config_xml_web_search_model_override() {
+        let toml_str = r#"
+[provider]
+web_search_model = "custom/search-model"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.web_search.model, "perplexity/sonar");
+    }
+
+    #[test]
+    fn test_deep_merge_toml_table_over_scalar() {
+        let mut base: toml::Value = toml::from_str(
+            r#"
+key = "scalar"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+key = "overridden"
+"#,
+        )
+        .unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(
+            base.get("key").unwrap().as_str(),
+            Some("overridden")
+        );
+    }
+
+    #[test]
+    fn test_find_project_config_returns_option() {
+        let result = find_project_config();
+        assert!(result.is_none() || result.unwrap().exists());
+    }
 }

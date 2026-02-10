@@ -143,4 +143,36 @@ mod tests {
             assert_eq!(v["command"].as_str(), Some("test"), "Failed for tag: {tag}");
         }
     }
+
+    #[test]
+    fn test_extract_json_array_with_preamble() {
+        let input = "Here are the results:\n[1, 2, 3]\nDone!";
+        let v = extract_json(input).unwrap();
+        assert!(v.is_array());
+        assert_eq!(v.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_extract_json_array_direct() {
+        let input = "[\"a\", \"b\", \"c\"]";
+        let v = extract_json(input).unwrap();
+        assert!(v.is_array());
+    }
+
+    #[test]
+    fn test_extract_from_code_fence_plain() {
+        let input = "```\n{\"key\": \"val\"}\n```";
+        let v = extract_json(input).unwrap();
+        assert_eq!(v["key"].as_str(), Some("val"));
+    }
+
+    #[test]
+    fn test_extract_json_empty_string() {
+        assert!(extract_json("").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_whitespace_only() {
+        assert!(extract_json("   \n\t  ").is_none());
+    }
 }

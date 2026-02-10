@@ -77,4 +77,20 @@ mod tests {
         display.handle_event(DisplayEvent::Done);
         assert!(!display.is_streaming_text);
     }
+
+    #[test]
+    fn test_handle_event_tool_started() {
+        let config = DisplayConfig::default();
+        let mut display = TerminalDisplay::new(&config);
+        display.handle_event(DisplayEvent::ToolStarted { name: "test_tool".into() });
+        assert!(!display.is_streaming_text);
+    }
+
+    #[test]
+    fn test_handle_event_tool_finished() {
+        let config = DisplayConfig::default();
+        let mut display = TerminalDisplay::new(&config);
+        display.handle_event(DisplayEvent::ToolFinished { name: "test_tool".into() });
+        assert!(!display.is_streaming_text);
+    }
 }
