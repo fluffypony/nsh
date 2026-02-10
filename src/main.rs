@@ -1,4 +1,5 @@
 mod ansi;
+mod audit;
 mod cli;
 mod config;
 mod context;
@@ -15,6 +16,7 @@ mod pty;
 mod pump;
 mod query;
 mod redact;
+mod security;
 mod shell_hooks;
 mod skills;
 mod summary;

@@ -256,18 +256,28 @@ impl Default for ToolsConfig {
 
 impl ToolsConfig {
     pub fn is_command_allowed(&self, cmd: &str) -> bool {
-        let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\'];
+        let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"'];
         if cmd.chars().any(|c| dangerous_chars.contains(&c)) {
             return false;
         }
         if self.run_command_allowlist.contains(&"*".to_string()) {
             return true;
         }
-        let first_word = cmd.split_whitespace().next().unwrap_or("");
+        let argv: Vec<&str> = cmd.split_whitespace().collect();
+        if argv.is_empty() {
+            return false;
+        }
         self.run_command_allowlist.iter().any(|allowed| {
-            cmd == allowed
-                || cmd.starts_with(&format!("{allowed} "))
-                || first_word == allowed
+            let parts: Vec<&str> = allowed.split_whitespace().collect();
+            if parts.is_empty() {
+                return false;
+            }
+            if parts.len() == 1 {
+                argv[0] == parts[0]
+            } else {
+                argv.len() >= parts.len()
+                    && argv[..parts.len()].iter().zip(&parts).all(|(a, b)| a == b)
+            }
         })
     }
 }
@@ -311,6 +321,18 @@ impl Default for RedactionConfig {
                 r"glpat-[a-zA-Z0-9-]+".into(),
                 r"ghu_[a-zA-Z0-9]+".into(),
                 r"Bearer [a-zA-Z0-9._-]{20,}".into(),
+                r"-----BEGIN[A-Z ]*PRIVATE KEY-----".into(),
+                r"eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}".into(),
+                r"sk_live_[a-zA-Z0-9]{24,}".into(),
+                r"rk_live_[a-zA-Z0-9]{24,}".into(),
+                r"SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}".into(),
+                r"(?i)(password|passwd|pwd)\s*[=:]\s*\S+".into(),
+                r"mongodb(\+srv)?://[^\s]+@".into(),
+                r"postgres(ql)?://[^\s]+@".into(),
+                r"mysql://[^\s]+@".into(),
+                r"sk-ant-[a-zA-Z0-9-]{20,}".into(),
+                r"sk-or-v1-[a-zA-Z0-9]{20,}".into(),
+                r"npm_[a-zA-Z0-9]{36}".into(),
             ],
             replacement: "[REDACTED]".into(),
         }

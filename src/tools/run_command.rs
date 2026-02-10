@@ -15,9 +15,14 @@ pub fn execute(
         ));
     }
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
+    let argv = shell_words::split(cmd)
+        .map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
+    let (exe, args) = argv
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("empty command"))?;
+
+    let output = Command::new(exe)
+        .args(args)
         .output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

@@ -64,6 +64,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 strip-ansi-escapes = "0.2"
 vt100 = "0.16"
+shell-words = "1"
+flate2 = "1"
 
 [profile.release]
 lto = true
