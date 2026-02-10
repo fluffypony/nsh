@@ -285,10 +285,11 @@ async fn main() -> anyhow::Result<()> {
             }
         },
 
-        Commands::Doctor => {
+        Commands::Doctor { no_prune, no_vacuum, prune_days } => {
             let config = config::Config::load().unwrap_or_default();
             let db = db::Db::open()?;
-            db.run_doctor(config.context.retention_days)?;
+            let retention = prune_days.unwrap_or(config.context.retention_days);
+            db.run_doctor(retention, no_prune, no_vacuum, &config)?;
         }
 
         Commands::Heartbeat { session } => {
@@ -303,6 +304,125 @@ async fn main() -> anyhow::Result<()> {
                 .join(format!("redact_next_{session_id}"));
             std::fs::write(&flag_path, "")?;
             eprintln!("nsh: next command output will not be captured");
+        }
+
+        Commands::Update => {
+            eprintln!("nsh: checking for updates...");
+
+            let client = reqwest::Client::new();
+            let github_resp = client
+                .get("https://api.github.com/repos/fluffypony/nsh/commits/main")
+                .header("User-Agent", "nsh-updater")
+                .header("Accept", "application/vnd.github.v3+json")
+                .send()
+                .await?;
+
+            if !github_resp.status().is_success() {
+                eprintln!("nsh: failed to check GitHub for updates (HTTP {})", github_resp.status());
+                std::process::exit(1);
+            }
+
+            let github_json: serde_json::Value = github_resp.json().await?;
+            let github_sha = github_json["sha"].as_str().unwrap_or("");
+            if github_sha.len() < 40 {
+                eprintln!("nsh: could not determine latest commit from GitHub");
+                std::process::exit(1);
+            }
+
+            let dns_sha = match resolve_update_txt().await {
+                Ok(sha) => sha,
+                Err(e) => {
+                    eprintln!("nsh: DNS verification failed: {e}");
+                    eprintln!("  Falling back to dig...");
+                    match resolve_update_txt_fallback() {
+                        Ok(sha) => sha,
+                        Err(e2) => {
+                            eprintln!("nsh: DNS fallback also failed: {e2}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            };
+
+            if github_sha[..40] != dns_sha[..40.min(dns_sha.len())] {
+                eprintln!("nsh: update verification failed — GitHub and DNS records disagree");
+                eprintln!("  GitHub: {}", &github_sha[..12]);
+                eprintln!("  DNS:    {}", &dns_sha[..12.min(dns_sha.len())]);
+                eprintln!("  This may indicate a compromised repository. Aborting.");
+                std::process::exit(1);
+            }
+
+            let current_sha = option_env!("NSH_BUILD_SHA").unwrap_or("unknown");
+            if current_sha.starts_with(&github_sha[..7]) {
+                eprintln!("nsh: already up to date ({})", &github_sha[..12]);
+                return Ok(());
+            }
+
+            eprintln!("nsh: verified commit {} (GitHub ✓, DNS ✓)", &github_sha[..12]);
+
+            let arch = std::env::consts::ARCH;
+            let os = std::env::consts::OS;
+            let target = match (os, arch) {
+                ("macos", "aarch64") => "aarch64-apple-darwin",
+                ("macos", "x86_64") => "x86_64-apple-darwin",
+                ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+                ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+                _ => {
+                    eprintln!("nsh: unsupported platform {os}/{arch}. Build from source:");
+                    eprintln!("  cargo install --git https://github.com/fluffypony/nsh");
+                    std::process::exit(1);
+                }
+            };
+
+            let url = format!(
+                "https://github.com/fluffypony/nsh/releases/latest/download/nsh-{target}.tar.gz"
+            );
+            eprintln!("nsh: downloading {target}...");
+            let download_resp = client.get(&url).send().await?;
+            if !download_resp.status().is_success() {
+                eprintln!("nsh: no pre-built binary available. Build from source:");
+                eprintln!("  cargo install --git https://github.com/fluffypony/nsh");
+                std::process::exit(1);
+            }
+
+            let bytes = download_resp.bytes().await?;
+
+            let current_exe = std::env::current_exe()?;
+            let tmp_path = current_exe.with_extension("update_tmp");
+
+            let decoder = flate2::read::GzDecoder::new(&bytes[..]);
+            let mut archive = tar::Archive::new(decoder);
+            let mut found = false;
+            for entry in archive.entries()? {
+                let mut entry = entry?;
+                let path = entry.path()?.to_path_buf();
+                if path.file_name().map(|n| n == "nsh").unwrap_or(false) {
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&tmp_path)?;
+                    std::io::copy(&mut entry, &mut file)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))?;
+                    }
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                let _ = std::fs::remove_file(&tmp_path);
+                eprintln!("nsh: binary not found in archive");
+                std::process::exit(1);
+            }
+
+            std::fs::rename(&tmp_path, &current_exe)?;
+
+            eprintln!("nsh: updated successfully to {}", &github_sha[..12]);
+            eprintln!("  Restart your shell to use the new version.");
         }
 
         Commands::DaemonSend { action } => {
@@ -534,6 +654,36 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn resolve_update_txt() -> anyhow::Result<String> {
+    use hickory_resolver::Resolver;
+    let resolver = Resolver::builder_tokio()?.build();
+    let response = resolver.txt_lookup("update.nsh.tools").await?;
+    for record in response.iter() {
+        let txt = record.to_string();
+        let cleaned = txt.trim().trim_matches('"');
+        if cleaned.len() >= 40 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(cleaned.to_string());
+        }
+    }
+    anyhow::bail!("no valid SHA found in DNS TXT record")
+}
+
+fn resolve_update_txt_fallback() -> anyhow::Result<String> {
+    let output = std::process::Command::new("dig")
+        .args(["+short", "TXT", "update.nsh.tools"])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("dig command failed");
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let cleaned = text.trim().trim_matches('"');
+    if cleaned.len() >= 40 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(cleaned.to_string())
+    } else {
+        anyhow::bail!("no valid SHA in dig output: {cleaned}")
+    }
 }
 
 fn redact_config_keys(val: &mut toml::Value) {

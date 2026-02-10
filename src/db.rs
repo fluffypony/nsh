@@ -1011,9 +1011,85 @@ impl Db {
         Ok(())
     }
 
-    pub fn run_doctor(&self, retention_days: u32) -> anyhow::Result<()> {
-        eprintln!("nsh doctor: checking database integrity...");
+    pub fn run_doctor(&self, retention_days: u32, no_prune: bool, no_vacuum: bool, config: &crate::config::Config) -> anyhow::Result<()> {
+        eprintln!("nsh doctor: checking system health...\n");
 
+        // 1. Config file validation
+        eprint!("  Config file... ");
+        let config_path = crate::config::Config::path();
+        if config_path.exists() {
+            match std::fs::read_to_string(&config_path) {
+                Ok(content) => match toml::from_str::<toml::Value>(&content) {
+                    Ok(_) => eprintln!("OK ({})", config_path.display()),
+                    Err(e) => eprintln!("PARSE ERROR: {e}"),
+                },
+                Err(e) => eprintln!("READ ERROR: {e}"),
+            }
+        } else {
+            eprintln!("not found (using defaults)");
+        }
+
+        // 2. API key reachability
+        eprint!("  API key ({})... ", config.provider.default);
+        let auth = match config.provider.default.as_str() {
+            "openrouter" => config.provider.openrouter.as_ref(),
+            "anthropic" => config.provider.anthropic.as_ref(),
+            "openai" => config.provider.openai.as_ref(),
+            "ollama" => config.provider.ollama.as_ref(),
+            "gemini" => config.provider.gemini.as_ref(),
+            _ => None,
+        };
+        match auth {
+            Some(a) => match a.resolve_api_key(&config.provider.default) {
+                Ok(_) => eprintln!("OK"),
+                Err(e) => eprintln!("MISSING: {e}"),
+            },
+            None => eprintln!("no auth configured"),
+        }
+
+        // 3. Shell hook integrity
+        eprint!("  Shell hooks... ");
+        let shell = std::env::var("SHELL").unwrap_or_default();
+        let shell_name = shell.rsplit('/').next().unwrap_or("");
+        let rc_path = match shell_name {
+            "zsh" => Some(dirs::home_dir().unwrap_or_default().join(".zshrc")),
+            "bash" => {
+                let bashrc = dirs::home_dir().unwrap_or_default().join(".bashrc");
+                let bash_profile = dirs::home_dir().unwrap_or_default().join(".bash_profile");
+                if bashrc.exists() { Some(bashrc) }
+                else if bash_profile.exists() { Some(bash_profile) }
+                else { Some(bashrc) }
+            }
+            "fish" => Some(dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config")).join("fish/conf.d/nsh.fish")),
+            _ => None,
+        };
+        if let Some(ref path) = rc_path {
+            if path.exists() {
+                let content = std::fs::read_to_string(path).unwrap_or_default();
+                if content.contains("nsh init") || content.contains("nsh wrap") {
+                    eprintln!("OK ({})", path.display());
+                } else {
+                    eprintln!("MISSING — nsh init not found in {}", path.display());
+                }
+            } else {
+                eprintln!("rc file not found: {}", path.display());
+            }
+        } else {
+            eprintln!("unknown shell: {shell_name}");
+        }
+
+        // 4. DB size report
+        eprint!("  Database... ");
+        let db_path = crate::config::Config::nsh_dir().join("nsh.db");
+        let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+        let db_size_str = if db_size > 1_048_576 {
+            format!("{:.1} MB", db_size as f64 / 1_048_576.0)
+        } else {
+            format!("{:.1} KB", db_size as f64 / 1024.0)
+        };
+        eprintln!("{db_size_str}");
+
+        // 5. FTS5 integrity
         eprint!("  FTS5 integrity... ");
         match self.check_fts_integrity() {
             Ok(()) => eprintln!("OK"),
@@ -1029,18 +1105,77 @@ impl Db {
         self.optimize_fts()?;
         eprintln!("OK");
 
+        // 6. Orphaned sessions
         eprint!("  Orphaned sessions... ");
         let cleaned = self.cleanup_orphaned_sessions()?;
         eprintln!("{cleaned} cleaned");
 
-        eprint!("  Pruning old data ({retention_days} days)... ");
-        let pruned = self.prune(retention_days)?;
-        eprintln!("{pruned} commands removed");
+        // 7. Missing summaries count
+        eprint!("  Missing summaries... ");
+        let missing_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM commands WHERE output IS NOT NULL AND summary IS NULL AND summary_status IS NULL",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(0);
+        if missing_count > 0 {
+            eprintln!("{missing_count} commands without summaries");
+        } else {
+            eprintln!("none");
+        }
 
-        eprint!("  Incremental vacuum... ");
-        self.conn.execute_batch("PRAGMA incremental_vacuum")?;
-        eprintln!("OK");
+        // 8. Orphaned socket/PID files
+        eprint!("  Orphaned files... ");
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let mut orphaned_count = 0;
+        if let Ok(entries) = std::fs::read_dir(&nsh_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if (name.starts_with("daemon_") && (name.ends_with(".sock") || name.ends_with(".pid")))
+                    || name.starts_with("scrollback_") && !name.ends_with(".sock")
+                    || name.starts_with("pending_cmd_")
+                    || name.starts_with("pending_flag_")
+                {
+                    let session_id = name
+                        .trim_start_matches("daemon_")
+                        .trim_start_matches("scrollback_")
+                        .trim_start_matches("pending_cmd_")
+                        .trim_start_matches("pending_flag_")
+                        .trim_end_matches(".sock")
+                        .trim_end_matches(".pid")
+                        .trim_end_matches(".tmp");
+                    let session_active: bool = self.conn.query_row(
+                        "SELECT COUNT(*) > 0 FROM sessions WHERE id = ? AND ended_at IS NULL",
+                        params![session_id],
+                        |row| row.get(0),
+                    ).unwrap_or(false);
+                    if !session_active {
+                        let _ = std::fs::remove_file(entry.path());
+                        orphaned_count += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("{orphaned_count} removed");
 
+        // 9. Pruning
+        if !no_prune {
+            eprint!("  Pruning old data ({retention_days} days)... ");
+            let pruned = self.prune(retention_days)?;
+            eprintln!("{pruned} commands removed");
+        } else {
+            eprintln!("  Pruning... skipped (--no-prune)");
+        }
+
+        // 10. Vacuum
+        if !no_vacuum {
+            eprint!("  Incremental vacuum... ");
+            self.conn.execute_batch("PRAGMA incremental_vacuum")?;
+            eprintln!("OK");
+        } else {
+            eprintln!("  Vacuum... skipped (--no-vacuum)");
+        }
+
+        // 11. Integrity check
         eprint!("  Integrity check... ");
         let result: String = self.conn.query_row(
             "PRAGMA integrity_check",
@@ -1048,6 +1183,8 @@ impl Db {
             |row| row.get(0),
         )?;
         eprintln!("{result}");
+
+        eprintln!("\nnsh doctor: done");
 
         Ok(())
     }

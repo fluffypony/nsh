@@ -122,7 +122,17 @@ pub enum Commands {
     },
 
     /// Check and repair nsh database integrity
-    Doctor,
+    Doctor {
+        /// Skip pruning old data
+        #[arg(long, default_value_t = false)]
+        no_prune: bool,
+        /// Skip vacuum
+        #[arg(long, default_value_t = false)]
+        no_vacuum: bool,
+        /// Override retention period (days)
+        #[arg(long)]
+        prune_days: Option<u32>,
+    },
 
     /// Update session heartbeat
     Heartbeat {
@@ -132,6 +142,9 @@ pub enum Commands {
 
     /// Skip capturing the next command's output
     RedactNext,
+
+    /// Self-update nsh to the latest version
+    Update,
 
     /// Send a message to the daemon (thin client)
     DaemonSend {

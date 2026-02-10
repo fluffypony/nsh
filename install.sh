@@ -48,6 +48,33 @@ install_from_release() {
     trap 'rm -rf "$TMP"' RETURN
 
     if curl -fsSL "$URL" -o "$TMP/nsh.tar.gz" 2>/dev/null; then
+        # Checksum verification
+        local SHA_URL="https://github.com/$REPO/releases/download/${LATEST}/nsh-${TARGET}.tar.gz.sha256"
+        local expected_sha=""
+        if curl -fsSL "$SHA_URL" -o "$TMP/nsh.sha256" 2>/dev/null; then
+            expected_sha="$(awk '{print $1}' "$TMP/nsh.sha256")"
+        fi
+
+        if [[ -n "$expected_sha" ]]; then
+            local actual_sha=""
+            if command -v sha256sum &>/dev/null; then
+                actual_sha="$(sha256sum "$TMP/nsh.tar.gz" | awk '{print $1}')"
+            elif command -v shasum &>/dev/null; then
+                actual_sha="$(shasum -a 256 "$TMP/nsh.tar.gz" | awk '{print $1}')"
+            fi
+
+            if [[ -n "$actual_sha" ]]; then
+                if [[ "$actual_sha" != "$expected_sha" ]]; then
+                    error "Checksum verification failed! Expected: $expected_sha Got: $actual_sha"
+                fi
+                ok "Checksum verified"
+            else
+                warn "No sha256sum or shasum available, skipping checksum verification"
+            fi
+        else
+            warn "No checksum file available, skipping verification"
+        fi
+
         tar xzf "$TMP/nsh.tar.gz" -C "$TMP"
         mkdir -p "$INSTALL_DIR"
         install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
@@ -169,34 +196,73 @@ add_shell_integration() {
     ok "Added nsh integration to $rc_file"
 }
 
-case "$CURRENT_SHELL" in
-    zsh)
-        add_shell_integration "$HOME/.zshrc" "zsh" \
-            'eval "$(nsh init zsh)"'
-        ;;
-    bash)
-        RC="$HOME/.bashrc"
-        [[ "$OS" == "Darwin" && -f "$HOME/.bash_profile" && ! -f "$RC" ]] && RC="$HOME/.bash_profile"
-        add_shell_integration "$RC" "bash" \
-            'eval "$(nsh init bash)"'
-        ;;
-    fish)
-        FISH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fish"
-        mkdir -p "$FISH_DIR/conf.d"
-        if [[ ! -f "$FISH_DIR/conf.d/nsh.fish" ]]; then
-            cat > "$FISH_DIR/conf.d/nsh.fish" <<'FISHCONF'
+add_shell_integration_for() {
+    local s="$1"
+    case "$s" in
+        zsh)
+            add_shell_integration "$HOME/.zshrc" "zsh" \
+                'eval "$(nsh init zsh)"'
+            ;;
+        bash)
+            local RC="$HOME/.bashrc"
+            [[ "$OS" == "Darwin" && -f "$HOME/.bash_profile" && ! -f "$RC" ]] && RC="$HOME/.bash_profile"
+            add_shell_integration "$RC" "bash" \
+                'eval "$(nsh init bash)"'
+            ;;
+        fish)
+            local FISH_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fish"
+            mkdir -p "$FISH_DIR/conf.d"
+            if [[ ! -f "$FISH_DIR/conf.d/nsh.fish" ]]; then
+                cat > "$FISH_DIR/conf.d/nsh.fish" <<'FISHCONF'
 # nsh — Natural Shell integration
 command -v nsh >/dev/null; and not set -q NSH_PTY_ACTIVE; and nsh wrap
 nsh init fish | source
 FISHCONF
-            ok "Added nsh integration to $FISH_DIR/conf.d/nsh.fish"
+                ok "Added nsh integration to $FISH_DIR/conf.d/nsh.fish"
+            else
+                ok "Fish integration already present"
+            fi
+            ;;
+    esac
+}
+
+# Detect available shells
+SHELLS_FOUND=()
+[[ -f "$HOME/.bashrc" || -f "$HOME/.bash_profile" ]] && SHELLS_FOUND+=(bash)
+[[ -f "$HOME/.zshrc" ]] && SHELLS_FOUND+=(zsh)
+[[ -d "${XDG_CONFIG_HOME:-$HOME/.config}/fish" ]] && SHELLS_FOUND+=(fish)
+
+# If current shell not in detected list, add it
+found_current=false
+for s in "${SHELLS_FOUND[@]}"; do
+    [[ "$s" == "$CURRENT_SHELL" ]] && found_current=true
+done
+if ! $found_current; then
+    SHELLS_FOUND+=("$CURRENT_SHELL")
+fi
+
+if (( ${#SHELLS_FOUND[@]} > 1 )); then
+    echo ""
+    echo "Multiple shells detected: ${SHELLS_FOUND[*]}"
+    for s in "${SHELLS_FOUND[@]}"; do
+        if [[ "$s" == "$CURRENT_SHELL" ]]; then
+            add_shell_integration_for "$s"
+        else
+            printf "  Add nsh to %s? [Y/n] " "$s"
+            if [[ -t 0 ]]; then
+                read -r ans
+                [[ "$ans" != "n" && "$ans" != "N" ]] && add_shell_integration_for "$s"
+            else
+                add_shell_integration_for "$s"
+            fi
         fi
-        ;;
-    *)
-        warn "Unsupported shell '$CURRENT_SHELL'. Add manually:"
-        warn "  eval \"\$(nsh init bash)\"   # or zsh/fish"
-        ;;
-esac
+    done
+elif (( ${#SHELLS_FOUND[@]} == 1 )); then
+    add_shell_integration_for "${SHELLS_FOUND[0]}"
+else
+    warn "No supported shell detected. Add manually:"
+    warn '  eval "$(nsh init bash)"   # or zsh/fish'
+fi
 
 echo ""
 ok "nsh installed successfully!"

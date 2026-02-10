@@ -68,6 +68,8 @@ strip-ansi-escapes = "0.2"
 vt100 = "0.16"
 shell-words = "1"
 flate2 = "1"
+hickory-resolver = "0.25"
+tar = "0.4"
 
 [profile.release]
 lto = true
