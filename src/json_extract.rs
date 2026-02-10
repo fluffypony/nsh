@@ -35,32 +35,22 @@ pub fn extract_json(input: &str) -> Option<serde_json::Value> {
 }
 
 fn strip_thinking_tags(text: &str) -> String {
-    let mut result = text.to_string();
     let tags = &[
         "thinking", "think", "antThinking", "reasoning",
         "reflection", "scratchpad", "analysis",
     ];
+    let mut patterns = Vec::new();
     for tag in tags {
-        // Remove self-closing variants: <tag/> or <tag />
-        let self_closing1 = format!("<{tag}/>");
-        let self_closing2 = format!("<{tag} />");
-        result = result.replace(&self_closing1, "");
-        result = result.replace(&self_closing2, "");
-
-        // Remove paired tags and their content
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        loop {
-            if let Some(start) = result.find(&open) {
-                if let Some(end) = result[start..].find(&close) {
-                    result.replace_range(start..start + end + close.len(), "");
-                    continue;
-                }
-                // Unclosed tag — remove everything from open tag onwards
-                result = result[..start].to_string();
-            }
-            break;
-        }
+        // Self-closing: <tag/>, <tag />, <tag  />, case-insensitive
+        patterns.push(regex::Regex::new(&format!(r"(?i)<{tag}\s*/>")).unwrap());
+        // Paired: <tag>...</tag> or <tag ...>...</tag>, case-insensitive, non-greedy
+        patterns.push(regex::Regex::new(&format!(r"(?is)<{tag}(\s[^>]*)?>.*?</{tag}>")).unwrap());
+        // Unclosed: <tag> with no closing tag — remove from open tag onwards
+        patterns.push(regex::Regex::new(&format!(r"(?is)<{tag}(\s[^>]*)?>.*$")).unwrap());
+    }
+    let mut result = text.to_string();
+    for pat in &patterns {
+        result = pat.replace_all(&result, "").to_string();
     }
     result
 }

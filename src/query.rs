@@ -494,7 +494,9 @@ User: "add serde to my Cargo.toml"
 
 ## Error Recovery
 When the user says "fix", "fix it", or references a recent error, the error
-output is already in your context. Diagnose immediately without calling tools.
+output is already in your context. Diagnose immediately without calling extra
+information-gathering tools — respond directly with the appropriate terminal
+tool (usually command or chat).
 Common patterns: missing packages → suggest install, permission errors → suggest
 sudo, syntax errors → show corrected command.
 

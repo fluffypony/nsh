@@ -242,6 +242,15 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                         if let Some(trivial) = crate::summary::trivial_summary(&cmd_text, ec, output_text) {
                             let _ = db.update_summary(*id, &trivial);
                         }
+                        // Conversation feedback loop: if this command matches
+                        // a pending conversation suggestion, record the result
+                        if let Ok(Some((conv_id, suggested_cmd))) = db.find_pending_conversation(&session) {
+                            if cmd_text.trim() == suggested_cmd.trim() {
+                                let snippet = crate::util::truncate(output_text, 500);
+                                let snippet_ref = if snippet.is_empty() { None } else { Some(snippet.as_str()) };
+                                let _ = db.update_conversation_result(conv_id, ec, snippet_ref);
+                            }
+                        }
                     }
                     Err(_) => {}
                 }
