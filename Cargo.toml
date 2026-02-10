@@ -58,6 +58,9 @@ zeroize = { version = "1", features = ["derive"] }
 # File walking (.gitignore-aware)
 ignore = "0.4"
 
+# SHA-256
+sha2 = "0.10"
+
 # Misc
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }

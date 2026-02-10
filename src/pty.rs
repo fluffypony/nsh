@@ -165,6 +165,10 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     }
 }
 
+pub fn exec_execvp(cmd: &str, args: &[&str]) -> std::io::Error {
+    exec::execvp(cmd, args)
+}
+
 mod exec {
     pub fn execvp(cmd: &str, args: &[&str]) -> std::io::Error {
         use std::ffi::CString;

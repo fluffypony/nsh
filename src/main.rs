@@ -33,6 +33,7 @@ use cli::{
     Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, ProviderAction,
     SessionAction,
 };
+use sha2::{Digest, Sha256};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -52,9 +53,21 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Wrap { shell } => {
+            apply_pending_update();
+
             if let Ok(db) = db::Db::open() {
                 let _ = db.cleanup_orphaned_sessions();
+                if should_check_for_updates(&db) {
+                    std::thread::spawn(|| {
+                        let _ = background_update_check();
+                    });
+                }
             }
+
+            if config::Config::nsh_dir().join("update_pending").exists() {
+                eprintln!("\x1b[2mnsh: update ready, will apply on next shell start\x1b[0m");
+            }
+
             let shell = if shell.is_empty() {
                 std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
             } else {
@@ -310,6 +323,7 @@ async fn main() -> anyhow::Result<()> {
             let db = db::Db::open()?;
             let retention = prune_days.unwrap_or(config.context.retention_days);
             db.run_doctor(retention, no_prune, no_vacuum, &config)?;
+            cleanup_staged_updates();
         }
 
         Commands::Heartbeat { session } => {
@@ -327,36 +341,24 @@ async fn main() -> anyhow::Result<()> {
         Commands::Update => {
             eprintln!("nsh: checking for updates...");
 
-            let client = reqwest::Client::new();
-            let github_resp = client
-                .get("https://api.github.com/repos/fluffypony/nsh/commits/main")
-                .header("User-Agent", "nsh-updater")
-                .header("Accept", "application/vnd.github.v3+json")
-                .send()
-                .await?;
+            let target = match current_target_triple() {
+                Some(t) => t,
+                None => {
+                    let arch = std::env::consts::ARCH;
+                    let os = std::env::consts::OS;
+                    eprintln!("nsh: unsupported platform {os}/{arch}. Build from source:");
+                    eprintln!("  cargo install --git https://github.com/fluffypony/nsh");
+                    std::process::exit(1);
+                }
+            };
 
-            if !github_resp.status().is_success() {
-                eprintln!(
-                    "nsh: failed to check GitHub for updates (HTTP {})",
-                    github_resp.status()
-                );
-                std::process::exit(1);
-            }
-
-            let github_json: serde_json::Value = github_resp.json().await?;
-            let github_sha = github_json["sha"].as_str().unwrap_or("");
-            if github_sha.len() < 40 {
-                eprintln!("nsh: could not determine latest commit from GitHub");
-                std::process::exit(1);
-            }
-
-            let dns_sha = match resolve_update_txt().await {
-                Ok(sha) => sha,
+            let records = match resolve_update_txt().await {
+                Ok(r) => r,
                 Err(e) => {
-                    eprintln!("nsh: DNS verification failed: {e}");
+                    eprintln!("nsh: DNS lookup failed: {e}");
                     eprintln!("  Falling back to dig...");
                     match resolve_update_txt_fallback() {
-                        Ok(sha) => sha,
+                        Ok(r) => r,
                         Err(e2) => {
                             eprintln!("nsh: DNS fallback also failed: {e2}");
                             std::process::exit(1);
@@ -365,43 +367,27 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            if github_sha[..40] != dns_sha[..40.min(dns_sha.len())] {
-                eprintln!("nsh: update verification failed — GitHub and DNS records disagree");
-                eprintln!("  GitHub: {}", &github_sha[..12]);
-                eprintln!("  DNS:    {}", &dns_sha[..12.min(dns_sha.len())]);
-                eprintln!("  This may indicate a compromised repository. Aborting.");
-                std::process::exit(1);
-            }
-
-            let current_sha = option_env!("NSH_BUILD_SHA").unwrap_or("unknown");
-            if current_sha.starts_with(&github_sha[..7]) {
-                eprintln!("nsh: already up to date ({})", &github_sha[..12]);
-                return Ok(());
-            }
-
-            eprintln!(
-                "nsh: verified commit {} (GitHub ✓, DNS ✓)",
-                &github_sha[..12]
-            );
-
-            let arch = std::env::consts::ARCH;
-            let os = std::env::consts::OS;
-            let target = match (os, arch) {
-                ("macos", "aarch64") => "aarch64-apple-darwin",
-                ("macos", "x86_64") => "x86_64-apple-darwin",
-                ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-                ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-                _ => {
-                    eprintln!("nsh: unsupported platform {os}/{arch}. Build from source:");
-                    eprintln!("  cargo install --git https://github.com/fluffypony/nsh");
+            let (version, expected_sha) = match find_latest_for_target(&records, target) {
+                Some(v) => v,
+                None => {
+                    eprintln!("nsh: no release found for {target} in DNS records");
                     std::process::exit(1);
                 }
             };
 
+            let current_version = env!("CARGO_PKG_VERSION");
+            if util::compare_versions(&version, current_version) != std::cmp::Ordering::Greater {
+                eprintln!("nsh: already up to date (v{current_version})");
+                return Ok(());
+            }
+
+            eprintln!("nsh: v{version} available (current: v{current_version})");
+
             let url = format!(
-                "https://github.com/fluffypony/nsh/releases/latest/download/nsh-{target}.tar.gz"
+                "https://github.com/fluffypony/nsh/releases/download/v{version}/nsh-{target}.tar.gz"
             );
             eprintln!("nsh: downloading {target}...");
+            let client = reqwest::Client::new();
             let download_resp = client.get(&url).send().await?;
             if !download_resp.status().is_success() {
                 eprintln!("nsh: no pre-built binary available. Build from source:");
@@ -411,8 +397,9 @@ async fn main() -> anyhow::Result<()> {
 
             let bytes = download_resp.bytes().await?;
 
-            let current_exe = std::env::current_exe()?;
-            let tmp_path = current_exe.with_extension("update_tmp");
+            let staging_dir = config::Config::nsh_dir().join("updates");
+            std::fs::create_dir_all(&staging_dir)?;
+            let staged_path = staging_dir.join(format!("nsh-{version}-{target}"));
 
             let decoder = flate2::read::GzDecoder::new(&bytes[..]);
             let mut archive = tar::Archive::new(decoder);
@@ -425,13 +412,13 @@ async fn main() -> anyhow::Result<()> {
                         .write(true)
                         .create(true)
                         .truncate(true)
-                        .open(&tmp_path)?;
+                        .open(&staged_path)?;
                     std::io::copy(&mut entry, &mut file)?;
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
                         std::fs::set_permissions(
-                            &tmp_path,
+                            &staged_path,
                             std::fs::Permissions::from_mode(0o755),
                         )?;
                     }
@@ -441,15 +428,34 @@ async fn main() -> anyhow::Result<()> {
             }
 
             if !found {
-                let _ = std::fs::remove_file(&tmp_path);
+                let _ = std::fs::remove_file(&staged_path);
                 eprintln!("nsh: binary not found in archive");
                 std::process::exit(1);
             }
 
-            std::fs::rename(&tmp_path, &current_exe)?;
+            let actual_sha = sha256_file(&staged_path)?;
+            if actual_sha != expected_sha {
+                let _ = std::fs::remove_file(&staged_path);
+                eprintln!("nsh: SHA256 verification failed!");
+                eprintln!("  Expected: {expected_sha}");
+                eprintln!("  Got:      {actual_sha}");
+                std::process::exit(1);
+            }
+            eprintln!("nsh: SHA256 verified (DNS ✓)");
 
-            eprintln!("nsh: updated successfully to {}", &github_sha[..12]);
-            eprintln!("  Restart your shell to use the new version.");
+            let current_exe = std::env::current_exe()?;
+            let pending_path = config::Config::nsh_dir().join("update_pending");
+            let pending_info = serde_json::json!({
+                "version": version,
+                "staged_path": staged_path.to_string_lossy(),
+                "target_binary": current_exe.to_string_lossy(),
+                "sha256": expected_sha,
+                "downloaded_at": chrono::Utc::now().to_rfc3339(),
+            });
+            std::fs::write(&pending_path, serde_json::to_string_pretty(&pending_info)?)?;
+
+            eprintln!("nsh: update v{version} downloaded and verified.");
+            eprintln!("  It will be applied automatically on your next shell start.");
         }
 
         Commands::DaemonSend { action } => {
@@ -708,21 +714,40 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn resolve_update_txt() -> anyhow::Result<String> {
+fn parse_dns_txt_records(raw: &str) -> Vec<(String, String, String)> {
+    raw.lines()
+        .filter_map(|line| {
+            let cleaned = line.trim().trim_matches('"');
+            let parts: Vec<&str> = cleaned.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let (version, target, sha) = (parts[0], parts[1], parts[2]);
+                if sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some((version.to_string(), target.to_string(), sha.to_string()));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+async fn resolve_update_txt() -> anyhow::Result<Vec<(String, String, String)>> {
     use hickory_resolver::Resolver;
     let resolver = Resolver::builder_tokio()?.build();
     let response = resolver.txt_lookup("update.nsh.tools").await?;
+    let mut raw = String::new();
     for record in response.iter() {
         let txt = record.to_string();
-        let cleaned = txt.trim().trim_matches('"');
-        if cleaned.len() >= 40 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Ok(cleaned.to_string());
-        }
+        raw.push_str(txt.trim().trim_matches('"'));
+        raw.push('\n');
     }
-    anyhow::bail!("no valid SHA found in DNS TXT record")
+    let records = parse_dns_txt_records(&raw);
+    if records.is_empty() {
+        anyhow::bail!("no valid version:target:sha256 records found in DNS TXT");
+    }
+    Ok(records)
 }
 
-fn resolve_update_txt_fallback() -> anyhow::Result<String> {
+fn resolve_update_txt_fallback() -> anyhow::Result<Vec<(String, String, String)>> {
     let output = std::process::Command::new("dig")
         .args(["+short", "TXT", "update.nsh.tools"])
         .output()?;
@@ -730,11 +755,242 @@ fn resolve_update_txt_fallback() -> anyhow::Result<String> {
         anyhow::bail!("dig command failed");
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let cleaned = text.trim().trim_matches('"');
-    if cleaned.len() >= 40 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(cleaned.to_string())
-    } else {
-        anyhow::bail!("no valid SHA in dig output: {cleaned}")
+    let records = parse_dns_txt_records(&text);
+    if records.is_empty() {
+        anyhow::bail!("no valid version:target:sha256 records in dig output");
+    }
+    Ok(records)
+}
+
+fn current_target_triple() -> Option<&'static str> {
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+    match (os, arch) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+fn find_latest_for_target(
+    records: &[(String, String, String)],
+    target: &str,
+) -> Option<(String, String)> {
+    let mut best: Option<(String, String)> = None;
+    for (version, t, sha) in records {
+        if t == target {
+            match &best {
+                Some((bv, _)) => {
+                    if util::compare_versions(version, bv) == std::cmp::Ordering::Greater {
+                        best = Some((version.clone(), sha.clone()));
+                    }
+                }
+                None => best = Some((version.clone(), sha.clone())),
+            }
+        }
+    }
+    best
+}
+
+fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn apply_pending_update() {
+    let result = (|| -> anyhow::Result<()> {
+        let pending_path = config::Config::nsh_dir().join("update_pending");
+        if !pending_path.exists() {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(&pending_path)?;
+        let info: serde_json::Value = serde_json::from_str(&content)?;
+
+        let version = info["version"].as_str().unwrap_or("");
+        let staged_str = info["staged_path"].as_str().unwrap_or("");
+        let expected_sha = info["sha256"].as_str().unwrap_or("");
+
+        let staged_path = std::path::PathBuf::from(staged_str);
+        if !staged_path.exists() {
+            let _ = std::fs::remove_file(&pending_path);
+            return Ok(());
+        }
+
+        let actual_sha = sha256_file(&staged_path)?;
+        if !expected_sha.is_empty() && actual_sha != expected_sha {
+            let _ = std::fs::remove_file(&pending_path);
+            let _ = std::fs::remove_file(&staged_path);
+            anyhow::bail!("staged binary SHA mismatch");
+        }
+
+        let current_exe = std::env::current_exe()?;
+        let new_path = current_exe.with_extension("new");
+        std::fs::copy(&staged_path, &new_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&new_path, &current_exe)?;
+
+        let _ = std::fs::remove_file(&pending_path);
+        let _ = std::fs::remove_file(&staged_path);
+
+        eprintln!("nsh: updated to v{version}");
+
+        let args: Vec<String> = std::env::args().collect();
+        if !args.is_empty() {
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let _err = pty::exec_execvp(&args[0], &arg_refs);
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        tracing::debug!("apply_pending_update failed: {e}");
+    }
+}
+
+fn should_check_for_updates(db: &db::Db) -> bool {
+    match db.get_meta("last_update_check") {
+        Ok(Some(ts)) => {
+            if let Ok(last) = chrono::DateTime::parse_from_rfc3339(&ts) {
+                let elapsed = chrono::Utc::now().signed_duration_since(last);
+                elapsed.num_hours() >= 24
+            } else {
+                true
+            }
+        }
+        _ => true,
+    }
+}
+
+fn background_update_check() -> anyhow::Result<()> {
+    let target = current_target_triple().ok_or_else(|| anyhow::anyhow!("unsupported platform"))?;
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    let records = resolve_update_txt_fallback()?;
+    let (latest_version, expected_sha) =
+        find_latest_for_target(&records, target).ok_or_else(|| {
+            anyhow::anyhow!("no DNS record for {target}")
+        })?;
+
+    if util::compare_versions(&latest_version, current_version) != std::cmp::Ordering::Greater {
+        let db = db::Db::open()?;
+        db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())?;
+        return Ok(());
+    }
+
+    let pending_path = config::Config::nsh_dir().join("update_pending");
+    if pending_path.exists() {
+        return Ok(());
+    }
+
+    let url = format!(
+        "https://github.com/fluffypony/nsh/releases/download/v{latest_version}/nsh-{target}.tar.gz"
+    );
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", &url])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("download failed");
+    }
+
+    let staging_dir = config::Config::nsh_dir().join("updates");
+    std::fs::create_dir_all(&staging_dir)?;
+    let staged_path = staging_dir.join(format!("nsh-{latest_version}-{target}"));
+
+    let decoder = flate2::read::GzDecoder::new(&output.stdout[..]);
+    let mut archive = tar::Archive::new(decoder);
+    let mut found = false;
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        if path.file_name().map(|n| n == "nsh").unwrap_or(false) {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&staged_path)?;
+            std::io::copy(&mut entry, &mut file)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&staged_path, std::fs::Permissions::from_mode(0o755))?;
+            }
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        anyhow::bail!("binary not found in archive");
+    }
+
+    let actual_sha = sha256_file(&staged_path)?;
+    if actual_sha != expected_sha {
+        let _ = std::fs::remove_file(&staged_path);
+        anyhow::bail!("SHA256 mismatch: expected {expected_sha}, got {actual_sha}");
+    }
+
+    let current_exe = std::env::current_exe()?;
+    let pending_info = serde_json::json!({
+        "version": latest_version,
+        "staged_path": staged_path.to_string_lossy(),
+        "target_binary": current_exe.to_string_lossy(),
+        "sha256": expected_sha,
+        "downloaded_at": chrono::Utc::now().to_rfc3339(),
+    });
+    std::fs::write(&pending_path, serde_json::to_string_pretty(&pending_info)?)?;
+
+    let db = db::Db::open()?;
+    db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())?;
+
+    Ok(())
+}
+
+fn cleanup_staged_updates() {
+    let nsh_dir = config::Config::nsh_dir();
+    let updates_dir = nsh_dir.join("updates");
+    if !updates_dir.exists() {
+        return;
+    }
+    let pending_path = nsh_dir.join("update_pending");
+    let pending_staged: Option<String> = std::fs::read_to_string(&pending_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| v["staged_path"].as_str().map(|s| s.to_string()));
+
+    if let Ok(entries) = std::fs::read_dir(&updates_dir) {
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let dominated = match &pending_staged {
+                    Some(p) => path.to_string_lossy() != *p,
+                    None => true,
+                };
+                if dominated {
+                    let _ = std::fs::remove_file(&path);
+                    removed += 1;
+                }
+            }
+        }
+        if removed > 0 {
+            eprintln!("  Stale staged updates... {removed} removed");
+        } else {
+            eprintln!("  Stale staged updates... none");
+        }
     }
 }
 
