@@ -5,6 +5,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     let description = input["description"].as_str().unwrap_or("");
     let command = input["command"].as_str().unwrap_or("");
     let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
+    let terminal = input["terminal"].as_bool().unwrap_or(false);
     let parameters = input.get("parameters");
 
     if name.is_empty() || description.is_empty() || command.is_empty() {
@@ -17,11 +18,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
 
     // Build TOML content
     let mut toml_content = format!(
-        "name = {}\ndescription = {}\ncommand = {}\ntimeout_seconds = {}\n",
+        "name = {}\ndescription = {}\ncommand = {}\ntimeout_seconds = {}\nterminal = {}\n",
         toml::Value::String(name.into()),
         toml::Value::String(description.into()),
         toml::Value::String(command.into()),
         timeout,
+        terminal,
     );
 
     if let Some(serde_json::Value::Object(params)) = parameters {

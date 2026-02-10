@@ -765,3 +765,361 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{ProjectInfo, QueryContext};
+    use serde_json::json;
+
+    fn make_test_ctx() -> QueryContext {
+        QueryContext {
+            os_info: "macOS".into(),
+            shell: "zsh".into(),
+            cwd: "/tmp".into(),
+            username: "test".into(),
+            conversation_history: vec![],
+            hostname: "test".into(),
+            machine_info: "arm64".into(),
+            datetime_info: "2025-01-01".into(),
+            timezone_info: "UTC".into(),
+            locale_info: "en_US.UTF-8".into(),
+            session_history: vec![],
+            other_sessions: vec![],
+            scrollback_text: String::new(),
+            custom_instructions: None,
+            project_info: ProjectInfo {
+                root: None,
+                project_type: "unknown".into(),
+                git_branch: None,
+                git_status: None,
+                git_commits: vec![],
+                files: vec![],
+            },
+            ssh_context: None,
+            container_context: None,
+        }
+    }
+
+    #[test]
+    fn test_build_system_prompt_non_empty() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY123", "<config/>");
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_nsh() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY123", "<config/>");
+        assert!(result.contains("nsh"), "expected 'nsh' in prompt");
+        assert!(
+            result.contains("Natural Shell"),
+            "expected 'Natural Shell' in prompt"
+        );
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_boundary() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY_TOKEN_XYZ", "<config/>");
+        assert!(
+            result.contains("BOUNDARY_TOKEN_XYZ"),
+            "expected boundary token in prompt"
+        );
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_xml_context() {
+        let ctx = make_test_ctx();
+        let xml = "<context><env os=\"linux\"/></context>";
+        let result = build_system_prompt(&ctx, xml, "B", "<config/>");
+        assert!(result.contains(xml));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_config_xml() {
+        let ctx = make_test_ctx();
+        let cfg = "<nsh_configuration>test config</nsh_configuration>";
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", cfg);
+        assert!(result.contains(cfg));
+    }
+
+    #[test]
+    fn test_describe_tool_action_search_history() {
+        let input = json!({"query": "nginx"});
+        let desc = describe_tool_action("search_history", &input);
+        assert_eq!(desc, "searching history for \"nginx\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_grep_file_with_pattern() {
+        let input = json!({"path": "/tmp/foo.rs", "pattern": "fn main"});
+        let desc = describe_tool_action("grep_file", &input);
+        assert_eq!(desc, "searching /tmp/foo.rs for /fn main/");
+    }
+
+    #[test]
+    fn test_describe_tool_action_grep_file_no_pattern() {
+        let input = json!({"path": "/tmp/foo.rs"});
+        let desc = describe_tool_action("grep_file", &input);
+        assert_eq!(desc, "reading /tmp/foo.rs");
+    }
+
+    #[test]
+    fn test_describe_tool_action_read_file() {
+        let input = json!({"path": "/etc/hosts"});
+        let desc = describe_tool_action("read_file", &input);
+        assert_eq!(desc, "reading /etc/hosts");
+    }
+
+    #[test]
+    fn test_describe_tool_action_list_directory() {
+        let input = json!({"path": "/var/log"});
+        let desc = describe_tool_action("list_directory", &input);
+        assert_eq!(desc, "listing /var/log");
+    }
+
+    #[test]
+    fn test_describe_tool_action_run_command() {
+        let input = json!({"command": "uname -a"});
+        let desc = describe_tool_action("run_command", &input);
+        assert_eq!(desc, "running `uname -a`");
+    }
+
+    #[test]
+    fn test_describe_tool_action_web_search() {
+        let input = json!({"query": "rust async"});
+        let desc = describe_tool_action("web_search", &input);
+        assert_eq!(desc, "searching \"rust async\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_man_page() {
+        let input = json!({"command": "grep"});
+        let desc = describe_tool_action("man_page", &input);
+        assert_eq!(desc, "reading man page: grep");
+    }
+
+    #[test]
+    fn test_describe_tool_action_unknown() {
+        let input = json!({});
+        let desc = describe_tool_action("some_unknown_tool", &input);
+        assert_eq!(desc, "some_unknown_tool");
+    }
+
+    #[test]
+    fn test_validate_tool_input_command_ok() {
+        let input = json!({"command": "ls", "explanation": "list files"});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_command_missing_field() {
+        let input = json!({"command": "ls"});
+        let err = validate_tool_input("command", &input).unwrap_err();
+        assert!(err.contains("explanation"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_chat_ok() {
+        let input = json!({"response": "hello"});
+        assert!(validate_tool_input("chat", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_chat_missing() {
+        let input = json!({});
+        let err = validate_tool_input("chat", &input).unwrap_err();
+        assert!(err.contains("response"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_grep_file_ok() {
+        let input = json!({"path": "/tmp/x"});
+        assert!(validate_tool_input("grep_file", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_grep_file_missing() {
+        let input = json!({"pattern": "foo"});
+        let err = validate_tool_input("grep_file", &input).unwrap_err();
+        assert!(err.contains("path"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_write_file_ok() {
+        let input = json!({"path": "/tmp/out"});
+        assert!(validate_tool_input("write_file", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_write_file_missing() {
+        let input = json!({});
+        let err = validate_tool_input("write_file", &input).unwrap_err();
+        assert!(err.contains("path"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_patch_file_ok() {
+        let input = json!({"path": "/tmp/f", "search": "old"});
+        assert!(validate_tool_input("patch_file", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_patch_file_missing() {
+        let input = json!({"path": "/tmp/f"});
+        let err = validate_tool_input("patch_file", &input).unwrap_err();
+        assert!(err.contains("search"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_run_command_ok() {
+        let input = json!({"command": "ls", "reason": "check files"});
+        assert!(validate_tool_input("run_command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_run_command_missing() {
+        let input = json!({"command": "ls"});
+        let err = validate_tool_input("run_command", &input).unwrap_err();
+        assert!(err.contains("reason"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_web_search_ok() {
+        let input = json!({"query": "rust"});
+        assert!(validate_tool_input("web_search", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_web_search_missing() {
+        let input = json!({});
+        let err = validate_tool_input("web_search", &input).unwrap_err();
+        assert!(err.contains("query"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_ask_user_ok() {
+        let input = json!({"question": "which option?"});
+        assert!(validate_tool_input("ask_user", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_ask_user_missing() {
+        let input = json!({});
+        let err = validate_tool_input("ask_user", &input).unwrap_err();
+        assert!(err.contains("question"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_man_page_ok() {
+        let input = json!({"command": "ls"});
+        assert!(validate_tool_input("man_page", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_man_page_missing() {
+        let input = json!({});
+        let err = validate_tool_input("man_page", &input).unwrap_err();
+        assert!(err.contains("command"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_manage_config_ok() {
+        let input = json!({"action": "set", "key": "provider.model"});
+        assert!(validate_tool_input("manage_config", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_manage_config_missing() {
+        let input = json!({"action": "set"});
+        let err = validate_tool_input("manage_config", &input).unwrap_err();
+        assert!(err.contains("key"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_skill_ok() {
+        let input = json!({"name": "test", "description": "desc", "command": "echo hi"});
+        assert!(validate_tool_input("install_skill", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_skill_missing() {
+        let input = json!({"name": "test", "description": "desc"});
+        let err = validate_tool_input("install_skill", &input).unwrap_err();
+        assert!(err.contains("command"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_mcp_server_ok() {
+        let input = json!({"name": "fs"});
+        assert!(validate_tool_input("install_mcp_server", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_mcp_server_missing() {
+        let input = json!({});
+        let err = validate_tool_input("install_mcp_server", &input).unwrap_err();
+        assert!(err.contains("name"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_unknown_tool() {
+        let input = json!({"anything": true});
+        assert!(validate_tool_input("totally_unknown", &input).is_ok());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_grep_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("test.txt");
+        std::fs::write(&file, "hello world\nfoo bar\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "hello"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("hello world"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_read_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("read_me.txt");
+        std::fs::write(&file, "line1\nline2\nline3\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap()});
+        let result = execute_sync_tool("read_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_list_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "").unwrap();
+        let input = json!({"path": dir.path().to_str().unwrap()});
+        let result = execute_sync_tool("list_directory", &input, &Config::default()).unwrap();
+        assert!(result.contains("a.txt"));
+        assert!(result.contains("b.txt"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command() {
+        let input = json!({"command": "echo hello_nsh_test"});
+        let result = execute_sync_tool("run_command", &input, &Config::default()).unwrap();
+        assert!(result.contains("hello_nsh_test"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_man_page() {
+        let input = json!({"command": "ls"});
+        let result = execute_sync_tool("man_page", &input, &Config::default()).unwrap();
+        assert!(result.contains("ls") || result.contains("No man page"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_unknown() {
+        let input = json!({});
+        let result = execute_sync_tool("nonexistent_tool", &input, &Config::default()).unwrap();
+        assert_eq!(result, "Unknown tool: nonexistent_tool");
+    }
+}

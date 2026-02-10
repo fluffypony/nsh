@@ -127,7 +127,8 @@ impl McpServer {
 
                 let resp = tokio::time::timeout(self.timeout, req.send())
                     .await
-                    .map_err(|_| anyhow::anyhow!("MCP HTTP request '{method}' timed out"))??;
+                    .map_err(|_| anyhow::anyhow!("MCP HTTP request '{method}' timed out"))??
+                    .error_for_status()?;
 
                 // Capture session ID
                 if let Some(sid) = resp.headers().get("mcp-session-id") {
@@ -405,11 +406,13 @@ impl McpClient {
 
     fn parse_tool_name<'a>(&'a self, prefixed_name: &'a str) -> Option<(&'a str, &'a str)> {
         let rest = prefixed_name.strip_prefix("mcp_")?;
-        for server_name in self.servers.keys() {
+        let mut keys: Vec<&str> = self.servers.keys().map(|s| s.as_str()).collect();
+        keys.sort_by(|a, b| b.len().cmp(&a.len()));
+        for server_name in keys {
             if let Some(tool_name) =
-                rest.strip_prefix(server_name.as_str()).and_then(|s| s.strip_prefix('_'))
+                rest.strip_prefix(server_name).and_then(|s| s.strip_prefix('_'))
             {
-                return Some((server_name.as_str(), tool_name));
+                return Some((server_name, tool_name));
             }
         }
         None

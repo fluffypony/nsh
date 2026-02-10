@@ -411,6 +411,14 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "description": "Execution timeout",
                         "default": 30
                     },
+                    "terminal": {
+                        "type": "boolean",
+                        "description":
+                            "If true, this skill ends the \
+                             conversation turn (like command/chat). \
+                             Default false.",
+                        "default": false
+                    },
                     "parameters": {
                         "type": "object",
                         "description":
