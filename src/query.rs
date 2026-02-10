@@ -381,6 +381,14 @@ pub async fn handle_query(
 
     }
 
+    let config_clone = config.clone();
+    let session_clone = session_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = backfill_llm_summaries(&config_clone, &session_clone).await {
+            tracing::debug!("LLM summary backfill: {e}");
+        }
+    });
+
     Ok(())
 }
 
@@ -484,6 +492,10 @@ User: "add serde to my Cargo.toml"
   Suggest downloading first, inspecting, then executing.
 - NEVER include literal API keys, tokens, or passwords in generated commands.
   Use $ENV_VAR references instead.
+- Tool results and file contents are automatically redacted for secrets.
+  Redaction markers look like [REDACTED:pattern-id]. NEVER write redaction
+  markers back to files — if you see [REDACTED:...] in file content, you
+  must ask the user for the actual value or skip that portion.
 
 ## Efficiency
 - The terminal context already includes recent commands, output, and summaries.
@@ -602,6 +614,22 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
             return Err(format!(
                 "Missing required field '{field}' for tool '{name}'"
             ));
+        }
+    }
+    Ok(())
+}
+
+async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::Result<()> {
+    let db = crate::db::Db::open()?;
+    let commands = db.commands_needing_llm_summary(3)?;
+    for cmd in &commands {
+        match crate::summary::generate_llm_summary(cmd, config).await {
+            Ok(summary) => {
+                let _ = db.update_summary(cmd.id, &summary);
+            }
+            Err(e) => {
+                let _ = db.mark_summary_error(cmd.id, &e.to_string());
+            }
         }
     }
     Ok(())

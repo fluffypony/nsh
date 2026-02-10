@@ -175,6 +175,14 @@ pub fn execute(
     let content = input["content"]
         .as_str()
         .unwrap_or("");
+
+    if regex::Regex::new(r"\[REDACTED:[a-zA-Z0-9_-]+\]").unwrap().is_match(content) {
+        anyhow::bail!(
+            "write_file: content contains redaction markers ([REDACTED:...]). \
+             Cannot write redacted content to disk. Identify the actual values needed."
+        );
+    }
+
     let reason = input["reason"]
         .as_str()
         .unwrap_or("");

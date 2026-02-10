@@ -41,6 +41,36 @@ pub fn build_summary_prompt(cmd: &CommandForSummary) -> String {
     )
 }
 
+pub async fn generate_llm_summary(cmd: &crate::db::CommandForSummary, config: &crate::config::Config) -> anyhow::Result<String> {
+    let prompt = build_summary_prompt(cmd);
+    let provider = crate::provider::create_provider(&config.provider.default, config)?;
+    let model = config.models.fast.first()
+        .cloned()
+        .unwrap_or_else(|| config.provider.model.clone());
+    let request = crate::provider::ChatRequest {
+        model,
+        system: "You are a concise command summarizer. Summarize in 1-2 sentences.".into(),
+        messages: vec![crate::provider::Message {
+            role: crate::provider::Role::User,
+            content: vec![crate::provider::ContentBlock::Text { text: prompt }],
+        }],
+        tools: vec![],
+        tool_choice: crate::provider::ToolChoice::None,
+        max_tokens: 256,
+        stream: false,
+        extra_body: None,
+    };
+    let response = provider.complete(request).await?;
+    let text = response.content.iter()
+        .filter_map(|b| if let crate::provider::ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+        .collect::<Vec<_>>()
+        .join("");
+    if text.trim().is_empty() {
+        anyhow::bail!("empty summary response");
+    }
+    Ok(text.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -124,6 +124,21 @@ pub fn execute(
     let replace = input["replace"]
         .as_str()
         .unwrap_or("");
+
+    let redact_re = regex::Regex::new(r"\[REDACTED:[a-zA-Z0-9_-]+\]").unwrap();
+    if redact_re.is_match(search) {
+        return Ok(Some(
+            "search text contains redaction markers ([REDACTED:...]). \
+             Use a different edit anchor that doesn't span redacted content.".into()
+        ));
+    }
+    if redact_re.is_match(replace) {
+        return Ok(Some(
+            "replacement text contains redaction markers ([REDACTED:...]). \
+             Cannot write redacted content. Use the actual values.".into()
+        ));
+    }
+
     let reason = input["reason"]
         .as_str()
         .unwrap_or("");
