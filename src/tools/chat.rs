@@ -11,9 +11,8 @@ pub fn execute(
 ) -> anyhow::Result<()> {
     let response = input["response"].as_str().unwrap_or("");
 
-    let color = "\x1b[3;36m"; // cyan italic
-    let reset = "\x1b[0m";
-    eprintln!("{color}{response}{reset}");
+    let skin = termimad::MadSkin::default();
+    skin.write_text_on(&mut std::io::stderr(), response)?;
 
     if !private {
         crate::audit::audit_log(session_id, original_query, "chat", response, "safe");
