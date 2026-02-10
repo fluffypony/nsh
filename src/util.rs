@@ -20,6 +20,24 @@ pub fn truncate_bytes(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |s: &str| -> Vec<u32> {
+        s.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect()
+    };
+    let a_parts = parse(a);
+    let b_parts = parse(b);
+    let len = a_parts.len().max(b_parts.len());
+    for i in 0..len {
+        let av = a_parts.get(i).copied().unwrap_or(0);
+        let bv = b_parts.get(i).copied().unwrap_or(0);
+        match av.cmp(&bv) {
+            std::cmp::Ordering::Equal => continue,
+            ord => return ord,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +155,35 @@ mod tests {
     #[test]
     fn test_truncate_bytes_zero_limit() {
         assert_eq!(truncate_bytes("hello", 0), "");
+    }
+
+    #[test]
+    fn test_compare_versions_equal() {
+        assert_eq!(compare_versions("1.2.3", "1.2.3"), std::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_compare_versions_newer_minor() {
+        assert_eq!(compare_versions("0.2.0", "0.1.0"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_versions("0.1.0", "0.2.0"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn test_compare_versions_newer_major() {
+        assert_eq!(compare_versions("2.0.0", "1.9.9"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_versions("1.0.0", "2.0.0"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn test_compare_versions_newer_patch() {
+        assert_eq!(compare_versions("1.0.1", "1.0.0"), std::cmp::Ordering::Greater);
+        assert_eq!(compare_versions("1.0.0", "1.0.1"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn test_compare_versions_different_length() {
+        assert_eq!(compare_versions("1.0", "1.0.0"), std::cmp::Ordering::Equal);
+        assert_eq!(compare_versions("1.0", "1.0.1"), std::cmp::Ordering::Less);
+        assert_eq!(compare_versions("1.0.1", "1.0"), std::cmp::Ordering::Greater);
     }
 }
