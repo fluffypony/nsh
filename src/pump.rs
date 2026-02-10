@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn test_capture_engine_rate_limit() {
         let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000, "vt100".into(), "drop".into());
-        eng.process(&vec![b'A'; 200]);
+        eng.process(&[b'A'; 200]);
         let lines = eng.get_lines(100);
         assert!(lines.contains("[nsh: output capture suppressed"));
     }

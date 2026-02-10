@@ -14,13 +14,13 @@ args = ["fmt"]
 [tasks.check]
 description = "Fast compilation check (no codegen)"
 command = "cargo"
-args = ["check"]
+args = ["check", "--all-targets"]
 dependencies = ["format"]
 
 [tasks.lint]
 description = "Run Clippy linter with warnings as errors"
 command = "cargo"
-args = ["clippy", "--", "-D", "warnings"]
+args = ["clippy", "--all-targets", "--", "-D", "warnings"]
 dependencies = ["check"]
 
 [tasks.test]
@@ -32,21 +32,20 @@ dependencies = ["lint"]
 [tasks.audit]
 description = "Check dependencies for known vulnerabilities"
 install_crate = "cargo-audit"
+install_crate_args = ["--locked"]
 command = "cargo"
 args = ["audit"]
 
 [tasks.geiger]
 description = "Report unsafe code usage in dependency tree"
 install_crate = "cargo-geiger"
+install_crate_args = ["--locked"]
 command = "cargo"
 args = ["geiger", "--output-format", "Ascii"]
 
 [tasks.quality]
 description = "Run the full quality pipeline: format, check, lint, test, audit"
 dependencies = [
-    "format",
-    "check",
-    "lint",
     "test",
     "audit",
 ]
