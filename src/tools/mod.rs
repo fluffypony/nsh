@@ -4,6 +4,7 @@ pub mod command;
 pub mod grep_file;
 pub mod list_directory;
 pub mod man_page;
+pub mod memory;
 pub mod patch_file;
 pub mod read_file;
 pub mod run_command;
@@ -491,6 +492,65 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["name"]
             }),
         },
+        ToolDefinition {
+            name: "remember".into(),
+            description: "Store a fact, preference, or note in persistent \
+                          memory. If a memory with the same key already \
+                          exists, it will be updated. Memories are shown \
+                          in your context on every query.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Short label for the memory (e.g. 'home NAS IP', 'deploy command', 'preferred editor')"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The content to remember"
+                    }
+                },
+                "required": ["key", "value"]
+            }),
+        },
+        ToolDefinition {
+            name: "forget_memory".into(),
+            description: "Delete a memory by its ID. Memory IDs are visible \
+                          in the <memories> context block.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The memory ID to delete"
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "update_memory".into(),
+            description: "Update an existing memory by ID. Provide a new \
+                          key, value, or both.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "description": "The memory ID to update"
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "New label (optional)"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "New value (optional)"
+                    }
+                },
+                "required": ["id"]
+            }),
+        },
     ]
 }
 
@@ -502,7 +562,7 @@ mod tests {
     #[test]
     fn test_all_tool_definitions_returns_all_tools() {
         let tools = all_tool_definitions();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 18);
         for tool in &tools {
             assert!(!tool.name.is_empty());
             assert!(!tool.description.is_empty());
@@ -536,6 +596,7 @@ mod tests {
             "list_directory", "web_search", "run_command", "ask_user",
             "write_file", "patch_file", "man_page",
             "manage_config", "install_skill", "install_mcp_server",
+            "remember", "forget_memory", "update_memory",
         ];
         for name in &expected {
             assert!(names.contains(*name), "missing tool: {name}");

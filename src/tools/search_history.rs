@@ -80,6 +80,20 @@ pub fn execute(
         result.push('\n');
     }
 
+    let memory_matches = db
+        .search_memories(query.unwrap_or(regex.unwrap_or("")))
+        .unwrap_or_default();
+
+    if !memory_matches.is_empty() {
+        result.push_str("\n── Memories ──\n");
+        for m in &memory_matches {
+            result.push_str(&format!(
+                "  [memory #{}] {} = {}\n",
+                m.id, m.key, m.value,
+            ));
+        }
+    }
+
     Ok(crate::redact::redact_secrets(&result, &config.redaction))
 }
 

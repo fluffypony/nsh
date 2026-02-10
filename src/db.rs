@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -232,6 +232,19 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
         )?;
     }
 
+    if current_version < 4 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS memories (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);",
+        )?;
+    }
+
     if current_version < SCHEMA_VERSION {
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
@@ -283,6 +296,7 @@ impl Db {
             max_output_bytes: config.context.max_output_storage_bytes,
         };
         let _ = db.cleanup_orphaned_sessions();
+        crate::history_import::import_if_needed(&db);
         Ok(db)
     }
 
@@ -646,6 +660,157 @@ impl Db {
             )?;
         }
         Ok(())
+    }
+
+    pub fn get_meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?",
+                params![key],
+                |row| row.get(0),
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn command_count(&self) -> rusqlite::Result<usize> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM commands",
+            [],
+            |row| row.get::<_, i64>(0).map(|v| v as usize),
+        )
+    }
+
+    // ── Memory system ──────────────────────────────────────────────
+
+    pub fn upsert_memory(&self, key: &str, value: &str) -> rusqlite::Result<(i64, bool)> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let existing: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM memories WHERE LOWER(key) = LOWER(?)",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(id) = existing {
+            self.conn.execute(
+                "UPDATE memories SET value = ?, key = ?, updated_at = ? WHERE id = ?",
+                params![value, key, now, id],
+            )?;
+            Ok((id, true))
+        } else {
+            self.conn.execute(
+                "INSERT INTO memories (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                params![key, value, now, now],
+            )?;
+            Ok((self.conn.last_insert_rowid(), false))
+        }
+    }
+
+    pub fn delete_memory(&self, id: i64) -> rusqlite::Result<bool> {
+        let rows = self
+            .conn
+            .execute("DELETE FROM memories WHERE id = ?", params![id])?;
+        Ok(rows > 0)
+    }
+
+    pub fn update_memory(
+        &self,
+        id: i64,
+        key: Option<&str>,
+        value: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        if key.is_none() && value.is_none() {
+            return Ok(false);
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut parts = Vec::new();
+        let mut vals: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(k) = key {
+            parts.push("key = ?");
+            vals.push(Box::new(k.to_string()));
+        }
+        if let Some(v) = value {
+            parts.push("value = ?");
+            vals.push(Box::new(v.to_string()));
+        }
+        parts.push("updated_at = ?");
+        vals.push(Box::new(now));
+        vals.push(Box::new(id));
+
+        let sql = format!("UPDATE memories SET {} WHERE id = ?", parts.join(", "));
+        let params: Vec<&dyn rusqlite::types::ToSql> = vals.iter().map(|v| v.as_ref()).collect();
+        let rows = self.conn.execute(&sql, params.as_slice())?;
+        Ok(rows > 0)
+    }
+
+    pub fn get_memories(&self, limit: usize) -> rusqlite::Result<Vec<Memory>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key, value, created_at, updated_at \
+             FROM memories ORDER BY updated_at DESC LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(Memory {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                value: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn search_memories(&self, query: &str) -> rusqlite::Result<Vec<Memory>> {
+        let pattern = format!("%{query}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT id, key, value, created_at, updated_at \
+             FROM memories \
+             WHERE key LIKE ? OR value LIKE ? \
+             ORDER BY updated_at DESC LIMIT 20",
+        )?;
+        let rows = stmt.query_map(params![pattern, pattern], |row| {
+            Ok(Memory {
+                id: row.get(0)?,
+                key: row.get(1)?,
+                value: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    #[allow(dead_code)]
+    pub fn get_memory_by_id(&self, id: i64) -> rusqlite::Result<Option<Memory>> {
+        self.conn
+            .query_row(
+                "SELECT id, key, value, created_at, updated_at FROM memories WHERE id = ?",
+                params![id],
+                |row| {
+                    Ok(Memory {
+                        id: row.get(0)?,
+                        key: row.get(1)?,
+                        value: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
     }
 
     #[allow(dead_code)]
@@ -1280,6 +1445,15 @@ impl Db {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Memory {
+    pub id: i64,
+    pub key: String,
+    pub value: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 // ── Data types ─────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ mod daemon;
 mod daemon_client;
 mod db;
 mod display;
+mod history_import;
 mod init;
 mod json_display;
 mod json_extract;
