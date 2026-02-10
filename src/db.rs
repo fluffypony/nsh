@@ -767,6 +767,34 @@ impl Db {
         Ok(updated > 0)
     }
 
+    pub fn commands_needing_llm_summary(&self, limit: usize) -> rusqlite::Result<Vec<CommandForSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, command, cwd, exit_code, output
+             FROM commands
+             WHERE output IS NOT NULL AND summary IS NULL AND summary_status = 'needs_llm'
+             ORDER BY started_at DESC
+             LIMIT ?"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(CommandForSummary {
+                id: row.get(0)?,
+                command: row.get(1)?,
+                cwd: row.get(2)?,
+                exit_code: row.get(3)?,
+                output: row.get(4)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn mark_unsummarized_for_llm(&self) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE commands SET summary_status = 'needs_llm'
+             WHERE output IS NOT NULL AND summary IS NULL AND summary_status IS NULL",
+            [],
+        )
+    }
+
     pub fn mark_summary_error(&self, id: i64, error: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE commands SET summary_status = 'error', summary = ? WHERE id = ? AND summary IS NULL",

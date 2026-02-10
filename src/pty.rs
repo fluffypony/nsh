@@ -1,7 +1,7 @@
 use rustix::pty::{grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{self, Termios};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::pump::{pump_loop, CaptureEngine};
 
@@ -90,7 +90,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
 
     let ws = termios::tcgetwinsize(real_stdin).ok();
     let (rows, cols) = ws.map(|w| (w.ws_row, w.ws_col)).unwrap_or((24, 80));
-    let capture = Mutex::new(CaptureEngine::new(
+    let capture = Arc::new(Mutex::new(CaptureEngine::new(
         rows,
         cols,
         config.context.scrollback_rate_limit_bps,
@@ -98,7 +98,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
         config.context.scrollback_lines.max(1000),
         config.capture.mode.clone(),
         config.capture.alt_screen.clone(),
-    ));
+    )));
 
     // Fork
     match unsafe { libc::fork() } {
@@ -165,7 +165,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
                 real_stdin,
                 real_stdout,
                 pty.master.as_fd(),
-                &capture,
+                Arc::clone(&capture),
                 pid,
             );
 

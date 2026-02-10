@@ -83,6 +83,7 @@ pub fn handle_daemon_request(
     request: DaemonRequest,
     capture: &Mutex<crate::pump::CaptureEngine>,
     db_tx: &std::sync::mpsc::Sender<DbCommand>,
+    max_output_bytes: usize,
 ) -> DaemonResponse {
     match request {
         DaemonRequest::Record {
@@ -90,7 +91,7 @@ pub fn handle_daemon_request(
             tty, pid, shell, duration_ms, output,
         } => {
             let captured = capture.lock().ok()
-                .and_then(|mut eng| eng.capture_since_mark(65536));
+                .and_then(|mut eng| eng.capture_since_mark(max_output_bytes));
             let final_output = output.or(captured);
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let cmd = DbCommand::Record {
@@ -147,7 +148,7 @@ pub fn handle_daemon_request(
         DaemonRequest::CaptureRead { max_lines, .. } => {
             match capture.lock() {
                 Ok(mut eng) => {
-                    let text = eng.capture_since_mark(65536)
+                    let text = eng.capture_since_mark(max_output_bytes)
                         .unwrap_or_default();
                     let lines: Vec<&str> = text.lines().collect();
                     let start = lines.len().saturating_sub(max_lines);
@@ -304,6 +305,8 @@ fn generate_summaries_sync(db: &crate::db::Db) {
             let _ = db.update_summary(cmd.id, &trivial);
         }
     }
+
+    let _ = db.mark_unsummarized_for_llm();
 }
 
 pub fn daemon_socket_path(session_id: &str) -> std::path::PathBuf {

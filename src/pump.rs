@@ -1,5 +1,5 @@
 use std::os::fd::BorrowedFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -326,7 +326,7 @@ pub fn pump_loop(
     real_stdin: BorrowedFd,
     real_stdout: BorrowedFd,
     pty_master: BorrowedFd,
-    capture: &Mutex<CaptureEngine>,
+    capture: Arc<Mutex<CaptureEngine>>,
     child_pid: rustix::process::Pid,
 ) {
     use rustix::event::{poll, PollFd, PollFlags, Timespec};
@@ -341,6 +341,10 @@ pub fn pump_loop(
         pty_master_raw,
         winch_pending.clone(),
     );
+
+    let config = crate::config::Config::load().unwrap_or_default();
+    let max_output_bytes = config.context.max_output_storage_bytes;
+    let active_conns = Arc::new(AtomicUsize::new(0));
 
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
@@ -443,7 +447,7 @@ pub fn pump_loop(
             Ok(_) => {
                 if handle_io(
                     &poll_fds[0], &poll_fds[1], &real_stdin, &real_stdout, &pty_master,
-                    &mut buf, capture, &mut last_activity, &mut last_flush,
+                    &mut buf, &capture, &mut last_activity, &mut last_flush,
                     &scrollback_path, &redact_active_path,
                 ) {
                     break;
@@ -451,13 +455,13 @@ pub fn pump_loop(
 
                 if let (Some(idx), Some(l)) = (legacy_idx, listener.as_ref()) {
                     if poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_socket_connection(l, capture);
+                        handle_socket_connection(l, &capture);
                     }
                 }
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
                     if poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_daemon_connection(l, capture, &db_tx);
+                        handle_daemon_connection(l, &capture, &db_tx, max_output_bytes, &active_conns);
                     }
                 }
             }
@@ -539,6 +543,40 @@ fn handle_io(
     false
 }
 
+fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut cred as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if rc == 0 && cred.uid != unsafe { libc::getuid() } {
+            tracing::warn!("Rejecting daemon connection from uid {}", cred.uid);
+            return false;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        let mut euid: libc::uid_t = 0;
+        let mut egid: libc::gid_t = 0;
+        let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut euid, &mut egid) };
+        if rc == 0 && euid != unsafe { libc::getuid() } {
+            tracing::warn!("Rejecting daemon connection from uid {}", euid);
+            return false;
+        }
+    }
+    true
+}
+
 fn handle_socket_connection(
     listener: &std::os::unix::net::UnixListener,
     capture: &Mutex<CaptureEngine>,
@@ -546,6 +584,9 @@ fn handle_socket_connection(
     use std::io::Write;
 
     if let Ok((mut stream, _)) = listener.accept() {
+        if !check_peer_uid(&stream) {
+            return;
+        }
         stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
         if let Ok(eng) = capture.lock() {
             let text = eng.get_lines(1000);
@@ -556,30 +597,90 @@ fn handle_socket_connection(
 
 fn handle_daemon_connection(
     listener: &std::os::unix::net::UnixListener,
+    capture: &Arc<Mutex<CaptureEngine>>,
+    db_tx: &std::sync::mpsc::Sender<crate::daemon::DbCommand>,
+    max_output_bytes: usize,
+    active_conns: &Arc<AtomicUsize>,
+) {
+    const MAX_CONCURRENT: usize = 8;
+
+    if let Ok((stream, _)) = listener.accept() {
+        if !check_peer_uid(&stream) {
+            return;
+        }
+
+        if active_conns.load(Ordering::Relaxed) >= MAX_CONCURRENT {
+            tracing::debug!("daemon: rejecting connection, at max concurrent limit");
+            return;
+        }
+
+        let capture = Arc::clone(capture);
+        let db_tx = db_tx.clone();
+        let active = Arc::clone(active_conns);
+        active.fetch_add(1, Ordering::Relaxed);
+
+        std::thread::Builder::new()
+            .name("nsh-daemon-conn".into())
+            .spawn(move || {
+                handle_daemon_connection_inner(stream, &capture, &db_tx, max_output_bytes);
+                active.fetch_sub(1, Ordering::Relaxed);
+            })
+            .ok();
+    }
+}
+
+fn handle_daemon_connection_inner(
+    stream: std::os::unix::net::UnixStream,
     capture: &Mutex<CaptureEngine>,
     db_tx: &std::sync::mpsc::Sender<crate::daemon::DbCommand>,
+    max_output_bytes: usize,
 ) {
     use std::io::{BufRead, BufReader, Write};
 
-    if let Ok((stream, _)) = listener.accept() {
-        stream.set_read_timeout(Some(Duration::from_millis(500))).ok();
-        stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+    stream.set_read_timeout(Some(Duration::from_millis(500))).ok();
+    stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
 
-        let mut reader = BufReader::new(&stream);
-        let mut line = String::new();
-        let read_result = reader.read_line(&mut line);
-        let response = match read_result {
-            Ok(0) => return,
-            Ok(n) if n > 256 * 1024 => {
-                crate::daemon::DaemonResponse::error("request too large")
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    let read_result = reader.read_line(&mut line);
+    let response = match read_result {
+        Ok(0) => return,
+        Ok(n) if n > 256 * 1024 => {
+            crate::daemon::DaemonResponse::error("request too large")
+        }
+        Ok(_) => {
+            let raw: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(e) => {
+                    let resp = crate::daemon::DaemonResponse::error(format!("invalid JSON: {e}"));
+                    if let Ok(json) = serde_json::to_string(&resp) {
+                        let mut writer = stream;
+                        let _ = writer.write_all(json.as_bytes());
+                        let _ = writer.write_all(b"\n");
+                        let _ = writer.flush();
+                    }
+                    return;
+                }
+            };
+            let client_version = raw.get("v").and_then(|v| v.as_u64()).unwrap_or(1);
+            if client_version > crate::daemon::DAEMON_PROTOCOL_VERSION as u64 {
+                tracing::warn!(
+                    "daemon: client protocol version {client_version} > server {}",
+                    crate::daemon::DAEMON_PROTOCOL_VERSION
+                );
             }
-            Ok(_) => match serde_json::from_str::<crate::daemon::DaemonRequest>(&line) {
-                Ok(request) => crate::daemon::handle_daemon_request(request, capture, db_tx),
+            match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
+                Ok(request) => crate::daemon::handle_daemon_request(request, capture, db_tx, max_output_bytes),
                 Err(e) => crate::daemon::DaemonResponse::error(format!("invalid request: {e}")),
-            },
-            Err(_) => return,
-        };
-        if let Ok(json) = serde_json::to_string(&response) {
+            }
+        }
+        Err(_) => return,
+    };
+    if let Ok(mut json_val) = serde_json::to_value(&response) {
+        if let serde_json::Value::Object(ref mut map) = json_val {
+            map.insert("v".into(), serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION));
+        }
+        if let Ok(json) = serde_json::to_string(&json_val) {
             let mut writer = stream;
             let _ = writer.write_all(json.as_bytes());
             let _ = writer.write_all(b"\n");
