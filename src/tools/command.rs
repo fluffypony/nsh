@@ -9,6 +9,7 @@ pub fn execute(
     db: &Db,
     session_id: &str,
     private: bool,
+    config: &crate::config::Config,
 ) -> anyhow::Result<()> {
     let command = input["command"].as_str().unwrap_or("");
     let explanation = input["explanation"].as_str().unwrap_or("");
@@ -54,9 +55,9 @@ pub fn execute(
     }
 
     if !private {
-        let redacted_query = crate::redact::redact_secrets(original_query, &crate::config::RedactionConfig::default());
-        let redacted_response = crate::redact::redact_secrets(command, &crate::config::RedactionConfig::default());
-        let redacted_explanation = Some(crate::redact::redact_secrets(explanation, &crate::config::RedactionConfig::default()));
+        let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
+        let redacted_response = crate::redact::redact_secrets(command, &config.redaction);
+        let redacted_explanation = Some(crate::redact::redact_secrets(explanation, &config.redaction));
         db.insert_conversation(
             session_id,
             &redacted_query,
@@ -66,9 +67,8 @@ pub fn execute(
             false,
             pending,
         )?;
+        crate::audit::audit_log(session_id, original_query, "command", command, &risk.to_string());
     }
-
-    crate::audit::audit_log(session_id, original_query, "command", command, &risk.to_string());
 
     Ok(())
 }

@@ -185,13 +185,13 @@ pub async fn handle_query(
                     "command" => {
                         has_terminal_tool = true;
                         tools::command::execute(
-                            input, query, db, session_id, private,
+                            input, query, db, session_id, private, config,
                         )?;
                     }
                     "chat" => {
                         has_terminal_tool = true;
                         tools::chat::execute(
-                            input, query, db, session_id, private,
+                            input, query, db, session_id, private, config,
                         )?;
                     }
                     "write_file" => {
@@ -208,7 +208,8 @@ pub async fn handle_query(
                                 has_terminal_tool = true;
                             }
                             Some(err_msg) => {
-                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                let sanitized = crate::security::sanitize_tool_output(&err_msg);
+                                let wrapped = crate::security::wrap_tool_result(name, &sanitized, &boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,

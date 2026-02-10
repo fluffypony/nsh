@@ -99,7 +99,7 @@ pub fn generate_boundary() -> String {
 }
 
 pub fn wrap_tool_result(name: &str, content: &str, boundary: &str) -> String {
-    format!("<tool_result boundary=\"{boundary}\" name=\"{name}\">\n{content}\n</tool_result>")
+    format!("BOUNDARY-{boundary}\n<tool_result name=\"{name}\">\n{content}\n</tool_result>\nBOUNDARY-{boundary}")
 }
 
 pub fn boundary_system_prompt_addition(boundary: &str) -> String {
@@ -238,7 +238,8 @@ mod tests {
     #[test]
     fn test_wrap_tool_result() {
         let result = wrap_tool_result("test_tool", "some content", "abc123");
-        assert!(result.contains("boundary=\"abc123\""));
+        assert!(result.starts_with("BOUNDARY-abc123\n"));
+        assert!(result.ends_with("\nBOUNDARY-abc123"));
         assert!(result.contains("name=\"test_tool\""));
         assert!(result.contains("some content"));
     }

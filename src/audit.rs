@@ -43,6 +43,12 @@ pub fn rotate_audit_log() {
     if std::io::copy(&mut reader, &mut encoder).is_err() { return; }
     if encoder.finish().is_err() { return; }
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o600));
+    }
+
     let _ = std::fs::write(&log_path, "");
 
     cleanup_old_archives();

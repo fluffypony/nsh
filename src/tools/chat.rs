@@ -7,6 +7,7 @@ pub fn execute(
     db: &Db,
     session_id: &str,
     private: bool,
+    config: &crate::config::Config,
 ) -> anyhow::Result<()> {
     let response = input["response"].as_str().unwrap_or("");
 
@@ -16,8 +17,8 @@ pub fn execute(
 
     if !private {
         crate::audit::audit_log(session_id, original_query, "chat", response, "safe");
-        let redacted_query = crate::redact::redact_secrets(original_query, &crate::config::RedactionConfig::default());
-        let redacted_response = crate::redact::redact_secrets(response, &crate::config::RedactionConfig::default());
+        let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
+        let redacted_response = crate::redact::redact_secrets(response, &config.redaction);
         db.insert_conversation(
             session_id,
             &redacted_query,
