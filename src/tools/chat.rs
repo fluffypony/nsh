@@ -15,6 +15,7 @@ pub fn execute(
     eprintln!("{color}{response}{reset}");
 
     if !private {
+        crate::audit::audit_log(session_id, original_query, "chat", response, "safe");
         let redacted_query = crate::redact::redact_secrets(original_query, &crate::config::RedactionConfig::default());
         let redacted_response = crate::redact::redact_secrets(response, &crate::config::RedactionConfig::default());
         db.insert_conversation(

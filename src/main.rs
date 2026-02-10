@@ -37,6 +37,8 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    security::secure_nsh_directory();
+
     let cli = Cli::parse();
 
     match cli.command {
