@@ -73,3 +73,24 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn test_execute_missing_fields() {
+        let input = json!({"name": "test"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required"));
+    }
+
+    #[test]
+    fn test_execute_invalid_name() {
+        let input = json!({"name": "bad name!", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+}

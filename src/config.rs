@@ -1651,4 +1651,115 @@ model = "search-model"
         assert_eq!(config.web_search.provider, "brave");
         assert_eq!(config.web_search.model, "search-model");
     }
+
+    #[test]
+    fn test_build_config_xml_basic() {
+        let config = Config::default();
+        let skills = vec![];
+        let mcp_servers = vec![];
+        let xml = build_config_xml(&config, &skills, &mcp_servers);
+        assert!(xml.contains("<nsh_configuration"));
+        assert!(xml.contains("</nsh_configuration>"));
+        assert!(xml.contains("provider"));
+        assert!(xml.contains("context"));
+        assert!(xml.contains("display"));
+    }
+
+    #[test]
+    fn test_build_config_xml_with_skills() {
+        let config = Config::default();
+        let skills = vec![crate::skills::Skill {
+            name: "test_skill".to_string(),
+            description: "A test skill".to_string(),
+            command: "echo test".to_string(),
+            timeout_seconds: 30,
+            parameters: std::collections::HashMap::new(),
+            is_project: false,
+            terminal: false,
+        }];
+        let mcp_servers = vec![];
+        let xml = build_config_xml(&config, &skills, &mcp_servers);
+        assert!(xml.contains("test_skill"));
+        assert!(xml.contains("A test skill"));
+    }
+
+    #[test]
+    fn test_build_config_xml_with_mcp() {
+        let config = Config::default();
+        let skills = vec![];
+        let mcp_servers = vec![("test_server".to_string(), 3)];
+        let xml = build_config_xml(&config, &skills, &mcp_servers);
+        assert!(xml.contains("test_server"));
+        assert!(xml.contains("tools=\"3\""));
+    }
+
+    #[test]
+    fn test_mcp_effective_transport_default() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: Some("echo".into()),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            url: None,
+            headers: std::collections::HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "stdio");
+    }
+
+    #[test]
+    fn test_mcp_effective_transport_explicit_http() {
+        let cfg = McpServerConfig {
+            transport: Some("http".into()),
+            command: None,
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            url: Some("http://localhost:8080".into()),
+            headers: std::collections::HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "http");
+    }
+
+    #[test]
+    fn test_mcp_effective_transport_inferred_http() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: None,
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            url: Some("http://localhost:8080".into()),
+            headers: std::collections::HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "http");
+    }
+
+    #[test]
+    fn test_opt_without_choices() {
+        let mut x = String::new();
+        opt(&mut x, "test_key", "test_value", "test description", None);
+        assert!(x.contains("test_key"));
+        assert!(x.contains("test_value"));
+        assert!(x.contains("test description"));
+        assert!(!x.contains("choices"));
+    }
+
+    #[test]
+    fn test_opt_with_choices() {
+        let mut x = String::new();
+        opt(&mut x, "mode", "prefill", "execution mode", Some("prefill,confirm,autorun"));
+        assert!(x.contains("choices="));
+        assert!(x.contains("prefill,confirm,autorun"));
+    }
+
+    #[test]
+    fn test_find_project_config_no_panic() {
+        let _ = find_project_config();
+    }
+
+    #[test]
+    fn test_default_mcp_timeout() {
+        assert_eq!(default_mcp_timeout(), 30);
+    }
 }

@@ -142,3 +142,47 @@ pub fn execute(
     eprintln!("{dim}Restart your shell or run a new query for it to become active.{reset}");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn test_execute_missing_name() {
+        let input = json!({"command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("name"));
+    }
+
+    #[test]
+    fn test_execute_invalid_name() {
+        let input = json!({"name": "bad name!", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_execute_stdio_missing_command() {
+        let input = json!({"name": "test", "transport": "stdio"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("command"));
+    }
+
+    #[test]
+    fn test_execute_http_missing_url() {
+        let input = json!({"name": "test", "transport": "http"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("url"));
+    }
+
+    #[test]
+    fn test_execute_invalid_transport() {
+        let input = json!({"name": "test", "transport": "websocket"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+    }
+}

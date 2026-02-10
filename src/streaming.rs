@@ -216,3 +216,135 @@ async fn check_cancelled(cancelled: &Arc<AtomicBool>) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn test_configure_display() {
+        let config = crate::config::DisplayConfig::default();
+        configure_display(&config);
+    }
+
+    #[test]
+    fn test_chat_color_default() {
+        let color = chat_color();
+        assert!(!color.is_empty());
+    }
+
+    #[test]
+    fn test_spinner_frames_default() {
+        let frames = spinner_frames();
+        assert!(!frames.is_empty());
+    }
+
+    #[test]
+    fn test_hide_spinner_noop_when_not_active() {
+        hide_spinner();
+    }
+
+    #[test]
+    fn test_spinner_guard_noop() {
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_text() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::TextDelta("hello ".to_string())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("world".to_string())).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        if let ContentBlock::Text { text } = &msg.content[0] {
+            assert_eq!(text, "hello world");
+        } else {
+            panic!("expected text content");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_tool_use() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "command".into(),
+        }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"command":"ls"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        if let ContentBlock::ToolUse { name, input, .. } = &msg.content[0] {
+            assert_eq!(name, "command");
+            assert_eq!(input["command"].as_str(), Some("ls"));
+        } else {
+            panic!("expected tool use");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_error() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::Error("test error".into())).await.unwrap();
+        drop(tx);
+
+        let result = consume_stream(&mut rx, &cancelled).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_generation_id_ignored() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::GenerationId("gen-123".into())).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert!(msg.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_text_and_tool() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::TextDelta("thinking...".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "chat".into(),
+        }).await.unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"response":"hi"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseEnd).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_channel_closed() {
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert!(msg.content.is_empty());
+    }
+}
