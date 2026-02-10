@@ -91,4 +91,14 @@ mod tests {
     fn test_cleanup_old_archives_limit() {
         cleanup_old_archives();
     }
+
+    #[test]
+    fn test_audit_log_no_panic() {
+        audit_log("test-session", "test query", "command", "ls", "safe");
+    }
+
+    #[test]
+    fn test_rotate_audit_log_no_panic() {
+        rotate_audit_log();
+    }
 }

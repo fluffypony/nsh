@@ -921,4 +921,422 @@ mod tests {
         assert_eq!(format_size(1536), "1.5KB");
         assert_eq!(format_size(1_500_000), "1.4MB");
     }
+
+    #[test]
+    fn test_format_size_edge_cases() {
+        assert_eq!(format_size(0), "0B");
+        assert_eq!(format_size(1023), "1023B");
+        assert_eq!(format_size(1024), "1.0KB");
+        assert_eq!(format_size(1024 * 1024), "1.0MB");
+        assert_eq!(format_size(1024 * 1024 * 10), "10.0MB");
+    }
+
+    #[test]
+    fn test_xml_escape_empty() {
+        assert_eq!(xml_escape(""), "");
+    }
+
+    #[test]
+    fn test_xml_escape_all_special() {
+        assert_eq!(xml_escape("&<>\""), "&amp;&lt;&gt;&quot;");
+    }
+
+    #[test]
+    fn test_xml_escape_mixed() {
+        assert_eq!(
+            xml_escape("a & b < c > d \"e\""),
+            "a &amp; b &lt; c &gt; d &quot;e&quot;"
+        );
+    }
+
+    #[test]
+    fn test_detect_locale() {
+        let locale = detect_locale();
+        assert!(!locale.is_empty());
+    }
+
+    #[test]
+    fn test_detect_project_type_node() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_node");
+        let _ = std::fs::create_dir_all(&tmp);
+        let _ = std::fs::remove_file(tmp.join("Cargo.toml"));
+        std::fs::write(tmp.join("package.json"), "{}").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Node"), "expected Node.js, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_python() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_python");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("pyproject.toml"), "").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Python"), "expected Python, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_go() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_go");
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("go.mod"), "").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Go"), "expected Go, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_unknown() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_unknown");
+        let _ = std::fs::create_dir_all(&tmp);
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert_eq!(t, "unknown");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn make_minimal_ctx() -> QueryContext {
+        QueryContext {
+            os_info: "macOS 15.0".into(),
+            shell: "zsh".into(),
+            cwd: "/tmp".into(),
+            username: "testuser".into(),
+            conversation_history: vec![],
+            hostname: "testhost".into(),
+            machine_info: "arm64".into(),
+            datetime_info: "2025-01-01 00:00:00 UTC".into(),
+            timezone_info: "UTC".into(),
+            locale_info: "en_US.UTF-8".into(),
+            session_history: vec![],
+            other_sessions: vec![],
+            scrollback_text: String::new(),
+            custom_instructions: None,
+            project_info: ProjectInfo {
+                root: None,
+                project_type: "unknown".into(),
+                git_branch: None,
+                git_status: None,
+                git_commits: vec![],
+                files: vec![],
+            },
+            ssh_context: None,
+            container_context: None,
+        }
+    }
+
+    #[test]
+    fn test_build_xml_context_minimal() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.starts_with("<context>"));
+        assert!(xml.ends_with("</context>"));
+        assert!(xml.contains("os=\"macOS 15.0\""));
+        assert!(xml.contains("shell=\"zsh\""));
+        assert!(xml.contains("cwd=\"/tmp\""));
+        assert!(xml.contains("user=\"testuser\""));
+        assert!(xml.contains("hostname=\"testhost\""));
+        assert!(xml.contains("machine=\"arm64\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_environment_info() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<environment"));
+        assert!(xml.contains("datetime=\"2025-01-01 00:00:00 UTC\""));
+        assert!(xml.contains("timezone=\"UTC\""));
+        assert!(xml.contains("locale=\"en_US.UTF-8\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_project_info() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/home/user/myproject".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("main".into()),
+            git_status: Some("clean".into()),
+            git_commits: vec![GitCommit {
+                hash: "abc123".into(),
+                message: "initial commit".into(),
+                relative_time: "2 hours ago".into(),
+            }],
+            files: vec![FileEntry {
+                path: "src/main.rs".into(),
+                kind: "file".into(),
+                size: "1.5KB".into(),
+            }],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<project root=\"/home/user/myproject\" type=\"Rust/Cargo\">"));
+        assert!(xml.contains("branch=\"main\""));
+        assert!(xml.contains("status=\"clean\""));
+        assert!(xml.contains("hash=\"abc123\""));
+        assert!(xml.contains("initial commit"));
+        assert!(xml.contains("<files count=\"1\">"));
+        assert!(xml.contains("path=\"src/main.rs\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_scrollback() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "$ ls\nfile1.txt  file2.txt".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<recent_terminal session=\"current\">"));
+        assert!(xml.contains("file1.txt"));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_session_history() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "ls -la".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: Some(50),
+            summary: Some("listed files".into()),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<session_history"));
+        assert!(xml.contains("<input>ls -la</input>"));
+        assert!(xml.contains("<summary>listed files</summary>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_ssh_context() {
+        let mut ctx = make_minimal_ctx();
+        ctx.ssh_context = Some("<ssh remote_ip=\"192.168.1.1\" />".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<ssh remote_ip=\"192.168.1.1\" />"));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_container_context() {
+        let mut ctx = make_minimal_ctx();
+        ctx.container_context = Some("<container type=\"docker\" />".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<container type=\"docker\" />"));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_custom_instructions() {
+        let mut ctx = make_minimal_ctx();
+        ctx.custom_instructions = Some("Always use tabs for indentation.".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<custom_instructions>"));
+        assert!(xml.contains("Always use tabs for indentation."));
+        assert!(xml.contains("</custom_instructions>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_with_other_sessions() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![OtherSessionSummary {
+            command: "cargo build".into(),
+            cwd: Some("/projects/foo".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:05:00Z".into(),
+            summary: Some("compiled successfully".into()),
+            tty: "/dev/ttys002".into(),
+            shell: "zsh".into(),
+            session_id: "other-session-1".into(),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<other_sessions>"));
+        assert!(xml.contains("<session tty=\"/dev/ttys002\" shell=\"zsh\">"));
+        assert!(xml.contains("<input>cargo build</input>"));
+        assert!(xml.contains("<summary>compiled successfully</summary>"));
+    }
+
+    #[test]
+    fn test_detect_os_non_empty() {
+        let os = detect_os();
+        assert!(!os.is_empty());
+    }
+
+    #[test]
+    fn test_detect_hostname_non_empty() {
+        let hostname = detect_hostname();
+        assert!(!hostname.is_empty());
+    }
+
+    #[test]
+    fn test_detect_machine_info_contains_arch() {
+        let info = detect_machine_info();
+        assert!(
+            info.contains(std::env::consts::ARCH),
+            "expected arch in machine info, got: {info}"
+        );
+    }
+
+    #[test]
+    fn test_which_exists_ls() {
+        assert!(which_exists("ls"));
+    }
+
+    #[test]
+    fn test_which_exists_nonexistent() {
+        assert!(!which_exists("nonexistent_cmd_xyz"));
+    }
+
+    #[test]
+    fn test_detect_locale_non_empty() {
+        let locale = detect_locale();
+        assert!(!locale.is_empty());
+    }
+
+    #[test]
+    fn test_detect_ssh_context_without_env() {
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+            std::env::remove_var("SSH_CONNECTION");
+        }
+        assert!(detect_ssh_context().is_none());
+    }
+
+    #[test]
+    fn test_detect_container_on_non_container() {
+        let result = detect_container();
+        if !std::path::Path::new("/.dockerenv").exists() {
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_detect_timezone_non_empty() {
+        let tz = detect_timezone();
+        assert!(!tz.is_empty());
+    }
+
+    #[test]
+    fn test_detect_project_type_multiple() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_multi");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("Cargo.toml"), "").unwrap();
+        std::fs::write(tmp.join("package.json"), "{}").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Rust"), "expected Rust, got: {t}");
+        assert!(t.contains("Node"), "expected Node.js, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_dockerfile() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_docker");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("Dockerfile"), "FROM alpine").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Docker"), "expected Docker, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_makefile() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_make");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("Makefile"), "all:").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Make"), "expected Make, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_java() {
+        let tmp = std::env::temp_dir().join("nsh_test_project_java");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("pom.xml"), "<project/>").unwrap();
+        let t = detect_project_type(tmp.to_str().unwrap());
+        assert!(t.contains("Java"), "expected Java, got: {t}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_detect_project_type_nonexistent_dir() {
+        let t = detect_project_type("/tmp/nsh_nonexistent_dir_xyz_999");
+        assert_eq!(t, "unknown");
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_none() {
+        let config = Config::default();
+        let tmp = std::env::temp_dir().join("nsh_test_no_instructions");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        let result = gather_custom_instructions(&config, tmp.to_str().unwrap());
+        if config.context.custom_instructions.is_none() {
+            assert!(result.is_none());
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_read_scrollback_file_missing() {
+        let nsh_dir = std::env::temp_dir().join("nsh_test_scrollback_missing");
+        let _ = std::fs::create_dir_all(&nsh_dir);
+        let result = read_scrollback_file("nonexistent_session_xyz", &nsh_dir);
+        assert!(result.is_empty());
+        let _ = std::fs::remove_dir_all(&nsh_dir);
+    }
+
+    #[test]
+    fn test_build_xml_context_with_conversation_history() {
+        let mut ctx = make_minimal_ctx();
+        ctx.conversation_history = vec![ConversationExchange {
+            query: "how do I list files".into(),
+            response_type: "command".into(),
+            response: "ls -la".into(),
+            explanation: Some("List all files".into()),
+            result_exit_code: None,
+            result_output_snippet: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.starts_with("<context>"));
+        assert!(xml.ends_with("</context>"));
+        assert_eq!(ctx.conversation_history.len(), 1);
+        assert_eq!(ctx.conversation_history[0].query, "how do I list files");
+        assert_eq!(ctx.conversation_history[0].response, "ls -la");
+    }
+
+    #[test]
+    fn test_list_project_files_with_temp_dir() {
+        let tmp = std::env::temp_dir().join("nsh_test_list_files");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        std::fs::write(tmp.join("hello.txt"), "world").unwrap();
+        std::fs::write(tmp.join("foo.rs"), "fn main() {}").unwrap();
+        let _ = std::fs::create_dir_all(tmp.join("subdir"));
+        std::fs::write(tmp.join("subdir").join("bar.txt"), "baz").unwrap();
+        let entries = list_project_files(tmp.to_str().unwrap(), 100);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"hello.txt"), "missing hello.txt: {paths:?}");
+        assert!(paths.contains(&"foo.rs"), "missing foo.rs: {paths:?}");
+        let hello = entries.iter().find(|e| e.path == "hello.txt").unwrap();
+        assert_eq!(hello.kind, "file");
+        assert!(!hello.size.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_get_cached_system_info_returns_valid_data() {
+        let info = get_cached_system_info();
+        assert!(!info.os_info.is_empty());
+        assert!(!info.hostname.is_empty());
+        assert!(!info.machine_info.is_empty());
+        assert!(!info.timezone_info.is_empty());
+        assert!(!info.locale_info.is_empty());
+    }
+
+    #[test]
+    fn test_get_cached_system_info_caching() {
+        let info1 = get_cached_system_info();
+        let info2 = get_cached_system_info();
+        assert_eq!(info1.os_info, info2.os_info);
+        assert_eq!(info1.hostname, info2.hostname);
+        assert_eq!(info1.machine_info, info2.machine_info);
+    }
 }

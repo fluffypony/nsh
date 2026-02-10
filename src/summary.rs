@@ -221,4 +221,53 @@ mod tests {
             Some("Built-in returned 1".into())
         );
     }
+
+    #[test]
+    fn test_trivial_summary_cls() {
+        assert_eq!(
+            trivial_summary("cls", 0, ""),
+            Some("Cleared terminal".into())
+        );
+    }
+
+    #[test]
+    fn test_trivial_summary_with_nonzero_exit_no_output() {
+        assert_eq!(
+            trivial_summary("false", 1, ""),
+            Some("Built-in returned 1".into())
+        );
+        assert!(trivial_summary("unknown_cmd", 1, "").is_none());
+    }
+
+    #[test]
+    fn test_build_summary_prompt_with_no_output() {
+        let cmd = CommandForSummary {
+            id: 10,
+            command: "silent-cmd".into(),
+            cwd: Some("/home".into()),
+            exit_code: Some(0),
+            output: None,
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains("silent-cmd"));
+        assert!(prompt.contains("Exit code: 0"));
+        assert!(!prompt.contains("[...]"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_exactly_50_lines() {
+        let lines: Vec<String> = (1..=50).map(|i| format!("line {i}")).collect();
+        let output = lines.join("\n");
+        let cmd = CommandForSummary {
+            id: 11,
+            command: "fifty-lines".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            output: Some(output),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(!prompt.contains("[...]"));
+        assert!(prompt.contains("line 1"));
+        assert!(prompt.contains("line 50"));
+    }
 }

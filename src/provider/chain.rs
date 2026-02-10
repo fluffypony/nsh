@@ -130,3 +130,80 @@ pub async fn call_chain_with_fallback_think(
     }
     anyhow::bail!("All models in chain exhausted")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_429() {
+        let e = anyhow::anyhow!("HTTP 429 Too Many Requests");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_500() {
+        let e = anyhow::anyhow!("500 Internal Server Error");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_502() {
+        let e = anyhow::anyhow!("502 Bad Gateway");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_503() {
+        let e = anyhow::anyhow!("503 Service Unavailable");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_504() {
+        let e = anyhow::anyhow!("504 Gateway Timeout");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_timeout() {
+        let e = anyhow::anyhow!("connection timed out");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_timeout_keyword() {
+        let e = anyhow::anyhow!("request timeout reached");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn not_retryable_400() {
+        let e = anyhow::anyhow!("400 Bad Request: invalid model");
+        assert!(!is_retryable_error(&e));
+    }
+
+    #[test]
+    fn not_retryable_401() {
+        let e = anyhow::anyhow!("401 Unauthorized");
+        assert!(!is_retryable_error(&e));
+    }
+
+    #[test]
+    fn not_retryable_403() {
+        let e = anyhow::anyhow!("403 Forbidden");
+        assert!(!is_retryable_error(&e));
+    }
+
+    #[test]
+    fn not_retryable_404() {
+        let e = anyhow::anyhow!("404 Not Found");
+        assert!(!is_retryable_error(&e));
+    }
+
+    #[test]
+    fn not_retryable_generic() {
+        let e = anyhow::anyhow!("something went wrong");
+        assert!(!is_retryable_error(&e));
+    }
+}

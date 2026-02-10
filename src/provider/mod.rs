@@ -172,3 +172,144 @@ pub fn parse_openai_response(json: &serde_json::Value) -> anyhow::Result<Message
         content,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parse_openai_response_text_content() {
+        let resp = json!({
+            "choices": [{"message": {"content": "Hello world", "role": "assistant"}}]
+        });
+        let msg = parse_openai_response(&resp).unwrap();
+        assert!(matches!(msg.role, Role::Assistant));
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello world"),
+            _ => panic!("expected Text block"),
+        }
+    }
+
+    #[test]
+    fn parse_openai_response_tool_calls() {
+        let resp = json!({
+            "choices": [{"message": {
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "run_command", "arguments": "{\"cmd\":\"ls\"}"}
+                }]
+            }}]
+        });
+        let msg = parse_openai_response(&resp).unwrap();
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "run_command");
+                assert_eq!(input, &json!({"cmd": "ls"}));
+            }
+            _ => panic!("expected ToolUse block"),
+        }
+    }
+
+    #[test]
+    fn parse_openai_response_text_and_tool_calls() {
+        let resp = json!({
+            "choices": [{"message": {
+                "content": "Let me run that",
+                "tool_calls": [{
+                    "id": "call_2",
+                    "function": {"name": "read_file", "arguments": "{\"path\":\"/tmp/f\"}"}
+                }]
+            }}]
+        });
+        let msg = parse_openai_response(&resp).unwrap();
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(&msg.content[0], ContentBlock::Text { text } if text == "Let me run that"));
+        assert!(matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "read_file"));
+    }
+
+    #[test]
+    fn parse_openai_response_empty_choices() {
+        let resp = json!({"choices": []});
+        assert!(parse_openai_response(&resp).is_err());
+    }
+
+    #[test]
+    fn parse_openai_response_invalid_arguments_defaults() {
+        let resp = json!({
+            "choices": [{"message": {
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_3",
+                    "function": {"name": "test", "arguments": "not json{{{"}
+                }]
+            }}]
+        });
+        let msg = parse_openai_response(&resp).unwrap();
+        match &msg.content[0] {
+            ContentBlock::ToolUse { input, .. } => assert_eq!(input, &json!(null)),
+            _ => panic!("expected ToolUse block"),
+        }
+    }
+
+    #[test]
+    fn message_serialization_roundtrip() {
+        let msg = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".into(),
+            }],
+        };
+        let serialized = serde_json::to_string(&msg).unwrap();
+        let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+        assert!(matches!(deserialized.role, Role::User));
+        assert_eq!(deserialized.content.len(), 1);
+    }
+
+    #[test]
+    fn role_serialization_roundtrip() {
+        for (role, expected) in [
+            (Role::System, "\"system\""),
+            (Role::User, "\"user\""),
+            (Role::Assistant, "\"assistant\""),
+            (Role::Tool, "\"tool\""),
+        ] {
+            let s = serde_json::to_string(&role).unwrap();
+            assert_eq!(s, expected);
+            let back: Role = serde_json::from_str(&s).unwrap();
+            assert_eq!(
+                std::mem::discriminant(&role),
+                std::mem::discriminant(&back)
+            );
+        }
+    }
+
+    #[test]
+    fn content_block_serialization_roundtrip() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "hello".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "id1".into(),
+                name: "fn1".into(),
+                input: json!({"key": "val"}),
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "id1".into(),
+                content: "result".into(),
+                is_error: false,
+            },
+        ];
+        for block in &blocks {
+            let s = serde_json::to_string(block).unwrap();
+            let back: ContentBlock = serde_json::from_str(&s).unwrap();
+            let s2 = serde_json::to_string(&back).unwrap();
+            assert_eq!(s, s2);
+        }
+    }
+}

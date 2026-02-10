@@ -10,6 +10,9 @@ pub mod run_command;
 pub mod search_history;
 pub mod web_search;
 pub mod write_file;
+pub mod manage_config;
+pub mod install_skill;
+pub mod install_mcp;
 
 use serde::Serialize;
 use serde_json::json;
@@ -340,6 +343,146 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["command"]
             }),
         },
+        ToolDefinition {
+            name: "manage_config".into(),
+            description: "Modify nsh configuration. The current \
+                          configuration with all available options \
+                          is shown in the <nsh_configuration> block \
+                          in the system context. Use action=\"set\" \
+                          with a dot-separated key path and a value, \
+                          or action=\"remove\" to delete a key. The \
+                          user will see the change and must confirm."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description":
+                            "Action to perform: 'set' or 'remove'",
+                        "enum": ["set", "remove"],
+                        "default": "set"
+                    },
+                    "key": {
+                        "type": "string",
+                        "description":
+                            "Dot-separated config key path \
+                             (e.g. 'provider.model', \
+                             'context.history_limit')"
+                    },
+                    "value": {
+                        "description":
+                            "Value to set (string, number, boolean, \
+                             or array). Required for action='set'."
+                    }
+                },
+                "required": ["action", "key"]
+            }),
+        },
+        ToolDefinition {
+            name: "install_skill".into(),
+            description: "Install a new custom skill (reusable tool). \
+                          Skills are shell command templates with \
+                          optional parameters, saved to \
+                          ~/.nsh/skills/. The user will see the \
+                          skill definition and must confirm."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description":
+                            "Skill name (alphanumeric + underscores)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description":
+                            "What the skill does"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description":
+                            "Shell command template. Use {param_name} \
+                             for parameters."
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Execution timeout",
+                        "default": 30
+                    },
+                    "parameters": {
+                        "type": "object",
+                        "description":
+                            "Map of parameter names to \
+                             {type, description} objects",
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string" },
+                                "description": { "type": "string" }
+                            }
+                        }
+                    }
+                },
+                "required": ["name", "description", "command"]
+            }),
+        },
+        ToolDefinition {
+            name: "install_mcp_server".into(),
+            description: "Add a new MCP (Model Context Protocol) tool \
+                          server to the nsh configuration. Supports \
+                          stdio transport (local command) and http \
+                          transport (remote URL). The server becomes \
+                          available after the next query. The user \
+                          must confirm the config change."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description":
+                            "Server name (alphanumeric, underscores, \
+                             hyphens)"
+                    },
+                    "transport": {
+                        "type": "string",
+                        "description": "Transport type",
+                        "enum": ["stdio", "http"],
+                        "default": "stdio"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description":
+                            "Command to spawn (required for stdio)"
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description":
+                            "Command arguments (stdio only)"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description":
+                            "Server URL (required for http)"
+                    },
+                    "env": {
+                        "type": "object",
+                        "description":
+                            "Environment variables for the server",
+                        "additionalProperties": { "type": "string" }
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Request timeout",
+                        "default": 30
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
     ]
 }
 
@@ -351,7 +494,7 @@ mod tests {
     #[test]
     fn test_all_tool_definitions_returns_all_tools() {
         let tools = all_tool_definitions();
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 15);
         for tool in &tools {
             assert!(!tool.name.is_empty());
             assert!(!tool.description.is_empty());
@@ -384,6 +527,7 @@ mod tests {
             "command", "chat", "search_history", "grep_file", "read_file",
             "list_directory", "web_search", "run_command", "ask_user",
             "write_file", "patch_file", "man_page",
+            "manage_config", "install_skill", "install_mcp_server",
         ];
         for name in &expected {
             assert!(names.contains(*name), "missing tool: {name}");

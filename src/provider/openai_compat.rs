@@ -270,6 +270,180 @@ pub fn build_openai_tools(tools: &[crate::tools::ToolDefinition]) -> Vec<serde_j
     })).collect()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::{ContentBlock, Message, Role};
+    use crate::tools::ToolDefinition;
+    use serde_json::json;
+
+    #[test]
+    fn build_openai_messages_user() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "user");
+        assert_eq!(result[0]["content"], "hello");
+    }
+
+    #[test]
+    fn build_openai_messages_with_system() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".into(),
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "You are helpful");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["role"], "system");
+        assert_eq!(result[0]["content"], "You are helpful");
+        assert_eq!(result[1]["role"], "user");
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_text_and_tool_calls() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "thinking".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    input: json!({"path": "/tmp"}),
+                },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+        assert_eq!(result[0]["content"], "thinking");
+        let tc = result[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0]["id"], "c1");
+        assert_eq!(tc[0]["type"], "function");
+        assert_eq!(tc[0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn build_openai_messages_tool_result() {
+        let msgs = vec![Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "file contents".into(),
+                is_error: false,
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "tool");
+        assert_eq!(result[0]["tool_call_id"], "c1");
+        assert_eq!(result[0]["content"], "file contents");
+    }
+
+    #[test]
+    fn build_openai_tools_basic() {
+        let tools = vec![ToolDefinition {
+            name: "test_tool".into(),
+            description: "A test tool".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+        }];
+        let result = build_openai_tools(&tools);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["type"], "function");
+        assert_eq!(result[0]["function"]["name"], "test_tool");
+        assert_eq!(result[0]["function"]["description"], "A test tool");
+    }
+
+    #[test]
+    fn build_openai_tools_empty() {
+        let result = build_openai_tools(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn is_anthropic_model_claude() {
+        assert!(is_anthropic_model("claude-3.5-sonnet"));
+        assert!(is_anthropic_model("claude-3-opus"));
+        assert!(is_anthropic_model("anthropic/claude-3.5-sonnet"));
+    }
+
+    #[test]
+    fn is_anthropic_model_non_claude() {
+        assert!(!is_anthropic_model("gpt-4"));
+        assert!(!is_anthropic_model("gemini-pro"));
+        assert!(!is_anthropic_model("llama-3"));
+    }
+
+    #[test]
+    fn apply_thinking_mode_gemini3_no_think() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "google/gemini-3-pro", false);
+        assert_eq!(body["reasoning"]["effort"], "low");
+    }
+
+    #[test]
+    fn apply_thinking_mode_gemini3_think() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "google/gemini-3-pro", true);
+        assert_eq!(body["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn apply_thinking_mode_claude_sonnet_think() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "claude-3.5-sonnet", true);
+        assert_eq!(body["reasoning"]["enabled"], true);
+        assert_eq!(body["reasoning"]["budget_tokens"], 32768);
+    }
+
+    #[test]
+    fn apply_thinking_mode_claude_sonnet_no_think() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "claude-3.5-sonnet", false);
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_mode_other_model_no_change() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "gpt-4", true);
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn thinking_model_name_gemini_25_think() {
+        let result = thinking_model_name("google/gemini-2.5-pro", true);
+        assert_eq!(result, "google/gemini-2.5-pro:thinking");
+    }
+
+    #[test]
+    fn thinking_model_name_gemini_25_already_thinking() {
+        let result = thinking_model_name("google/gemini-2.5-pro:thinking", true);
+        assert_eq!(result, "google/gemini-2.5-pro:thinking");
+    }
+
+    #[test]
+    fn thinking_model_name_gemini_25_no_think() {
+        let result = thinking_model_name("google/gemini-2.5-pro", false);
+        assert_eq!(result, "google/gemini-2.5-pro");
+    }
+
+    #[test]
+    fn thinking_model_name_non_gemini() {
+        let result = thinking_model_name("gpt-4", true);
+        assert_eq!(result, "gpt-4");
+    }
+}
+
 pub fn spawn_openai_stream(
     resp: reqwest::Response,
 ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {

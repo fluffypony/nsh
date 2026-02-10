@@ -161,3 +161,35 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
     eprintln!("{color}│{reset} $ {command}");
     eprintln!("{color}{bottom_line}{reset}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::RiskLevel;
+
+    #[test]
+    fn test_display_command_preview_safe() {
+        display_command_preview("ls -la", "List files in current directory", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_elevated() {
+        display_command_preview("sudo rm file", "Remove file with sudo", &RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_display_command_preview_dangerous() {
+        display_command_preview("rm -rf /", "Delete everything!", &RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_display_command_preview_empty() {
+        display_command_preview("", "", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_long_command() {
+        let long = "a".repeat(100);
+        display_command_preview(&long, "Long command", &RiskLevel::Safe);
+    }
+}

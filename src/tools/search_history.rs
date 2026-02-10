@@ -177,4 +177,70 @@ mod tests {
     fn test_resolve_relative_time_unknown_suffix() {
         assert_eq!(resolve_relative_time("5x"), "5x");
     }
+
+    #[test]
+    fn test_resolve_relative_time_whitespace_trimming() {
+        let result = resolve_relative_time(" 2h ");
+        let parsed = result.parse::<DateTime<Utc>>().unwrap();
+        let expected = Utc::now() - chrono::Duration::hours(2);
+        assert!((parsed - expected).num_seconds().abs() < 5);
+    }
+
+    fn test_db() -> crate::db::Db {
+        crate::db::Db::open_in_memory().expect("in-memory db")
+    }
+
+    fn insert_test_commands(db: &crate::db::Db) {
+        db.insert_command(
+            "test_sess", "cargo build", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("Compiling..."), "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "test_sess", "git push origin main", "/project", Some(0),
+            "2025-06-01T00:01:00Z", None, Some("Everything up-to-date"), "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "test_sess", "cargo test --release", "/project", Some(1),
+            "2025-06-01T00:02:00Z", None, Some("test result: FAILED"), "", "", 0,
+        ).unwrap();
+    }
+
+    #[test]
+    fn test_execute_no_criteria() {
+        let db = test_db();
+        let config = Config::default();
+        let input = serde_json::json!({});
+        let result = execute(&db, &input, &config, "sess1").unwrap();
+        assert!(result.contains("No search criteria provided"));
+    }
+
+    #[test]
+    fn test_execute_with_query() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
+
+    #[test]
+    fn test_execute_with_regex() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"regex": "git.*main"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("git push"));
+    }
+
+    #[test]
+    fn test_execute_no_results() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "nonexistent_xyz_12345"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("No matching commands found"));
+    }
 }

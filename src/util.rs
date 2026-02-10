@@ -77,30 +77,65 @@ mod tests {
 
     #[test]
     fn test_truncate_bytes_mid_multibyte_produces_valid_utf8() {
-        // 4-byte UTF-8 characters (emoji)
-        let input = "🎉🎊🎈"; // each emoji is 4 bytes = 12 bytes total
+        let input = "🎉🎊🎈";
         for cut in 1..=12 {
             let result = truncate_bytes(input, cut);
-            // Must always be valid UTF-8 (it's a &str so this is guaranteed by type)
-            // but verify the length is correct
             assert!(
                 result.len() <= cut,
                 "truncate_bytes at {cut} produced {} bytes",
                 result.len()
             );
-            // Verify it's a proper char boundary
             assert!(
                 result.is_empty() || result.chars().last().is_some(),
                 "truncate_bytes at {cut} produced invalid UTF-8 boundary"
             );
         }
-        // Cutting at byte 1-3 of a 4-byte char should produce empty
         assert_eq!(truncate_bytes("😀abc", 1), "");
         assert_eq!(truncate_bytes("😀abc", 2), "");
         assert_eq!(truncate_bytes("😀abc", 3), "");
-        // Cutting at byte 4 should include the emoji
         assert_eq!(truncate_bytes("😀abc", 4), "😀");
-        // Cutting at byte 5 should include emoji + 'a'
         assert_eq!(truncate_bytes("😀abc", 5), "😀a");
+    }
+
+    #[test]
+    fn test_truncate_empty_string() {
+        assert_eq!(truncate("", 10), "");
+        assert_eq!(truncate("", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_shorter_than_limit() {
+        assert_eq!(truncate("hi", 100), "hi");
+    }
+
+    #[test]
+    fn test_truncate_exactly_at_limit() {
+        assert_eq!(truncate("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn test_truncate_longer_than_limit() {
+        let result = truncate("abcdefghij", 3);
+        assert_eq!(result, "abc\n[... truncated]");
+    }
+
+    #[test]
+    fn test_truncate_unicode_mixed() {
+        let input = "aé日😀";
+        let result = truncate(input, 2);
+        assert_eq!(result, "aé\n[... truncated]");
+        let result = truncate(input, 4);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_bytes_empty() {
+        assert_eq!(truncate_bytes("", 0), "");
+        assert_eq!(truncate_bytes("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_bytes_zero_limit() {
+        assert_eq!(truncate_bytes("hello", 0), "");
     }
 }

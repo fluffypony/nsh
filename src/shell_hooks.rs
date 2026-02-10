@@ -16,3 +16,23 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("redact_next_{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("redact_active_{session_id}")));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pending_cmd_prefix() {
+        assert_eq!(PENDING_CMD_PREFIX, "pending_cmd_");
+    }
+
+    #[test]
+    fn test_pending_flag_prefix() {
+        assert_eq!(PENDING_FLAG_PREFIX, "pending_flag_");
+    }
+
+    #[test]
+    fn test_cleanup_pending_files_no_panic() {
+        cleanup_pending_files("nonexistent-session-id-12345");
+    }
+}

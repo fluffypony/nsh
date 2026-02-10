@@ -38,3 +38,43 @@ impl TerminalDisplay {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::DisplayConfig;
+
+    #[test]
+    fn test_new_display() {
+        let config = DisplayConfig::default();
+        let display = TerminalDisplay::new(&config);
+        assert!(!display.is_streaming_text);
+        assert_eq!(display.chat_color, config.chat_color);
+    }
+
+    #[test]
+    fn test_handle_event_done_when_not_streaming() {
+        let config = DisplayConfig::default();
+        let mut display = TerminalDisplay::new(&config);
+        display.handle_event(DisplayEvent::Done);
+        assert!(!display.is_streaming_text);
+    }
+
+    #[test]
+    fn test_handle_event_text_sets_streaming() {
+        let config = DisplayConfig::default();
+        let mut display = TerminalDisplay::new(&config);
+        display.handle_event(DisplayEvent::TextChunk("hello".into()));
+        assert!(display.is_streaming_text);
+    }
+
+    #[test]
+    fn test_handle_event_done_resets_streaming() {
+        let config = DisplayConfig::default();
+        let mut display = TerminalDisplay::new(&config);
+        display.handle_event(DisplayEvent::TextChunk("hello".into()));
+        assert!(display.is_streaming_text);
+        display.handle_event(DisplayEvent::Done);
+        assert!(!display.is_streaming_text);
+    }
+}

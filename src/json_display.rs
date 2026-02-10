@@ -30,3 +30,26 @@ impl JsonDisplay {
         let _ = writeln!(stderr);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_json_display_new() {
+        let _d = JsonDisplay::new();
+    }
+
+    #[test]
+    fn test_json_display_handles_all_events() {
+        let mut d = JsonDisplay::new();
+        d.handle_event(DisplayEvent::TextChunk("hi".into()));
+        d.handle_event(DisplayEvent::ToolStarted {
+            name: "test_tool".into(),
+        });
+        d.handle_event(DisplayEvent::ToolFinished {
+            name: "test_tool".into(),
+        });
+        d.handle_event(DisplayEvent::Done);
+    }
+}

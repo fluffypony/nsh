@@ -242,3 +242,115 @@ pub fn execute(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_expand_tilde_with_subpath() {
+        let result = expand_tilde("~/foo");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(result, home.join("foo"));
+    }
+
+    #[test]
+    fn test_expand_tilde_bare() {
+        let result = expand_tilde("~");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(result, home);
+    }
+
+    #[test]
+    fn test_expand_tilde_absolute_path() {
+        let result = expand_tilde("/abs/path");
+        assert_eq!(result, PathBuf::from("/abs/path"));
+    }
+
+    #[test]
+    fn test_validate_path_normal() {
+        let tmp = std::env::temp_dir().join("nsh_test_validate_ok.txt");
+        assert!(validate_path(&tmp).is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_traversal() {
+        let bad = PathBuf::from("/tmp/foo/../bar");
+        let err = validate_path(&bad).unwrap_err();
+        assert!(
+            err.to_string().contains("path traversal"),
+            "expected path traversal error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_blocked_ssh() {
+        let home = dirs::home_dir().unwrap();
+        let ssh = home.join(".ssh/test_key");
+        let err = validate_path(&ssh).unwrap_err();
+        assert!(
+            err.to_string().contains("blocked"),
+            "expected blocked error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_blocked_nsh() {
+        let home = dirs::home_dir().unwrap();
+        let nsh = home.join(".nsh/something");
+        let err = validate_path(&nsh).unwrap_err();
+        assert!(
+            err.to_string().contains("blocked"),
+            "expected blocked error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_is_root_returns_false() {
+        assert!(!is_root());
+    }
+
+    #[test]
+    fn test_trash_dir_contains_trash() {
+        let td = trash_dir();
+        let s = td.to_string_lossy();
+        assert!(
+            s.contains("Trash") || s.contains("trash"),
+            "expected Trash in path, got: {s}"
+        );
+    }
+
+    #[test]
+    fn test_print_diff_no_panic() {
+        print_diff("", "");
+        print_diff("hello\nworld", "hello\nrust");
+        print_diff("a", "");
+        print_diff("", "b");
+        let long = "line\n".repeat(200);
+        print_diff(&long, &long);
+    }
+
+    #[test]
+    fn test_print_preview_no_panic() {
+        print_preview("");
+        print_preview("single line");
+        let long = "line\n".repeat(100);
+        print_preview(&long);
+    }
+
+    #[test]
+    fn test_backup_to_trash() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "backup test content").unwrap();
+
+        let backup_path = backup_to_trash(tmp.path()).unwrap();
+        assert!(backup_path.exists(), "backup file should exist");
+        assert!(
+            backup_path.to_string_lossy().contains("nsh_backup"),
+            "backup filename should contain nsh_backup"
+        );
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+}

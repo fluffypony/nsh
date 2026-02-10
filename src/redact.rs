@@ -1021,4 +1021,124 @@ mod tests {
             "should redact Slack token, got: {result}"
         );
     }
+
+    #[test]
+    fn test_redact_empty_input() {
+        let config = test_config();
+        let result = redact_secrets("", &config);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_redact_plain_text_unchanged() {
+        let config = test_config();
+        let input = "Hello, this is a normal log line with no secrets at all.";
+        let result = redact_secrets(input, &config);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_redact_gitlab_pat() {
+        let config = test_config();
+        let input = "glpat-abcdefghij0123456789";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:gitlab-pat]"),
+            "should redact GitLab PAT, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_stripe_secret() {
+        let config = test_config();
+        let input = "sk_test_abc123def456ghi789jklmnopqrst";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:"),
+            "should redact Stripe secret, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_npm_token() {
+        let config = test_config();
+        let input = "npm_abcdefghijklmnopqrstuvwxyz0123456789";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:npm-access-token]"),
+            "should redact npm token, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_jwt_token() {
+        let config = test_config();
+        let input = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:jwt-token]"),
+            "should redact JWT, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_multiple_secrets_in_one_string() {
+        let config = test_config();
+        let gh_pat = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
+        let aws_key = "AKIAIOSFODNN7EXAMPLE";
+        let input = format!("keys: {gh_pat} and {aws_key}");
+        let result = redact_secrets(&input, &config);
+        assert!(result.contains("[REDACTED:github-pat]"));
+        assert!(result.contains("[REDACTED:aws-access-key-id]"));
+    }
+
+    #[test]
+    fn test_redact_disabled_returns_original_2() {
+        let config = RedactionConfig {
+            enabled: false,
+            patterns: vec![],
+            replacement: "[GONE]".into(),
+            disable_builtin: false,
+        };
+        let gh = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
+        let result = redact_secrets(gh, &config);
+        assert_eq!(result, gh);
+    }
+
+    #[test]
+    fn test_redact_url_no_query_no_credentials() {
+        let url = "https://example.com/path";
+        assert_eq!(redact_url(url), url);
+    }
+
+    #[test]
+    fn test_redact_url_multiple_sensitive_params() {
+        let url = "https://api.example.com/v1?token=abc&secret=def&page=1";
+        let result = redact_url(url);
+        assert!(result.contains("token=[REDACTED]"));
+        assert!(result.contains("secret=[REDACTED]"));
+        assert!(result.contains("page=1"));
+    }
+
+    #[test]
+    fn test_strip_invisible_unicode_clean_input() {
+        let input = "hello world";
+        assert_eq!(strip_invisible_unicode(input), "hello world");
+    }
+
+    #[test]
+    fn test_strip_invisible_unicode_empty() {
+        assert_eq!(strip_invisible_unicode(""), "");
+    }
+
+    #[test]
+    fn test_redact_hugging_face_token() {
+        let config = test_config();
+        let input = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345678901";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:hugging-face-access-token]"),
+            "should redact HF token, got: {result}"
+        );
+    }
 }

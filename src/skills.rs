@@ -16,6 +16,8 @@ struct SkillFile {
     #[serde(default = "default_skill_timeout")]
     timeout_seconds: u64,
     #[serde(default)]
+    terminal: bool,
+    #[serde(default)]
     parameters: HashMap<String, SkillParam>,
 }
 
@@ -36,6 +38,7 @@ pub struct Skill {
     pub description: String,
     pub command: String,
     pub timeout_seconds: u64,
+    pub terminal: bool,
     pub parameters: HashMap<String, SkillParam>,
     pub is_project: bool,
 }
@@ -89,6 +92,7 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
                 description: skill_file.description,
                 command: skill_file.command,
                 timeout_seconds: skill_file.timeout_seconds,
+                terminal: skill_file.terminal,
                 parameters: skill_file.parameters,
                 is_project,
             },
@@ -273,6 +277,7 @@ mod tests {
             description: "Search things".to_string(),
             command: "echo {query}".to_string(),
             timeout_seconds: 30,
+            terminal: false,
             parameters: params,
             is_project: false,
         };
@@ -291,5 +296,134 @@ mod tests {
         let mut skills = HashMap::new();
         load_skills_from_dir(Path::new("/nonexistent/path/that/does/not/exist"), false, &mut skills);
         assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_execute_skill_echo() {
+        let skill = Skill {
+            name: "echo_test".to_string(),
+            description: "test".to_string(),
+            command: "echo hello".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_execute_skill_with_parameters() {
+        let mut params = HashMap::new();
+        params.insert(
+            "name".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "a name".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "greet".to_string(),
+            description: "greet someone".to_string(),
+            command: "echo hello {name}".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: params,
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({"name": "world"})).unwrap();
+        assert!(result.contains("hello world"));
+    }
+
+    #[test]
+    fn test_execute_skill_param_injection_rejected() {
+        let mut params = HashMap::new();
+        params.insert(
+            "name".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "a name".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "greet".to_string(),
+            description: "greet someone".to_string(),
+            command: "echo hello {name}".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: params,
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({"name": "world; rm -rf /"}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_multiple() {
+        let skill_a = Skill {
+            name: "alpha".to_string(),
+            description: "Alpha skill".to_string(),
+            command: "echo a".to_string(),
+            timeout_seconds: 10,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let mut params = HashMap::new();
+        params.insert(
+            "x".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "param x".to_string(),
+            },
+        );
+        let skill_b = Skill {
+            name: "beta".to_string(),
+            description: "Beta skill".to_string(),
+            command: "echo {x}".to_string(),
+            timeout_seconds: 20,
+            terminal: false,
+            parameters: params,
+            is_project: true,
+        };
+        let defs = skill_tool_definitions(&[skill_a, skill_b]);
+        assert_eq!(defs.len(), 2);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"skill_alpha"));
+        assert!(names.contains(&"skill_beta"));
+    }
+
+    #[test]
+    fn test_validate_param_value_all_forbidden() {
+        for ch in SHELL_METACHARACTERS {
+            let val = format!("foo{ch}bar");
+            assert!(
+                validate_param_value(&val).is_err(),
+                "Expected rejection for char '{ch}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_default_skill_timeout() {
+        assert_eq!(default_skill_timeout(), 30);
+    }
+
+    #[tokio::test]
+    async fn test_execute_skill_async_simple() {
+        let skill = Skill {
+            name: "async_echo".to_string(),
+            description: "test".to_string(),
+            command: "echo hello".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill_async(skill, serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(result.contains("hello"));
     }
 }
