@@ -990,10 +990,11 @@ fn cleanup_staged_updates() {
         return;
     }
     let pending_path = nsh_dir.join("update_pending");
-    let pending_staged: Option<String> = std::fs::read_to_string(&pending_path)
+    let pending_staged: Option<std::path::PathBuf> = std::fs::read_to_string(&pending_path)
         .ok()
         .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-        .and_then(|v| v["staged_path"].as_str().map(|s| s.to_string()));
+        .and_then(|v| v["staged_path"].as_str().map(std::path::PathBuf::from))
+        .and_then(|p| std::fs::canonicalize(&p).ok());
 
     if let Ok(entries) = std::fs::read_dir(&updates_dir) {
         let mut removed = 0;
@@ -1001,7 +1002,7 @@ fn cleanup_staged_updates() {
             let path = entry.path();
             if path.is_file() {
                 let dominated = match &pending_staged {
-                    Some(p) => path.to_string_lossy() != *p,
+                    Some(p) => std::fs::canonicalize(&path).ok().as_ref() != Some(p),
                     None => true,
                 };
                 if dominated {
