@@ -48,29 +48,28 @@ install_from_release() {
     trap 'rm -rf "$TMP"' RETURN
 
     if curl -fsSL "$URL" -o "$TMP/nsh.tar.gz" 2>/dev/null; then
-        # Checksum verification
+        # Compute SHA256 of downloaded archive
+        local actual_sha=""
+        if command -v sha256sum &>/dev/null; then
+            actual_sha="$(sha256sum "$TMP/nsh.tar.gz" | awk '{print $1}')"
+        elif command -v shasum &>/dev/null; then
+            actual_sha="$(shasum -a 256 "$TMP/nsh.tar.gz" | awk '{print $1}')"
+        fi
+
+        # GitHub checksum verification
         local SHA_URL="https://github.com/$REPO/releases/download/${LATEST}/nsh-${TARGET}.tar.gz.sha256"
         local expected_sha=""
         if curl -fsSL "$SHA_URL" -o "$TMP/nsh.sha256" 2>/dev/null; then
             expected_sha="$(awk '{print $1}' "$TMP/nsh.sha256")"
         fi
 
-        if [[ -n "$expected_sha" ]]; then
-            local actual_sha=""
-            if command -v sha256sum &>/dev/null; then
-                actual_sha="$(sha256sum "$TMP/nsh.tar.gz" | awk '{print $1}')"
-            elif command -v shasum &>/dev/null; then
-                actual_sha="$(shasum -a 256 "$TMP/nsh.tar.gz" | awk '{print $1}')"
+        if [[ -n "$expected_sha" && -n "$actual_sha" ]]; then
+            if [[ "$actual_sha" != "$expected_sha" ]]; then
+                error "Checksum verification failed! Expected: $expected_sha Got: $actual_sha"
             fi
-
-            if [[ -n "$actual_sha" ]]; then
-                if [[ "$actual_sha" != "$expected_sha" ]]; then
-                    error "Checksum verification failed! Expected: $expected_sha Got: $actual_sha"
-                fi
-                ok "Checksum verified"
-            else
-                warn "No sha256sum or shasum available, skipping checksum verification"
-            fi
+            ok "Checksum verified"
+        elif [[ -n "$expected_sha" ]]; then
+            warn "No sha256sum or shasum available, skipping checksum verification"
         else
             warn "No checksum file available, skipping verification"
         fi
@@ -82,11 +81,13 @@ install_from_release() {
             dns_records="$(dig +short TXT update.nsh.tools 2>/dev/null | tr -d '"')"
             dns_verify_sha="$(echo "$dns_records" | grep "^${LATEST#v}:${TARGET}:" | head -1 | cut -d: -f3)"
         fi
-        if [[ -n "$dns_verify_sha" ]]; then
-            if [[ -n "$actual_sha" && "$actual_sha" != "$dns_verify_sha" ]]; then
+        if [[ -n "$dns_verify_sha" && -n "$actual_sha" ]]; then
+            if [[ "$actual_sha" != "$dns_verify_sha" ]]; then
                 error "DNS verification failed! Binary SHA does not match DNS TXT record."
             fi
             ok "DNS verified"
+        elif [[ -n "$dns_verify_sha" ]]; then
+            warn "DNS record found but no sha256 tool available, skipping DNS verification"
         elif [[ -n "$expected_sha" ]]; then
             ok "GitHub checksum verified (DNS unavailable)"
         else

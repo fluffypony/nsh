@@ -452,7 +452,7 @@ async fn main() -> anyhow::Result<()> {
                 "sha256": expected_sha,
                 "downloaded_at": chrono::Utc::now().to_rfc3339(),
             });
-            std::fs::write(&pending_path, serde_json::to_string_pretty(&pending_info)?)?;
+            atomic_write(&pending_path, serde_json::to_string_pretty(&pending_info)?.as_bytes())?;
 
             eprintln!("nsh: update v{version} downloaded and verified.");
             eprintln!("  It will be applied automatically on your next shell start.");
@@ -816,7 +816,13 @@ fn apply_pending_update() {
             return Ok(());
         }
         let content = std::fs::read_to_string(&pending_path)?;
-        let info: serde_json::Value = serde_json::from_str(&content)?;
+        let info: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = std::fs::remove_file(&pending_path);
+                anyhow::bail!("corrupt update_pending file, removed");
+            }
+        };
 
         let version = info["version"].as_str().unwrap_or("");
         let staged_str = info["staged_path"].as_str().unwrap_or("");
@@ -828,8 +834,12 @@ fn apply_pending_update() {
             return Ok(());
         }
 
+        if expected_sha.is_empty() {
+            let _ = std::fs::remove_file(&pending_path);
+            anyhow::bail!("update_pending missing sha256");
+        }
         let actual_sha = sha256_file(&staged_path)?;
-        if !expected_sha.is_empty() && actual_sha != expected_sha {
+        if actual_sha != expected_sha {
             let _ = std::fs::remove_file(&pending_path);
             let _ = std::fs::remove_file(&staged_path);
             anyhow::bail!("staged binary SHA mismatch");
@@ -850,10 +860,14 @@ fn apply_pending_update() {
 
         eprintln!("nsh: updated to v{version}");
 
+        let exe_path = current_exe.to_string_lossy().to_string();
         let args: Vec<String> = std::env::args().collect();
         if !args.is_empty() {
-            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let _err = pty::exec_execvp(&args[0], &arg_refs);
+            let mut new_args = vec![exe_path.as_str()];
+            for a in args.iter().skip(1) {
+                new_args.push(a.as_str());
+            }
+            let _err = pty::exec_execvp(&exe_path, &new_args);
         }
         Ok(())
     })();
@@ -910,6 +924,7 @@ fn background_update_check() -> anyhow::Result<()> {
     let staging_dir = config::Config::nsh_dir().join("updates");
     std::fs::create_dir_all(&staging_dir)?;
     let staged_path = staging_dir.join(format!("nsh-{latest_version}-{target}"));
+    let tmp_staged = staging_dir.join(format!("nsh-{latest_version}-{target}.{}", std::process::id()));
 
     let decoder = flate2::read::GzDecoder::new(&output.stdout[..]);
     let mut archive = tar::Archive::new(decoder);
@@ -922,26 +937,28 @@ fn background_update_check() -> anyhow::Result<()> {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(&staged_path)?;
+                .open(&tmp_staged)?;
             std::io::copy(&mut entry, &mut file)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&staged_path, std::fs::Permissions::from_mode(0o755))?;
+                std::fs::set_permissions(&tmp_staged, std::fs::Permissions::from_mode(0o755))?;
             }
             found = true;
             break;
         }
     }
     if !found {
+        let _ = std::fs::remove_file(&tmp_staged);
         anyhow::bail!("binary not found in archive");
     }
 
-    let actual_sha = sha256_file(&staged_path)?;
+    let actual_sha = sha256_file(&tmp_staged)?;
     if actual_sha != expected_sha {
-        let _ = std::fs::remove_file(&staged_path);
+        let _ = std::fs::remove_file(&tmp_staged);
         anyhow::bail!("SHA256 mismatch: expected {expected_sha}, got {actual_sha}");
     }
+    std::fs::rename(&tmp_staged, &staged_path)?;
 
     let current_exe = std::env::current_exe()?;
     let pending_info = serde_json::json!({
@@ -951,11 +968,18 @@ fn background_update_check() -> anyhow::Result<()> {
         "sha256": expected_sha,
         "downloaded_at": chrono::Utc::now().to_rfc3339(),
     });
-    std::fs::write(&pending_path, serde_json::to_string_pretty(&pending_info)?)?;
+    atomic_write(&pending_path, serde_json::to_string_pretty(&pending_info)?.as_bytes())?;
 
     let db = db::Db::open()?;
     db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())?;
 
+    Ok(())
+}
+
+fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
