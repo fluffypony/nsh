@@ -108,10 +108,28 @@ pub async fn handle_query(
         };
 
         let _spinner = streaming::SpinnerGuard::new();
-        let (mut rx, _used_model) = chain::call_chain_with_fallback_think(
+        let chain_result = chain::call_chain_with_fallback_think(
             provider.as_ref(), request, chain, think,
-        ).await?;
+        ).await;
         drop(_spinner);
+
+        let (mut rx, _used_model) = match chain_result {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = e.to_string();
+                let display_msg = if msg.len() > 100 { &msg[..100] } else { &msg };
+                eprintln!("\x1b[33mnsh: couldn't reach {}: {}\x1b[0m",
+                    config.provider.default, display_msg);
+                if msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized") {
+                    eprintln!("  Check your API key: nsh config edit");
+                } else if msg.contains("429") {
+                    eprintln!("  Rate limited. Wait a moment and try again.");
+                } else {
+                    eprintln!("  Try: nsh doctor");
+                }
+                return Ok(());
+            }
+        };
 
         let response =
             streaming::consume_stream(&mut rx, &cancelled).await?;
@@ -243,6 +261,7 @@ pub async fn handle_query(
             >>>> = Vec::new();
 
             for (id, name, input) in parallel_calls {
+                eprintln!("  \x1b[2m↳ {}\x1b[0m", describe_tool_action(&name, &input));
                 match name.as_str() {
                     "search_history" => {
                         let (content, is_error) = match tools::search_history::execute(
@@ -329,6 +348,7 @@ pub async fn handle_query(
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect::<Vec<_>>()
             });
+            eprintln!("  \x1b[2m↳ asking for input...\x1b[0m");
             let (content, is_error) = match tools::ask_user::execute(
                 question, options.as_deref(),
             ) {
@@ -357,7 +377,6 @@ pub async fn handle_query(
             content: tool_results,
         });
 
-        eprintln!("  \x1b[2m↳ gathering more context...\x1b[0m");
     }
 
     Ok(())
@@ -465,6 +484,44 @@ fn execute_sync_tool(
             tools::man_page::execute(cmd, section)
         }
         unknown => Ok(format!("Unknown tool: {unknown}")),
+    }
+}
+
+fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
+    match name {
+        "search_history" => {
+            let q = input["query"].as_str().unwrap_or("...");
+            format!("searching history for \"{q}\"")
+        }
+        "grep_file" => {
+            let path = input["path"].as_str().unwrap_or("file");
+            if let Some(pat) = input["pattern"].as_str() {
+                format!("searching {path} for /{pat}/")
+            } else {
+                format!("reading {path}")
+            }
+        }
+        "read_file" => {
+            let path = input["path"].as_str().unwrap_or("file");
+            format!("reading {path}")
+        }
+        "list_directory" => {
+            let path = input["path"].as_str().unwrap_or(".");
+            format!("listing {path}")
+        }
+        "run_command" => {
+            let cmd = input["command"].as_str().unwrap_or("...");
+            format!("running `{cmd}`")
+        }
+        "web_search" => {
+            let q = input["query"].as_str().unwrap_or("...");
+            format!("searching \"{q}\"")
+        }
+        "man_page" => {
+            let cmd = input["command"].as_str().unwrap_or("?");
+            format!("reading man page: {cmd}")
+        }
+        other => other.to_string(),
     }
 }
 

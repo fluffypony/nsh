@@ -37,10 +37,8 @@ pub fn execute(
         RiskLevel::Safe => {}
     }
 
-    // Display explanation
-    let color = "\x1b[3;36m"; // cyan italic
-    let reset = "\x1b[0m";
-    eprintln!("{color}{explanation}{reset}");
+    // Display rich command preview
+    display_command_preview(command, explanation, &risk);
 
     // Write command to pending file for shell hook to pick up
     let nsh_dir = crate::config::Config::nsh_dir();
@@ -95,4 +93,35 @@ pub fn execute(
     }
 
     Ok(())
+}
+
+fn display_command_preview(command: &str, explanation: &str, risk: &crate::security::RiskLevel) {
+    let color = match risk {
+        RiskLevel::Dangerous => "\x1b[1;31m",
+        RiskLevel::Elevated => "\x1b[1;33m",
+        RiskLevel::Safe => "\x1b[1;36m",
+    };
+    let reset = "\x1b[0m";
+    let dim = "\x1b[2m";
+
+    let content_width = command.len().max(explanation.len()).max(20).min(60);
+    let box_width = content_width + 4;
+
+    let top_label = " nsh ";
+    let top_line = format!(
+        "╭─{top_label}{:─<width$}╮",
+        "",
+        width = box_width - top_label.len() - 1
+    );
+    let bottom_line = format!("╰{:─<width$}╯", "", width = box_width + 1);
+
+    eprintln!("{color}{top_line}{reset}");
+    if !explanation.is_empty() {
+        for line in explanation.lines() {
+            eprintln!("{color}│{reset} {dim}{line}{reset}");
+        }
+        eprintln!("{color}│{reset}");
+    }
+    eprintln!("{color}│{reset} $ {command}");
+    eprintln!("{color}{bottom_line}{reset}");
 }

@@ -131,8 +131,15 @@ async fn main() -> anyhow::Result<()> {
                 db.end_session(&session)?;
                 shell_hooks::cleanup_pending_files(&session);
             }
-            SessionAction::Label { label: _, session: _ } => {
-                eprintln!("nsh: session label not yet implemented");
+            SessionAction::Label { label, session } => {
+                let session_id = session.unwrap_or_else(||
+                    std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into()));
+                let db = db::Db::open()?;
+                if db.set_session_label(&session_id, &label)? {
+                    eprintln!("nsh: session labeled \"{label}\"");
+                } else {
+                    eprintln!("nsh: session not found");
+                }
             }
         },
 
@@ -173,10 +180,21 @@ async fn main() -> anyhow::Result<()> {
             Some(ConfigAction::Path) | None => {
                 println!("{}", config::Config::path().display());
             }
-            Some(ConfigAction::Show { raw: _ }) => {
+            Some(ConfigAction::Show { raw }) => {
                 let path = config::Config::path();
                 if path.exists() {
-                    print!("{}", std::fs::read_to_string(&path)?);
+                    let content = std::fs::read_to_string(&path)?;
+                    if raw {
+                        print!("{content}");
+                    } else {
+                        match content.parse::<toml::Value>() {
+                            Ok(mut val) => {
+                                redact_config_keys(&mut val);
+                                print!("{}", toml::to_string_pretty(&val)?);
+                            }
+                            Err(_) => print!("{content}"),
+                        }
+                    }
                 } else {
                     eprintln!("No config file found at {}", path.display());
                     eprintln!("Run with defaults or create one.");
@@ -380,13 +398,122 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Chat => {
-            eprintln!("nsh: chat mode not yet implemented");
+            use std::io::Write;
+            let config = config::Config::load()?;
+            let db = db::Db::open()?;
+            let session_id = std::env::var("NSH_SESSION_ID")
+                .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+            eprintln!("nsh chat (type 'exit' or Ctrl-D to quit, 'reset' to clear context)");
+            let mut last_config_mtime = std::fs::metadata(config::Config::path())
+                .and_then(|m| m.modified())
+                .ok();
+            let mut config = config;
+            loop {
+                eprint!("\x1b[1;36m?\x1b[0m ");
+                std::io::stderr().flush()?;
+                let mut line = String::new();
+                if std::io::stdin().read_line(&mut line)? == 0 {
+                    break;
+                }
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                match line {
+                    "exit" | "quit" => break,
+                    "reset" => {
+                        db.clear_conversations(&session_id)?;
+                        eprintln!("Context cleared.");
+                        continue;
+                    }
+                    _ => {}
+                }
+                // Hot-reload config if changed
+                if let Ok(meta) = std::fs::metadata(config::Config::path()) {
+                    if let Ok(mtime) = meta.modified() {
+                        if last_config_mtime.as_ref() != Some(&mtime) {
+                            if let Ok(new_config) = config::Config::load() {
+                                config = new_config;
+                                last_config_mtime = Some(mtime);
+                            }
+                        }
+                    }
+                }
+                if let Err(e) = query::handle_query(line, &config, &db, &session_id, false, false).await {
+                    eprintln!("\x1b[33mnsh: {e}\x1b[0m");
+                }
+            }
         }
-        Commands::Export { format: _, session: _ } => {
-            eprintln!("nsh: export not yet implemented");
+
+        Commands::Export { format, session } => {
+            let session_id = session.unwrap_or_else(||
+                std::env::var("NSH_SESSION_ID").unwrap_or_default());
+            let db = db::Db::open()?;
+            let convos = db.get_conversations(&session_id, 1000)?;
+            if convos.is_empty() {
+                eprintln!("No conversations found for session {session_id}");
+            } else {
+                match format.as_deref().unwrap_or("markdown") {
+                    "json" => {
+                        let json_convos: Vec<serde_json::Value> = convos.iter().map(|c| {
+                            serde_json::json!({
+                                "query": c.query,
+                                "response_type": c.response_type,
+                                "response": c.response,
+                                "explanation": c.explanation,
+                            })
+                        }).collect();
+                        println!("{}", serde_json::to_string_pretty(&json_convos)?);
+                    }
+                    _ => {
+                        for c in &convos {
+                            println!("**Q:** {}\n", c.query);
+                            match c.response_type.as_str() {
+                                "command" => println!("```bash\n{}\n```\n{}\n",
+                                    c.response,
+                                    c.explanation.as_deref().unwrap_or("")),
+                                _ => println!("{}\n", c.response),
+                            }
+                        }
+                    }
+                }
+            }
         }
+
         Commands::Status => {
-            eprintln!("nsh: status not yet implemented");
+            let session_id = std::env::var("NSH_SESSION_ID")
+                .unwrap_or_else(|_| "(not set)".into());
+            let config = config::Config::load().unwrap_or_default();
+            let db = db::Db::open()?;
+            let pty_active = std::env::var("NSH_TTY").is_ok();
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
+            let db_path = config::Config::nsh_dir().join("nsh.db");
+            let db_size = std::fs::metadata(&db_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let db_size_str = if db_size > 1_048_576 {
+                format!("{:.1} MB", db_size as f64 / 1_048_576.0)
+            } else {
+                format!("{:.1} KB", db_size as f64 / 1024.0)
+            };
+
+            let session_label = if session_id != "(not set)" {
+                db.get_session_label(&session_id).unwrap_or(None)
+            } else {
+                None
+            };
+
+            eprintln!("nsh status:");
+            eprintln!("  Session:    {session_id}");
+            if let Some(label) = session_label {
+                eprintln!("  Label:      {label}");
+            }
+            eprintln!("  Shell:      {shell}");
+            eprintln!("  PTY active: {}", if pty_active { "yes" } else { "no" });
+            eprintln!("  Provider:   {}", config.provider.default);
+            eprintln!("  Model:      {}", config.provider.model);
+            eprintln!("  DB path:    {}", db_path.display());
+            eprintln!("  DB size:    {db_size_str}");
         }
         Commands::Completions { shell } => {
             use clap::CommandFactory;
@@ -397,4 +524,30 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn redact_config_keys(val: &mut toml::Value) {
+    match val {
+        toml::Value::Table(table) => {
+            for (key, v) in table.iter_mut() {
+                if key == "api_key" {
+                    if let toml::Value::String(s) = v {
+                        if s.len() > 8 {
+                            *s = format!("{}...{}", &s[..4], &s[s.len()-4..]);
+                        } else {
+                            *s = "****".into();
+                        }
+                    }
+                } else {
+                    redact_config_keys(v);
+                }
+            }
+        }
+        toml::Value::Array(arr) => {
+            for v in arr {
+                redact_config_keys(v);
+            }
+        }
+        _ => {}
+    }
 }

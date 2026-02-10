@@ -322,6 +322,25 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_session_label(&self, session_id: &str, label: &str) -> rusqlite::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET label = ? WHERE id = ?",
+            params![label, session_id],
+        )?;
+        Ok(updated > 0)
+    }
+
+    pub fn get_session_label(&self, session_id: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row(
+            "SELECT label FROM sessions WHERE id = ?",
+            params![session_id],
+            |row| row.get(0),
+        ).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => rusqlite::Error::QueryReturnedNoRows,
+            other => other,
+        }).or(Ok(None))
+    }
+
     // ── Command recording ──────────────────────────────────────────
 
     pub fn insert_command(
