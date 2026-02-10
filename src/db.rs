@@ -419,7 +419,7 @@ impl Db {
              FROM commands_fts f
              JOIN commands c ON c.id = f.rowid
              WHERE commands_fts MATCH ?
-             ORDER BY rank
+             ORDER BY bm25(commands_fts, 1.0, 0.5, 2.0, 0.5)
              LIMIT ?",
         )?;
         let rows = stmt.query_map(params![query, limit as i64], |row| {
@@ -883,7 +883,7 @@ impl Db {
             for cond in &conditions {
                 sql.push_str(cond);
             }
-            sql.push_str(" ORDER BY rank LIMIT ?");
+            sql.push_str(" ORDER BY bm25(commands_fts, 1.0, 0.5, 2.0, 0.5) LIMIT ?");
 
             // Build params dynamically - collect into Vec<Box<dyn rusqlite::types::ToSql>>
             let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -982,7 +982,7 @@ impl Db {
         rows.collect()
     }
 
-    pub fn run_doctor(&self) -> anyhow::Result<()> {
+    pub fn run_doctor(&self, retention_days: u32) -> anyhow::Result<()> {
         eprintln!("nsh doctor: checking database integrity...");
 
         eprint!("  FTS5 integrity... ");
@@ -1004,8 +1004,8 @@ impl Db {
         let cleaned = self.cleanup_orphaned_sessions()?;
         eprintln!("{cleaned} cleaned");
 
-        eprint!("  Pruning old data (90 days)... ");
-        let pruned = self.prune(90)?;
+        eprint!("  Pruning old data ({retention_days} days)... ");
+        let pruned = self.prune(retention_days)?;
         eprintln!("{pruned} commands removed");
 
         eprint!("  Incremental vacuum... ");

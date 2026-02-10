@@ -279,8 +279,9 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Doctor => {
+            let config = config::Config::load().unwrap_or_default();
             let db = db::Db::open()?;
-            db.run_doctor()?;
+            db.run_doctor(config.context.retention_days)?;
         }
 
         Commands::Heartbeat { session } => {

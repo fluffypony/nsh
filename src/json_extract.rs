@@ -1,34 +1,53 @@
 pub fn extract_json(input: &str) -> Option<serde_json::Value> {
+    // 1. Direct parse
     if let Ok(val) = serde_json::from_str(input) {
         return Some(val);
     }
-
+    // 2. Strip thinking tags
     let cleaned = strip_thinking_tags(input);
     let trimmed = cleaned.trim();
-
     if let Ok(val) = serde_json::from_str(trimmed) {
         return Some(val);
     }
-
+    // 3. Extract from code fences
     if let Some(json_str) = extract_from_code_fence(trimmed) {
         if let Ok(val) = serde_json::from_str(json_str.trim()) {
             return Some(val);
         }
     }
-
-    if let Some(val) = extract_braced(trimmed, '{', '}') {
-        return Some(val);
+    // 4. Find first { and last matching }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start < end {
+            if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
+                return Some(val);
+            }
+        }
     }
-    if let Some(val) = extract_braced(trimmed, '[', ']') {
-        return Some(val);
+    // 5. Same for arrays
+    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
+        if start < end {
+            if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
+                return Some(val);
+            }
+        }
     }
-
     None
 }
 
 fn strip_thinking_tags(text: &str) -> String {
     let mut result = text.to_string();
-    for tag in &["thinking", "think", "antThinking", "reflection", "reasoning", "scratchpad", "analysis"] {
+    let tags = &[
+        "thinking", "think", "antThinking", "reasoning",
+        "reflection", "scratchpad", "analysis",
+    ];
+    for tag in tags {
+        // Remove self-closing variants: <tag/> or <tag />
+        let self_closing1 = format!("<{tag}/>");
+        let self_closing2 = format!("<{tag} />");
+        result = result.replace(&self_closing1, "");
+        result = result.replace(&self_closing2, "");
+
+        // Remove paired tags and their content
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
         loop {
@@ -37,6 +56,7 @@ fn strip_thinking_tags(text: &str) -> String {
                     result.replace_range(start..start + end + close.len(), "");
                     continue;
                 }
+                // Unclosed tag — remove everything from open tag onwards
                 result = result[..start].to_string();
             }
             break;
@@ -58,42 +78,6 @@ fn extract_from_code_fence(text: &str) -> Option<&str> {
     None
 }
 
-fn extract_braced(text: &str, open: char, close: char) -> Option<serde_json::Value> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == open {
-            let start = i;
-            let mut depth = 1;
-            let mut in_string = false;
-            let mut escape = false;
-            i += 1;
-            while i < chars.len() && depth > 0 {
-                if escape {
-                    escape = false;
-                } else if chars[i] == '\\' && in_string {
-                    escape = true;
-                } else if chars[i] == '"' {
-                    in_string = !in_string;
-                } else if !in_string {
-                    if chars[i] == open { depth += 1; }
-                    if chars[i] == close { depth -= 1; }
-                }
-                i += 1;
-            }
-            if depth == 0 {
-                let substr: String = chars[start..i].iter().collect();
-                if let Ok(val) = serde_json::from_str(&substr) {
-                    return Some(val);
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +93,17 @@ mod tests {
         let input = "<thinking>Let me think about this...</thinking>\n{\"command\": \"pwd\"}";
         let v = extract_json(input).unwrap();
         assert_eq!(v["command"].as_str(), Some("pwd"));
+    }
+
+    #[test]
+    fn test_self_closing_thinking_tags() {
+        let input = "<thinking/>\n{\"command\": \"pwd\"}";
+        let v = extract_json(input).unwrap();
+        assert_eq!(v["command"].as_str(), Some("pwd"));
+
+        let input2 = "<think />\n{\"command\": \"ls\"}";
+        let v2 = extract_json(input2).unwrap();
+        assert_eq!(v2["command"].as_str(), Some("ls"));
     }
 
     #[test]
@@ -135,5 +130,14 @@ mod tests {
         let input = r#"{"a": {"b": [1, 2, {"c": 3}]}}"#;
         let v = extract_json(input).unwrap();
         assert_eq!(v["a"]["b"][2]["c"].as_i64().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_all_thinking_tag_variants() {
+        for tag in &["thinking", "think", "antThinking", "reasoning", "reflection", "scratchpad", "analysis"] {
+            let input = format!("<{tag}>some inner text</{tag}>{{\"command\": \"test\"}}");
+            let v = extract_json(&input).unwrap();
+            assert_eq!(v["command"].as_str(), Some("test"), "Failed for tag: {tag}");
+        }
     }
 }
