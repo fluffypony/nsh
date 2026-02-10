@@ -75,6 +75,24 @@ install_from_release() {
             warn "No checksum file available, skipping verification"
         fi
 
+        # DNS TXT cross-check
+        local dns_verify_sha=""
+        if command -v dig &>/dev/null; then
+            local dns_records
+            dns_records="$(dig +short TXT update.nsh.tools 2>/dev/null | tr -d '"')"
+            dns_verify_sha="$(echo "$dns_records" | grep "^${LATEST#v}:${TARGET}:" | head -1 | cut -d: -f3)"
+        fi
+        if [[ -n "$dns_verify_sha" ]]; then
+            if [[ -n "$actual_sha" && "$actual_sha" != "$dns_verify_sha" ]]; then
+                error "DNS verification failed! Binary SHA does not match DNS TXT record."
+            fi
+            ok "DNS verified"
+        elif [[ -n "$expected_sha" ]]; then
+            ok "GitHub checksum verified (DNS unavailable)"
+        else
+            warn "No verification available, proceeding with unverified binary"
+        fi
+
         tar xzf "$TMP/nsh.tar.gz" -C "$TMP"
         mkdir -p "$INSTALL_DIR"
         install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
@@ -112,7 +130,14 @@ install_from_source() {
 
 # Try release binary first, fall back to source
 if ! install_from_release; then
-    info "No pre-built binary available, building from source..."
+    warn "No pre-built binary available for $TARGET."
+    if [[ -t 0 ]]; then
+        printf "  Build from source? This requires Rust and may take a few minutes. [y/N] "
+        read -r ans
+        if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
+            error "Installation aborted. Pre-built binaries are available for: x86_64-linux, aarch64-linux, x86_64-macos, aarch64-macos"
+        fi
+    fi
     install_from_source
 fi
 
