@@ -47,6 +47,7 @@ __nsh_debug_trap() {
         __nsh_cmd="$(HISTTIMEFORMAT='' history 1 | sed 's/^ *[0-9]* *//')"
         HISTCONTROL="$hist_control"
         __nsh_cmd_start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        __nsh_cmd_start_epoch=$(date +%s)
 
         # Mark scrollback position for per-command output capture
         nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null &
@@ -80,6 +81,12 @@ __nsh_prompt_command() {
     __nsh_cmd=""
     __nsh_cmd_start=""
 
+    local duration_ms=0
+    if [[ -n "${__nsh_cmd_start_epoch:-}" ]]; then
+        duration_ms=$(( ($(date +%s) - ${__nsh_cmd_start_epoch}) * 1000 ))
+        __nsh_cmd_start_epoch=""
+    fi
+
     # Remove redact_active flag
     rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
 
@@ -107,6 +114,7 @@ __nsh_prompt_command() {
             --cwd "$PWD" \
             --exit-code "$exit_code" \
             --started-at "$start" \
+            --duration-ms "$duration_ms" \
             --tty "$(tty)" \
             --pid "$$" \
             --shell "bash" >/dev/null 2>&1 &

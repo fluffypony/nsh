@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
             cwd,
             exit_code,
             started_at,
+            duration_ms,
             tty,
             pid,
             shell,
@@ -114,12 +115,18 @@ async fn main() -> anyhow::Result<()> {
                 &cwd,
                 Some(exit_code),
                 &started_at,
-                None,
+                duration_ms,
                 None,
                 &tty,
                 &shell,
                 pid,
             )?;
+
+            if let Ok(Some((conv_id, suggested_cmd))) = db.find_pending_conversation(&session) {
+                if command.trim() == suggested_cmd.trim() {
+                    let _ = db.update_conversation_result(conv_id, exit_code, None);
+                }
+            }
         }
 
         Commands::Session { action } => match action {
@@ -311,7 +318,7 @@ async fn main() -> anyhow::Result<()> {
             let request = match &action {
                 DaemonSendAction::Record {
                     session, command, cwd, exit_code, started_at,
-                    tty, pid, shell,
+                    duration_ms, tty, pid, shell,
                 } => daemon::DaemonRequest::Record {
                     session: session.clone(),
                     command: command.clone(),
@@ -321,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
                     tty: tty.clone(),
                     pid: *pid,
                     shell: shell.clone(),
-                    duration_ms: None,
+                    duration_ms: *duration_ms,
                     output: None,
                 },
                 DaemonSendAction::Heartbeat { session } => {
@@ -343,12 +350,12 @@ async fn main() -> anyhow::Result<()> {
                     match action {
                         DaemonSendAction::Record {
                             session, command, cwd, exit_code, started_at,
-                            tty, pid, shell,
+                            duration_ms, tty, pid, shell,
                         } => {
                             let db = db::Db::open()?;
                             db.insert_command(
                                 &session, &command, &cwd, Some(exit_code),
-                                &started_at, None, None, &tty, &shell, pid,
+                                &started_at, duration_ms, None, &tty, &shell, pid,
                             )?;
                         }
                         DaemonSendAction::Heartbeat { session } => {
@@ -402,6 +409,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Chat => {
             use std::io::Write;
             let config = config::Config::load()?;
+            streaming::configure_display(&config.display);
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID")
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());

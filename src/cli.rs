@@ -55,6 +55,8 @@ pub enum Commands {
         exit_code: i32,
         #[arg(long)]
         started_at: String,
+        #[arg(long)]
+        duration_ms: Option<i64>,
         #[arg(long, default_value = "")]
         tty: String,
         #[arg(long, default_value_t = 0)]
@@ -216,6 +218,8 @@ pub enum DaemonSendAction {
         exit_code: i32,
         #[arg(long)]
         started_at: String,
+        #[arg(long)]
+        duration_ms: Option<i64>,
         #[arg(long, default_value = "")]
         tty: String,
         #[arg(long, default_value_t = 0)]

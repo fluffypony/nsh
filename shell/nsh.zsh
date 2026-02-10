@@ -34,6 +34,7 @@ __NSH_LAST_RECORDED_START=""
 __nsh_preexec() {
     export __NSH_CMD="$1"
     export __NSH_CMD_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    export __nsh_cmd_start_epoch=$(date +%s)
     export __NSH_CWD="$PWD"
 
     # Mark scrollback position for per-command output capture
@@ -63,6 +64,13 @@ __nsh_precmd() {
     __NSH_CMD=""
     __NSH_CMD_START=""
     __NSH_CWD=""
+
+    # Compute duration
+    local duration_ms=0
+    if [[ -n "${__nsh_cmd_start_epoch:-}" ]]; then
+        duration_ms=$(( ($(date +%s) - ${__nsh_cmd_start_epoch}) * 1000 ))
+        __nsh_cmd_start_epoch=""
+    fi
 
     # Remove redact_active flag
     rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
@@ -94,6 +102,7 @@ __nsh_precmd() {
         --cwd "$cwd" \
         --exit-code "$exit_code" \
         --started-at "$start" \
+        --duration-ms "$duration_ms" \
         --tty "$(tty)" \
         --pid "$$" \
         --shell "zsh" >/dev/null 2>&1 &!

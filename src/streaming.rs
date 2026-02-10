@@ -1,21 +1,45 @@
 use crate::provider::{ContentBlock, Message, Role, StreamEvent};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 
 static SPINNER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SPINNER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> =
     Mutex::new(None);
 
+static CHAT_COLOR: OnceLock<String> = OnceLock::new();
+static SPINNER_FRAMES: OnceLock<Vec<String>> = OnceLock::new();
+
+pub fn configure_display(config: &crate::config::DisplayConfig) {
+    let _ = CHAT_COLOR.set(config.chat_color.clone());
+    let frames: Vec<String> = config.thinking_indicator
+        .chars()
+        .map(|c| c.to_string())
+        .collect();
+    if !frames.is_empty() {
+        let _ = SPINNER_FRAMES.set(frames);
+    }
+}
+
+fn chat_color() -> &'static str {
+    CHAT_COLOR.get().map(|s| s.as_str()).unwrap_or("\x1b[3;36m")
+}
+
+fn spinner_frames() -> &'static [String] {
+    static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
+    SPINNER_FRAMES.get().unwrap_or_else(|| {
+        DEFAULT.get_or_init(|| {
+            vec!["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+                .into_iter().map(String::from).collect()
+        })
+    })
+}
+
 pub fn show_spinner() {
     SPINNER_ACTIVE.store(true, Ordering::SeqCst);
     let handle = std::thread::spawn(move || {
-        let frames = [
-            "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}",
-            "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-            "\u{2807}", "\u{280f}",
-        ];
+        let frames = spinner_frames();
         let mut i = 0;
         while SPINNER_ACTIVE.load(Ordering::SeqCst) {
             eprint!(
@@ -56,11 +80,7 @@ impl SpinnerGuard {
         ).is_ok();
         if was_inactive {
             let handle = std::thread::spawn(move || {
-                let frames = [
-                    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}",
-                    "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
-                    "\u{2807}", "\u{280f}",
-                ];
+                let frames = spinner_frames();
                 let mut i = 0;
                 while SPINNER_ACTIVE.load(Ordering::SeqCst) {
                     eprint!(
@@ -124,7 +144,7 @@ pub async fn consume_stream(
             StreamEvent::TextDelta(text) => {
                 if !is_streaming_text {
                     is_streaming_text = true;
-                    eprint!("\x1b[3;36m"); // cyan italic
+                    eprint!("{}", chat_color());
                 }
                 eprint!("{text}");
                 io::stderr().flush().ok();

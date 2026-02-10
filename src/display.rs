@@ -1,14 +1,17 @@
+use crate::config::DisplayConfig;
 use crate::stream_consumer::DisplayEvent;
 use std::io::{self, Write};
 
 pub struct TerminalDisplay {
     is_streaming_text: bool,
+    chat_color: String,
 }
 
 impl TerminalDisplay {
-    pub fn new() -> Self {
+    pub fn new(config: &DisplayConfig) -> Self {
         Self {
             is_streaming_text: false,
+            chat_color: config.chat_color.clone(),
         }
     }
 
@@ -17,7 +20,7 @@ impl TerminalDisplay {
             DisplayEvent::TextChunk(text) => {
                 if !self.is_streaming_text {
                     self.is_streaming_text = true;
-                    eprint!("\x1b[3;36m");
+                    eprint!("{}", self.chat_color);
                 }
                 eprint!("{text}");
                 io::stderr().flush().ok();

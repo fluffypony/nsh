@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 const SCHEMA_VERSION: i32 = 3;
 
@@ -514,7 +514,8 @@ impl Db {
         limit: usize,
     ) -> rusqlite::Result<Vec<ConversationExchange>> {
         let mut stmt = self.conn.prepare(
-            "SELECT query, response_type, response, explanation
+            "SELECT query, response_type, response, explanation, \
+                    result_exit_code, result_output_snippet
              FROM conversations
              WHERE session_id = ?
              ORDER BY created_at DESC
@@ -528,6 +529,8 @@ impl Db {
                     response_type: row.get(1)?,
                     response: row.get(2)?,
                     explanation: row.get(3)?,
+                    result_exit_code: row.get(4)?,
+                    result_output_snippet: row.get(5)?,
                 })
             },
         )?;
@@ -982,6 +985,32 @@ impl Db {
         rows.collect()
     }
 
+    pub fn find_pending_conversation(
+        &self,
+        session_id: &str,
+    ) -> rusqlite::Result<Option<(i64, String)>> {
+        self.conn.query_row(
+            "SELECT id, response FROM conversations WHERE session_id = ? \
+             AND response_type = 'command' AND result_exit_code IS NULL \
+             ORDER BY created_at DESC LIMIT 1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()
+    }
+
+    pub fn update_conversation_result(
+        &self,
+        conv_id: i64,
+        exit_code: i32,
+        output_snippet: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE conversations SET result_exit_code = ?, result_output_snippet = ? WHERE id = ?",
+            params![exit_code, output_snippet, conv_id],
+        )?;
+        Ok(())
+    }
+
     pub fn run_doctor(&self, retention_days: u32) -> anyhow::Result<()> {
         eprintln!("nsh doctor: checking database integrity...");
 
@@ -1086,6 +1115,8 @@ pub struct ConversationExchange {
     pub response_type: String,
     pub response: String,
     pub explanation: Option<String>,
+    pub result_exit_code: Option<i32>,
+    pub result_output_snippet: Option<String>,
 }
 
 impl ConversationExchange {
@@ -1146,13 +1177,20 @@ impl ConversationExchange {
             "command" => "command",
             _ => "chat",
         };
-        let raw_content = match self.response_type.as_str() {
+        let mut raw_content = match self.response_type.as_str() {
             "command" => format!(
                 "Command prefilled: {}",
                 self.response
             ),
             _ => self.response.clone(),
         };
+        if let Some(code) = &self.result_exit_code {
+            let result_text = match &self.result_output_snippet {
+                Some(output) => format!("\nUser executed. Exit {code}. Output:\n{output}"),
+                None => format!("\nUser executed. Exit {code}."),
+            };
+            raw_content.push_str(&result_text);
+        }
         let content = format!(
             "<tool_result name=\"{tool_name}\">\n{raw_content}\n</tool_result>"
         );

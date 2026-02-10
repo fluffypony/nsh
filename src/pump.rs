@@ -17,6 +17,8 @@ pub struct CaptureEngine {
     history_lines: Vec<String>,
     prev_visible: Vec<String>,
     mark_state: Option<(usize, Vec<String>)>,
+    capture_mode: String,
+    alt_screen_mode: String,
 }
 
 impl CaptureEngine {
@@ -26,6 +28,8 @@ impl CaptureEngine {
         rate_limit_bps: usize,
         pause_seconds: u64,
         max_scrollback_lines: usize,
+        capture_mode: String,
+        alt_screen_mode: String,
     ) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, max_scrollback_lines),
@@ -39,6 +43,8 @@ impl CaptureEngine {
             history_lines: Vec::new(),
             prev_visible: Vec::new(),
             mark_state: None,
+            capture_mode,
+            alt_screen_mode,
         }
     }
 
@@ -79,7 +85,9 @@ impl CaptureEngine {
             return;
         } else if self.in_alternate_screen {
             self.in_alternate_screen = false;
-            self.prev_visible.clear();
+            if self.alt_screen_mode != "snapshot" {
+                self.prev_visible.clear();
+            }
         }
 
         self.parser.screen_mut().set_scrollback(0);
@@ -588,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_basic() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
         eng.process(b"line one\r\nline two\r\nline three\r\n");
         let lines = eng.get_lines(10);
         assert!(lines.contains("line one"));
@@ -598,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_empty() {
-        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
         let lines = eng.get_lines(10);
         assert!(lines.trim().is_empty());
     }
@@ -619,7 +627,7 @@ mod tests {
 
     #[test]
     fn test_capture_engine_rate_limit() {
-        let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000);
+        let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000, "vt100".into(), "drop".into());
         eng.process(&vec![b'A'; 200]);
         let lines = eng.get_lines(100);
         assert!(lines.contains("[nsh: output capture suppressed"));
@@ -627,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_alt_screen_content_excluded() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
         eng.process(b"before alt\r\n");
         eng.process(b"\x1b[?1049h");
         eng.process(b"TUI content\r\n");
@@ -637,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_mark_and_capture() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
         eng.process(b"before mark\r\n");
         eng.mark();
         eng.process(b"after mark line 1\r\nafter mark line 2\r\n");
@@ -649,14 +657,14 @@ mod tests {
 
     #[test]
     fn test_capture_without_mark_returns_none() {
-        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000);
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
         eng.process(b"some output\r\n");
         assert!(eng.capture_since_mark(65536).is_none());
     }
 
     #[test]
     fn test_total_line_count() {
-        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000);
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
         for i in 0..10 {
             eng.process(format!("line {i}\r\n").as_bytes());
         }

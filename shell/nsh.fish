@@ -40,6 +40,7 @@ set -g __nsh_last_heartbeat 0
 function __nsh_preexec --on-event fish_preexec
     set -g __nsh_cmd $argv[1]
     set -g __nsh_cmd_start (date -u +%Y-%m-%dT%H:%M:%SZ)
+    set -g __nsh_cmd_start_epoch (date +%s)
     set -g __nsh_cwd $PWD
 
     # Redact-next-command mechanism
@@ -59,6 +60,12 @@ function __nsh_postexec --on-event fish_postexec
     set -g __nsh_cmd ""
     set -g __nsh_cmd_start ""
     set -g __nsh_cwd ""
+
+    set -l duration_ms 0
+    if test -n "$__nsh_cmd_start_epoch"
+        set duration_ms (math "( "(date +%s)" - $__nsh_cmd_start_epoch) * 1000")
+        set -g __nsh_cmd_start_epoch ""
+    end
 
     # Remove redact_active flag
     rm -f "$HOME/.nsh/redact_active_$NSH_SESSION_ID" 2>/dev/null
@@ -90,6 +97,7 @@ function __nsh_postexec --on-event fish_postexec
         --cwd "$cwd" \
         --exit-code $exit_code \
         --started-at "$start" \
+        --duration-ms $duration_ms \
         --tty $NSH_TTY \
         --pid $fish_pid \
         --shell fish &>/dev/null &

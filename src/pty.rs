@@ -96,6 +96,8 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
         config.context.scrollback_rate_limit_bps,
         config.context.scrollback_pause_seconds,
         config.context.scrollback_lines.max(1000),
+        config.capture.mode.clone(),
+        config.capture.alt_screen.clone(),
     ));
 
     // Fork

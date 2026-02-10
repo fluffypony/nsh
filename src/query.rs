@@ -13,6 +13,8 @@ pub async fn handle_query(
     think: bool,
     private: bool,
 ) -> anyhow::Result<()> {
+    crate::streaming::configure_display(&config.display);
+
     let cancelled = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
         .ok();
