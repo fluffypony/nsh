@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 
 pub fn execute(
     question: &str,
@@ -21,9 +21,7 @@ pub fn execute(
 
     io::stderr().flush()?;
 
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim().to_string();
+    let input = read_user_input()?;
 
     // If options were given and user typed a number, resolve it
     if let Some(opts) = options {
@@ -35,4 +33,24 @@ pub fn execute(
     }
 
     Ok(input)
+}
+
+fn read_user_input() -> anyhow::Result<String> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        return Ok(input.trim().to_string());
+    }
+
+    // stdin is piped — try /dev/tty for interactive input
+    match std::fs::File::open("/dev/tty") {
+        Ok(tty) => {
+            let mut reader = io::BufReader::new(tty);
+            let mut input = String::new();
+            reader.read_line(&mut input)?;
+            Ok(input.trim().to_string())
+        }
+        Err(_) => Ok("Cannot ask user — stdin is piped. Proceeding with best guess.".into()),
+    }
 }

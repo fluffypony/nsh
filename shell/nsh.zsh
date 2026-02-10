@@ -108,8 +108,8 @@ __nsh_precmd() {
     # Auto-continue pending multi-step task
     local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
     if [[ -f "$pending_flag" ]]; then
-        rm -f "$pending_flag"
         if [[ -n "${__NSH_PENDING_CMD:-}" && "$cmd" == "$__NSH_PENDING_CMD" ]]; then
+            rm -f "$pending_flag"
             __NSH_PENDING_CMD=""
             nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &!
         fi

@@ -59,12 +59,32 @@ async fn main() -> anyhow::Result<()> {
             pty::run_wrapped_shell(&shell)?;
         }
 
-        Commands::Query { words, think, private } => {
+        Commands::Query { words, think, private, json: _ } => {
             if words.is_empty() {
                 eprintln!("Usage: ? <your question>");
                 std::process::exit(1);
             }
-            let query_text = words.join(" ");
+            let mut query_text = words.join(" ");
+
+            // Pipe/stdin support
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                let mut piped = String::new();
+                use std::io::Read;
+                std::io::stdin().read_to_string(&mut piped)?;
+                if !piped.is_empty() {
+                    let truncated = crate::util::truncate(&piped, 32000);
+                    query_text = format!("<piped_input>\n{truncated}\n</piped_input>\n\n{query_text}");
+                }
+            }
+
+            // Auto-run suffix: strip trailing !!
+            let (_query_text, _force_autorun) = if query_text.ends_with("!!") {
+                (query_text[..query_text.len()-2].trim().to_string(), true)
+            } else {
+                (query_text, false)
+            };
+            let query_text = _query_text;
             let config = config::Config::load()?;
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID")
@@ -111,6 +131,9 @@ async fn main() -> anyhow::Result<()> {
                 db.end_session(&session)?;
                 shell_hooks::cleanup_pending_files(&session);
             }
+            SessionAction::Label { label: _, session: _ } => {
+                eprintln!("nsh: session label not yet implemented");
+            }
         },
 
         Commands::History { action } => match action {
@@ -150,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
             Some(ConfigAction::Path) | None => {
                 println!("{}", config::Config::path().display());
             }
-            Some(ConfigAction::Show) => {
+            Some(ConfigAction::Show { raw: _ }) => {
                 let path = config::Config::path();
                 if path.exists() {
                     print!("{}", std::fs::read_to_string(&path)?);
@@ -354,6 +377,22 @@ async fn main() -> anyhow::Result<()> {
                 }
                 _ => {}
             }
+        }
+
+        Commands::Chat => {
+            eprintln!("nsh: chat mode not yet implemented");
+        }
+        Commands::Export { format: _, session: _ } => {
+            eprintln!("nsh: export not yet implemented");
+        }
+        Commands::Status => {
+            eprintln!("nsh: status not yet implemented");
+        }
+        Commands::Completions { shell } => {
+            use clap::CommandFactory;
+            use clap_complete::generate;
+            let mut cmd = cli::Cli::command();
+            generate(shell, &mut cmd, "nsh", &mut std::io::stdout());
         }
     }
 

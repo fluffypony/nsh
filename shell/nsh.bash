@@ -3,9 +3,12 @@
 
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
-    alias '?'='nsh query --'
-    alias '??'='nsh query --think --'
-    alias '?!'='nsh query --private --'
+    nsh_query() { nsh query -- "$@"; }
+    nsh_query_think() { nsh query --think -- "$@"; }
+    nsh_query_private() { nsh query --private -- "$@"; }
+    alias '?'='nsh_query'
+    alias '??'='nsh_query_think'
+    alias '?!'='nsh_query_private'
     # Only reinstall hooks if not already present
     case ";${PROMPT_COMMAND:-};" in
         *";__nsh_prompt_command;"*) ;;
@@ -23,9 +26,12 @@ nsh session start --session "$NSH_SESSION_ID" --tty "$(tty)" --shell "bash" --pi
 disown 2>/dev/null
 
 # ── Aliases ─────────────────────────────────────────────
-alias '?'='nsh query --'
-alias '??'='nsh query --think --'
-alias '?!'='nsh query --private --'
+nsh_query() { nsh query -- "$@"; }
+nsh_query_think() { nsh query --think -- "$@"; }
+nsh_query_private() { nsh query --private -- "$@"; }
+alias '?'='nsh_query'
+alias '??'='nsh_query_think'
+alias '?!'='nsh_query_private'
 
 # ── State variables ─────────────────────────────────────
 __nsh_cmd=""
@@ -119,8 +125,8 @@ __nsh_prompt_command() {
     # Auto-continue pending multi-step task
     local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
     if [[ -f "$pending_flag" ]]; then
-        rm -f "$pending_flag"
         if [[ -n "${__nsh_pending_cmd:-}" && "$cmd" == "$__nsh_pending_cmd" ]]; then
+            rm -f "$pending_flag"
             __nsh_pending_cmd=""
             nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &
             disown 2>/dev/null

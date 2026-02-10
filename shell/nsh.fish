@@ -106,8 +106,8 @@ function __nsh_postexec --on-event fish_postexec
     # Auto-continue pending multi-step task
     set -l pending_flag "$HOME/.nsh/pending_flag_$NSH_SESSION_ID"
     if test -f $pending_flag
-        rm -f $pending_flag
         if test -n "$__nsh_pending_cmd" -a "$cmd" = "$__nsh_pending_cmd"
+            rm -f $pending_flag
             set -g __nsh_pending_cmd ""
             nsh query -- "__NSH_CONTINUE__" &>/dev/null &
             disown 2>/dev/null

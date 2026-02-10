@@ -9,6 +9,7 @@ repository = "https://github.com/fluffypony/nsh"
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -34,6 +35,7 @@ libc = "0.2"
 
 # Terminal
 crossterm = "0.29"
+termimad = "0.34"
 
 # Config
 dirs = "6"

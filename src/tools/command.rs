@@ -44,14 +44,38 @@ pub fn execute(
 
     // Write command to pending file for shell hook to pick up
     let nsh_dir = crate::config::Config::nsh_dir();
-    let cmd_file =
-        nsh_dir.join(format!("pending_cmd_{session_id}"));
-    std::fs::write(&cmd_file, command)?;
+    let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+
+    // Atomic write: temp file + rename, with 0o600 permissions
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let tmp = cmd_file.with_extension("tmp");
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(command.as_bytes())?;
+        std::fs::rename(&tmp, &cmd_file)?;
+    }
 
     if pending {
-        let pending_file =
-            nsh_dir.join(format!("pending_flag_{session_id}"));
-        std::fs::write(&pending_file, "1")?;
+        let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
+        let tmp = pending_file.with_extension("tmp");
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            f.write_all(b"1")?;
+        }
+        std::fs::rename(&tmp, &pending_file)?;
     }
 
     if !private {

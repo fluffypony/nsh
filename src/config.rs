@@ -23,6 +23,8 @@ pub struct Config {
     pub db: DbConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub execution: ExecutionConfig,
 }
 
 impl Default for Config {
@@ -38,6 +40,21 @@ impl Default for Config {
             capture: CaptureConfig::default(),
             db: DbConfig::default(),
             mcp: McpConfig::default(),
+            execution: ExecutionConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ExecutionConfig {
+    pub mode: String, // "prefill" | "confirm" | "autorun"
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            mode: "prefill".into(),
         }
     }
 }
