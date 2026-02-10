@@ -236,10 +236,11 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS memories (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                key         TEXT NOT NULL,
+                key         TEXT NOT NULL COLLATE NOCASE,
                 value       TEXT NOT NULL,
                 created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
+                updated_at  TEXT NOT NULL,
+                UNIQUE(key)
             );
             CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);",
         )?;
@@ -698,25 +699,31 @@ impl Db {
         let existing: Option<i64> = self
             .conn
             .query_row(
-                "SELECT id FROM memories WHERE LOWER(key) = LOWER(?)",
+                "SELECT id FROM memories WHERE key = ?",
                 params![key],
                 |row| row.get(0),
             )
             .optional()?;
 
-        if let Some(id) = existing {
-            self.conn.execute(
-                "UPDATE memories SET value = ?, key = ?, updated_at = ? WHERE id = ?",
-                params![value, key, now, id],
-            )?;
-            Ok((id, true))
+        let was_update = existing.is_some();
+
+        self.conn.execute(
+            "INSERT INTO memories (key, value, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?3) \
+             ON CONFLICT(key) DO UPDATE SET \
+               value = excluded.value, \
+               key = excluded.key, \
+               updated_at = excluded.updated_at",
+            params![key, value, now],
+        )?;
+
+        let id = if let Some(id) = existing {
+            id
         } else {
-            self.conn.execute(
-                "INSERT INTO memories (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                params![key, value, now, now],
-            )?;
-            Ok((self.conn.last_insert_rowid(), false))
-        }
+            self.conn.last_insert_rowid()
+        };
+
+        Ok((id, was_update))
     }
 
     pub fn delete_memory(&self, id: i64) -> rusqlite::Result<bool> {

@@ -28,7 +28,13 @@ pub fn import_if_needed(db: &crate::db::Db) {
         let mut all_entries: Vec<(String, DateTime<Utc>)> = Vec::new();
 
         for (path, shell) in &files {
-            let file_mtime = DateTime::<Utc>::from(std::fs::metadata(path)?.modified()?);
+            let file_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
+                Ok(mt) => DateTime::<Utc>::from(mt),
+                Err(e) => {
+                    tracing::debug!("skipping {}: {e}", path.display());
+                    continue;
+                }
+            };
             let entries = match shell {
                 Shell::Bash => parse_bash(path, file_mtime),
                 Shell::Zsh => parse_zsh(path, file_mtime),
@@ -85,32 +91,41 @@ pub fn import_if_needed(db: &crate::db::Db) {
     }
 }
 
+fn detect_shell_from_content(path: &Path) -> Shell {
+    if let Ok(bytes) = std::fs::read(path) {
+        let content = String::from_utf8_lossy(&bytes);
+        let first_line = content.lines().find(|l| !l.trim().is_empty());
+        if let Some(line) = first_line {
+            if line.starts_with("- cmd: ") {
+                return Shell::Fish;
+            }
+            let re = Regex::new(r"^: \d+:\d+;").unwrap();
+            if re.is_match(line) {
+                return Shell::Zsh;
+            }
+        }
+    }
+    Shell::Bash
+}
+
 fn discover_history_files() -> Vec<(PathBuf, Shell)> {
-    let mut files = Vec::new();
+    let mut files: Vec<(PathBuf, Shell)> = Vec::new();
     let home = dirs::home_dir().unwrap_or_default();
 
-    for path in [
-        std::env::var("HISTFILE").ok().map(PathBuf::from),
-        Some(home.join(".bash_history")),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if path.exists() && !files.iter().any(|(p, _): &(PathBuf, Shell)| p == &path) {
-            files.push((path, Shell::Bash));
+    if let Some(path) = std::env::var("HISTFILE").ok().map(PathBuf::from) {
+        if path.exists() {
+            let shell = detect_shell_from_content(&path);
+            files.push((path, shell));
         }
     }
 
-    for path in [
-        std::env::var("HISTFILE").ok().map(PathBuf::from),
-        Some(home.join(".zsh_history")),
-        Some(home.join(".histfile")),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if path.exists() && !files.iter().any(|(p, _): &(PathBuf, Shell)| p == &path) {
-            files.push((path, Shell::Zsh));
+    for (path, shell) in [
+        (home.join(".bash_history"), Shell::Bash),
+        (home.join(".zsh_history"), Shell::Zsh),
+        (home.join(".histfile"), Shell::Zsh),
+    ] {
+        if path.exists() && !files.iter().any(|(p, _)| p == &path) {
+            files.push((path, shell));
         }
     }
 
@@ -147,29 +162,29 @@ fn parse_bash(path: &Path, file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<U
     let mut results: Vec<(String, DateTime<Utc>)> = Vec::new();
     let mut pending_timestamp: Option<i64> = None;
 
-    for (reverse_idx, line) in lines.iter().enumerate().rev() {
-        if line.starts_with('#') {
-            if let Ok(ts) = line[1..].trim().parse::<i64>() {
+    for (idx, line) in lines.iter().enumerate() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix('#') {
+            if let Ok(ts) = rest.trim().parse::<i64>() {
                 pending_timestamp = Some(ts);
                 continue;
             }
         }
 
-        if line.is_empty() {
-            continue;
-        }
-
         let timestamp = if let Some(ts) = pending_timestamp.take() {
             DateTime::from_timestamp(ts, 0).unwrap_or(file_mtime)
         } else {
-            let remaining = total.saturating_sub(reverse_idx + 1);
+            let remaining = total.saturating_sub(idx + 1);
             file_mtime - chrono::Duration::seconds(remaining as i64)
         };
 
         results.push((line.to_string(), timestamp));
     }
 
-    results.reverse();
     results
 }
 

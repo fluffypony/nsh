@@ -80,9 +80,12 @@ pub fn execute(
         result.push('\n');
     }
 
-    let memory_matches = db
-        .search_memories(query.unwrap_or(regex.unwrap_or("")))
-        .unwrap_or_default();
+    let memory_query = query.or(regex).unwrap_or("");
+    let memory_matches = if memory_query.is_empty() {
+        Vec::new()
+    } else {
+        db.search_memories(memory_query).unwrap_or_default()
+    };
 
     if !memory_matches.is_empty() {
         result.push_str("\n── Memories ──\n");
