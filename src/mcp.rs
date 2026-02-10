@@ -28,7 +28,6 @@ struct JsonRpcNotification {
 
 #[derive(Deserialize)]
 struct JsonRpcResponse {
-    #[allow(dead_code)]
     id: Option<u64>,
     result: Option<serde_json::Value>,
     error: Option<JsonRpcError>,
@@ -145,7 +144,49 @@ impl McpServer {
                     .to_string();
 
                 if content_type.contains("text/event-stream") {
-                    parse_sse_response(&resp.text().await?)
+                    use futures::StreamExt;
+                    let sse_fut = async {
+                        let mut body_stream = resp.bytes_stream();
+                        let mut buffer = String::new();
+                        while let Some(chunk) = body_stream.next().await {
+                            let chunk = chunk?;
+                            buffer.push_str(&String::from_utf8_lossy(&chunk));
+                            while let Some(pos) = buffer.find("\n\n") {
+                                let event_block = buffer[..pos].to_string();
+                                buffer = buffer[pos + 2..].to_string();
+                                for line in event_block.lines() {
+                                    if let Some(data) = line.strip_prefix("data: ") {
+                                        let data = data.trim();
+                                        if data.is_empty() {
+                                            continue;
+                                        }
+                                        if let Ok(resp) =
+                                            serde_json::from_str::<JsonRpcResponse>(data)
+                                        {
+                                            if resp.id.is_some() {
+                                                if let Some(err) = resp.error {
+                                                    anyhow::bail!(
+                                                        "MCP error {}: {}",
+                                                        err.code,
+                                                        err.message
+                                                    );
+                                                }
+                                                return Ok(resp
+                                                    .result
+                                                    .unwrap_or(serde_json::Value::Null));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        anyhow::bail!("No JSON-RPC response found in SSE stream")
+                    };
+                    tokio::time::timeout(self.timeout, sse_fut)
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!("MCP SSE response for '{method}' timed out")
+                        })?
                 } else {
                     let rpc_resp: JsonRpcResponse = resp.json().await?;
                     if let Some(err) = rpc_resp.error {
@@ -200,7 +241,7 @@ impl McpServer {
 
 async fn read_stdio_response(
     stdout: &mut BufReader<tokio::process::ChildStdout>,
-    _expected_id: u64,
+    expected_id: u64,
 ) -> anyhow::Result<JsonRpcResponse> {
     loop {
         let mut line = String::new();
@@ -213,31 +254,11 @@ async fn read_stdio_response(
             continue;
         }
         if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
-            if resp.id.is_some() {
+            if resp.id == Some(expected_id) {
                 return Ok(resp);
             }
         }
     }
-}
-
-fn parse_sse_response(body: &str) -> anyhow::Result<serde_json::Value> {
-    for line in body.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            let data = data.trim();
-            if data.is_empty() {
-                continue;
-            }
-            if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(data) {
-                if resp.id.is_some() {
-                    if let Some(err) = resp.error {
-                        anyhow::bail!("MCP error {}: {}", err.code, err.message);
-                    }
-                    return Ok(resp.result.unwrap_or(serde_json::Value::Null));
-                }
-            }
-        }
-    }
-    anyhow::bail!("No JSON-RPC response found in SSE stream")
 }
 
 pub struct McpClient {

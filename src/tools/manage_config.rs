@@ -38,6 +38,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             set_toml_value(&mut doc, key, toml_value.clone())?;
             let new_content = toml::to_string_pretty(&doc)?;
 
+            if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
+                eprintln!("{red}✗ Invalid configuration: {e}{reset}");
+                eprintln!("{dim}The change was not applied.{reset}");
+                return Ok(());
+            }
+
             eprintln!("{bold_yellow}nsh config change:{reset}");
             eprintln!("  Key: {key}");
             if let Some(old) = &old_value {
@@ -68,6 +74,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             }
 
             let new_content = toml::to_string_pretty(&doc)?;
+
+            if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
+                eprintln!("{red}✗ Invalid configuration: {e}{reset}");
+                eprintln!("{dim}The change was not applied.{reset}");
+                return Ok(());
+            }
 
             eprintln!("{bold_yellow}nsh config removal:{reset}");
             eprintln!("  {red}Remove key: {key}{reset}");

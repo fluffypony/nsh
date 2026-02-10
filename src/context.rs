@@ -1339,4 +1339,104 @@ mod tests {
         assert_eq!(info1.hostname, info2.hostname);
         assert_eq!(info1.machine_info, info2.machine_info);
     }
+
+    #[test]
+    fn test_build_xml_context_with_git_commits_and_files() {
+        let config = crate::config::Config::default();
+        let ctx = QueryContext {
+            os_info: "macOS".into(),
+            shell: "zsh".into(),
+            cwd: "/tmp".into(),
+            username: "test".into(),
+            conversation_history: vec![],
+            hostname: "test".into(),
+            machine_info: "arm64".into(),
+            datetime_info: "2025-01-01".into(),
+            timezone_info: "UTC".into(),
+            locale_info: "en_US.UTF-8".into(),
+            session_history: vec![],
+            other_sessions: vec![],
+            scrollback_text: String::new(),
+            custom_instructions: None,
+            project_info: ProjectInfo {
+                root: Some("/project".into()),
+                project_type: "Rust".into(),
+                git_branch: Some("main".into()),
+                git_status: Some("3 files changed".into()),
+                git_commits: vec![GitCommit {
+                    hash: "abc123".into(),
+                    message: "Initial commit".into(),
+                    relative_time: "2 hours ago".into(),
+                }],
+                files: vec![FileEntry {
+                    path: "src/main.rs".into(),
+                    kind: "file".into(),
+                    size: "1.5KB".into(),
+                }],
+            },
+            ssh_context: None,
+            container_context: None,
+        };
+        let xml = build_xml_context(&ctx, &config);
+        assert!(xml.contains("branch=\"main\""));
+        assert!(xml.contains("status=\"3 files changed\""));
+        assert!(xml.contains("abc123"));
+        assert!(xml.contains("Initial commit"));
+        assert!(xml.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_list_project_files_with_tempdir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("file1.txt"), "content").unwrap();
+        std::fs::write(tmp.path().join("file2.rs"), "fn main() {}").unwrap();
+        let subdir = tmp.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("nested.txt"), "nested").unwrap();
+        let entries = list_project_files(tmp.path().to_str().unwrap(), 100);
+        assert!(entries.len() >= 3);
+    }
+
+    #[test]
+    fn test_list_project_files_fallback_skips_git_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("file1.txt"), "content").unwrap();
+        let git_dir = tmp.path().join(".git");
+        std::fs::create_dir(&git_dir).unwrap();
+        std::fs::write(git_dir.join("config"), "git config").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            !paths.iter().any(|p| p.contains(".git")),
+            "fallback should skip .git dir: {paths:?}"
+        );
+        assert!(paths.contains(&"file1.txt"), "should still list regular files: {paths:?}");
+    }
+
+    #[test]
+    fn test_list_project_files_respects_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..20 {
+            std::fs::write(tmp.path().join(format!("file{i}.txt")), "x").unwrap();
+        }
+        let entries = list_project_files(tmp.path().to_str().unwrap(), 5);
+        assert!(entries.len() <= 5);
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_with_config() {
+        let mut config = crate::config::Config::default();
+        config.context.custom_instructions = Some("Always use sudo".into());
+        let instructions = gather_custom_instructions(&config, "/tmp");
+        assert!(instructions.is_some());
+        assert!(instructions.unwrap().contains("Always use sudo"));
+    }
+
+    #[test]
+    fn test_detect_project_type_cmake() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("C") || t.contains("CMake") || t.contains("cmake"));
+    }
 }

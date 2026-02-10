@@ -96,6 +96,11 @@ pub fn execute(
 
     let new_content = toml::to_string_pretty(&doc)?;
 
+    if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
+        eprintln!("Error: resulting config would be invalid: {e}");
+        return Ok(());
+    }
+
     let bold_yellow = "\x1b[1;33m";
     let green = "\x1b[32m";
     let dim = "\x1b[2m";

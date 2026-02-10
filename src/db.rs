@@ -2586,4 +2586,495 @@ mod tests {
         assert_eq!(c1[0].query, "q1");
         assert_eq!(c2[0].query, "q2");
     }
+
+    #[test]
+    fn test_search_history_multiple_results_ordered_by_relevance() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo build", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "cargo test", "/project", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "cargo bench", "/project", Some(0),
+            "2025-06-01T00:02:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history("cargo", 10).unwrap();
+        assert_eq!(results.len(), 3);
+        for r in &results {
+            assert!(r.cmd_highlight.contains("cargo"));
+        }
+    }
+
+    #[test]
+    fn test_search_history_respects_limit() {
+        let db = test_db();
+        for i in 0..10 {
+            db.insert_command(
+                "s1", &format!("grep pattern{i}"), "/tmp", Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"), None, None, "", "", 0,
+            ).unwrap();
+        }
+
+        let results = db.search_history("grep", 3).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_search_history_matches_output() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "run_script", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None,
+            Some("unique_sentinel_output_value"), "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history("unique_sentinel_output_value", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "run_script");
+    }
+
+    #[test]
+    fn test_search_history_matches_summary_via_fts() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "make deploy", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("deploying..."), "", "", 0,
+        ).unwrap();
+        db.update_summary(id, "deployed application to production kubernetes cluster").unwrap();
+
+        let results = db.search_history("kubernetes", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "make deploy");
+    }
+
+    #[test]
+    fn test_search_history_matches_cwd() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "ls", "/unique/searchable/directory", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history("searchable", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_init_db_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn, 10000).unwrap();
+        init_db(&conn, 10000).unwrap();
+
+        let version: String = conn.query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, SCHEMA_VERSION.to_string());
+
+        conn.execute(
+            "INSERT INTO sessions (id, tty, shell, pid, started_at) VALUES ('x', 'tty', 'zsh', 1, '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO commands (session_id, command, started_at) VALUES ('x', 'echo hi', '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM commands_fts WHERE commands_fts MATCH 'echo'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_insert_command_with_none_values() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "echo hello", "/tmp",
+            None, "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        assert!(id > 0);
+
+        let (exit_code, duration, output): (Option<i32>, Option<i64>, Option<String>) =
+            db.conn.query_row(
+                "SELECT exit_code, duration_ms, output FROM commands WHERE id = ?",
+                params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+        assert!(exit_code.is_none());
+        assert!(duration.is_none());
+        assert!(output.is_none());
+    }
+
+    #[test]
+    fn test_insert_command_with_very_long_command() {
+        let db = test_db();
+        let long_cmd = "x".repeat(100_000);
+        let id = db.insert_command(
+            "s1", &long_cmd, "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        assert!(id > 0);
+
+        let stored: String = db.conn.query_row(
+            "SELECT command FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored.len(), 100_000);
+    }
+
+    #[test]
+    fn test_insert_command_with_unicode_output() {
+        let db = test_db();
+        let unicode_output = "日本語テスト 🦀 émojis résumé café";
+        let id = db.insert_command(
+            "s1", "echo intl", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some(unicode_output), "", "", 0,
+        ).unwrap();
+
+        let stored: Option<String> = db.conn.query_row(
+            "SELECT output FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored.as_deref(), Some(unicode_output));
+    }
+
+    #[test]
+    fn test_insert_command_truncation_at_multibyte_boundary() {
+        let db = Db {
+            conn: Connection::open_in_memory().unwrap(),
+            max_output_bytes: 10,
+        };
+        init_db(&db.conn, 10000).unwrap();
+
+        let output = "aaaa日本語bbb";
+        let id = db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some(output), "", "", 0,
+        ).unwrap();
+
+        let stored: Option<String> = db.conn.query_row(
+            "SELECT output FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        let stored = stored.unwrap();
+        assert!(stored.contains("[truncated by nsh]"));
+        assert!(stored.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_insert_usage_all_fields() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let id = db.insert_usage(
+            "s1",
+            Some("translate this code"),
+            "claude-3.5-sonnet",
+            "anthropic",
+            Some(1500),
+            Some(800),
+            Some(0.0234),
+            Some("gen_full_test_123"),
+        ).unwrap();
+        assert!(id > 0);
+
+        let (model, provider, input, output, cost, gen_id, query): (
+            String, String, Option<u32>, Option<u32>, Option<f64>, Option<String>, Option<String>,
+        ) = db.conn.query_row(
+            "SELECT model, provider, input_tokens, output_tokens, cost_usd, generation_id, query_text FROM usage WHERE id = ?",
+            params![id], |row| Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                row.get(4)?, row.get(5)?, row.get(6)?,
+            )),
+        ).unwrap();
+        assert_eq!(model, "claude-3.5-sonnet");
+        assert_eq!(provider, "anthropic");
+        assert_eq!(input, Some(1500));
+        assert_eq!(output, Some(800));
+        assert!((cost.unwrap() - 0.0234).abs() < 1e-9);
+        assert_eq!(gen_id.as_deref(), Some("gen_full_test_123"));
+        assert_eq!(query.as_deref(), Some("translate this code"));
+    }
+
+    #[test]
+    fn test_recent_commands_with_summaries_chronological_order() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let id1 = db.insert_command(
+            "s1", "first", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", Some(100), Some("out1"), "", "", 0,
+        ).unwrap();
+        db.update_summary(id1, "summary for first").unwrap();
+
+        let id2 = db.insert_command(
+            "s1", "second", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", Some(200), Some("out2"), "", "", 0,
+        ).unwrap();
+        db.update_summary(id2, "summary for second").unwrap();
+
+        let id3 = db.insert_command(
+            "s1", "third", "/tmp", Some(1),
+            "2025-06-01T00:02:00Z", None, None, "", "", 0,
+        ).unwrap();
+        let _ = id3;
+
+        let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
+        assert_eq!(cmds.len(), 3);
+        assert_eq!(cmds[0].command, "first");
+        assert_eq!(cmds[0].summary.as_deref(), Some("summary for first"));
+        assert_eq!(cmds[0].duration_ms, Some(100));
+        assert_eq!(cmds[1].command, "second");
+        assert_eq!(cmds[1].summary.as_deref(), Some("summary for second"));
+        assert_eq!(cmds[2].command, "third");
+        assert!(cmds[2].summary.is_none());
+        assert_eq!(cmds[2].exit_code, Some(1));
+    }
+
+    #[test]
+    fn test_other_sessions_with_summaries_multiple_sessions() {
+        let db = test_db();
+        db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("other1", "/dev/pts/1", "bash", 5678).unwrap();
+        db.create_session("other2", "/dev/pts/2", "fish", 9012).unwrap();
+
+        db.insert_command(
+            "me", "my_cmd", "/home", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
+        ).unwrap();
+
+        let id1 = db.insert_command(
+            "other1", "their_cmd_1", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, Some("output1"), "/dev/pts/1", "bash", 5678,
+        ).unwrap();
+        db.update_summary(id1, "summary for other1").unwrap();
+
+        db.insert_command(
+            "other2", "their_cmd_2", "/var", Some(1),
+            "2025-06-01T00:02:00Z", None, None, "/dev/pts/2", "fish", 9012,
+        ).unwrap();
+
+        let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
+        assert_eq!(others.len(), 2);
+        assert_eq!(others[0].command, "their_cmd_2");
+        assert_eq!(others[0].tty, "/dev/pts/2");
+        assert_eq!(others[0].shell, "fish");
+        assert!(others[0].summary.is_none());
+        assert_eq!(others[1].command, "their_cmd_1");
+        assert_eq!(others[1].summary.as_deref(), Some("summary for other1"));
+    }
+
+    #[test]
+    fn test_other_sessions_excludes_ended() {
+        let db = test_db();
+        db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("ended", "/dev/pts/1", "bash", 5678).unwrap();
+        db.end_session("ended").unwrap();
+
+        db.insert_command(
+            "ended", "ended_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "/dev/pts/1", "bash", 5678,
+        ).unwrap();
+
+        let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
+        assert!(others.is_empty());
+    }
+
+    #[test]
+    fn test_conversation_full_lifecycle() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let id1 = db.insert_conversation(
+            "s1", "how do I list files", "chat", "Use ls -la to list files",
+            None, false, false,
+        ).unwrap();
+
+        let id2 = db.insert_conversation(
+            "s1", "list files", "command", "ls -la",
+            Some("lists all files including hidden"), false, true,
+        ).unwrap();
+
+        assert!(id2 > id1);
+
+        let pending = db.find_pending_conversation("s1").unwrap();
+        assert!(pending.is_some());
+        let (pid, resp) = pending.unwrap();
+        assert_eq!(pid, id2);
+        assert_eq!(resp, "ls -la");
+
+        db.update_conversation_result(id2, 0, Some("total 42\ndrwxr-xr-x")).unwrap();
+
+        let pending = db.find_pending_conversation("s1").unwrap();
+        assert!(pending.is_none());
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert_eq!(convos.len(), 2);
+        assert_eq!(convos[0].response_type, "chat");
+        assert!(convos[0].result_exit_code.is_none());
+        assert_eq!(convos[1].response_type, "command");
+        assert_eq!(convos[1].result_exit_code, Some(0));
+        assert_eq!(convos[1].explanation.as_deref(), Some("lists all files including hidden"));
+
+        db.clear_conversations("s1").unwrap();
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert!(convos.is_empty());
+    }
+
+    #[test]
+    fn test_insert_command_creates_session_on_conflict() {
+        let db = test_db();
+        db.insert_command(
+            "auto_sess", "echo hello", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "/dev/pts/5", "zsh", 999,
+        ).unwrap();
+
+        let tty: String = db.conn.query_row(
+            "SELECT tty FROM sessions WHERE id = 'auto_sess'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(tty, "/dev/pts/5");
+
+        db.insert_command(
+            "auto_sess", "echo world", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "/dev/pts/6", "bash", 1000,
+        ).unwrap();
+
+        let tty: String = db.conn.query_row(
+            "SELECT tty FROM sessions WHERE id = 'auto_sess'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(tty, "/dev/pts/6");
+    }
+
+    #[test]
+    fn test_search_history_empty_db() {
+        let db = test_db();
+        let results = db.search_history("anything", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_update_heartbeat_updates_timestamp() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let hb1: Option<String> = db.conn.query_row(
+            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+            [], |row| row.get(0),
+        ).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.update_heartbeat("s1").unwrap();
+
+        let hb2: Option<String> = db.conn.query_row(
+            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+            [], |row| row.get(0),
+        ).unwrap();
+
+        assert!(hb1.is_some());
+        assert!(hb2.is_some());
+        assert!(hb2.unwrap() > hb1.unwrap());
+    }
+
+    #[test]
+    fn test_commands_needing_summary_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            db.insert_command(
+                "s1", &format!("cmd{i}"), "/tmp", Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"), None,
+                Some(&format!("output{i}")), "", "", 0,
+            ).unwrap();
+        }
+
+        let needing = db.commands_needing_summary(2).unwrap();
+        assert_eq!(needing.len(), 2);
+    }
+
+    #[test]
+    fn test_create_session_ignore_duplicate() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = 's1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_insert_command_with_all_fields() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "cargo test --release", "/home/user/project",
+            Some(0), "2025-06-01T12:30:00Z", Some(45000),
+            Some("running 42 tests\ntest result: ok"), "/dev/pts/3", "zsh", 5555,
+        ).unwrap();
+
+        let (cmd, cwd, exit_code, duration, output): (
+            String, Option<String>, Option<i32>, Option<i64>, Option<String>,
+        ) = db.conn.query_row(
+            "SELECT command, cwd, exit_code, duration_ms, output FROM commands WHERE id = ?",
+            params![id], |row| Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
+            )),
+        ).unwrap();
+        assert_eq!(cmd, "cargo test --release");
+        assert_eq!(cwd.as_deref(), Some("/home/user/project"));
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(duration, Some(45000));
+        assert!(output.unwrap().contains("running 42 tests"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_only_no_fts() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "curl https://api.example.com/v1/users", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "wget https://api.example.com/v2/data", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some(r"https://api\.example\.com/v1"), None, None,
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("curl"));
+    }
+
+    #[test]
+    fn test_prune_cleans_fts_index() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "old_prunable_unique_cmd", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let before = db.search_history("old_prunable_unique_cmd", 10).unwrap();
+        assert_eq!(before.len(), 1);
+
+        db.prune(30).unwrap();
+
+        let after = db.search_history("old_prunable_unique_cmd", 10).unwrap();
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn test_update_usage_cost_nonexistent() {
+        let db = test_db();
+        let updated = db.update_usage_cost("nonexistent_gen_id", 1.0).unwrap();
+        assert!(!updated);
+    }
 }

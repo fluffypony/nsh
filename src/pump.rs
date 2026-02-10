@@ -1103,4 +1103,510 @@ mod tests {
         let output = eng.get_lines(0);
         assert!(output.is_empty());
     }
+
+    #[test]
+    fn test_rate_limit_suppressed_only_once() {
+        let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'A'; 200]);
+        eng.process(&[b'B'; 200]);
+        eng.process(&[b'C'; 200]);
+        let lines = eng.get_lines(1000);
+        let count = lines.matches("[nsh: output capture suppressed").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_rate_limit_paused_data_dropped() {
+        let mut eng = CaptureEngine::new(24, 80, 50, 1, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'X'; 100]);
+        assert!(eng.paused_until.is_some());
+        eng.process(b"should be dropped\r\n");
+        let output = eng.get_lines(1000);
+        assert!(!output.contains("should be dropped"));
+    }
+
+    #[test]
+    fn test_rate_limit_pause_seconds_configurable() {
+        let mut eng = CaptureEngine::new(24, 80, 50, 5, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'X'; 100]);
+        assert!(eng.paused_until.is_some());
+        let until = eng.paused_until.unwrap();
+        let expected_min = Instant::now() + Duration::from_secs(4);
+        assert!(until >= expected_min);
+    }
+
+    #[test]
+    fn test_process_empty_bytes() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"");
+        assert_eq!(eng.total_line_count(), 0);
+        assert!(eng.get_lines(100).trim().is_empty());
+    }
+
+    #[test]
+    fn test_get_lines_returns_empty_on_alt_screen() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"normal content\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"alt content\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_alt_screen_drop_mode_clears_prev_visible() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"line A\r\nline B\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.process(b"\x1b[?1049h");
+        eng.in_alternate_screen = true;
+        eng.prev_visible = vec!["something".into()];
+        eng.process(b"\x1b[?1049l");
+        let vis_after_leave = eng.prev_visible.clone();
+        assert!(
+            vis_after_leave.is_empty()
+                || !vis_after_leave.iter().any(|l| l.contains("something")),
+        );
+    }
+
+    #[test]
+    fn test_alt_screen_snapshot_mode_preserves_prev_visible() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "snapshot".into());
+        eng.process(b"line A\r\nline B\r\n");
+        let before = eng.prev_visible.clone();
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"\x1b[?1049l");
+        assert_eq!(eng.prev_visible, before);
+    }
+
+    #[test]
+    fn test_alt_screen_enter_process_leave_cycle() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"before1\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"alt1\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"middle\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"alt2\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"after\r\n");
+        let output = eng.get_lines(1000);
+        assert!(output.contains("after"));
+        assert!(!output.contains("alt1"));
+        assert!(!output.contains("alt2"));
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_empty_prev_nonempty_cur() {
+        let prev: Vec<String> = vec![];
+        let cur: Vec<String> = vec!["a".into(), "b".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_nonempty_prev_empty_cur() {
+        let prev: Vec<String> = vec!["a".into(), "b".into()];
+        let cur: Vec<String> = vec![];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_full_overlap() {
+        let prev: Vec<String> = vec!["a".into(), "b".into()];
+        let cur: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_single_line_scroll() {
+        let prev: Vec<String> = vec!["a".into(), "b".into(), "c".into()];
+        let cur: Vec<String> = vec!["b".into(), "c".into(), "d".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a"]);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_full_match_different_lengths() {
+        let a = vec!["x", "y", "z"];
+        let b = vec!["x", "y", "z", "w"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 3);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_b_shorter_than_a() {
+        let a = vec!["a", "b", "c", "d"];
+        let b = vec!["d"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 1);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_no_match_long() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["d", "e", "f"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 0);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_exactly_151_lines() {
+        let lines: Vec<String> = (0..151).map(|i| format!("line {i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert!(result.contains("line 0"));
+        assert!(result.contains("line 99"));
+        assert!(result.contains("[... 1 lines omitted ...]"));
+        assert!(result.contains("line 150"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_single_line() {
+        let result = truncate_for_storage("only one line", 65536);
+        assert_eq!(result, "only one line");
+    }
+
+    #[test]
+    fn test_truncate_for_storage_zero_max_bytes() {
+        let result = truncate_for_storage("hello", 0);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_many_lines_and_byte_limit() {
+        let lines: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 50);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_sanitize_input_preserves_tab() {
+        let input = b"\t";
+        assert_eq!(sanitize_input(input), b"\t".to_vec());
+    }
+
+    #[test]
+    fn test_sanitize_input_preserves_backspace() {
+        let input = b"\x08";
+        assert_eq!(sanitize_input(input), b"\x08".to_vec());
+    }
+
+    #[test]
+    fn test_sanitize_input_preserves_escape() {
+        let input = b"\x1b";
+        assert_eq!(sanitize_input(input), b"\x1b".to_vec());
+    }
+
+    #[test]
+    fn test_sanitize_input_mixed() {
+        let input = b"a\x00b\x01c\x02d\x1be\nf\rg\th\x08";
+        let expected = b"abcd\x1be\nf\rg\th\x08";
+        assert_eq!(sanitize_input(input), expected.to_vec());
+    }
+
+    #[test]
+    fn test_sanitize_input_printable_ascii_range() {
+        let input: Vec<u8> = (0x20..=0x7E).collect();
+        let result = sanitize_input(&input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_input_filters_0x7f() {
+        let input = b"\x7f";
+        assert!(sanitize_input(input).is_empty());
+    }
+
+    #[test]
+    fn test_capture_since_mark_no_new_output() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"content\r\n");
+        eng.mark();
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.is_empty());
+    }
+
+    #[test]
+    fn test_capture_since_mark_with_only_visible_changes() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        eng.process(b"new visible line\r\n");
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.contains("new visible line"));
+    }
+
+    #[test]
+    fn test_mark_on_fresh_engine() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        eng.process(b"first output\r\n");
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.contains("first output"));
+    }
+
+    #[test]
+    fn test_set_size_different_dimensions() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"hello\r\n");
+        eng.set_size(10, 40);
+        eng.process(b"smaller screen\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("smaller screen"));
+    }
+
+    #[test]
+    fn test_set_size_multiple_times() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"a\r\n");
+        eng.set_size(40, 120);
+        eng.process(b"b\r\n");
+        eng.set_size(10, 40);
+        eng.process(b"c\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("c"));
+    }
+
+    #[test]
+    fn test_process_whitespace_only_lines_not_in_history() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for _ in 0..10 {
+            eng.process(b"   \r\n");
+        }
+        for line in &eng.history_lines {
+            assert!(!line.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_process_crlf_handling() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"line1\r\nline2\r\n");
+        let output = eng.get_lines(100);
+        assert!(!output.contains("\r\n"));
+        assert!(output.contains("line1"));
+        assert!(output.contains("line2"));
+    }
+
+    #[test]
+    fn test_get_lines_history_plus_visible() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..20 {
+            eng.process(format!("line{i}\r\n").as_bytes());
+        }
+        let output = eng.get_lines(50);
+        assert!(output.contains("line0"));
+        assert!(output.contains("line19"));
+    }
+
+    #[test]
+    fn test_process_ansi_color_sequences() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"\x1b[31mred text\x1b[0m\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("red text"));
+    }
+
+    #[test]
+    fn test_process_cursor_movement() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"hello\x1b[5Dworld\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("world"));
+    }
+
+    #[test]
+    fn test_process_backspace() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"abc\x08x\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("abx"));
+    }
+
+    #[test]
+    fn test_capture_since_mark_max_bytes_with_many_lines() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        for i in 0..200 {
+            eng.process(format!("post mark line {i}\r\n").as_bytes());
+        }
+        let captured = eng.capture_since_mark(100).unwrap();
+        assert!(captured.len() <= 100 + "[... truncated by nsh]".len() + 1);
+    }
+
+    #[test]
+    fn test_rate_limit_window_reset() {
+        let mut eng = CaptureEngine::new(24, 80, 1000, 2, 10_000, "vt100".into(), "drop".into());
+        eng.rate_bytes = 500;
+        eng.rate_window_start = Instant::now() - Duration::from_secs(2);
+        eng.process(b"after reset\r\n");
+        assert_eq!(eng.rate_bytes, b"after reset\r\n".len());
+        let output = eng.get_lines(100);
+        assert!(output.contains("after reset"));
+    }
+
+    #[test]
+    fn test_total_line_count_no_scrolling() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"a\r\nb\r\n");
+        assert_eq!(eng.total_line_count(), 0);
+    }
+
+    #[test]
+    fn test_get_lines_strips_bracket_paste_markers() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"normal text\r\n");
+        eng.history_lines
+            .push("line with \x1b[200~paste\x1b[201~ inside".into());
+        let output = eng.get_lines(1000);
+        assert!(!output.contains("\x1b[200~"));
+        assert!(!output.contains("\x1b[201~"));
+    }
+
+    #[test]
+    fn test_capture_since_mark_overlap_equals_cur_visible_len() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"same line\r\n");
+        eng.mark();
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_both_empty() {
+        let empty: Vec<String> = vec![];
+        let scrolled = detect_scrolled_lines(&empty, &empty);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_one_element_lists() {
+        assert_eq!(longest_suffix_prefix_overlap(&["a"], &["a"]), 1);
+        assert_eq!(longest_suffix_prefix_overlap(&["a"], &["b"]), 0);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_suffix_in_middle() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["b", "c", "d"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
+    }
+
+    #[test]
+    fn test_process_large_single_line() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        let long_line = "A".repeat(500);
+        eng.process(format!("{long_line}\r\n").as_bytes());
+        let output = eng.get_lines(100);
+        assert!(output.contains("AAAA"));
+    }
+
+    #[test]
+    fn test_set_size_clears_prev_visible_each_time() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"content\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.set_size(30, 100);
+        assert!(eng.prev_visible.is_empty());
+        eng.process(b"more\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.set_size(20, 60);
+        assert!(eng.prev_visible.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_for_storage_149_lines_no_truncation() {
+        let lines: Vec<String> = (0..149).map(|i| format!("line {i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_200_lines_keeps_first_100_last_50() {
+        let lines: Vec<String> = (0..200).map(|i| format!("L{i:04}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert!(result.contains("L0000"));
+        assert!(result.contains("L0099"));
+        assert!(result.contains("[... 50 lines omitted ...]"));
+        assert!(result.contains("L0150"));
+        assert!(result.contains("L0199"));
+        assert!(!result.contains("\nL0100\n"));
+    }
+
+    #[test]
+    fn test_mark_state_is_none_initially() {
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        assert!(eng.mark_state.is_none());
+    }
+
+    #[test]
+    fn test_mark_sets_mark_state() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"data\r\n");
+        eng.mark();
+        assert!(eng.mark_state.is_some());
+    }
+
+    #[test]
+    fn test_in_alternate_screen_initially_false() {
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        assert!(!eng.in_alternate_screen);
+    }
+
+    #[test]
+    fn test_process_sets_in_alternate_screen() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"\x1b[?1049h");
+        assert!(eng.in_alternate_screen);
+    }
+
+    #[test]
+    fn test_rate_limit_suppressed_flag_persists() {
+        let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000, "vt100".into(), "drop".into());
+        assert!(!eng.suppressed);
+        eng.process(&[b'A'; 200]);
+        assert!(eng.suppressed);
+    }
+
+    #[test]
+    fn test_capture_since_mark_with_large_history_and_visible() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..50 {
+            eng.process(format!("pre{i}\r\n").as_bytes());
+        }
+        eng.mark();
+        for i in 0..50 {
+            eng.process(format!("post{i}\r\n").as_bytes());
+        }
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.contains("post0"));
+        assert!(captured.contains("post49"));
+        assert!(!captured.contains("pre0"));
+    }
+
+    #[test]
+    fn test_get_lines_with_exact_max() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..10 {
+            eng.process(format!("L{i}\r\n").as_bytes());
+        }
+        let output = eng.get_lines(3);
+        let lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+        assert!(lines.len() <= 3);
+    }
+
+    #[test]
+    fn test_sanitize_input_only_control_chars_filtered() {
+        for b in 0x00..=0x1Fu8 {
+            let input = [b];
+            let result = sanitize_input(&input);
+            match b {
+                0x0A | 0x0D | 0x09 | 0x1B | 0x08 => assert_eq!(result, vec![b]),
+                _ => assert!(result.is_empty(), "byte {b:#04x} should be filtered"),
+            }
+        }
+    }
 }
