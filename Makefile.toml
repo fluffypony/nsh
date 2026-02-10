@@ -1,0 +1,59 @@
+[config]
+min_version = "0.37.24"
+
+[tasks.format]
+description = "Check code formatting"
+command = "cargo"
+args = ["fmt", "--", "--check"]
+
+[tasks.format-fix]
+description = "Auto-fix code formatting"
+command = "cargo"
+args = ["fmt"]
+
+[tasks.check]
+description = "Fast compilation check (no codegen)"
+command = "cargo"
+args = ["check"]
+dependencies = ["format"]
+
+[tasks.lint]
+description = "Run Clippy linter with warnings as errors"
+command = "cargo"
+args = ["clippy", "--", "-D", "warnings"]
+dependencies = ["check"]
+
+[tasks.test]
+description = "Run all tests"
+command = "cargo"
+args = ["test"]
+dependencies = ["lint"]
+
+[tasks.audit]
+description = "Check dependencies for known vulnerabilities"
+install_crate = "cargo-audit"
+command = "cargo"
+args = ["audit"]
+
+[tasks.geiger]
+description = "Report unsafe code usage in dependency tree"
+install_crate = "cargo-geiger"
+command = "cargo"
+args = ["geiger", "--output-format", "Ascii"]
+
+[tasks.quality]
+description = "Run the full quality pipeline: format, check, lint, test, audit"
+dependencies = [
+    "format",
+    "check",
+    "lint",
+    "test",
+    "audit",
+]
+
+[tasks.quality-full]
+description = "Run full quality pipeline including geiger unsafe audit"
+dependencies = [
+    "quality",
+    "geiger",
+]

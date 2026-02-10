@@ -57,9 +57,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         };
 
         let size_str = human_size(size);
-        entries.push(format!(
-            "{kind:<5} {size_str:>8}  {modified}  {name}"
-        ));
+        entries.push(format!("{kind:<5} {size_str:>8}  {modified}  {name}"));
     }
 
     entries.sort();

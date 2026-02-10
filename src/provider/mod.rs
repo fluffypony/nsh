@@ -63,13 +63,18 @@ pub enum ToolChoice {
 #[derive(Debug)]
 pub enum StreamEvent {
     TextDelta(String),
-    ToolUseStart { id: String, name: String },
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
     ToolUseDelta(String),
     ToolUseEnd,
     #[allow(dead_code)]
     GenerationId(String),
     #[allow(dead_code)]
-    Done { usage: Option<Usage> },
+    Done {
+        usage: Option<Usage>,
+    },
     Error(String),
 }
 
