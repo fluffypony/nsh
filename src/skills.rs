@@ -217,3 +217,79 @@ pub async fn execute_skill_async(skill: Skill, input: serde_json::Value) -> anyh
         Err(_) => anyhow::bail!("Skill timed out after {timeout_secs}s"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_param_value_clean() {
+        assert!(validate_param_value("hello world").is_ok());
+    }
+
+    #[test]
+    fn test_validate_param_value_semicolon() {
+        assert!(validate_param_value("foo;bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_param_value_pipe() {
+        assert!(validate_param_value("foo|bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_param_value_backtick() {
+        assert!(validate_param_value("foo`bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_param_value_dollar() {
+        assert!(validate_param_value("foo$bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_param_value_ampersand() {
+        assert!(validate_param_value("foo&bar").is_err());
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_empty() {
+        let defs = skill_tool_definitions(&[]);
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_basic() {
+        let mut params = HashMap::new();
+        params.insert(
+            "query".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "search query".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "search".to_string(),
+            description: "Search things".to_string(),
+            command: "echo {query}".to_string(),
+            timeout_seconds: 30,
+            parameters: params,
+            is_project: false,
+        };
+        let defs = skill_tool_definitions(&[skill]);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "skill_search");
+        assert_eq!(defs[0].description, "Search things");
+        let props = defs[0].parameters.get("properties").unwrap();
+        assert!(props.get("query").is_some());
+        let required = defs[0].parameters.get("required").unwrap().as_array().unwrap();
+        assert!(required.contains(&serde_json::json!("query")));
+    }
+
+    #[test]
+    fn test_load_skills_nonexistent_dir() {
+        let mut skills = HashMap::new();
+        load_skills_from_dir(Path::new("/nonexistent/path/that/does/not/exist"), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+}

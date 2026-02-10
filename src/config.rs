@@ -728,4 +728,44 @@ chat_color = "red"
             );
         }
     }
+
+    #[test]
+    fn test_provider_auth_default() {
+        let auth = ProviderAuth::default();
+        assert!(auth.api_key.is_none());
+        assert!(auth.api_key_cmd.is_none());
+    }
+
+    #[test]
+    fn test_config_from_empty_string() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.provider.default, "openrouter");
+        assert_eq!(config.provider.model, "google/gemini-2.5-flash");
+        assert_eq!(config.context.history_limit, 20);
+        assert!(config.redaction.enabled);
+    }
+
+    #[test]
+    fn test_config_custom_provider() {
+        let toml_str = r#"
+[provider]
+default = "anthropic"
+model = "claude-3"
+timeout_seconds = 60
+
+[provider.anthropic]
+api_key = "sk-test-key"
+base_url = "https://custom.api.example.com"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.default, "anthropic");
+        assert_eq!(config.provider.model, "claude-3");
+        assert_eq!(config.provider.timeout_seconds, 60);
+        let anthropic = config.provider.anthropic.unwrap();
+        assert_eq!(anthropic.api_key.as_deref(), Some("sk-test-key"));
+        assert_eq!(
+            anthropic.base_url.as_deref(),
+            Some("https://custom.api.example.com")
+        );
+    }
 }

@@ -275,4 +275,38 @@ mod tests {
         let (level, _) = assess_command("pkill nginx");
         assert_eq!(level, RiskLevel::Elevated);
     }
+
+    #[test]
+    fn test_generate_boundary_length() {
+        let b = generate_boundary();
+        assert_eq!(b.len(), 32);
+        assert!(b.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_generate_boundary_unique() {
+        let a = generate_boundary();
+        let b = generate_boundary();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_boundary_system_prompt_addition() {
+        let boundary = "abc123";
+        let result = boundary_system_prompt_addition(boundary);
+        assert!(result.contains("abc123"));
+        assert!(result.contains("UNTRUSTED"));
+    }
+
+    #[test]
+    fn test_risk_level_display() {
+        assert_eq!(format!("{}", RiskLevel::Safe), "safe");
+        assert_eq!(format!("{}", RiskLevel::Elevated), "elevated");
+        assert_eq!(format!("{}", RiskLevel::Dangerous), "dangerous");
+    }
+
+    #[test]
+    fn test_secure_nsh_directory_no_panic() {
+        secure_nsh_directory();
+    }
 }

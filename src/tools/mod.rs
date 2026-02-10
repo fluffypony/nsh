@@ -342,3 +342,60 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_all_tool_definitions_returns_all_tools() {
+        let tools = all_tool_definitions();
+        assert_eq!(tools.len(), 12);
+        for tool in &tools {
+            assert!(!tool.name.is_empty());
+            assert!(!tool.description.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_tool_definitions_have_valid_schemas() {
+        let tools = all_tool_definitions();
+        for tool in &tools {
+            let obj = tool.parameters.as_object().expect("parameters should be an object");
+            assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("object"));
+        }
+    }
+
+    #[test]
+    fn test_tool_names_unique() {
+        let tools = all_tool_definitions();
+        let mut names = HashSet::new();
+        for tool in &tools {
+            assert!(names.insert(tool.name.clone()), "duplicate tool name: {}", tool.name);
+        }
+    }
+
+    #[test]
+    fn test_specific_tools_exist() {
+        let tools = all_tool_definitions();
+        let names: HashSet<String> = tools.iter().map(|t| t.name.clone()).collect();
+        let expected = [
+            "command", "chat", "search_history", "grep_file", "read_file",
+            "list_directory", "web_search", "run_command", "ask_user",
+            "write_file", "patch_file", "man_page",
+        ];
+        for name in &expected {
+            assert!(names.contains(*name), "missing tool: {name}");
+        }
+    }
+
+    #[test]
+    fn test_tool_required_fields() {
+        let tools = all_tool_definitions();
+        for tool in &tools {
+            let obj = tool.parameters.as_object().unwrap();
+            assert!(obj.contains_key("required"), "tool '{}' missing 'required' field", tool.name);
+        }
+    }
+}

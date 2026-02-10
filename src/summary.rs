@@ -139,4 +139,86 @@ mod tests {
         assert!(prompt.contains("Exit code: 0"));
         assert!(prompt.contains("running 10 tests"));
     }
+
+    #[test]
+    fn test_build_summary_prompt_truncates_long_output() {
+        let lines: Vec<String> = (1..=60).map(|i| format!("line {i}")).collect();
+        let output = lines.join("\n");
+        let cmd = CommandForSummary {
+            id: 2,
+            command: "long-cmd".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            output: Some(output),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains("[...]"));
+        assert!(prompt.contains("line 1"));
+        assert!(prompt.contains("line 25"));
+        assert!(prompt.contains("line 60"));
+        assert!(!prompt.contains("line 26\n"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_preserves_short_output() {
+        let lines: Vec<String> = (1..=50).map(|i| format!("line {i}")).collect();
+        let output = lines.join("\n");
+        let cmd = CommandForSummary {
+            id: 3,
+            command: "short-cmd".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            output: Some(output),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(!prompt.contains("[...]"));
+        assert!(prompt.contains("line 1"));
+        assert!(prompt.contains("line 50"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_missing_fields() {
+        let cmd = CommandForSummary {
+            id: 4,
+            command: "test".into(),
+            cwd: None,
+            exit_code: None,
+            output: None,
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains("CWD: ?"));
+        assert!(prompt.contains("Exit code: -1"));
+    }
+
+    #[test]
+    fn test_trivial_summary_exit_logout() {
+        assert_eq!(
+            trivial_summary("exit", 0, ""),
+            Some("Exited shell".into())
+        );
+        assert_eq!(
+            trivial_summary("logout", 0, ""),
+            Some("Exited shell".into())
+        );
+    }
+
+    #[test]
+    fn test_trivial_summary_pwd() {
+        assert_eq!(
+            trivial_summary("pwd", 0, "/home/user"),
+            Some("Printed working directory".into())
+        );
+    }
+
+    #[test]
+    fn test_trivial_summary_true_false() {
+        assert_eq!(
+            trivial_summary("true", 0, ""),
+            Some("Built-in returned 0".into())
+        );
+        assert_eq!(
+            trivial_summary("false", 1, ""),
+            Some("Built-in returned 1".into())
+        );
+    }
 }

@@ -123,3 +123,58 @@ fn resolve_relative_time(input: &str) -> String {
 
     (chrono::Utc::now() - duration).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    #[test]
+    fn test_resolve_relative_time_iso_passthrough() {
+        let input = "2025-01-01T00:00:00Z";
+        assert_eq!(resolve_relative_time(input), input);
+    }
+
+    #[test]
+    fn test_resolve_relative_time_date_passthrough() {
+        let input = "2025-01-01";
+        assert_eq!(resolve_relative_time(input), input);
+    }
+
+    #[test]
+    fn test_resolve_relative_time_hours() {
+        let result = resolve_relative_time("2h");
+        let parsed = result.parse::<DateTime<Utc>>().unwrap();
+        let expected = Utc::now() - chrono::Duration::hours(2);
+        assert!((parsed - expected).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn test_resolve_relative_time_days() {
+        let result = resolve_relative_time("3d");
+        let parsed = result.parse::<DateTime<Utc>>().unwrap();
+        let expected = Utc::now() - chrono::Duration::days(3);
+        assert!((parsed - expected).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn test_resolve_relative_time_weeks() {
+        let result = resolve_relative_time("1w");
+        let parsed = result.parse::<DateTime<Utc>>().unwrap();
+        let expected = Utc::now() - chrono::Duration::weeks(1);
+        assert!((parsed - expected).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn test_resolve_relative_time_minutes() {
+        let result = resolve_relative_time("30m");
+        let parsed = result.parse::<DateTime<Utc>>().unwrap();
+        let expected = Utc::now() - chrono::Duration::minutes(30);
+        assert!((parsed - expected).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn test_resolve_relative_time_unknown_suffix() {
+        assert_eq!(resolve_relative_time("5x"), "5x");
+    }
+}
