@@ -12,12 +12,21 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
-        let auth = config.provider.anthropic.as_ref()
+        let auth = config
+            .provider
+            .anthropic
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Anthropic not configured"))?;
         Ok(Self {
-            client: Client::builder().timeout(std::time::Duration::from_secs(config.provider.timeout_seconds)).build()?,
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(
+                    config.provider.timeout_seconds,
+                ))
+                .build()?,
             api_key: auth.resolve_api_key("anthropic")?,
-            base_url: auth.base_url.clone()
+            base_url: auth
+                .base_url
+                .clone()
                 .unwrap_or_else(|| "https://api.anthropic.com".into()),
         })
     }
@@ -27,24 +36,45 @@ impl AnthropicProvider {
         for msg in &request.messages {
             match msg.role {
                 Role::User => {
-                    let text: String = msg.content.iter()
-                        .filter_map(|c| if let ContentBlock::Text { text } = c { Some(text.as_str()) } else { None })
-                        .collect::<Vec<_>>().join("\n");
+                    let text: String = msg
+                        .content
+                        .iter()
+                        .filter_map(|c| {
+                            if let ContentBlock::Text { text } = c {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     messages.push(json!({"role": "user", "content": text}));
                 }
                 Role::Assistant => {
-                    let content: Vec<serde_json::Value> = msg.content.iter().filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
-                        ContentBlock::ToolUse { id, name, input } =>
-                            Some(json!({"type": "tool_use", "id": id, "name": name, "input": input})),
-                        _ => None,
-                    }).collect();
+                    let content: Vec<serde_json::Value> = msg
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => {
+                                Some(json!({"type": "text", "text": text}))
+                            }
+                            ContentBlock::ToolUse { id, name, input } => Some(
+                                json!({"type": "tool_use", "id": id, "name": name, "input": input}),
+                            ),
+                            _ => None,
+                        })
+                        .collect();
                     messages.push(json!({"role": "assistant", "content": content}));
                 }
                 Role::Tool => {
                     let mut content = Vec::new();
                     for block in &msg.content {
-                        if let ContentBlock::ToolResult { tool_use_id, content: c, is_error } = block {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content: c,
+                            is_error,
+                        } = block
+                        {
                             content.push(json!({
                                 "type": "tool_result", "tool_use_id": tool_use_id,
                                 "content": c, "is_error": is_error,
@@ -57,9 +87,15 @@ impl AnthropicProvider {
             }
         }
 
-        let tools: Vec<serde_json::Value> = request.tools.iter().map(|t| json!({
-            "name": t.name, "description": t.description, "input_schema": t.parameters,
-        })).collect();
+        let tools: Vec<serde_json::Value> = request
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name, "description": t.description, "input_schema": t.parameters,
+                })
+            })
+            .collect();
 
         let mut body = json!({
             "model": request.model,
@@ -72,8 +108,12 @@ impl AnthropicProvider {
         if !tools.is_empty() {
             body["tools"] = json!(tools);
             match request.tool_choice {
-                ToolChoice::Required => { body["tool_choice"] = json!({"type": "any"}); }
-                ToolChoice::Auto => { body["tool_choice"] = json!({"type": "auto"}); }
+                ToolChoice::Required => {
+                    body["tool_choice"] = json!({"type": "any"});
+                }
+                ToolChoice::Auto => {
+                    body["tool_choice"] = json!({"type": "auto"});
+                }
                 ToolChoice::None => {}
             }
         }
@@ -86,12 +126,15 @@ impl LlmProvider for AnthropicProvider {
     async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
         let mut body = self.build_body(&request);
         body["stream"] = json!(false);
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &*self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&body).send().await?;
+            .json(&body)
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -104,7 +147,9 @@ impl LlmProvider for AnthropicProvider {
                 match block["type"].as_str() {
                     Some("text") => {
                         if let Some(text) = block["text"].as_str() {
-                            content.push(ContentBlock::Text { text: text.to_string() });
+                            content.push(ContentBlock::Text {
+                                text: text.to_string(),
+                            });
                         }
                     }
                     Some("tool_use") => {
@@ -118,18 +163,27 @@ impl LlmProvider for AnthropicProvider {
                 }
             }
         }
-        Ok(Message { role: Role::Assistant, content })
+        Ok(Message {
+            role: Role::Assistant,
+            content,
+        })
     }
 
-    async fn stream(&self, request: ChatRequest) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+    async fn stream(
+        &self,
+        request: ChatRequest,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
         let mut body = self.build_body(&request);
         body["stream"] = json!(true);
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &*self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&body).send().await?;
+            .json(&body)
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -146,20 +200,26 @@ impl LlmProvider for AnthropicProvider {
             while let Some(event) = stream.next().await {
                 let event = match event {
                     Ok(e) => e,
-                    Err(e) => { let _ = tx.send(StreamEvent::Error(e.to_string())).await; break; }
+                    Err(e) => {
+                        let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                        break;
+                    }
                 };
                 let data: serde_json::Value = match serde_json::from_str(&event.data) {
-                    Ok(v) => v, Err(_) => continue,
+                    Ok(v) => v,
+                    Err(_) => continue,
                 };
                 match event.event.as_str() {
                     "content_block_start" => {
                         let block = &data["content_block"];
                         if block["type"].as_str() == Some("tool_use") {
                             in_tool_use = true;
-                            let _ = tx.send(StreamEvent::ToolUseStart {
-                                id: block["id"].as_str().unwrap_or("").to_string(),
-                                name: block["name"].as_str().unwrap_or("").to_string(),
-                            }).await;
+                            let _ = tx
+                                .send(StreamEvent::ToolUseStart {
+                                    id: block["id"].as_str().unwrap_or("").to_string(),
+                                    name: block["name"].as_str().unwrap_or("").to_string(),
+                                })
+                                .await;
                         }
                     }
                     "content_block_delta" => {
@@ -172,7 +232,8 @@ impl LlmProvider for AnthropicProvider {
                             }
                             Some("input_json_delta") => {
                                 if let Some(json) = delta["partial_json"].as_str() {
-                                    let _ = tx.send(StreamEvent::ToolUseDelta(json.to_string())).await;
+                                    let _ =
+                                        tx.send(StreamEvent::ToolUseDelta(json.to_string())).await;
                                 }
                             }
                             _ => {}

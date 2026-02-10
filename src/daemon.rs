@@ -51,7 +51,9 @@ pub enum DaemonRequest {
     },
 }
 
-fn default_max_lines() -> usize { 1000 }
+fn default_max_lines() -> usize {
+    1000
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -75,7 +77,9 @@ impl DaemonResponse {
     }
 
     pub fn error(msg: impl Into<String>) -> Self {
-        Self::Error { message: msg.into() }
+        Self::Error {
+            message: msg.into(),
+        }
     }
 }
 
@@ -87,16 +91,34 @@ pub fn handle_daemon_request(
 ) -> DaemonResponse {
     match request {
         DaemonRequest::Record {
-            session, command, cwd, exit_code, started_at,
-            tty, pid, shell, duration_ms, output,
+            session,
+            command,
+            cwd,
+            exit_code,
+            started_at,
+            tty,
+            pid,
+            shell,
+            duration_ms,
+            output,
         } => {
-            let captured = capture.lock().ok()
+            let captured = capture
+                .lock()
+                .ok()
                 .and_then(|mut eng| eng.capture_since_mark(max_output_bytes));
             let final_output = output.or(captured);
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
             let cmd = DbCommand::Record {
-                session, command, cwd, exit_code, started_at,
-                tty, pid, shell, duration_ms, output: final_output,
+                session,
+                command,
+                cwd,
+                exit_code,
+                started_at,
+                tty,
+                pid,
+                shell,
+                duration_ms,
+                output: final_output,
                 reply: reply_tx,
             };
             if db_tx.send(cmd).is_err() {
@@ -105,14 +127,19 @@ pub fn handle_daemon_request(
             match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(Ok(id)) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
                 Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => DaemonResponse::error("DB timeout"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    DaemonResponse::error("DB timeout")
+                }
                 Err(_) => DaemonResponse::error("DB thread hung up"),
             }
         }
 
         DaemonRequest::Heartbeat { session } => {
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-            let cmd = DbCommand::Heartbeat { session, reply: reply_tx };
+            let cmd = DbCommand::Heartbeat {
+                session,
+                reply: reply_tx,
+            };
             if db_tx.send(cmd).is_err() {
                 return DaemonResponse::error("DB thread unavailable");
             }
@@ -120,59 +147,51 @@ pub fn handle_daemon_request(
             match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(Ok(())) => DaemonResponse::ok(),
                 Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => DaemonResponse::error("DB timeout"),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    DaemonResponse::error("DB timeout")
+                }
                 Err(_) => DaemonResponse::error("DB thread hung up"),
             }
         }
 
-        DaemonRequest::Scrollback { max_lines } => {
-            match capture.lock() {
-                Ok(eng) => {
-                    let text = eng.get_lines(max_lines);
-                    DaemonResponse::ok_with_data(serde_json::json!({"scrollback": text}))
-                }
-                Err(_) => DaemonResponse::error("capture lock poisoned"),
+        DaemonRequest::Scrollback { max_lines } => match capture.lock() {
+            Ok(eng) => {
+                let text = eng.get_lines(max_lines);
+                DaemonResponse::ok_with_data(serde_json::json!({"scrollback": text}))
             }
-        }
+            Err(_) => DaemonResponse::error("capture lock poisoned"),
+        },
 
-        DaemonRequest::CaptureMark { .. } => {
-            match capture.lock() {
-                Ok(mut eng) => {
-                    eng.mark();
-                    DaemonResponse::ok()
-                }
-                Err(_) => DaemonResponse::error("capture lock poisoned"),
+        DaemonRequest::CaptureMark { .. } => match capture.lock() {
+            Ok(mut eng) => {
+                eng.mark();
+                DaemonResponse::ok()
             }
-        }
+            Err(_) => DaemonResponse::error("capture lock poisoned"),
+        },
 
-        DaemonRequest::CaptureRead { max_lines, .. } => {
-            match capture.lock() {
-                Ok(mut eng) => {
-                    let text = eng.capture_since_mark(max_output_bytes)
-                        .unwrap_or_default();
-                    let lines: Vec<&str> = text.lines().collect();
-                    let start = lines.len().saturating_sub(max_lines);
-                    let result = lines[start..].join("\n");
-                    DaemonResponse::ok_with_data(serde_json::json!({"output": result}))
-                }
-                Err(_) => DaemonResponse::error("capture lock poisoned"),
+        DaemonRequest::CaptureRead { max_lines, .. } => match capture.lock() {
+            Ok(mut eng) => {
+                let text = eng.capture_since_mark(max_output_bytes).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let start = lines.len().saturating_sub(max_lines);
+                let result = lines[start..].join("\n");
+                DaemonResponse::ok_with_data(serde_json::json!({"output": result}))
             }
-        }
+            Err(_) => DaemonResponse::error("capture lock poisoned"),
+        },
 
-        DaemonRequest::Status => {
-            DaemonResponse::ok_with_data(serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "pid": std::process::id(),
-            }))
-        }
+        DaemonRequest::Status => DaemonResponse::ok_with_data(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "pid": std::process::id(),
+        })),
 
         DaemonRequest::SummarizeCheck { .. } => {
             let _ = db_tx.send(DbCommand::GenerateSummaries);
             DaemonResponse::ok()
         }
 
-        DaemonRequest::Context { .. }
-        | DaemonRequest::McpToolCall { .. } => {
+        DaemonRequest::Context { .. } | DaemonRequest::McpToolCall { .. } => {
             DaemonResponse::error("not yet implemented")
         }
     }
@@ -227,30 +246,54 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             DbCommand::Record {
-                session, command, cwd, exit_code, started_at,
-                tty, pid, shell, duration_ms, output, reply,
+                session,
+                command,
+                cwd,
+                exit_code,
+                started_at,
+                tty,
+                pid,
+                shell,
+                duration_ms,
+                output,
+                reply,
             } => {
                 let cmd_text = command.clone();
                 let ec = exit_code;
                 let out = output.clone();
 
                 let result = db.insert_command(
-                    &session, &command, &cwd, Some(exit_code),
-                    &started_at, duration_ms, output.as_deref(),
-                    &tty, &shell, pid,
+                    &session,
+                    &command,
+                    &cwd,
+                    Some(exit_code),
+                    &started_at,
+                    duration_ms,
+                    output.as_deref(),
+                    &tty,
+                    &shell,
+                    pid,
                 );
                 match &result {
                     Ok(id) => {
                         let output_text = out.as_deref().unwrap_or("");
-                        if let Some(trivial) = crate::summary::trivial_summary(&cmd_text, ec, output_text) {
+                        if let Some(trivial) =
+                            crate::summary::trivial_summary(&cmd_text, ec, output_text)
+                        {
                             let _ = db.update_summary(*id, &trivial);
                         }
                         // Conversation feedback loop: if this command matches
                         // a pending conversation suggestion, record the result
-                        if let Ok(Some((conv_id, suggested_cmd))) = db.find_pending_conversation(&session) {
+                        if let Ok(Some((conv_id, suggested_cmd))) =
+                            db.find_pending_conversation(&session)
+                        {
                             if cmd_text.trim() == suggested_cmd.trim() {
                                 let snippet = crate::util::truncate(output_text, 500);
-                                let snippet_ref = if snippet.is_empty() { None } else { Some(snippet.as_str()) };
+                                let snippet_ref = if snippet.is_empty() {
+                                    None
+                                } else {
+                                    Some(snippet.as_str())
+                                };
                                 let _ = db.update_conversation_result(conv_id, ec, snippet_ref);
                             }
                         }
@@ -266,17 +309,32 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
             }
 
             DbCommand::InsertConversation {
-                session_id, query, response_type, response,
-                explanation, executed, pending, reply,
+                session_id,
+                query,
+                response_type,
+                response,
+                explanation,
+                executed,
+                pending,
+                reply,
             } => {
                 let result = db.insert_conversation(
-                    &session_id, &query, &response_type, &response,
-                    explanation.as_deref(), executed, pending,
+                    &session_id,
+                    &query,
+                    &response_type,
+                    &response,
+                    explanation.as_deref(),
+                    executed,
+                    pending,
                 );
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!("{e}")));
             }
 
-            DbCommand::SearchHistory { query, limit, reply } => {
+            DbCommand::SearchHistory {
+                query,
+                limit,
+                reply,
+            } => {
                 let result = db.search_history(&query, limit);
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!("{e}")));
             }
@@ -301,7 +359,9 @@ fn generate_summaries_sync(db: &crate::db::Db) {
 
     for cmd in &commands {
         let output = cmd.output.as_deref().unwrap_or("");
-        if let Some(trivial) = crate::summary::trivial_summary(&cmd.command, cmd.exit_code.unwrap_or(-1), output) {
+        if let Some(trivial) =
+            crate::summary::trivial_summary(&cmd.command, cmd.exit_code.unwrap_or(-1), output)
+        {
             let _ = db.update_summary(cmd.id, &trivial);
         }
     }
@@ -310,11 +370,9 @@ fn generate_summaries_sync(db: &crate::db::Db) {
 }
 
 pub fn daemon_socket_path(session_id: &str) -> std::path::PathBuf {
-    crate::config::Config::nsh_dir()
-        .join(format!("daemon_{session_id}.sock"))
+    crate::config::Config::nsh_dir().join(format!("daemon_{session_id}.sock"))
 }
 
 pub fn daemon_pid_path(session_id: &str) -> std::path::PathBuf {
-    crate::config::Config::nsh_dir()
-        .join(format!("daemon_{session_id}.pid"))
+    crate::config::Config::nsh_dir().join(format!("daemon_{session_id}.pid"))
 }

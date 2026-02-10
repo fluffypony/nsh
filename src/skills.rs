@@ -54,11 +54,7 @@ pub fn load_skills() -> Vec<Skill> {
     skills_by_name.into_values().collect()
 }
 
-fn load_skills_from_dir(
-    dir: &Path,
-    is_project: bool,
-    skills: &mut HashMap<String, Skill>,
-) {
+fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<String, Skill>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -132,16 +128,13 @@ pub fn skill_tool_definitions(skills: &[Skill]) -> Vec<ToolDefinition> {
 }
 
 const SHELL_METACHARACTERS: &[char] = &[
-    ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\',
-    '\'', '"',
+    ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"',
 ];
 
 fn validate_param_value(value: &str) -> anyhow::Result<()> {
     for ch in SHELL_METACHARACTERS {
         if value.contains(*ch) {
-            anyhow::bail!(
-                "Parameter value contains forbidden shell metacharacter '{ch}'"
-            );
+            anyhow::bail!("Parameter value contains forbidden shell metacharacter '{ch}'");
         }
     }
     Ok(())
@@ -176,18 +169,12 @@ fn check_project_skill_approval(skill: &Skill) -> anyhow::Result<()> {
     }
 }
 
-pub fn execute_skill(
-    skill: &Skill,
-    input: &serde_json::Value,
-) -> anyhow::Result<String> {
+pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<String> {
     check_project_skill_approval(skill)?;
 
     let mut command = skill.command.clone();
     for (param_name, _param) in &skill.parameters {
-        let value = input
-            .get(param_name)
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let value = input.get(param_name).and_then(|v| v.as_str()).unwrap_or("");
 
         validate_param_value(value)?;
 
@@ -216,10 +203,7 @@ pub fn execute_skill(
     Ok(result)
 }
 
-pub async fn execute_skill_async(
-    skill: Skill,
-    input: serde_json::Value,
-) -> anyhow::Result<String> {
+pub async fn execute_skill_async(skill: Skill, input: serde_json::Value) -> anyhow::Result<String> {
     let timeout_secs = skill.timeout_seconds;
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(timeout_secs),

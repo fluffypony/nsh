@@ -78,11 +78,7 @@ pub struct FileEntry {
     pub size: String,
 }
 
-pub fn build_context(
-    db: &Db,
-    session_id: &str,
-    config: &Config,
-) -> anyhow::Result<QueryContext> {
+pub fn build_context(db: &Db, session_id: &str, config: &Config) -> anyhow::Result<QueryContext> {
     let sys = get_cached_system_info();
 
     let shell = std::env::var("SHELL")
@@ -95,13 +91,13 @@ pub fn build_context(
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
 
-    let conversation_history =
-        db.get_conversations(session_id, config.context.history_limit)
-            .unwrap_or_default();
+    let conversation_history = db
+        .get_conversations(session_id, config.context.history_limit)
+        .unwrap_or_default();
 
-    let session_history =
-        db.recent_commands_with_summaries(session_id, config.context.history_summaries)
-            .unwrap_or_default();
+    let session_history = db
+        .recent_commands_with_summaries(session_id, config.context.history_summaries)
+        .unwrap_or_default();
 
     let other_sessions = if config.context.include_other_tty {
         db.other_sessions_with_summaries(
@@ -130,7 +126,9 @@ pub fn build_context(
         conversation_history,
         hostname: sys.hostname,
         machine_info: sys.machine_info,
-        datetime_info: chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string(),
+        datetime_info: chrono::Local::now()
+            .format("%Y-%m-%d %H:%M:%S %Z")
+            .to_string(),
         timezone_info: sys.timezone_info,
         locale_info: sys.locale_info,
         session_history,
@@ -190,10 +188,17 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         ));
 
         if let Some(ref branch) = ctx.project_info.git_branch {
-            let status_attr = ctx.project_info.git_status.as_ref()
+            let status_attr = ctx
+                .project_info
+                .git_status
+                .as_ref()
                 .map(|s| format!(" status=\"{}\"", xml_escape(s)))
                 .unwrap_or_default();
-            xml.push_str(&format!("\n    <git branch=\"{}\"{}>\n", xml_escape(branch), status_attr));
+            xml.push_str(&format!(
+                "\n    <git branch=\"{}\"{}>\n",
+                xml_escape(branch),
+                status_attr
+            ));
             for commit in &ctx.project_info.git_commits {
                 xml.push_str(&format!(
                     "      <commit hash=\"{}\" ts=\"{}\">{}</commit>\n",
@@ -242,7 +247,8 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             ctx.session_history.len(),
         ));
         for cmd in &ctx.session_history {
-            let duration_attr = cmd.duration_ms
+            let duration_attr = cmd
+                .duration_ms
                 .map(|d| format!(" duration=\"{}ms\"", d))
                 .unwrap_or_default();
             xml.push_str(&format!(
@@ -369,14 +375,19 @@ fn gather_custom_instructions(config: &Config, cwd: &str) -> Option<String> {
     let project_instructions = find_git_root(cwd).and_then(|root| {
         let path = root.join(".nsh").join("instructions.md");
         if path.exists() {
-            std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+            std::fs::read_to_string(&path)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
         } else {
             None
         }
     });
 
     match (global, project_instructions) {
-        (Some(g), Some(p)) => Some(format!("{g}\n\n--- Project-specific instructions ---\n\n{p}")),
+        (Some(g), Some(p)) => Some(format!(
+            "{g}\n\n--- Project-specific instructions ---\n\n{p}"
+        )),
         (Some(g), None) => Some(g),
         (None, Some(p)) => Some(p),
         (None, None) => None,
@@ -385,7 +396,11 @@ fn gather_custom_instructions(config: &Config, cwd: &str) -> Option<String> {
 
 fn detect_project_info(cwd: &str, config: &Config) -> ProjectInfo {
     let project_type = detect_project_type(cwd);
-    let root = if project_type != "unknown" { Some(cwd.to_string()) } else { None };
+    let root = if project_type != "unknown" {
+        Some(cwd.to_string())
+    } else {
+        None
+    };
 
     let (git_branch, git_status, git_commits) = detect_git_info(cwd, config.context.git_commits);
 
@@ -428,16 +443,42 @@ fn detect_project_type(cwd: &str) -> String {
 }
 
 fn check_project_markers(dir: &std::path::Path, types: &mut Vec<&'static str>) {
-    if dir.join("Cargo.toml").exists() { types.push("Rust/Cargo"); }
-    if dir.join("package.json").exists() { types.push("Node.js"); }
-    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() { types.push("Python"); }
-    if dir.join("go.mod").exists() { types.push("Go"); }
-    if dir.join("Makefile").exists() { types.push("Make"); }
-    if dir.join("Dockerfile").exists() || dir.join("docker-compose.yml").exists() || dir.join("compose.yml").exists() { types.push("Docker"); }
-    if dir.join("Gemfile").exists() { types.push("Ruby"); }
-    if dir.join("pom.xml").exists() || dir.join("build.gradle").exists() || dir.join("build.gradle.kts").exists() { types.push("Java"); }
-    if dir.join("CMakeLists.txt").exists() { types.push("C/C++ (CMake)"); }
-    if dir.join("flake.nix").exists() || dir.join("shell.nix").exists() { types.push("Nix"); }
+    if dir.join("Cargo.toml").exists() {
+        types.push("Rust/Cargo");
+    }
+    if dir.join("package.json").exists() {
+        types.push("Node.js");
+    }
+    if dir.join("pyproject.toml").exists() || dir.join("setup.py").exists() {
+        types.push("Python");
+    }
+    if dir.join("go.mod").exists() {
+        types.push("Go");
+    }
+    if dir.join("Makefile").exists() {
+        types.push("Make");
+    }
+    if dir.join("Dockerfile").exists()
+        || dir.join("docker-compose.yml").exists()
+        || dir.join("compose.yml").exists()
+    {
+        types.push("Docker");
+    }
+    if dir.join("Gemfile").exists() {
+        types.push("Ruby");
+    }
+    if dir.join("pom.xml").exists()
+        || dir.join("build.gradle").exists()
+        || dir.join("build.gradle.kts").exists()
+    {
+        types.push("Java");
+    }
+    if dir.join("CMakeLists.txt").exists() {
+        types.push("C/C++ (CMake)");
+    }
+    if dir.join("flake.nix").exists() || dir.join("shell.nix").exists() {
+        types.push("Nix");
+    }
 }
 
 fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
@@ -470,7 +511,10 @@ fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
     }
 }
 
-fn detect_git_info(cwd: &str, max_commits: usize) -> (Option<String>, Option<String>, Vec<GitCommit>) {
+fn detect_git_info(
+    cwd: &str,
+    max_commits: usize,
+) -> (Option<String>, Option<String>, Vec<GitCommit>) {
     // Check if we're inside a git work tree
     let check = run_git_with_timeout(&["rev-parse", "--is-inside-work-tree"], cwd);
     if check.as_deref() != Some("true") {
@@ -482,19 +526,24 @@ fn detect_git_info(cwd: &str, max_commits: usize) -> (Option<String>, Option<Str
         return (None, None, Vec::new());
     }
 
-    let status = run_git_with_timeout(&["status", "--porcelain"], cwd)
-        .map(|output| {
-            let count = output.lines().count();
-            if count == 0 {
-                "clean".to_string()
-            } else {
-                format!("{count} changed files")
-            }
-        });
+    let status = run_git_with_timeout(&["status", "--porcelain"], cwd).map(|output| {
+        let count = output.lines().count();
+        if count == 0 {
+            "clean".to_string()
+        } else {
+            format!("{count} changed files")
+        }
+    });
 
     let limit_arg = format!("-{max_commits}");
     let commits = run_git_with_timeout(
-        &["log", "--oneline", "--no-decorate", &limit_arg, "--format=%h|%s|%cr"],
+        &[
+            "log",
+            "--oneline",
+            "--no-decorate",
+            &limit_arg,
+            "--format=%h|%s|%cr",
+        ],
         cwd,
     )
     .map(|output| {
@@ -531,7 +580,10 @@ fn list_project_files(cwd: &str, limit: usize) -> Vec<FileEntry> {
     list_project_files_fallback(path, limit)
 }
 
-fn list_project_files_with_ignore(cwd: &std::path::Path, max_files: usize) -> Option<Vec<FileEntry>> {
+fn list_project_files_with_ignore(
+    cwd: &std::path::Path,
+    max_files: usize,
+) -> Option<Vec<FileEntry>> {
     use ignore::WalkBuilder;
 
     let walker = WalkBuilder::new(cwd)
@@ -563,11 +615,20 @@ fn list_project_files_with_ignore(cwd: &std::path::Path, max_files: usize) -> Op
         let ft = entry.file_type();
         let is_dir = ft.as_ref().map_or(false, |ft| ft.is_dir());
         let is_symlink = ft.as_ref().map_or(false, |ft| ft.is_symlink());
-        let kind = if is_symlink { "symlink" } else if is_dir { "dir" } else { "file" };
+        let kind = if is_symlink {
+            "symlink"
+        } else if is_dir {
+            "dir"
+        } else {
+            "file"
+        };
         let size = if is_dir || is_symlink {
             String::new()
         } else {
-            entry.metadata().map(|m| format_size(m.len())).unwrap_or_default()
+            entry
+                .metadata()
+                .map(|m| format_size(m.len()))
+                .unwrap_or_default()
         };
         entries.push(FileEntry {
             path: rel.to_string_lossy().to_string(),
@@ -585,8 +646,17 @@ fn list_project_files_with_ignore(cwd: &std::path::Path, max_files: usize) -> Op
 
 fn list_project_files_fallback(cwd: &std::path::Path, max_files: usize) -> Vec<FileEntry> {
     const SKIP_DIRS: &[&str] = &[
-        ".git", "target", "node_modules", "__pycache__", ".venv", "venv",
-        "dist", "build", ".next", ".cache", "vendor",
+        ".git",
+        "target",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".next",
+        ".cache",
+        "vendor",
     ];
 
     let mut entries = Vec::new();
@@ -597,7 +667,9 @@ fn list_project_files_fallback(cwd: &std::path::Path, max_files: usize) -> Vec<F
         if depth > 5 || entries.len() >= max_files {
             break;
         }
-        let Ok(read_dir) = std::fs::read_dir(&dir) else { continue };
+        let Ok(read_dir) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         let mut children: Vec<_> = read_dir.flatten().collect();
         children.sort_by_key(|e| e.file_name());
 
@@ -617,8 +689,18 @@ fn list_project_files_fallback(cwd: &std::path::Path, max_files: usize) -> Vec<F
                 continue;
             }
 
-            let rel = entry.path().strip_prefix(cwd).unwrap_or(&entry.path()).to_path_buf();
-            let kind = if is_symlink { "symlink" } else if is_dir { "dir" } else { "file" };
+            let rel = entry
+                .path()
+                .strip_prefix(cwd)
+                .unwrap_or(&entry.path())
+                .to_path_buf();
+            let kind = if is_symlink {
+                "symlink"
+            } else if is_dir {
+                "dir"
+            } else {
+                "file"
+            };
             let size = if is_dir || is_symlink {
                 String::new()
             } else {
@@ -663,9 +745,7 @@ fn detect_os() -> String {
             .arg("-productVersion")
             .output()
             .ok()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout).trim().to_string()
-            })
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
         let version = version_str.trim();
         let arch = std::env::consts::ARCH;
@@ -716,7 +796,12 @@ fn detect_machine_info() -> String {
             .args(["-n", "hw.memsize"])
             .output()
             .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
             .map(|b| format!("{:.0}GB RAM", b as f64 / 1_073_741_824.0))
             .unwrap_or_default()
     };
@@ -739,8 +824,12 @@ fn detect_machine_info() -> String {
     let mem = String::new();
 
     let mut parts = vec![arch.to_string()];
-    if cpus > 0 { parts.push(format!("{cpus} cores")); }
-    if !mem.is_empty() { parts.push(mem); }
+    if cpus > 0 {
+        parts.push(format!("{cpus} cores"));
+    }
+    if !mem.is_empty() {
+        parts.push(mem);
+    }
 
     let pkg_mgrs: Vec<&str> = ["brew", "apt", "dnf", "yum", "pacman", "nix", "apk"]
         .iter()
@@ -832,5 +921,4 @@ mod tests {
         assert_eq!(format_size(1536), "1.5KB");
         assert_eq!(format_size(1_500_000), "1.4MB");
     }
-
 }

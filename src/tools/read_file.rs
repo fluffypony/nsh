@@ -28,9 +28,7 @@ fn is_sensitive_path(path: &Path) -> bool {
     false
 }
 
-pub fn execute(
-    input: &serde_json::Value,
-) -> anyhow::Result<String> {
+pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
@@ -38,13 +36,14 @@ pub fn execute(
     let path = expand_tilde(raw_path);
 
     if is_sensitive_path(&path) {
-        return Ok(format!("Access denied: '{}' is in a sensitive directory", raw_path));
+        return Ok(format!(
+            "Access denied: '{}' is in a sensitive directory",
+            raw_path
+        ));
     }
 
-    let start_line =
-        (input["start_line"].as_u64().unwrap_or(1) as usize).max(1);
-    let end_line =
-        input["end_line"].as_u64().unwrap_or(200) as usize;
+    let start_line = (input["start_line"].as_u64().unwrap_or(1) as usize).max(1);
+    let end_line = input["end_line"].as_u64().unwrap_or(200) as usize;
 
     let bytes = match fs::read(&path) {
         Ok(b) => b,
@@ -57,9 +56,7 @@ pub fn execute(
 
     let content = match String::from_utf8(bytes) {
         Ok(s) => s,
-        Err(_) => {
-            return Ok("Binary file, cannot display".into())
-        }
+        Err(_) => return Ok("Binary file, cannot display".into()),
     };
 
     let lines: Vec<&str> = content.lines().collect();
@@ -72,18 +69,11 @@ pub fn execute(
         ));
     }
 
-    let capped_end = end_line
-        .min(start_line + 499)
-        .min(total_lines);
+    let capped_end = end_line.min(start_line + 499).min(total_lines);
 
     let mut result = String::new();
-    for (i, line) in
-        lines[start_line - 1..capped_end].iter().enumerate()
-    {
-        result.push_str(&format!(
-            "{:>4}: {line}\n",
-            start_line + i
-        ));
+    for (i, line) in lines[start_line - 1..capped_end].iter().enumerate() {
+        result.push_str(&format!("{:>4}: {line}\n", start_line + i));
     }
 
     if capped_end < total_lines {
@@ -125,8 +115,7 @@ mod tests {
         }
         let path = f.path().to_str().unwrap();
 
-        let input =
-            json!({"path": path, "start_line": 3, "end_line": 5});
+        let input = json!({"path": path, "start_line": 3, "end_line": 5});
         let result = execute(&input).unwrap();
         assert!(result.contains("   3: line 3"));
         assert!(result.contains("   5: line 5"));
@@ -136,8 +125,7 @@ mod tests {
 
     #[test]
     fn test_read_file_nonexistent() {
-        let input =
-            json!({"path": "/tmp/nsh_test_nonexistent_xyz"});
+        let input = json!({"path": "/tmp/nsh_test_nonexistent_xyz"});
         let result = execute(&input).unwrap();
         assert!(result.contains("Error reading"));
     }

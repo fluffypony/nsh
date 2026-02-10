@@ -27,7 +27,9 @@ pub fn audit_log(session_id: &str, query: &str, tool: &str, response: &str, risk
 
 pub fn rotate_audit_log() {
     let log_path = crate::config::Config::nsh_dir().join("audit.log");
-    let Ok(meta) = std::fs::metadata(&log_path) else { return };
+    let Ok(meta) = std::fs::metadata(&log_path) else {
+        return;
+    };
     if meta.len() <= 15_000_000 {
         return;
     }
@@ -36,12 +38,20 @@ pub fn rotate_audit_log() {
     let archive_name = format!("audit_{ts}.log.gz");
     let archive_path = crate::config::Config::nsh_dir().join(&archive_name);
 
-    let Ok(input_file) = std::fs::File::open(&log_path) else { return };
-    let Ok(output_file) = std::fs::File::create(&archive_path) else { return };
+    let Ok(input_file) = std::fs::File::open(&log_path) else {
+        return;
+    };
+    let Ok(output_file) = std::fs::File::create(&archive_path) else {
+        return;
+    };
     let mut encoder = flate2::write::GzEncoder::new(output_file, flate2::Compression::default());
     let mut reader = std::io::BufReader::new(input_file);
-    if std::io::copy(&mut reader, &mut encoder).is_err() { return; }
-    if encoder.finish().is_err() { return; }
+    if std::io::copy(&mut reader, &mut encoder).is_err() {
+        return;
+    }
+    if encoder.finish().is_err() {
+        return;
+    }
 
     #[cfg(unix)]
     {
@@ -56,7 +66,9 @@ pub fn rotate_audit_log() {
 
 fn cleanup_old_archives() {
     let dir = crate::config::Config::nsh_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
     let mut archives: Vec<std::path::PathBuf> = entries
         .flatten()
         .filter(|e| {

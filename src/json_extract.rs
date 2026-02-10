@@ -36,8 +36,13 @@ pub fn extract_json(input: &str) -> Option<serde_json::Value> {
 
 fn strip_thinking_tags(text: &str) -> String {
     let tags = &[
-        "thinking", "think", "antThinking", "reasoning",
-        "reflection", "scratchpad", "analysis",
+        "thinking",
+        "think",
+        "antThinking",
+        "reasoning",
+        "reflection",
+        "scratchpad",
+        "analysis",
     ];
     let mut patterns = Vec::new();
     for tag in tags {
@@ -124,7 +129,15 @@ mod tests {
 
     #[test]
     fn test_all_thinking_tag_variants() {
-        for tag in &["thinking", "think", "antThinking", "reasoning", "reflection", "scratchpad", "analysis"] {
+        for tag in &[
+            "thinking",
+            "think",
+            "antThinking",
+            "reasoning",
+            "reflection",
+            "scratchpad",
+            "analysis",
+        ] {
             let input = format!("<{tag}>some inner text</{tag}>{{\"command\": \"test\"}}");
             let v = extract_json(&input).unwrap();
             assert_eq!(v["command"].as_str(), Some("test"), "Failed for tag: {tag}");

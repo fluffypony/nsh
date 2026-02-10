@@ -8,8 +8,9 @@ pub fn trivial_summary(cmd: &str, exit_code: i32, output: &str) -> Option<String
         "exit" | "logout" => Some("Exited shell".into()),
         "pwd" => Some("Printed working directory".into()),
         "true" | "false" => Some(format!("Built-in returned {exit_code}")),
-        _ if output.trim().is_empty() && exit_code == 0 =>
-            Some(format!("Ran `{cmd}` successfully (no output)")),
+        _ if output.trim().is_empty() && exit_code == 0 => {
+            Some(format!("Ran `{cmd}` successfully (no output)"))
+        }
         _ if output.trim().len() < 20 => None,
         _ => None,
     }
@@ -41,10 +42,16 @@ pub fn build_summary_prompt(cmd: &CommandForSummary) -> String {
     )
 }
 
-pub async fn generate_llm_summary(cmd: &crate::db::CommandForSummary, config: &crate::config::Config) -> anyhow::Result<String> {
+pub async fn generate_llm_summary(
+    cmd: &crate::db::CommandForSummary,
+    config: &crate::config::Config,
+) -> anyhow::Result<String> {
     let prompt = build_summary_prompt(cmd);
     let provider = crate::provider::create_provider(&config.provider.default, config)?;
-    let model = config.models.fast.first()
+    let model = config
+        .models
+        .fast
+        .first()
         .cloned()
         .unwrap_or_else(|| config.provider.model.clone());
     let request = crate::provider::ChatRequest {
@@ -61,8 +68,16 @@ pub async fn generate_llm_summary(cmd: &crate::db::CommandForSummary, config: &c
         extra_body: None,
     };
     let response = provider.complete(request).await?;
-    let text = response.content.iter()
-        .filter_map(|b| if let crate::provider::ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+    let text = response
+        .content
+        .iter()
+        .filter_map(|b| {
+            if let crate::provider::ContentBlock::Text { text } = b {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
         .collect::<Vec<_>>()
         .join("");
     if text.trim().is_empty() {

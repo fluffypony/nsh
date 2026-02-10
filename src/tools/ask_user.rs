@@ -1,9 +1,6 @@
 use std::io::{self, BufRead, Write};
 
-pub fn execute(
-    question: &str,
-    options: Option<&[String]>,
-) -> anyhow::Result<String> {
+pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<String> {
     let color = "\x1b[1;33m"; // bold yellow
     let reset = "\x1b[0m";
 

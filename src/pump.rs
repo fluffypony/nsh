@@ -65,13 +65,11 @@ impl CaptureEngine {
         }
         self.rate_bytes += bytes.len();
         if self.rate_limit_bps > 0 && self.rate_bytes > self.rate_limit_bps {
-            self.paused_until =
-                Some(Instant::now() + Duration::from_secs(self.pause_seconds));
+            self.paused_until = Some(Instant::now() + Duration::from_secs(self.pause_seconds));
             if !self.suppressed {
                 self.suppressed = true;
-                self.history_lines.push(
-                    "[nsh: output capture suppressed (high output rate)]".into(),
-                );
+                self.history_lines
+                    .push("[nsh: output capture suppressed (high output rate)]".into());
             }
             return;
         }
@@ -213,13 +211,15 @@ pub fn truncate_for_storage(output: &str, max_bytes: usize) -> String {
     } else {
         let first = lines[..100].join("\n");
         let last = lines[lines.len() - 50..].join("\n");
-        format!("{first}\n[... {} lines omitted ...]\n{last}", lines.len() - 150)
+        format!(
+            "{first}\n[... {} lines omitted ...]\n{last}",
+            lines.len() - 150
+        )
     };
     if result.len() <= max_bytes {
         result
     } else {
-        crate::util::truncate_bytes(&result, max_bytes).to_string()
-            + "\n[... truncated by nsh]"
+        crate::util::truncate_bytes(&result, max_bytes).to_string() + "\n[... truncated by nsh]"
     }
 }
 
@@ -329,18 +329,14 @@ pub fn pump_loop(
     capture: Arc<Mutex<CaptureEngine>>,
     child_pid: rustix::process::Pid,
 ) {
-    use rustix::event::{poll, PollFd, PollFlags, Timespec};
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
     use std::os::fd::AsRawFd;
 
     let stdin_raw = real_stdin.as_raw_fd();
     let pty_master_raw = pty_master.as_raw_fd();
     let winch_pending = Arc::new(AtomicBool::new(false));
-    let signal_thread = spawn_signal_thread(
-        child_pid,
-        stdin_raw,
-        pty_master_raw,
-        winch_pending.clone(),
-    );
+    let signal_thread =
+        spawn_signal_thread(child_pid, stdin_raw, pty_master_raw, winch_pending.clone());
 
     let config = crate::config::Config::load().unwrap_or_default();
     let max_output_bytes = config.context.max_output_storage_bytes;
@@ -352,14 +348,12 @@ pub fn pump_loop(
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
     }
 
-    let session_id =
-        std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
+    let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
 
     let nsh_dir = crate::config::Config::nsh_dir();
     let _ = std::fs::create_dir_all(&nsh_dir);
 
-    let socket_path = nsh_dir
-        .join(format!("scrollback_{session_id}.sock"));
+    let socket_path = nsh_dir.join(format!("scrollback_{session_id}.sock"));
     let _ = std::fs::remove_file(&socket_path);
     let listener = match std::os::unix::net::UnixListener::bind(&socket_path) {
         Ok(l) => {
@@ -446,9 +440,17 @@ pub fn pump_loop(
             }
             Ok(_) => {
                 if handle_io(
-                    &poll_fds[0], &poll_fds[1], &real_stdin, &real_stdout, &pty_master,
-                    &mut buf, &capture, &mut last_activity, &mut last_flush,
-                    &scrollback_path, &redact_active_path,
+                    &poll_fds[0],
+                    &poll_fds[1],
+                    &real_stdin,
+                    &real_stdout,
+                    &pty_master,
+                    &mut buf,
+                    &capture,
+                    &mut last_activity,
+                    &mut last_flush,
+                    &scrollback_path,
+                    &redact_active_path,
                 ) {
                     break;
                 }
@@ -461,7 +463,13 @@ pub fn pump_loop(
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
                     if poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_daemon_connection(l, &capture, &db_tx, max_output_bytes, &active_conns);
+                        handle_daemon_connection(
+                            l,
+                            &capture,
+                            &db_tx,
+                            max_output_bytes,
+                            &active_conns,
+                        );
                     }
                 }
             }
@@ -645,17 +653,19 @@ fn handle_daemon_connection_inner(
 ) {
     use std::io::{BufRead, BufReader, Write};
 
-    stream.set_read_timeout(Some(Duration::from_millis(500))).ok();
-    stream.set_write_timeout(Some(Duration::from_millis(500))).ok();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .ok();
 
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
     let read_result = reader.read_line(&mut line);
     let response = match read_result {
         Ok(0) => return,
-        Ok(n) if n > 256 * 1024 => {
-            crate::daemon::DaemonResponse::error("request too large")
-        }
+        Ok(n) if n > 256 * 1024 => crate::daemon::DaemonResponse::error("request too large"),
         Ok(_) => {
             let raw: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
@@ -678,7 +688,9 @@ fn handle_daemon_connection_inner(
                 );
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
-                Ok(request) => crate::daemon::handle_daemon_request(request, capture, db_tx, max_output_bytes),
+                Ok(request) => {
+                    crate::daemon::handle_daemon_request(request, capture, db_tx, max_output_bytes)
+                }
                 Err(e) => crate::daemon::DaemonResponse::error(format!("invalid request: {e}")),
             }
         }
@@ -686,7 +698,10 @@ fn handle_daemon_connection_inner(
     };
     if let Ok(mut json_val) = serde_json::to_value(&response) {
         if let serde_json::Value::Object(ref mut map) = json_val {
-            map.insert("v".into(), serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION));
+            map.insert(
+                "v".into(),
+                serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
+            );
         }
         if let Ok(json) = serde_json::to_string(&json_val) {
             let mut writer = stream;
@@ -696,8 +711,6 @@ fn handle_daemon_connection_inner(
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

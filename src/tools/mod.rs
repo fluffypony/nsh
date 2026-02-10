@@ -3,9 +3,9 @@ pub mod chat;
 pub mod command;
 pub mod grep_file;
 pub mod list_directory;
-pub mod read_file;
 pub mod man_page;
 pub mod patch_file;
+pub mod read_file;
 pub mod run_command;
 pub mod search_history;
 pub mod web_search;
@@ -156,8 +156,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read lines from a file with line numbers."
-                .into(),
+            description: "Read lines from a file with line numbers.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -203,8 +202,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "web_search".into(),
-            description: "Search the web for current information."
-                .into(),
+            description: "Search the web for current information.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -326,8 +324,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "man_page".into(),
-            description: "Retrieve the man page for a command."
-                .into(),
+            description: "Retrieve the man page for a command.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {

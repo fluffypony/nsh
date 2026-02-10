@@ -3,7 +3,7 @@ use rustix::termios::{self, Termios};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::pump::{pump_loop, CaptureEngine};
+use crate::pump::{CaptureEngine, pump_loop};
 
 static RESTORE_TERMIOS: OnceLock<(libc::c_int, Termios)> = OnceLock::new();
 
@@ -16,10 +16,7 @@ pub struct PtyPair {
 // Currently safe because PTY creation happens before fork(). If PTY creation
 // ever moves to a threaded context, a Mutex around ptsname would be needed.
 pub fn create_pty() -> anyhow::Result<PtyPair> {
-    let master = openpt(
-        rustix::pty::OpenptFlags::RDWR
-            | rustix::pty::OpenptFlags::NOCTTY,
-    )?;
+    let master = openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)?;
     grantpt(&master)?;
     unlockpt(&master)?;
 
@@ -43,10 +40,7 @@ pub fn make_raw(fd: BorrowedFd) -> anyhow::Result<Termios> {
 }
 
 /// Copy terminal size from one fd to another.
-pub fn copy_winsize(
-    from: BorrowedFd,
-    to: BorrowedFd,
-) -> anyhow::Result<()> {
+pub fn copy_winsize(from: BorrowedFd, to: BorrowedFd) -> anyhow::Result<()> {
     let ws = termios::tcgetwinsize(from)?;
     termios::tcsetwinsize(to, ws)?;
     Ok(())
@@ -68,13 +62,19 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     let real_stdin = rustix::stdio::stdin();
     let real_stdout = rustix::stdio::stdout();
     let original_termios = make_raw(real_stdin)?;
-    RESTORE_TERMIOS.set((real_stdin.as_raw_fd(), original_termios.clone())).ok();
+    RESTORE_TERMIOS
+        .set((real_stdin.as_raw_fd(), original_termios.clone()))
+        .ok();
 
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some((fd, termios)) = RESTORE_TERMIOS.get() {
             let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
-            let _ = rustix::termios::tcsetattr(borrowed, rustix::termios::OptionalActions::Now, termios);
+            let _ = rustix::termios::tcsetattr(
+                borrowed,
+                rustix::termios::OptionalActions::Now,
+                termios,
+            );
         }
         let reset = "\x1b[0m\x1b[?25h\x1b[?1049l\n";
         let _ = std::io::Write::write_all(&mut std::io::stderr(), reset.as_bytes());
@@ -112,17 +112,9 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
                 unsafe { libc::_exit(127) };
             }
 
-            let slave_raw =
-                std::os::fd::AsRawFd::as_raw_fd(&pty.slave);
+            let slave_raw = std::os::fd::AsRawFd::as_raw_fd(&pty.slave);
 
-            if unsafe {
-                libc::ioctl(
-                    slave_raw,
-                    libc::TIOCSCTTY as libc::c_ulong,
-                    0,
-                )
-            } == -1
-            {
+            if unsafe { libc::ioctl(slave_raw, libc::TIOCSCTTY as libc::c_ulong, 0) } == -1 {
                 eprintln!("nsh: TIOCSCTTY failed");
             }
 
@@ -147,10 +139,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             // Login shell convention: prepend '-' to basename in argv[0]
             let basename = shell.rsplit('/').next().unwrap_or(shell);
             let argv0 = format!("-{basename}");
-            let err = exec::execvp(
-                shell,
-                &[&argv0],
-            );
+            let err = exec::execvp(shell, &[&argv0]);
             eprintln!("nsh: exec failed: {err}");
             unsafe { libc::_exit(127) };
         }
@@ -158,8 +147,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             // ── Parent: run the pump ───────────────────────────
             drop(pty.slave);
 
-            let pid = rustix::process::Pid::from_raw(child_pid)
-                .expect("invalid child pid");
+            let pid = rustix::process::Pid::from_raw(child_pid).expect("invalid child pid");
 
             pump_loop(
                 real_stdin,
@@ -170,12 +158,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             );
 
             // Restore terminal
-            termios::tcsetattr(
-                real_stdin,
-                termios::OptionalActions::Now,
-                &original_termios,
-            )
-            .ok();
+            termios::tcsetattr(real_stdin, termios::OptionalActions::Now, &original_termios).ok();
 
             std::process::exit(0);
         }
@@ -187,10 +170,12 @@ mod exec {
         use std::ffi::CString;
         let cmd = match CString::new(cmd) {
             Ok(c) => c,
-            Err(_) => return std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "command path contains null byte",
-            ),
+            Err(_) => {
+                return std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "command path contains null byte",
+                );
+            }
         };
         let args: Vec<CString> = args.iter().filter_map(|a| CString::new(*a).ok()).collect();
         let arg_ptrs: Vec<*const libc::c_char> = args

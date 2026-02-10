@@ -137,7 +137,10 @@ impl McpClient {
         for (name, server_config) in &config.servers {
             match Self::start_server(name, server_config).await {
                 Ok(server) => {
-                    tracing::debug!("MCP server '{name}' started with {} tools", server.tools.len());
+                    tracing::debug!(
+                        "MCP server '{name}' started with {} tools",
+                        server.tools.len()
+                    );
                     self.servers.insert(name.clone(), server);
                 }
                 Err(e) => {
@@ -147,10 +150,7 @@ impl McpClient {
         }
     }
 
-    async fn start_server(
-        name: &str,
-        config: &McpServerConfig,
-    ) -> anyhow::Result<McpServer> {
+    async fn start_server(name: &str, config: &McpServerConfig) -> anyhow::Result<McpServer> {
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
             .envs(&config.env)
@@ -159,7 +159,10 @@ impl McpClient {
             .stderr(std::process::Stdio::null());
 
         let mut child = cmd.spawn().map_err(|e| {
-            anyhow::anyhow!("Failed to spawn MCP server '{name}' ({}): {e}", config.command)
+            anyhow::anyhow!(
+                "Failed to spawn MCP server '{name}' ({}): {e}",
+                config.command
+            )
         })?;
 
         let stdin = child.stdin.take().unwrap();
@@ -247,7 +250,9 @@ impl McpClient {
     fn parse_tool_name<'a>(&'a self, prefixed_name: &'a str) -> Option<(&'a str, &'a str)> {
         let rest = prefixed_name.strip_prefix("mcp_")?;
         for server_name in self.servers.keys() {
-            if let Some(tool_name) = rest.strip_prefix(server_name).and_then(|s| s.strip_prefix('_'))
+            if let Some(tool_name) = rest
+                .strip_prefix(server_name)
+                .and_then(|s| s.strip_prefix('_'))
             {
                 return Some((server_name.as_str(), tool_name));
             }

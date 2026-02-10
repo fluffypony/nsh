@@ -1,6 +1,6 @@
 use crate::provider::{ContentBlock, Message, Role, StreamEvent, Usage};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 pub enum DisplayEvent {
@@ -69,7 +69,9 @@ pub async fn consume_stream(
                     name: current_tool_name.clone(),
                     input,
                 });
-                on_event(DisplayEvent::ToolFinished { name: current_tool_name.clone() });
+                on_event(DisplayEvent::ToolFinished {
+                    name: current_tool_name.clone(),
+                });
                 current_tool_input.clear();
             }
 
@@ -102,12 +104,7 @@ pub async fn consume_stream(
     }
 
     if !current_text.is_empty() {
-        content_blocks.insert(
-            0,
-            ContentBlock::Text {
-                text: current_text,
-            },
-        );
+        content_blocks.insert(0, ContentBlock::Text { text: current_text });
     }
 
     Ok((

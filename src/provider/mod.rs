@@ -79,10 +79,7 @@ pub struct Usage {
 
 #[async_trait::async_trait]
 pub trait LlmProvider: Send + Sync {
-    async fn complete(
-        &self,
-        request: ChatRequest,
-    ) -> anyhow::Result<Message>;
+    async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message>;
 
     async fn stream(
         &self,
@@ -96,17 +93,14 @@ pub fn create_provider(
     config: &crate::config::Config,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     match provider_name {
-        "openrouter" => Ok(Box::new(
-            openrouter::OpenRouterProvider::new(config)?,
-        )),
-        "anthropic" => Ok(Box::new(
-            anthropic::AnthropicProvider::new(config)?,
-        )),
-        "openai" => {
-            Ok(Box::new(openai::OpenAIProvider::new(config)?))
-        }
+        "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(config)?)),
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(config)?)),
+        "openai" => Ok(Box::new(openai::OpenAIProvider::new(config)?)),
         "gemini" => {
-            let auth = config.provider.gemini.as_ref()
+            let auth = config
+                .provider
+                .gemini
+                .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Gemini not configured"))?;
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
                 auth.resolve_api_key("gemini")?,
@@ -125,7 +119,10 @@ pub fn create_provider(
                 .and_then(|a| a.resolve_api_key("ollama").ok())
                 .unwrap_or_else(|| zeroize::Zeroizing::new("ollama".into()));
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                api_key, base_url, config.provider.fallback_model.clone(), vec![],
+                api_key,
+                base_url,
+                config.provider.fallback_model.clone(),
+                vec![],
                 config.provider.timeout_seconds,
             )?))
         }
@@ -134,9 +131,7 @@ pub fn create_provider(
 }
 
 /// Parse an OpenAI-format JSON response into our Message type.
-pub fn parse_openai_response(
-    json: &serde_json::Value,
-) -> anyhow::Result<Message> {
+pub fn parse_openai_response(json: &serde_json::Value) -> anyhow::Result<Message> {
     let choice = json["choices"]
         .get(0)
         .ok_or_else(|| anyhow::anyhow!("No choices in response"))?;
@@ -157,15 +152,9 @@ pub fn parse_openai_response(
     if let Some(tool_calls) = msg["tool_calls"].as_array() {
         for tc in tool_calls {
             let id = tc["id"].as_str().unwrap_or("").to_string();
-            let name = tc["function"]["name"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            let args_str = tc["function"]["arguments"]
-                .as_str()
-                .unwrap_or("{}");
-            let input: serde_json::Value =
-                serde_json::from_str(args_str).unwrap_or_default();
+            let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
+            let input: serde_json::Value = serde_json::from_str(args_str).unwrap_or_default();
             content.push(ContentBlock::ToolUse { id, name, input });
         }
     }

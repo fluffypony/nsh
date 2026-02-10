@@ -5,15 +5,15 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 
 static SPINNER_ACTIVE: AtomicBool = AtomicBool::new(false);
-static SPINNER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> =
-    Mutex::new(None);
+static SPINNER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 static CHAT_COLOR: OnceLock<String> = OnceLock::new();
 static SPINNER_FRAMES: OnceLock<Vec<String>> = OnceLock::new();
 
 pub fn configure_display(config: &crate::config::DisplayConfig) {
     let _ = CHAT_COLOR.set(config.chat_color.clone());
-    let frames: Vec<String> = config.thinking_indicator
+    let frames: Vec<String> = config
+        .thinking_indicator
         .chars()
         .map(|c| c.to_string())
         .collect();
@@ -30,8 +30,10 @@ fn spinner_frames() -> &'static [String] {
     static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
     SPINNER_FRAMES.get().unwrap_or_else(|| {
         DEFAULT.get_or_init(|| {
-            vec!["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
-                .into_iter().map(String::from).collect()
+            vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                .into_iter()
+                .map(String::from)
+                .collect()
         })
     })
 }
@@ -42,15 +44,10 @@ pub fn show_spinner() {
         let frames = spinner_frames();
         let mut i = 0;
         while SPINNER_ACTIVE.load(Ordering::SeqCst) {
-            eprint!(
-                "\r\x1b[2m{} thinking...\x1b[0m",
-                frames[i % frames.len()]
-            );
+            eprint!("\r\x1b[2m{} thinking...\x1b[0m", frames[i % frames.len()]);
             io::stderr().flush().ok();
             i += 1;
-            std::thread::sleep(std::time::Duration::from_millis(
-                80,
-            ));
+            std::thread::sleep(std::time::Duration::from_millis(80));
         }
     });
     if let Ok(mut guard) = SPINNER_HANDLE.lock() {
@@ -75,18 +72,15 @@ pub struct SpinnerGuard {
 
 impl SpinnerGuard {
     pub fn new() -> Self {
-        let was_inactive = SPINNER_ACTIVE.compare_exchange(
-            false, true, Ordering::SeqCst, Ordering::SeqCst
-        ).is_ok();
+        let was_inactive = SPINNER_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
         if was_inactive {
             let handle = std::thread::spawn(move || {
                 let frames = spinner_frames();
                 let mut i = 0;
                 while SPINNER_ACTIVE.load(Ordering::SeqCst) {
-                    eprint!(
-                        "\r\x1b[2m{} thinking...\x1b[0m",
-                        frames[i % frames.len()]
-                    );
+                    eprint!("\r\x1b[2m{} thinking...\x1b[0m", frames[i % frames.len()]);
                     std::io::Write::flush(&mut std::io::stderr()).ok();
                     i += 1;
                     std::thread::sleep(std::time::Duration::from_millis(80));
@@ -204,12 +198,7 @@ pub async fn consume_stream(
     }
 
     if !current_text.is_empty() {
-        content_blocks.insert(
-            0,
-            ContentBlock::Text {
-                text: current_text,
-            },
-        );
+        content_blocks.insert(0, ContentBlock::Text { text: current_text });
     }
 
     Ok(Message {

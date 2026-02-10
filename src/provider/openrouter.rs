@@ -1,18 +1,26 @@
-use crate::provider::*;
 use super::openai_compat::OpenAICompatProvider;
+use crate::provider::*;
 
 pub struct OpenRouterProvider(OpenAICompatProvider);
 
 impl OpenRouterProvider {
     pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
-        let auth = config.provider.openrouter.as_ref()
+        let auth = config
+            .provider
+            .openrouter
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("OpenRouter not configured"))?;
         Ok(Self(OpenAICompatProvider::new(
             auth.resolve_api_key("openrouter")?,
-            auth.base_url.clone().unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
+            auth.base_url
+                .clone()
+                .unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
             config.provider.fallback_model.clone(),
             vec![
-                ("HTTP-Referer".into(), "https://github.com/fluffypony/nsh".into()),
+                (
+                    "HTTP-Referer".into(),
+                    "https://github.com/fluffypony/nsh".into(),
+                ),
                 ("X-Title".into(), "nsh".into()),
             ],
             config.provider.timeout_seconds,
@@ -26,7 +34,10 @@ impl LlmProvider for OpenRouterProvider {
         self.0.complete(request).await
     }
 
-    async fn stream(&self, request: ChatRequest) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+    async fn stream(
+        &self,
+        request: ChatRequest,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
         self.0.stream(request).await
     }
 }

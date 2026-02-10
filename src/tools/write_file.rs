@@ -36,7 +36,10 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("path contains NUL byte");
     }
 
-    if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         anyhow::bail!("path traversal (..) not allowed");
     }
 
@@ -63,26 +66,18 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
     if path.exists() {
         let meta = std::fs::symlink_metadata(path)?;
         if !meta.file_type().is_file() {
-            anyhow::bail!(
-                "target exists but is not a regular file"
-            );
+            anyhow::bail!("target exists but is not a regular file");
         }
     }
 
     if let Some(parent) = canonical_target.parent() {
         if parent.exists() {
             let real_parent = parent.canonicalize()?;
-            if real_parent.starts_with(&ssh_dir)
-                || real_parent.starts_with(&nsh_dir)
-            {
-                anyhow::bail!(
-                    "symlink resolves to a blocked directory"
-                );
+            if real_parent.starts_with(&ssh_dir) || real_parent.starts_with(&nsh_dir) {
+                anyhow::bail!("symlink resolves to a blocked directory");
             }
             if real_parent.starts_with("/etc") && !is_root() {
-                anyhow::bail!(
-                    "symlink resolves to /etc/ (requires root)"
-                );
+                anyhow::bail!("symlink resolves to /etc/ (requires root)");
             }
         }
     }
@@ -94,14 +89,9 @@ fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
     let trash = trash_dir();
     std::fs::create_dir_all(&trash)?;
 
-    let filename = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
-    let stamp =
-        chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let backup_name =
-        format!("{filename}.{stamp}.nsh_backup");
+    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let backup_name = format!("{filename}.{stamp}.nsh_backup");
     let dest = trash.join(&backup_name);
 
     std::fs::copy(path, &dest)?;
@@ -152,10 +142,7 @@ fn print_preview(content: &str) {
     for (i, line) in content.lines().enumerate() {
         if i >= 50 {
             let total = content.lines().count();
-            eprintln!(
-                "  ... ({} more lines)",
-                total - 50
-            );
+            eprintln!("  ... ({} more lines)", total - 50);
             break;
         }
         eprintln!("{green}+ {line}{reset}");
@@ -169,23 +156,20 @@ pub fn execute(
     session_id: &str,
     private: bool,
 ) -> anyhow::Result<()> {
-    let raw_path = input["path"]
-        .as_str()
-        .unwrap_or("");
-    let content = input["content"]
-        .as_str()
-        .unwrap_or("");
+    let raw_path = input["path"].as_str().unwrap_or("");
+    let content = input["content"].as_str().unwrap_or("");
 
-    if regex::Regex::new(r"\[REDACTED:[a-zA-Z0-9_-]+\]").unwrap().is_match(content) {
+    if regex::Regex::new(r"\[REDACTED:[a-zA-Z0-9_-]+\]")
+        .unwrap()
+        .is_match(content)
+    {
         anyhow::bail!(
             "write_file: content contains redaction markers ([REDACTED:...]). \
              Cannot write redacted content to disk. Identify the actual values needed."
         );
     }
 
-    let reason = input["reason"]
-        .as_str()
-        .unwrap_or("");
+    let reason = input["reason"].as_str().unwrap_or("");
 
     if raw_path.is_empty() {
         anyhow::bail!("write_file: path is required");
@@ -202,10 +186,7 @@ pub fn execute(
         eprintln!("{cyan_italic}{reason}{reset}");
     }
 
-    eprintln!(
-        "{bold}File:{reset} {}",
-        path.display()
-    );
+    eprintln!("{bold}File:{reset} {}", path.display());
     eprintln!();
 
     let existing = if path.exists() {
@@ -237,10 +218,7 @@ pub fn execute(
 
     if existing.is_some() {
         let backup = backup_to_trash(&path)?;
-        eprintln!(
-            "  Backup: {}",
-            backup.display()
-        );
+        eprintln!("  Backup: {}", backup.display());
     }
 
     if let Some(parent) = path.parent() {

@@ -118,9 +118,7 @@ impl Default for ProviderConfig {
         Self {
             default: "openrouter".into(),
             model: "google/gemini-2.5-flash".into(),
-            fallback_model: Some(
-                "anthropic/claude-sonnet-4.5".into(),
-            ),
+            fallback_model: Some("anthropic/claude-sonnet-4.5".into()),
             web_search_model: "perplexity/sonar".into(),
             openrouter: Some(ProviderAuth::default()),
             anthropic: None,
@@ -273,7 +271,9 @@ impl Default for ToolsConfig {
 
 impl ToolsConfig {
     pub fn is_command_allowed(&self, cmd: &str) -> bool {
-        let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"'];
+        let dangerous_chars = [
+            ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"',
+        ];
         if cmd.chars().any(|c| dangerous_chars.contains(&c)) {
             return false;
         }
@@ -310,8 +310,7 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             chat_color: "\x1b[3;36m".into(), // cyan italic
-            thinking_indicator:
-                "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".into(),
+            thinking_indicator: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".into(),
         }
     }
 }
@@ -486,10 +485,7 @@ impl Config {
             let content = std::fs::read_to_string(&path)?;
             toml::from_str(&content)?
         } else {
-            tracing::debug!(
-                "No config at {}, using defaults",
-                path.display()
-            );
+            tracing::debug!("No config at {}, using defaults", path.display());
             toml::Value::Table(toml::map::Map::new())
         };
 
@@ -497,19 +493,23 @@ impl Config {
         if let Some(project_path) = find_project_config() {
             tracing::debug!("Found project config at {}", project_path.display());
             match std::fs::read_to_string(&project_path) {
-                Ok(project_content) => {
-                    match toml::from_str::<toml::Value>(&project_content) {
-                        Ok(mut project_value) => {
-                            sanitize_project_config(&mut project_value);
-                            deep_merge_toml(&mut base_value, &project_value);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse project config {}: {e}", project_path.display());
-                        }
+                Ok(project_content) => match toml::from_str::<toml::Value>(&project_content) {
+                    Ok(mut project_value) => {
+                        sanitize_project_config(&mut project_value);
+                        deep_merge_toml(&mut base_value, &project_value);
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse project config {}: {e}",
+                            project_path.display()
+                        );
+                    }
+                },
                 Err(e) => {
-                    tracing::warn!("Failed to read project config {}: {e}", project_path.display());
+                    tracing::warn!(
+                        "Failed to read project config {}: {e}",
+                        project_path.display()
+                    );
                 }
             }
         }
@@ -547,14 +547,8 @@ mod tests {
     fn test_config_default_values() {
         let config = Config::default();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(
-            config.provider.model,
-            "google/gemini-2.5-flash"
-        );
-        assert_eq!(
-            config.provider.web_search_model,
-            "perplexity/sonar"
-        );
+        assert_eq!(config.provider.model, "google/gemini-2.5-flash");
+        assert_eq!(config.provider.web_search_model, "perplexity/sonar");
         assert_eq!(config.context.history_limit, 20);
         assert_eq!(config.context.retention_days, 1095);
         assert_eq!(config.context.history_summaries, 100);
@@ -569,13 +563,9 @@ mod tests {
 [provider]
 default = "openrouter"
 "#;
-        let config: Config =
-            toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(
-            config.provider.model,
-            "google/gemini-2.5-flash"
-        );
+        assert_eq!(config.provider.model, "google/gemini-2.5-flash");
     }
 
     #[test]
@@ -599,22 +589,15 @@ run_command_allowlist = ["echo", "ls"]
 [display]
 chat_color = "red"
 "#;
-        let config: Config =
-            toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.default, "anthropic");
         assert_eq!(config.provider.model, "claude-3");
-        assert_eq!(
-            config.provider.web_search_model,
-            "perplexity/sonar-pro"
-        );
+        assert_eq!(config.provider.web_search_model, "perplexity/sonar-pro");
         assert_eq!(config.context.history_limit, 50);
         assert_eq!(config.context.retention_days, 180);
         assert_eq!(config.context.history_summaries, 100);
         assert!(!config.context.include_other_tty);
-        assert_eq!(
-            config.tools.run_command_allowlist,
-            vec!["echo", "ls"]
-        );
+        assert_eq!(config.tools.run_command_allowlist, vec!["echo", "ls"]);
     }
 
     #[test]
@@ -627,8 +610,7 @@ default = "openrouter"
 provider = "brave"
 model = "some-model"
 "#;
-        let config: Config =
-            toml::from_str(toml_str).unwrap();
+        let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.web_search.provider, "brave");
         assert_eq!(config.web_search.model, "some-model");
     }
@@ -644,9 +626,7 @@ model = "some-model"
     #[test]
     fn test_is_command_allowed_prefix_match() {
         let tools = ToolsConfig {
-            run_command_allowlist: vec![
-                "git log".into(),
-            ],
+            run_command_allowlist: vec!["git log".into()],
         };
         assert!(tools.is_command_allowed("git log --oneline"));
     }
@@ -680,16 +660,22 @@ model = "some-model"
 
     #[test]
     fn test_deep_merge_toml() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
 [context]
 history_limit = 20
 git_commits = 10
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
-        let overlay: toml::Value = toml::from_str(r#"
+        let overlay: toml::Value = toml::from_str(
+            r#"
 [context]
 history_limit = 50
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         deep_merge_toml(&mut base, &overlay);
         let config: Config = base.try_into().unwrap();
@@ -699,7 +685,8 @@ history_limit = 50
 
     #[test]
     fn test_sanitize_project_config() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
 [provider]
 model = "custom-model"
 
@@ -715,13 +702,27 @@ git_commits = 5
 
 [display]
 chat_color = "red"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         sanitize_project_config(&mut value);
-        assert!(value.get("provider").is_none(), "provider section should be stripped");
-        assert!(value.get("tools").is_none(), "tools section should be stripped");
-        assert!(value.get("context").is_some(), "context section should be kept");
-        assert!(value.get("display").is_some(), "display section should be kept");
+        assert!(
+            value.get("provider").is_none(),
+            "provider section should be stripped"
+        );
+        assert!(
+            value.get("tools").is_none(),
+            "tools section should be stripped"
+        );
+        assert!(
+            value.get("context").is_some(),
+            "context section should be kept"
+        );
+        assert!(
+            value.get("display").is_some(),
+            "display section should be kept"
+        );
         let ctx = value.get("context").unwrap().as_table().unwrap();
         assert_eq!(ctx.get("git_commits").unwrap().as_integer(), Some(5));
     }

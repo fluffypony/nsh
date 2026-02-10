@@ -1,17 +1,13 @@
 use regex::Regex;
 use std::fs;
 
-pub fn execute(
-    input: &serde_json::Value,
-) -> anyhow::Result<String> {
+pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
     let pattern = input["pattern"].as_str();
-    let context_lines =
-        input["context_lines"].as_u64().unwrap_or(3) as usize;
-    let max_lines =
-        input["max_lines"].as_u64().unwrap_or(100) as usize;
+    let context_lines = input["context_lines"].as_u64().unwrap_or(3) as usize;
+    let max_lines = input["max_lines"].as_u64().unwrap_or(100) as usize;
 
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -24,11 +20,7 @@ pub fn execute(
         Some(pat) => {
             let re = match Regex::new(pat) {
                 Ok(r) => r,
-                Err(e) => {
-                    return Ok(format!(
-                        "Invalid regex '{pat}': {e}"
-                    ))
-                }
+                Err(e) => return Ok(format!("Invalid regex '{pat}': {e}")),
             };
 
             let mut result = String::new();
@@ -37,22 +29,14 @@ pub fn execute(
             for (i, line) in lines.iter().enumerate() {
                 if re.is_match(line) {
                     let start = i.saturating_sub(context_lines);
-                    let end =
-                        (i + context_lines + 1).min(lines.len());
+                    let end = (i + context_lines + 1).min(lines.len());
                     for j in start..end {
                         if output_lines >= max_lines {
-                            result.push_str(
-                                "\n[... truncated]\n",
-                            );
+                            result.push_str("\n[... truncated]\n");
                             return Ok(result);
                         }
-                        let marker =
-                            if j == i { ">>>" } else { "   " };
-                        result.push_str(&format!(
-                            "{marker} {:>4}: {}\n",
-                            j + 1,
-                            lines[j]
-                        ));
+                        let marker = if j == i { ">>>" } else { "   " };
+                        result.push_str(&format!("{marker} {:>4}: {}\n", j + 1, lines[j]));
                         output_lines += 1;
                     }
                     result.push_str("---\n");
@@ -60,9 +44,7 @@ pub fn execute(
             }
 
             if result.is_empty() {
-                Ok(format!(
-                    "No matches for '{pat}' in {path}"
-                ))
+                Ok(format!("No matches for '{pat}' in {path}"))
             } else {
                 Ok(result)
             }
@@ -72,17 +54,10 @@ pub fn execute(
             let end = max_lines.min(lines.len());
             let mut result = String::new();
             for (i, line) in lines[..end].iter().enumerate() {
-                result.push_str(&format!(
-                    "{:>4}: {}\n",
-                    i + 1,
-                    line
-                ));
+                result.push_str(&format!("{:>4}: {}\n", i + 1, line));
             }
             if lines.len() > max_lines {
-                result.push_str(&format!(
-                    "\n[... {} more lines]\n",
-                    lines.len() - max_lines
-                ));
+                result.push_str(&format!("\n[... {} more lines]\n", lines.len() - max_lines));
             }
             Ok(result)
         }
@@ -115,8 +90,7 @@ mod tests {
         writeln!(f, "hello world").unwrap();
         let path = f.path().to_str().unwrap();
 
-        let input =
-            json!({"path": path, "pattern": "nonexistent"});
+        let input = json!({"path": path, "pattern": "nonexistent"});
         let result = execute(&input).unwrap();
         assert!(result.contains("No matches"));
     }

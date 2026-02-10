@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA_VERSION: i32 = 3;
 
@@ -16,15 +16,18 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
 
-    conn.create_scalar_function("regexp", 2,
-        rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+    conn.create_scalar_function(
+        "regexp",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let pattern = ctx.get::<String>(0)?;
             let text = ctx.get::<String>(1).unwrap_or_default();
             let re = regex::Regex::new(&pattern)
                 .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
             Ok(re.is_match(&text))
-        }
+        },
     )?;
 
     conn.execute_batch(
@@ -155,18 +158,21 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
         .unwrap_or(0);
 
     if current_version < 2 {
-        conn.execute_batch(
-            "ALTER TABLE sessions ADD COLUMN last_heartbeat TEXT;",
-        )
-        .ok();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN last_heartbeat TEXT;")
+            .ok();
     }
 
     if current_version < 3 {
-        conn.execute_batch("ALTER TABLE commands ADD COLUMN summary TEXT;").ok();
-        conn.execute_batch("ALTER TABLE commands ADD COLUMN summary_status TEXT DEFAULT NULL;").ok();
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN label TEXT;").ok();
-        conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_exit_code INTEGER;").ok();
-        conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_output_snippet TEXT;").ok();
+        conn.execute_batch("ALTER TABLE commands ADD COLUMN summary TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE commands ADD COLUMN summary_status TEXT DEFAULT NULL;")
+            .ok();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN label TEXT;")
+            .ok();
+        conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_exit_code INTEGER;")
+            .ok();
+        conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_output_snippet TEXT;")
+            .ok();
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS usage (
@@ -240,9 +246,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
         [],
     ) {
         tracing::warn!("FTS5 index may be corrupt, rebuilding: {e}");
-        conn.execute_batch(
-            "INSERT INTO commands_fts(commands_fts) VALUES('rebuild')",
-        )?;
+        conn.execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('rebuild')")?;
     }
 
     Ok(())
@@ -302,8 +306,7 @@ impl Db {
     ) -> rusqlite::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let hostname = gethostname();
-        let username =
-            std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
         self.conn.execute(
             "INSERT OR IGNORE INTO sessions \
              (id, tty, shell, pid, started_at, hostname, username, last_heartbeat) \
@@ -331,14 +334,17 @@ impl Db {
     }
 
     pub fn get_session_label(&self, session_id: &str) -> rusqlite::Result<Option<String>> {
-        self.conn.query_row(
-            "SELECT label FROM sessions WHERE id = ?",
-            params![session_id],
-            |row| row.get(0),
-        ).map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => rusqlite::Error::QueryReturnedNoRows,
-            other => other,
-        }).or(Ok(None))
+        self.conn
+            .query_row(
+                "SELECT label FROM sessions WHERE id = ?",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => rusqlite::Error::QueryReturnedNoRows,
+                other => other,
+            })
+            .or(Ok(None))
     }
 
     // ── Command recording ──────────────────────────────────────────
@@ -406,11 +412,7 @@ impl Db {
 
     // ── FTS5 search ────────────────────────────────────────────────
 
-    pub fn search_history(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> rusqlite::Result<Vec<HistoryMatch>> {
+    pub fn search_history(&self, query: &str, limit: usize) -> rusqlite::Result<Vec<HistoryMatch>> {
         let mut stmt = self.conn.prepare(
             "SELECT c.id, c.session_id, c.command, c.cwd,
                     c.exit_code, c.started_at, c.output,
@@ -457,19 +459,16 @@ impl Db {
              ORDER BY c.started_at DESC
              LIMIT ?",
         )?;
-        let rows = stmt.query_map(
-            params![current_session, limit as i64],
-            |row| {
-                Ok(OtherSessionCommand {
-                    command: row.get(0)?,
-                    cwd: row.get(1)?,
-                    exit_code: row.get(2)?,
-                    started_at: row.get(3)?,
-                    tty: row.get(4)?,
-                    session_id: row.get(5)?,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(params![current_session, limit as i64], |row| {
+            Ok(OtherSessionCommand {
+                command: row.get(0)?,
+                cwd: row.get(1)?,
+                exit_code: row.get(2)?,
+                started_at: row.get(3)?,
+                tty: row.get(4)?,
+                session_id: row.get(5)?,
+            })
+        })?;
         rows.collect()
     }
 
@@ -521,28 +520,22 @@ impl Db {
              ORDER BY created_at DESC
              LIMIT ?",
         )?;
-        let rows = stmt.query_map(
-            params![session_id, limit as i64],
-            |row| {
-                Ok(ConversationExchange {
-                    query: row.get(0)?,
-                    response_type: row.get(1)?,
-                    response: row.get(2)?,
-                    explanation: row.get(3)?,
-                    result_exit_code: row.get(4)?,
-                    result_output_snippet: row.get(5)?,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(params![session_id, limit as i64], |row| {
+            Ok(ConversationExchange {
+                query: row.get(0)?,
+                response_type: row.get(1)?,
+                response: row.get(2)?,
+                explanation: row.get(3)?,
+                result_exit_code: row.get(4)?,
+                result_output_snippet: row.get(5)?,
+            })
+        })?;
         let mut results: Vec<ConversationExchange> = rows.collect::<Result<_, _>>()?;
         results.reverse(); // chronological order
         Ok(results)
     }
 
-    pub fn clear_conversations(
-        &self,
-        session_id: &str,
-    ) -> rusqlite::Result<()> {
+    pub fn clear_conversations(&self, session_id: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "DELETE FROM conversations WHERE session_id = ?",
             params![session_id],
@@ -552,8 +545,7 @@ impl Db {
 
     /// Prune old data beyond retention period
     pub fn prune(&self, retention_days: u32) -> rusqlite::Result<usize> {
-        let cutoff = chrono::Utc::now()
-            - chrono::Duration::days(retention_days as i64);
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
         let cutoff_str = cutoff.to_rfc3339();
         let deleted = self.conn.execute(
             "DELETE FROM commands WHERE started_at < ?",
@@ -581,9 +573,9 @@ impl Db {
     }
 
     pub fn cleanup_orphaned_sessions(&self) -> rusqlite::Result<usize> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, pid FROM sessions WHERE ended_at IS NULL",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, pid FROM sessions WHERE ended_at IS NULL")?;
         let orphans: Vec<(String, i64)> = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -613,21 +605,18 @@ impl Db {
     }
 
     pub fn rebuild_fts(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(
-            "INSERT INTO commands_fts(commands_fts) VALUES('rebuild')",
-        )
+        self.conn
+            .execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('rebuild')")
     }
 
     pub fn optimize_fts(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(
-            "INSERT INTO commands_fts(commands_fts) VALUES('optimize')",
-        )
+        self.conn
+            .execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('optimize')")
     }
 
     pub fn check_fts_integrity(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(
-            "INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')",
-        )
+        self.conn
+            .execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')")
     }
 
     pub fn prune_if_due(&self, retention_days: u32) -> rusqlite::Result<()> {
@@ -731,13 +720,16 @@ impl Db {
         let mut stmt = self.conn.prepare(
             "SELECT generation_id FROM usage \
              WHERE generation_id IS NOT NULL AND cost_usd IS NULL \
-             AND created_at > datetime('now', '-1 hour')"
+             AND created_at > datetime('now', '-1 hour')",
         )?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect()
     }
 
-    pub fn commands_needing_summary(&self, limit: usize) -> rusqlite::Result<Vec<CommandForSummary>> {
+    pub fn commands_needing_summary(
+        &self,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CommandForSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, command, cwd, exit_code, output
              FROM commands
@@ -745,7 +737,7 @@ impl Db {
                AND summary IS NULL
                AND summary_status IS NULL
              ORDER BY started_at DESC
-             LIMIT ?"
+             LIMIT ?",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok(CommandForSummary {
@@ -767,13 +759,16 @@ impl Db {
         Ok(updated > 0)
     }
 
-    pub fn commands_needing_llm_summary(&self, limit: usize) -> rusqlite::Result<Vec<CommandForSummary>> {
+    pub fn commands_needing_llm_summary(
+        &self,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CommandForSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, command, cwd, exit_code, output
              FROM commands
              WHERE output IS NOT NULL AND summary IS NULL AND summary_status = 'needs_llm'
              ORDER BY started_at DESC
-             LIMIT ?"
+             LIMIT ?",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok(CommandForSummary {
@@ -814,7 +809,7 @@ impl Db {
              FROM commands c
              WHERE c.session_id = ?
              ORDER BY c.started_at DESC
-             LIMIT ?"
+             LIMIT ?",
         )?;
         let rows = stmt.query_map(params![session_id, limit as i64], |row| {
             Ok(CommandWithSummary {
@@ -847,7 +842,7 @@ impl Db {
                AND (s.last_heartbeat IS NULL
                     OR s.last_heartbeat > datetime('now', '-5 minutes'))
              ORDER BY c.started_at DESC
-             LIMIT ?"
+             LIMIT ?",
         )?;
         let total_limit = max_ttys * summaries_per_tty;
         let rows = stmt.query_map(params![current_session, total_limit as i64], |row| {
@@ -885,7 +880,7 @@ impl Db {
                         highlight(commands_fts, 1, '>>>', '<<<') as out_hl
                  FROM commands_fts f
                  JOIN commands c ON c.id = f.rowid
-                 WHERE commands_fts MATCH ?1"
+                 WHERE commands_fts MATCH ?1",
             );
             let mut param_idx = 2;
             let mut conditions = Vec::new();
@@ -919,13 +914,22 @@ impl Db {
             // Build params dynamically - collect into Vec<Box<dyn rusqlite::types::ToSql>>
             let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             params_vec.push(Box::new(fts.to_string()));
-            if let Some(s) = since { params_vec.push(Box::new(s.to_string())); }
-            if let Some(u) = until { params_vec.push(Box::new(u.to_string())); }
-            if let Some(ec) = exit_code { params_vec.push(Box::new(ec)); }
-            if let Some(sf) = session_filter { params_vec.push(Box::new(sf.to_string())); }
+            if let Some(s) = since {
+                params_vec.push(Box::new(s.to_string()));
+            }
+            if let Some(u) = until {
+                params_vec.push(Box::new(u.to_string()));
+            }
+            if let Some(ec) = exit_code {
+                params_vec.push(Box::new(ec));
+            }
+            if let Some(sf) = session_filter {
+                params_vec.push(Box::new(sf.to_string()));
+            }
             params_vec.push(Box::new(limit as i64));
 
-            let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params_vec.iter().map(|p| p.as_ref()).collect();
 
             let mut stmt = self.conn.prepare(&sql)?;
             let rows = stmt.query_map(params_refs.as_slice(), |row| {
@@ -945,7 +949,10 @@ impl Db {
 
             if let Some(pattern) = regex_pattern {
                 if let Ok(re) = regex::Regex::new(pattern) {
-                    results.retain(|r| re.is_match(&r.command) || r.output.as_deref().map_or(false, |o| re.is_match(o)));
+                    results.retain(|r| {
+                        re.is_match(&r.command)
+                            || r.output.as_deref().map_or(false, |o| re.is_match(o))
+                    });
                 }
             }
 
@@ -958,7 +965,7 @@ impl Db {
                     c.exit_code, c.started_at, c.output,
                     c.command as cmd_hl,
                     c.output as out_hl
-             FROM commands c WHERE 1=1"
+             FROM commands c WHERE 1=1",
         );
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -995,7 +1002,8 @@ impl Db {
         sql.push_str(" ORDER BY c.started_at DESC LIMIT ?");
         params_vec.push(Box::new(limit as i64));
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok(HistoryMatch {
@@ -1017,13 +1025,15 @@ impl Db {
         &self,
         session_id: &str,
     ) -> rusqlite::Result<Option<(i64, String)>> {
-        self.conn.query_row(
-            "SELECT id, response FROM conversations WHERE session_id = ? \
+        self.conn
+            .query_row(
+                "SELECT id, response FROM conversations WHERE session_id = ? \
              AND response_type = 'command' AND result_exit_code IS NULL \
              ORDER BY created_at DESC LIMIT 1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
     }
 
     pub fn update_conversation_result(
@@ -1039,7 +1049,13 @@ impl Db {
         Ok(())
     }
 
-    pub fn run_doctor(&self, retention_days: u32, no_prune: bool, no_vacuum: bool, config: &crate::config::Config) -> anyhow::Result<()> {
+    pub fn run_doctor(
+        &self,
+        retention_days: u32,
+        no_prune: bool,
+        no_vacuum: bool,
+        config: &crate::config::Config,
+    ) -> anyhow::Result<()> {
         eprintln!("nsh doctor: checking system health...\n");
 
         // 1. Config file validation
@@ -1084,11 +1100,19 @@ impl Db {
             "bash" => {
                 let bashrc = dirs::home_dir().unwrap_or_default().join(".bashrc");
                 let bash_profile = dirs::home_dir().unwrap_or_default().join(".bash_profile");
-                if bashrc.exists() { Some(bashrc) }
-                else if bash_profile.exists() { Some(bash_profile) }
-                else { Some(bashrc) }
+                if bashrc.exists() {
+                    Some(bashrc)
+                } else if bash_profile.exists() {
+                    Some(bash_profile)
+                } else {
+                    Some(bashrc)
+                }
             }
-            "fish" => Some(dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config")).join("fish/conf.d/nsh.fish")),
+            "fish" => Some(
+                dirs::config_dir()
+                    .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+                    .join("fish/conf.d/nsh.fish"),
+            ),
             _ => None,
         };
         if let Some(ref path) = rc_path {
@@ -1158,7 +1182,8 @@ impl Db {
         if let Ok(entries) = std::fs::read_dir(&nsh_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if (name.starts_with("daemon_") && (name.ends_with(".sock") || name.ends_with(".pid")))
+                if (name.starts_with("daemon_")
+                    && (name.ends_with(".sock") || name.ends_with(".pid")))
                     || name.starts_with("scrollback_") && !name.ends_with(".sock")
                     || name.starts_with("pending_cmd_")
                     || name.starts_with("pending_flag_")
@@ -1171,11 +1196,14 @@ impl Db {
                         .trim_end_matches(".sock")
                         .trim_end_matches(".pid")
                         .trim_end_matches(".tmp");
-                    let session_active: bool = self.conn.query_row(
-                        "SELECT COUNT(*) > 0 FROM sessions WHERE id = ? AND ended_at IS NULL",
-                        params![session_id],
-                        |row| row.get(0),
-                    ).unwrap_or(false);
+                    let session_active: bool = self
+                        .conn
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM sessions WHERE id = ? AND ended_at IS NULL",
+                            params![session_id],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false);
                     if !session_active {
                         let _ = std::fs::remove_file(entry.path());
                         orphaned_count += 1;
@@ -1205,11 +1233,9 @@ impl Db {
 
         // 11. Integrity check
         eprint!("  Integrity check... ");
-        let result: String = self.conn.query_row(
-            "PRAGMA integrity_check",
-            [],
-            |row| row.get(0),
-        )?;
+        let result: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         eprintln!("{result}");
 
         eprintln!("\nnsh doctor: done");
@@ -1294,10 +1320,7 @@ impl ConversationExchange {
         }
     }
 
-    pub fn to_assistant_message(
-        &self,
-        tool_id: &str,
-    ) -> crate::provider::Message {
+    pub fn to_assistant_message(&self, tool_id: &str) -> crate::provider::Message {
         use crate::provider::{ContentBlock, Message, Role};
 
         match self.response_type.as_str() {
@@ -1332,10 +1355,7 @@ impl ConversationExchange {
         }
     }
 
-    pub fn to_tool_result_message(
-        &self,
-        tool_id: &str,
-    ) -> crate::provider::Message {
+    pub fn to_tool_result_message(&self, tool_id: &str) -> crate::provider::Message {
         use crate::provider::{ContentBlock, Message, Role};
 
         let tool_name = match self.response_type.as_str() {
@@ -1343,10 +1363,7 @@ impl ConversationExchange {
             _ => "chat",
         };
         let mut raw_content = match self.response_type.as_str() {
-            "command" => format!(
-                "Command prefilled: {}",
-                self.response
-            ),
+            "command" => format!("Command prefilled: {}", self.response),
             _ => self.response.clone(),
         };
         if let Some(code) = &self.result_exit_code {
@@ -1356,9 +1373,7 @@ impl ConversationExchange {
             };
             raw_content.push_str(&result_text);
         }
-        let content = format!(
-            "<tool_result name=\"{tool_name}\">\n{raw_content}\n</tool_result>"
-        );
+        let content = format!("<tool_result name=\"{tool_name}\">\n{raw_content}\n</tool_result>");
         Message {
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult {
@@ -1389,8 +1404,7 @@ mod tests {
     #[test]
     fn test_create_and_end_session() {
         let db = test_db();
-        db.create_session("s1", "/dev/pts/0", "zsh", 1234)
-            .unwrap();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.end_session("s1").unwrap();
 
         let ended_at: Option<String> = db
@@ -1446,26 +1460,34 @@ mod tests {
         )
         .unwrap();
 
-        let results =
-            db.search_history("nonexistent_term_xyz", 10).unwrap();
+        let results = db.search_history("nonexistent_term_xyz", 10).unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_insert_and_get_conversations() {
         let db = test_db();
-        db.create_session("s1", "/dev/pts/0", "zsh", 1234)
-            .unwrap();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_conversation(
-            "s1", "first query", "chat", "first response",
-            None, false, false,
+            "s1",
+            "first query",
+            "chat",
+            "first response",
+            None,
+            false,
+            false,
         )
         .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
         db.insert_conversation(
-            "s1", "second query", "command", "ls -la",
-            Some("list files"), false, false,
+            "s1",
+            "second query",
+            "command",
+            "ls -la",
+            Some("list files"),
+            false,
+            false,
         )
         .unwrap();
 
@@ -1474,22 +1496,15 @@ mod tests {
         assert_eq!(convos[0].query, "first query");
         assert_eq!(convos[1].query, "second query");
         assert_eq!(convos[1].response, "ls -la");
-        assert_eq!(
-            convos[1].explanation.as_deref(),
-            Some("list files")
-        );
+        assert_eq!(convos[1].explanation.as_deref(), Some("list files"));
     }
 
     #[test]
     fn test_clear_conversations() {
         let db = test_db();
-        db.create_session("s1", "/dev/pts/0", "zsh", 1234)
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.insert_conversation("s1", "query", "chat", "response", None, false, false)
             .unwrap();
-        db.insert_conversation(
-            "s1", "query", "chat", "response",
-            None, false, false,
-        )
-        .unwrap();
 
         db.clear_conversations("s1").unwrap();
         let convos = db.get_conversations("s1", 10).unwrap();
@@ -1538,27 +1553,37 @@ mod tests {
     #[test]
     fn test_recent_commands_other_sessions() {
         let db = test_db();
-        db.create_session("s1", "/dev/pts/0", "zsh", 100)
-            .unwrap();
-        db.create_session("s2", "/dev/pts/1", "bash", 200)
-            .unwrap();
+        db.create_session("s1", "/dev/pts/0", "zsh", 100).unwrap();
+        db.create_session("s2", "/dev/pts/1", "bash", 200).unwrap();
 
         db.insert_command(
-            "s1", "cmd_in_s1", "/tmp", Some(0),
-            "2025-01-01T00:00:00Z", None, None,
-            "/dev/pts/0", "zsh", 100,
+            "s1",
+            "cmd_in_s1",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/0",
+            "zsh",
+            100,
         )
         .unwrap();
         db.insert_command(
-            "s2", "cmd_in_s2", "/home", Some(0),
-            "2025-01-01T00:00:01Z", None, None,
-            "/dev/pts/1", "bash", 200,
+            "s2",
+            "cmd_in_s2",
+            "/home",
+            Some(0),
+            "2025-01-01T00:00:01Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "bash",
+            200,
         )
         .unwrap();
 
-        let other = db
-            .recent_commands_other_sessions("s1", 10)
-            .unwrap();
+        let other = db.recent_commands_other_sessions("s1", 10).unwrap();
         assert_eq!(other.len(), 1);
         assert_eq!(other[0].command, "cmd_in_s2");
         assert_eq!(other[0].tty, "/dev/pts/1");
@@ -1593,13 +1618,29 @@ mod tests {
     fn test_fts5_rebuild() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo test", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+            "s1",
+            "cargo test",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
         )
         .unwrap();
         db.insert_command(
-            "s1", "git push origin main", "/project", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+            "s1",
+            "git push origin main",
+            "/project",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
         )
         .unwrap();
 
@@ -1622,10 +1663,16 @@ mod tests {
         // max_output_bytes defaults to 32768 in open_in_memory
         let large_output = "x".repeat(50_000);
         db.insert_command(
-            "s1", "big_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None,
+            "s1",
+            "big_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
             Some(&large_output),
-            "", "", 0,
+            "",
+            "",
+            0,
         )
         .unwrap();
 
@@ -1659,19 +1706,18 @@ mod tests {
 
         // Insert the same command twice with the same timestamp
         let id1 = db
-            .insert_command(
-                session, cmd, "/tmp", Some(0), ts, None, None, "", "", 0,
-            )
+            .insert_command(session, cmd, "/tmp", Some(0), ts, None, None, "", "", 0)
             .unwrap();
         let id2 = db
-            .insert_command(
-                session, cmd, "/tmp", Some(0), ts, None, None, "", "", 0,
-            )
+            .insert_command(session, cmd, "/tmp", Some(0), ts, None, None, "", "", 0)
             .unwrap();
 
         // Both inserts succeed (DB doesn't deduplicate — shell hooks do)
         // but we verify the dedup guard exists in shell scripts
-        assert_ne!(id1, id2, "DB assigns different IDs (dedup is in shell hooks)");
+        assert_ne!(
+            id1, id2,
+            "DB assigns different IDs (dedup is in shell hooks)"
+        );
 
         // Verify the shell dedup guard exists
         let zsh_script = include_str!("../shell/nsh.zsh");
@@ -1699,17 +1745,45 @@ mod tests {
     fn test_regexp_function() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo test --release", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo test --release",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "git push origin main", "/project", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "git push origin main",
+            "/project",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("cargo.*release"), None, None, None, false, None, None, 10,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("cargo.*release"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                10,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("cargo test"));
     }
@@ -1718,16 +1792,26 @@ mod tests {
     fn test_summary_lifecycle() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo build", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("Compiling nsh v0.1.0\nFinished in 5.2s"),
-            "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo build",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("Compiling nsh v0.1.0\nFinished in 5.2s"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let needing = db.commands_needing_summary(5).unwrap();
         assert_eq!(needing.len(), 1);
         assert_eq!(needing[0].command, "cargo build");
 
-        let updated = db.update_summary(needing[0].id, "Built nsh successfully in 5.2s").unwrap();
+        let updated = db
+            .update_summary(needing[0].id, "Built nsh successfully in 5.2s")
+            .unwrap();
         assert!(updated);
 
         let needing_after = db.commands_needing_summary(5).unwrap();

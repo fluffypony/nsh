@@ -19,21 +19,22 @@ mod redact;
 mod security;
 mod shell_hooks;
 mod skills;
-mod summary;
 mod stream_consumer;
 mod streaming;
+mod summary;
 mod tools;
 mod util;
 
 use clap::Parser;
-use cli::{Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, ProviderAction, SessionAction};
+use cli::{
+    Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, ProviderAction,
+    SessionAction,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env(),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
@@ -59,7 +60,12 @@ async fn main() -> anyhow::Result<()> {
             pty::run_wrapped_shell(&shell)?;
         }
 
-        Commands::Query { words, think, private, json: _ } => {
+        Commands::Query {
+            words,
+            think,
+            private,
+            json: _,
+        } => {
             if words.is_empty() {
                 eprintln!("Usage: ? <your question>");
                 std::process::exit(1);
@@ -72,29 +78,30 @@ async fn main() -> anyhow::Result<()> {
                 use std::io::Read;
                 let max_pipe_bytes: u64 = 33000; // slightly over 32k to detect truncation
                 let mut piped = String::new();
-                std::io::stdin().take(max_pipe_bytes).read_to_string(&mut piped)?;
+                std::io::stdin()
+                    .take(max_pipe_bytes)
+                    .read_to_string(&mut piped)?;
                 if !piped.is_empty() {
                     let truncated = crate::util::truncate(&piped, 32000);
-                    query_text = format!("<piped_input>\n{truncated}\n</piped_input>\n\n{query_text}");
+                    query_text =
+                        format!("<piped_input>\n{truncated}\n</piped_input>\n\n{query_text}");
                 }
             }
 
             // Auto-run suffix: strip trailing !!
             let (_query_text, _force_autorun) = if query_text.ends_with("!!") {
-                (query_text[..query_text.len()-2].trim().to_string(), true)
+                (query_text[..query_text.len() - 2].trim().to_string(), true)
             } else {
                 (query_text, false)
             };
             let query_text = _query_text;
             let config = config::Config::load()?;
             let db = db::Db::open()?;
-            let session_id = std::env::var("NSH_SESSION_ID")
-                .unwrap_or_else(|_| "default".into());
+            let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             if private {
                 eprintln!("\x1b[2m🔒 private mode\x1b[0m");
             }
-            query::handle_query(&query_text, &config, &db, &session_id, think, private)
-                .await?;
+            query::handle_query(&query_text, &config, &db, &session_id, think, private).await?;
         }
 
         Commands::Record {
@@ -130,7 +137,12 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Session { action } => match action {
-            SessionAction::Start { session, tty, shell, pid } => {
+            SessionAction::Start {
+                session,
+                tty,
+                shell,
+                pid,
+            } => {
                 let db = db::Db::open()?;
                 db.create_session(&session, &tty, &shell, pid as i64)?;
             }
@@ -140,8 +152,9 @@ async fn main() -> anyhow::Result<()> {
                 shell_hooks::cleanup_pending_files(&session);
             }
             SessionAction::Label { label, session } => {
-                let session_id = session.unwrap_or_else(||
-                    std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into()));
+                let session_id = session.unwrap_or_else(|| {
+                    std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
+                });
                 let db = db::Db::open()?;
                 if db.set_session_label(&session_id, &label)? {
                     eprintln!("nsh: session labeled \"{label}\"");
@@ -160,13 +173,9 @@ async fn main() -> anyhow::Result<()> {
                         .exit_code
                         .map(|c| format!(" (exit {c})"))
                         .unwrap_or_default();
-                    println!(
-                        "[{}]{} {}",
-                        r.started_at, code, r.cmd_highlight
-                    );
+                    println!("[{}]{} {}", r.started_at, code, r.cmd_highlight);
                     if let Some(hl) = &r.output_highlight {
-                        let preview: String =
-                            hl.chars().take(200).collect();
+                        let preview: String = hl.chars().take(200).collect();
                         println!("  {preview}");
                     }
                 }
@@ -177,8 +186,7 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Reset => {
-            let session_id = std::env::var("NSH_SESSION_ID")
-                .unwrap_or_else(|_| "default".into());
+            let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             let db = db::Db::open()?;
             db.clear_conversations(&session_id)?;
             eprintln!("nsh: conversation context cleared");
@@ -209,14 +217,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Some(ConfigAction::Edit) => {
-                let editor =
-                    std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+                let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
                 let path = config::Config::path();
                 let dir = path.parent().unwrap();
                 std::fs::create_dir_all(dir)?;
-                std::process::Command::new(&editor)
-                    .arg(&path)
-                    .status()?;
+                std::process::Command::new(&editor).arg(&path).status()?;
             }
         },
 
@@ -233,8 +238,12 @@ async fn main() -> anyhow::Result<()> {
             if stats.is_empty() {
                 eprintln!("No usage data recorded yet.");
             } else {
-                eprintln!("Model                               Calls  Input Tok  Output Tok  Cost (USD)");
-                eprintln!("─────────────────────────────────────────────────────────────────────────────");
+                eprintln!(
+                    "Model                               Calls  Input Tok  Output Tok  Cost (USD)"
+                );
+                eprintln!(
+                    "─────────────────────────────────────────────────────────────────────────────"
+                );
                 let mut total_cost = 0.0_f64;
                 let mut total_calls = 0_i64;
                 for (model, calls, input_tok, output_tok, cost) in &stats {
@@ -245,8 +254,13 @@ async fn main() -> anyhow::Result<()> {
                     total_cost += cost;
                     total_calls += calls;
                 }
-                eprintln!("─────────────────────────────────────────────────────────────────────────────");
-                eprintln!("{:<35} {:>5}                        ${:.4}", "TOTAL", total_calls, total_cost);
+                eprintln!(
+                    "─────────────────────────────────────────────────────────────────────────────"
+                );
+                eprintln!(
+                    "{:<35} {:>5}                        ${:.4}",
+                    "TOTAL", total_calls, total_cost
+                );
             }
         }
 
@@ -285,7 +299,11 @@ async fn main() -> anyhow::Result<()> {
             }
         },
 
-        Commands::Doctor { no_prune, no_vacuum, prune_days } => {
+        Commands::Doctor {
+            no_prune,
+            no_vacuum,
+            prune_days,
+        } => {
             let config = config::Config::load().unwrap_or_default();
             let db = db::Db::open()?;
             let retention = prune_days.unwrap_or(config.context.retention_days);
@@ -298,10 +316,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::RedactNext => {
-            let session_id = std::env::var("NSH_SESSION_ID")
-                .unwrap_or_else(|_| "default".into());
-            let flag_path = config::Config::nsh_dir()
-                .join(format!("redact_next_{session_id}"));
+            let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
+            let flag_path = config::Config::nsh_dir().join(format!("redact_next_{session_id}"));
             std::fs::write(&flag_path, "")?;
             eprintln!("nsh: next command output will not be captured");
         }
@@ -318,7 +334,10 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             if !github_resp.status().is_success() {
-                eprintln!("nsh: failed to check GitHub for updates (HTTP {})", github_resp.status());
+                eprintln!(
+                    "nsh: failed to check GitHub for updates (HTTP {})",
+                    github_resp.status()
+                );
                 std::process::exit(1);
             }
 
@@ -358,7 +377,10 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            eprintln!("nsh: verified commit {} (GitHub ✓, DNS ✓)", &github_sha[..12]);
+            eprintln!(
+                "nsh: verified commit {} (GitHub ✓, DNS ✓)",
+                &github_sha[..12]
+            );
 
             let arch = std::env::consts::ARCH;
             let os = std::env::consts::OS;
@@ -406,7 +428,10 @@ async fn main() -> anyhow::Result<()> {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))?;
+                        std::fs::set_permissions(
+                            &tmp_path,
+                            std::fs::Permissions::from_mode(0o755),
+                        )?;
                     }
                     found = true;
                     break;
@@ -437,8 +462,15 @@ async fn main() -> anyhow::Result<()> {
 
             let request = match &action {
                 DaemonSendAction::Record {
-                    session, command, cwd, exit_code, started_at,
-                    duration_ms, tty, pid, shell,
+                    session,
+                    command,
+                    cwd,
+                    exit_code,
+                    started_at,
+                    duration_ms,
+                    tty,
+                    pid,
+                    shell,
                 } => daemon::DaemonRequest::Record {
                     session: session.clone(),
                     command: command.clone(),
@@ -451,12 +483,12 @@ async fn main() -> anyhow::Result<()> {
                     duration_ms: *duration_ms,
                     output: None,
                 },
-                DaemonSendAction::Heartbeat { session } => {
-                    daemon::DaemonRequest::Heartbeat { session: session.clone() }
-                }
-                DaemonSendAction::CaptureMark { session } => {
-                    daemon::DaemonRequest::CaptureMark { session: session.clone() }
-                }
+                DaemonSendAction::Heartbeat { session } => daemon::DaemonRequest::Heartbeat {
+                    session: session.clone(),
+                },
+                DaemonSendAction::CaptureMark { session } => daemon::DaemonRequest::CaptureMark {
+                    session: session.clone(),
+                },
                 DaemonSendAction::Status => daemon::DaemonRequest::Status,
             };
 
@@ -466,28 +498,41 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("nsh: daemon error: {message}");
                     }
                 }
-                None => {
-                    match action {
-                        DaemonSendAction::Record {
-                            session, command, cwd, exit_code, started_at,
-                            duration_ms, tty, pid, shell,
-                        } => {
-                            let db = db::Db::open()?;
-                            db.insert_command(
-                                &session, &command, &cwd, Some(exit_code),
-                                &started_at, duration_ms, None, &tty, &shell, pid,
-                            )?;
-                        }
-                        DaemonSendAction::Heartbeat { session } => {
-                            let db = db::Db::open()?;
-                            db.update_heartbeat(&session)?;
-                        }
-                        DaemonSendAction::CaptureMark { .. } => {}
-                        DaemonSendAction::Status => {
-                            eprintln!("nsh: daemon not running");
-                        }
+                None => match action {
+                    DaemonSendAction::Record {
+                        session,
+                        command,
+                        cwd,
+                        exit_code,
+                        started_at,
+                        duration_ms,
+                        tty,
+                        pid,
+                        shell,
+                    } => {
+                        let db = db::Db::open()?;
+                        db.insert_command(
+                            &session,
+                            &command,
+                            &cwd,
+                            Some(exit_code),
+                            &started_at,
+                            duration_ms,
+                            None,
+                            &tty,
+                            &shell,
+                            pid,
+                        )?;
                     }
-                }
+                    DaemonSendAction::Heartbeat { session } => {
+                        let db = db::Db::open()?;
+                        db.update_heartbeat(&session)?;
+                    }
+                    DaemonSendAction::CaptureMark { .. } => {}
+                    DaemonSendAction::Status => {
+                        eprintln!("nsh: daemon not running");
+                    }
+                },
             }
         }
 
@@ -506,14 +551,15 @@ async fn main() -> anyhow::Result<()> {
                         max_lines: *max_lines,
                     }
                 }
-                DaemonReadAction::Scrollback { max_lines } => {
-                    daemon::DaemonRequest::Scrollback { max_lines: *max_lines }
-                }
+                DaemonReadAction::Scrollback { max_lines } => daemon::DaemonRequest::Scrollback {
+                    max_lines: *max_lines,
+                },
             };
 
             match daemon_client::try_send_request(&session_id, &request) {
                 Some(daemon::DaemonResponse::Ok { data: Some(d) }) => {
-                    let text = d.get("output")
+                    let text = d
+                        .get("output")
                         .or_else(|| d.get("scrollback"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
@@ -569,15 +615,17 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                if let Err(e) = query::handle_query(line, &config, &db, &session_id, false, false).await {
+                if let Err(e) =
+                    query::handle_query(line, &config, &db, &session_id, false, false).await
+                {
                     eprintln!("\x1b[33mnsh: {e}\x1b[0m");
                 }
             }
         }
 
         Commands::Export { format, session } => {
-            let session_id = session.unwrap_or_else(||
-                std::env::var("NSH_SESSION_ID").unwrap_or_default());
+            let session_id =
+                session.unwrap_or_else(|| std::env::var("NSH_SESSION_ID").unwrap_or_default());
             let db = db::Db::open()?;
             let convos = db.get_conversations(&session_id, 1000)?;
             if convos.is_empty() {
@@ -585,23 +633,28 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 match format.as_deref().unwrap_or("markdown") {
                     "json" => {
-                        let json_convos: Vec<serde_json::Value> = convos.iter().map(|c| {
-                            serde_json::json!({
-                                "query": c.query,
-                                "response_type": c.response_type,
-                                "response": c.response,
-                                "explanation": c.explanation,
+                        let json_convos: Vec<serde_json::Value> = convos
+                            .iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "query": c.query,
+                                    "response_type": c.response_type,
+                                    "response": c.response,
+                                    "explanation": c.explanation,
+                                })
                             })
-                        }).collect();
+                            .collect();
                         println!("{}", serde_json::to_string_pretty(&json_convos)?);
                     }
                     _ => {
                         for c in &convos {
                             println!("**Q:** {}\n", c.query);
                             match c.response_type.as_str() {
-                                "command" => println!("```bash\n{}\n```\n{}\n",
+                                "command" => println!(
+                                    "```bash\n{}\n```\n{}\n",
                                     c.response,
-                                    c.explanation.as_deref().unwrap_or("")),
+                                    c.explanation.as_deref().unwrap_or("")
+                                ),
                                 _ => println!("{}\n", c.response),
                             }
                         }
@@ -611,16 +664,13 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::Status => {
-            let session_id = std::env::var("NSH_SESSION_ID")
-                .unwrap_or_else(|_| "(not set)".into());
+            let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(not set)".into());
             let config = config::Config::load().unwrap_or_default();
             let db = db::Db::open()?;
             let pty_active = std::env::var("NSH_TTY").is_ok();
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
             let db_path = config::Config::nsh_dir().join("nsh.db");
-            let db_size = std::fs::metadata(&db_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let db_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
             let db_size_str = if db_size > 1_048_576 {
                 format!("{:.1} MB", db_size as f64 / 1_048_576.0)
             } else {
@@ -693,7 +743,7 @@ fn redact_config_keys(val: &mut toml::Value) {
                 if key == "api_key" {
                     if let toml::Value::String(s) = v {
                         if s.len() > 8 {
-                            *s = format!("{}...{}", &s[..4], &s[s.len()-4..]);
+                            *s = format!("{}...{}", &s[..4], &s[s.len() - 4..]);
                         } else {
                             *s = "****".into();
                         }

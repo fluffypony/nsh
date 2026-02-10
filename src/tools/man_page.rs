@@ -1,9 +1,6 @@
 use std::process::Command;
 
-pub fn execute(
-    cmd: &str,
-    section: Option<u8>,
-) -> anyhow::Result<String> {
+pub fn execute(cmd: &str, section: Option<u8>) -> anyhow::Result<String> {
     let mut args = vec![];
     if let Some(s) = section {
         args.push(s.to_string());

@@ -1,12 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-pub fn execute(
-    input: &serde_json::Value,
-) -> anyhow::Result<String> {
+pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let path_str = input["path"].as_str().unwrap_or(".");
-    let show_hidden =
-        input["show_hidden"].as_bool().unwrap_or(false);
+    let show_hidden = input["show_hidden"].as_bool().unwrap_or(false);
 
     let path = Path::new(path_str);
     if !path.exists() {
@@ -20,11 +17,7 @@ pub fn execute(
 
     let read_dir = match fs::read_dir(path) {
         Ok(rd) => rd,
-        Err(e) => {
-            return Ok(format!(
-                "Error reading directory: {e}"
-            ))
-        }
+        Err(e) => return Ok(format!("Error reading directory: {e}")),
     };
 
     for entry in read_dir {
@@ -47,8 +40,7 @@ pub fn execute(
                     .modified()
                     .ok()
                     .map(|t| {
-                        let dt: chrono::DateTime<chrono::Utc> =
-                            t.into();
+                        let dt: chrono::DateTime<chrono::Utc> = t.into();
                         dt.format("%Y-%m-%d %H:%M").to_string()
                     })
                     .unwrap_or_else(|| "?".into());
@@ -100,10 +92,8 @@ mod tests {
     #[test]
     fn test_list_directory() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("file1.txt"), "hello")
-            .unwrap();
-        std::fs::write(dir.path().join("file2.rs"), "world")
-            .unwrap();
+        std::fs::write(dir.path().join("file1.txt"), "hello").unwrap();
+        std::fs::write(dir.path().join("file2.rs"), "world").unwrap();
         let path = dir.path().to_str().unwrap();
 
         let input = json!({"path": path});
@@ -124,18 +114,14 @@ mod tests {
         assert!(!without.contains(".hidden"));
         assert!(without.contains("visible"));
 
-        let with = execute(
-            &json!({"path": path, "show_hidden": true}),
-        )
-        .unwrap();
+        let with = execute(&json!({"path": path, "show_hidden": true})).unwrap();
         assert!(with.contains(".hidden"));
         assert!(with.contains("visible"));
     }
 
     #[test]
     fn test_list_directory_nonexistent() {
-        let input =
-            json!({"path": "/tmp/nsh_nonexistent_dir_xyz"});
+        let input = json!({"path": "/tmp/nsh_nonexistent_dir_xyz"});
         let result = execute(&input).unwrap();
         assert!(result.contains("Path does not exist"));
     }

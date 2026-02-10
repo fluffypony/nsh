@@ -5,14 +5,18 @@ use crate::provider::{ChatRequest, ContentBlock, LlmProvider, StreamEvent};
 
 pub fn is_retryable_error(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
-    msg.contains("429") || msg.contains("Too Many Requests")
-        || msg.contains("500") || msg.contains("502")
-        || msg.contains("503") || msg.contains("504")
+    msg.contains("429")
+        || msg.contains("Too Many Requests")
+        || msg.contains("500")
+        || msg.contains("502")
+        || msg.contains("503")
+        || msg.contains("504")
         || msg.contains("Internal Server Error")
         || msg.contains("Bad Gateway")
         || msg.contains("Service Unavailable")
         || msg.contains("Gateway Timeout")
-        || msg.contains("timeout") || msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("timed out")
 }
 
 pub async fn call_with_chain(
@@ -32,7 +36,10 @@ pub async fn call_with_chain(
                     continue;
                 }
                 Err(e) if i < chain.len() - 1 => {
-                    tracing::warn!("Model {model} failed: {e}, falling back to {}", chain[i + 1]);
+                    tracing::warn!(
+                        "Model {model} failed: {e}, falling back to {}",
+                        chain[i + 1]
+                    );
                     break;
                 }
                 Err(e) => return Err(e),
@@ -59,10 +66,12 @@ pub async fn stream_with_complete_fallback(
                             let _ = tx.send(StreamEvent::TextDelta(text.clone())).await;
                         }
                         ContentBlock::ToolUse { id, name, input } => {
-                            let _ = tx.send(StreamEvent::ToolUseStart {
-                                id: id.clone(),
-                                name: name.clone(),
-                            }).await;
+                            let _ = tx
+                                .send(StreamEvent::ToolUseStart {
+                                    id: id.clone(),
+                                    name: name.clone(),
+                                })
+                                .await;
                             let _ = tx.send(StreamEvent::ToolUseDelta(input.to_string())).await;
                             let _ = tx.send(StreamEvent::ToolUseEnd).await;
                         }
@@ -107,7 +116,10 @@ pub async fn call_chain_with_fallback_think(
                     continue;
                 }
                 Err(e) if i < chain.len() - 1 => {
-                    tracing::warn!("Model {model} failed: {e}, falling back to {}", chain[i + 1]);
+                    tracing::warn!(
+                        "Model {model} failed: {e}, falling back to {}",
+                        chain[i + 1]
+                    );
                     break;
                 }
                 Err(e) => return Err(e),

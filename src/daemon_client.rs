@@ -12,7 +12,10 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
 
     let mut json_val = serde_json::to_value(request)?;
     if let serde_json::Value::Object(ref mut map) = json_val {
-        map.insert("v".into(), serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION));
+        map.insert(
+            "v".into(),
+            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
+        );
     }
     let mut json = serde_json::to_string(&json_val)?;
     json.push('\n');

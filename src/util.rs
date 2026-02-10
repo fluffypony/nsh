@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn test_truncate_bytes_mid_multibyte_produces_valid_utf8() {
         // 4-byte UTF-8 characters (emoji)
-        let input = "🎉🎊🎈";  // each emoji is 4 bytes = 12 bytes total
+        let input = "🎉🎊🎈"; // each emoji is 4 bytes = 12 bytes total
         for cut in 1..=12 {
             let result = truncate_bytes(input, cut);
             // Must always be valid UTF-8 (it's a &str so this is guaranteed by type)

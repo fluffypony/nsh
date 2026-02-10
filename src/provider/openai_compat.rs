@@ -59,9 +59,15 @@ impl OpenAICompatProvider {
         }
 
         match request.tool_choice {
-            ToolChoice::Required => { body["tool_choice"] = json!("required"); }
-            ToolChoice::None => { body["tool_choice"] = json!("none"); }
-            ToolChoice::Auto => { body["tool_choice"] = json!("auto"); }
+            ToolChoice::Required => {
+                body["tool_choice"] = json!("required");
+            }
+            ToolChoice::None => {
+                body["tool_choice"] = json!("none");
+            }
+            ToolChoice::Auto => {
+                body["tool_choice"] = json!("auto");
+            }
         }
 
         if anthropic {
@@ -84,7 +90,8 @@ impl OpenAICompatProvider {
     }
 
     fn build_http_request(&self, body: &serde_json::Value, model: &str) -> reqwest::RequestBuilder {
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", &*self.api_key))
             .json(body);
@@ -159,7 +166,10 @@ impl LlmProvider for OpenAICompatProvider {
         parse_openai_response(&resp.json().await?)
     }
 
-    async fn stream(&self, request: ChatRequest) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+    async fn stream(
+        &self,
+        request: ChatRequest,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
         let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(true);
@@ -197,9 +207,18 @@ pub fn build_openai_messages(messages: &[Message], system: &str) -> Vec<serde_js
     for msg in messages {
         match msg.role {
             Role::User => {
-                let text: String = msg.content.iter()
-                    .filter_map(|c| if let ContentBlock::Text { text } = c { Some(text.as_str()) } else { None })
-                    .collect::<Vec<_>>().join("\n");
+                let text: String = msg
+                    .content
+                    .iter()
+                    .filter_map(|c| {
+                        if let ContentBlock::Text { text } = c {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 out.push(json!({"role": "user", "content": text}));
             }
             Role::Assistant => {
@@ -213,18 +232,29 @@ pub fn build_openai_messages(messages: &[Message], system: &str) -> Vec<serde_js
                                 "function": {"name": name, "arguments": input.to_string()}
                             }));
                         }
-                        ContentBlock::Text { text } => { text_parts.push(text.as_str()); }
+                        ContentBlock::Text { text } => {
+                            text_parts.push(text.as_str());
+                        }
                         _ => {}
                     }
                 }
                 let mut msg_json = json!({"role": "assistant"});
-                if !text_parts.is_empty() { msg_json["content"] = json!(text_parts.join("\n")); }
-                if !tool_calls.is_empty() { msg_json["tool_calls"] = json!(tool_calls); }
+                if !text_parts.is_empty() {
+                    msg_json["content"] = json!(text_parts.join("\n"));
+                }
+                if !tool_calls.is_empty() {
+                    msg_json["tool_calls"] = json!(tool_calls);
+                }
                 out.push(msg_json);
             }
             Role::Tool => {
                 for block in &msg.content {
-                    if let ContentBlock::ToolResult { tool_use_id, content, .. } = block {
+                    if let ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } = block
+                    {
                         out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": content}));
                     }
                 }
@@ -242,7 +272,9 @@ pub fn build_openai_tools(tools: &[crate::tools::ToolDefinition]) -> Vec<serde_j
     })).collect()
 }
 
-pub fn spawn_openai_stream(resp: reqwest::Response) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+pub fn spawn_openai_stream(
+    resp: reqwest::Response,
+) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     tokio::spawn(async move {
         use eventsource_stream::Eventsource;
@@ -253,7 +285,10 @@ pub fn spawn_openai_stream(resp: reqwest::Response) -> anyhow::Result<tokio::syn
         while let Some(event) = stream.next().await {
             let event = match event {
                 Ok(e) => e,
-                Err(e) => { let _ = tx.send(StreamEvent::Error(e.to_string())).await; break; }
+                Err(e) => {
+                    let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                    break;
+                }
             };
             if event.data == "[DONE]" {
                 if current_tool_index.is_some() {
@@ -263,7 +298,8 @@ pub fn spawn_openai_stream(resp: reqwest::Response) -> anyhow::Result<tokio::syn
                 break;
             }
             let chunk: serde_json::Value = match serde_json::from_str(&event.data) {
-                Ok(v) => v, Err(_) => continue,
+                Ok(v) => v,
+                Err(_) => continue,
             };
 
             if generation_id.is_none() {

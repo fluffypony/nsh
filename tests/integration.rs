@@ -83,11 +83,7 @@ fn test_query_no_words() {
         .output()
         .expect("failed to run nsh query");
 
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "Expected exit code 1"
-    );
+    assert_eq!(output.status.code(), Some(1), "Expected exit code 1");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("Usage"),
@@ -98,9 +94,7 @@ fn test_query_no_words() {
 #[test]
 fn test_history_search_empty_db() {
     let output = std::process::Command::new("cargo")
-        .args([
-            "run", "--", "history", "search", "nonexistent_query_xyz",
-        ])
+        .args(["run", "--", "history", "search", "nonexistent_query_xyz"])
         .env("HOME", std::env::temp_dir().join("nsh_test_history"))
         .output()
         .expect("failed to run nsh history search");

@@ -11,8 +11,14 @@ pub fn execute(
     let regex = input.get("regex").and_then(|v| v.as_str());
     let since = input.get("since").and_then(|v| v.as_str());
     let until = input.get("until").and_then(|v| v.as_str());
-    let exit_code = input.get("exit_code").and_then(|v| v.as_i64()).map(|v| v as i32);
-    let failed_only = input.get("failed_only").and_then(|v| v.as_bool()).unwrap_or(false);
+    let exit_code = input
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
+    let failed_only = input
+        .get("failed_only")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let session = input.get("session").and_then(|v| v.as_str());
     let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
@@ -21,16 +27,19 @@ pub fn execute(
     let resolved_until = until.map(|u| resolve_relative_time(u));
 
     // Resolve session filter
-    let session_filter = session.and_then(|s| {
-        match s {
-            "current" => Some(session_id.to_string()),
-            "all" | "" => None,
-            other => Some(other.to_string()),
-        }
+    let session_filter = session.and_then(|s| match s {
+        "current" => Some(session_id.to_string()),
+        "all" | "" => None,
+        other => Some(other.to_string()),
     });
 
-    if query.is_none() && regex.is_none() && since.is_none() && until.is_none()
-        && exit_code.is_none() && !failed_only && session.is_none()
+    if query.is_none()
+        && regex.is_none()
+        && since.is_none()
+        && until.is_none()
+        && exit_code.is_none()
+        && !failed_only
+        && session.is_none()
     {
         return Ok("No search criteria provided. Use 'query', 'regex', 'since', 'exit_code', or 'failed_only'.".into());
     }
@@ -53,7 +62,8 @@ pub fn execute(
 
     let mut result = String::new();
     for m in &matches {
-        let code = m.exit_code
+        let code = m
+            .exit_code
             .map(|c| format!(" (exit {c})"))
             .unwrap_or_default();
         result.push_str(&format!(
@@ -80,13 +90,25 @@ fn resolve_relative_time(input: &str) -> String {
     }
 
     let (num, unit) = if input.ends_with('h') {
-        (input.trim_end_matches('h').parse::<i64>().unwrap_or(1), "hours")
+        (
+            input.trim_end_matches('h').parse::<i64>().unwrap_or(1),
+            "hours",
+        )
     } else if input.ends_with('d') {
-        (input.trim_end_matches('d').parse::<i64>().unwrap_or(1), "days")
+        (
+            input.trim_end_matches('d').parse::<i64>().unwrap_or(1),
+            "days",
+        )
     } else if input.ends_with('w') {
-        (input.trim_end_matches('w').parse::<i64>().unwrap_or(1), "weeks")
+        (
+            input.trim_end_matches('w').parse::<i64>().unwrap_or(1),
+            "weeks",
+        )
     } else if input.ends_with('m') {
-        (input.trim_end_matches('m').parse::<i64>().unwrap_or(1), "minutes")
+        (
+            input.trim_end_matches('m').parse::<i64>().unwrap_or(1),
+            "minutes",
+        )
     } else {
         return input.to_string();
     };
@@ -99,6 +121,5 @@ fn resolve_relative_time(input: &str) -> String {
         _ => return input.to_string(),
     };
 
-    (chrono::Utc::now() - duration)
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    (chrono::Utc::now() - duration).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
