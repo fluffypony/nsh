@@ -279,6 +279,13 @@ where
     .await?
 }
 
+pub enum UsagePeriod {
+    Today,
+    Week,
+    Month,
+    All,
+}
+
 pub struct Db {
     conn: Connection,
     max_output_bytes: usize,
@@ -865,25 +872,22 @@ impl Db {
     #[allow(clippy::type_complexity)]
     pub fn get_usage_stats(
         &self,
-        since: Option<&str>,
+        period: UsagePeriod,
     ) -> rusqlite::Result<Vec<(String, i64, i64, i64, f64)>> {
-        let sql = if let Some(since_expr) = since {
-            format!(
-                "SELECT model, COUNT(*) as calls, \
-                 COALESCE(SUM(input_tokens), 0), \
-                 COALESCE(SUM(output_tokens), 0), \
-                 COALESCE(SUM(cost_usd), 0.0) \
-                 FROM usage WHERE created_at >= {since_expr} \
-                 GROUP BY model ORDER BY calls DESC"
-            )
-        } else {
+        let where_clause = match period {
+            UsagePeriod::Today => " WHERE created_at >= datetime('now', '-1 day')",
+            UsagePeriod::Week => " WHERE created_at >= datetime('now', '-7 days')",
+            UsagePeriod::Month => " WHERE created_at >= datetime('now', '-30 days')",
+            UsagePeriod::All => "",
+        };
+        let sql = format!(
             "SELECT model, COUNT(*) as calls, \
              COALESCE(SUM(input_tokens), 0), \
              COALESCE(SUM(output_tokens), 0), \
              COALESCE(SUM(cost_usd), 0.0) \
-             FROM usage GROUP BY model ORDER BY calls DESC"
-                .to_string()
-        };
+             FROM usage{where_clause} \
+             GROUP BY model ORDER BY calls DESC"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -2170,7 +2174,7 @@ mod tests {
             Some(200), Some(100), Some(0.02), None,
         ).unwrap();
 
-        let stats = db.get_usage_stats(None).unwrap();
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 1);
         let (model, calls, input_tok, output_tok, cost) = &stats[0];
         assert_eq!(model, "gpt-4");
@@ -2193,7 +2197,7 @@ mod tests {
         let updated = db.update_usage_cost("gen_abc", 0.05).unwrap();
         assert!(updated);
 
-        let stats = db.get_usage_stats(None).unwrap();
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 1);
         let (_, _, _, _, cost) = &stats[0];
         assert!((cost - 0.05).abs() < 1e-9);
@@ -2593,7 +2597,7 @@ mod tests {
         ).unwrap();
         assert!(id2 > id);
 
-        let stats = db.get_usage_stats(None).unwrap();
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 2);
     }
 
@@ -3300,7 +3304,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_usage_stats_with_since_filter() {
+    fn test_get_usage_stats_with_period_filter() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
@@ -3313,7 +3317,7 @@ mod tests {
             Some(200), Some(100), Some(0.02), None,
         ).unwrap();
 
-        let stats = db.get_usage_stats(Some("datetime('now', '-1 hour')")).unwrap();
+        let stats = db.get_usage_stats(UsagePeriod::Today).unwrap();
         assert_eq!(stats.len(), 1);
         let (model, calls, _, _, _) = &stats[0];
         assert_eq!(model, "gpt-4");
@@ -3643,7 +3647,7 @@ mod tests {
     #[test]
     fn test_get_usage_stats_empty() {
         let db = test_db();
-        let stats = db.get_usage_stats(None).unwrap();
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert!(stats.is_empty());
     }
 
@@ -3656,7 +3660,7 @@ mod tests {
         db.insert_usage("s1", None, "claude", "anthropic", Some(200), Some(100), Some(0.05), None).unwrap();
         db.insert_usage("s1", None, "gpt-4", "openai", Some(150), Some(75), Some(0.02), None).unwrap();
 
-        let stats = db.get_usage_stats(None).unwrap();
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 2);
         let gpt4 = stats.iter().find(|(m, _, _, _, _)| m == "gpt-4").unwrap();
         assert_eq!(gpt4.1, 2);

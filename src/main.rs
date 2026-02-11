@@ -249,14 +249,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
         Commands::Cost { period } => {
             let db = db::Db::open()?;
-            let since = match period.as_str() {
-                "today" => Some("datetime('now', '-1 day')"),
-                "week" => Some("datetime('now', '-7 days')"),
-                "month" => Some("datetime('now', '-30 days')"),
-                "all" => None,
-                _ => Some("datetime('now', '-30 days')"),
+            let usage_period = match period.as_str() {
+                "today" => db::UsagePeriod::Today,
+                "week" => db::UsagePeriod::Week,
+                "month" => db::UsagePeriod::Month,
+                "all" => db::UsagePeriod::All,
+                _ => db::UsagePeriod::Month,
             };
-            let stats = db.get_usage_stats(since)?;
+            let stats = db.get_usage_stats(usage_period)?;
             if stats.is_empty() {
                 eprintln!("No usage data recorded yet.");
             } else {

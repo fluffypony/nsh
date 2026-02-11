@@ -754,7 +754,14 @@ fn compiled_builtins() -> &'static [CompiledSecretPattern] {
 fn strip_invisible_unicode(input: &str) -> String {
     input
         .chars()
-        .filter(|&c| !('\u{E0000}'..='\u{E007F}').contains(&c))
+        .filter(|&c| {
+            !('\u{E0000}'..='\u{E007F}').contains(&c)
+                && c != '\u{200B}'
+                && c != '\u{200C}'
+                && c != '\u{200D}'
+                && c != '\u{FEFF}'
+                && c != '\u{00AD}'
+        })
         .collect()
 }
 
