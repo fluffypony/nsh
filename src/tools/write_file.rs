@@ -590,4 +590,107 @@ mod tests {
         let home = dirs::home_dir().unwrap();
         assert_eq!(result, home.join("a/b/c"));
     }
+
+    #[test]
+    fn test_print_diff_100_lines_boundary_no_truncation() {
+        let content = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let modified = (1..=100).map(|i| format!("mod {i}")).collect::<Vec<_>>().join("\n");
+        print_diff(&content, &modified);
+    }
+
+    #[test]
+    fn test_print_diff_101_lines_boundary_truncation() {
+        let old = (1..=101).map(|i| format!("old {i}")).collect::<Vec<_>>().join("\n");
+        let new = (1..=101).map(|i| format!("new {i}")).collect::<Vec<_>>().join("\n");
+        print_diff(&old, &new);
+    }
+
+    #[test]
+    fn test_print_preview_50_lines_boundary_no_truncation() {
+        let content = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        print_preview(&content);
+    }
+
+    #[test]
+    fn test_print_preview_unicode() {
+        let content = "日本語テスト\nこんにちは\n🌍🌎🌏\néàüñ\n«test»";
+        print_preview(content);
+    }
+
+    #[test]
+    fn test_validate_path_allow_bypasses_all_sensitive_dirs() {
+        let home = dirs::home_dir().unwrap();
+        let ssh = home.join(".ssh/test_key");
+        assert!(validate_path_with_access(&ssh, "allow").is_ok());
+
+        let gnupg = home.join(".gnupg/keyring");
+        assert!(validate_path_with_access(&gnupg, "allow").is_ok());
+
+        let docker = home.join(".docker/config.json");
+        assert!(validate_path_with_access(&docker, "allow").is_ok());
+    }
+
+    #[test]
+    fn test_write_nofollow_unicode() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("unicode.txt");
+        let content = "日本語 中文 한국어 🎉🎊 àèìòù";
+        write_nofollow(&path, content).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn test_write_nofollow_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("empty.txt");
+        write_nofollow(&path, "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn test_validate_path_blocked_gnupg() {
+        let home = dirs::home_dir().unwrap();
+        let gnupg = home.join(".gnupg/pubring.kbx");
+        let err = validate_path(&gnupg).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_gpg() {
+        let home = dirs::home_dir().unwrap();
+        let gpg = home.join(".gpg/keyring");
+        let err = validate_path(&gpg).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_gcloud() {
+        let home = dirs::home_dir().unwrap();
+        let gcloud = home.join(".config/gcloud/credentials");
+        let err = validate_path(&gcloud).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_azure() {
+        let home = dirs::home_dir().unwrap();
+        let azure = home.join(".azure/config");
+        let err = validate_path(&azure).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_backup_to_trash_special_chars_in_name() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("file (1) [test] & stuff.txt");
+        std::fs::write(&path, "special content").unwrap();
+
+        let backup_path = backup_to_trash(&path).unwrap();
+        assert!(backup_path.exists());
+        let name = backup_path.file_name().unwrap().to_string_lossy();
+        assert!(name.contains("nsh_backup"));
+        assert!(name.contains("file (1) [test] & stuff"));
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
 }

@@ -579,4 +579,305 @@ command = "echo project"
         };
         assert!(check_project_skill_approval(&skill).is_ok());
     }
+
+    #[test]
+    fn test_load_skills_does_not_panic() {
+        let _ = load_skills();
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_missing_required_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_content = r#"
+description = "missing name field"
+command = "echo test"
+"#;
+        std::fs::write(tmp.path().join("incomplete.toml"), skill_content).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_missing_command_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_content = r#"
+name = "no_cmd"
+description = "has no command"
+"#;
+        std::fs::write(tmp.path().join("no_cmd.toml"), skill_content).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_nonexistent_dir() {
+        let mut skills = HashMap::new();
+        load_skills_from_dir(std::path::Path::new("/nonexistent_dir_xyz_999"), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_execute_skill_stderr_output() {
+        let skill = Skill {
+            name: "stderr_test".to_string(),
+            description: "test".to_string(),
+            command: "echo error_msg >&2".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("error_msg"));
+    }
+
+    #[test]
+    fn test_execute_skill_stdout_and_stderr() {
+        let skill = Skill {
+            name: "both_test".to_string(),
+            description: "test".to_string(),
+            command: "echo stdout_line; echo stderr_line >&2".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("stdout_line"));
+        assert!(result.contains("stderr_line"));
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_empty_slice() {
+        let defs = skill_tool_definitions(&[]);
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_with_multiple_parameters() {
+        let mut params = HashMap::new();
+        params.insert(
+            "arg1".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "first arg".to_string(),
+            },
+        );
+        params.insert(
+            "arg2".to_string(),
+            SkillParam {
+                param_type: "integer".to_string(),
+                description: "second arg".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "multi_param".to_string(),
+            description: "skill with many params".to_string(),
+            command: "echo {arg1} {arg2}".to_string(),
+            timeout_seconds: 10,
+            terminal: false,
+            parameters: params,
+            is_project: false,
+        };
+        let defs = skill_tool_definitions(&[skill]);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "skill_multi_param");
+        let params_obj = &defs[0].parameters;
+        let props = params_obj["properties"].as_object().unwrap();
+        assert_eq!(props.len(), 2);
+        assert!(props.contains_key("arg1"));
+        assert!(props.contains_key("arg2"));
+        let required = params_obj["required"].as_array().unwrap();
+        assert_eq!(required.len(), 2);
+    }
+
+    #[test]
+    fn test_skill_file_deserialization() {
+        let toml_str = r#"
+name = "my_skill"
+description = "does things"
+command = "echo {query}"
+timeout_seconds = 15
+terminal = true
+
+[parameters.query]
+type = "string"
+description = "the query"
+"#;
+        let sf: SkillFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(sf.name, "my_skill");
+        assert_eq!(sf.description, "does things");
+        assert_eq!(sf.command, "echo {query}");
+        assert_eq!(sf.timeout_seconds, 15);
+        assert!(sf.terminal);
+        assert_eq!(sf.parameters.len(), 1);
+        let p = sf.parameters.get("query").unwrap();
+        assert_eq!(p.param_type, "string");
+        assert_eq!(p.description, "the query");
+    }
+
+    #[test]
+    fn test_skill_file_deserialization_defaults() {
+        let toml_str = r#"
+name = "minimal"
+description = "minimal skill"
+command = "echo hi"
+"#;
+        let sf: SkillFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(sf.timeout_seconds, 30);
+        assert!(!sf.terminal);
+        assert!(sf.parameters.is_empty());
+    }
+
+    #[test]
+    fn test_skill_param_clone() {
+        let param = SkillParam {
+            param_type: "string".to_string(),
+            description: "a param".to_string(),
+        };
+        let cloned = param.clone();
+        assert_eq!(cloned.param_type, "string");
+        assert_eq!(cloned.description, "a param");
+    }
+
+    #[test]
+    fn test_skill_debug_trait() {
+        let skill = Skill {
+            name: "debug_test".to_string(),
+            description: "test debug".to_string(),
+            command: "echo debug".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let debug_str = format!("{skill:?}");
+        assert!(debug_str.contains("debug_test"));
+        assert!(debug_str.contains("Skill"));
+    }
+
+    #[test]
+    fn test_skill_param_debug_trait() {
+        let param = SkillParam {
+            param_type: "string".to_string(),
+            description: "test".to_string(),
+        };
+        let debug_str = format!("{param:?}");
+        assert!(debug_str.contains("SkillParam"));
+        assert!(debug_str.contains("string"));
+    }
+
+    #[test]
+    fn test_skill_clone() {
+        let mut params = HashMap::new();
+        params.insert(
+            "x".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "x".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "clone_test".to_string(),
+            description: "test".to_string(),
+            command: "echo {x}".to_string(),
+            timeout_seconds: 10,
+            terminal: true,
+            parameters: params,
+            is_project: true,
+        };
+        let cloned = skill.clone();
+        assert_eq!(cloned.name, "clone_test");
+        assert_eq!(cloned.timeout_seconds, 10);
+        assert!(cloned.terminal);
+        assert!(cloned.is_project);
+        assert_eq!(cloned.parameters.len(), 1);
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_overwrite_same_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content1 = r#"
+name = "same_name"
+description = "first"
+command = "echo first"
+"#;
+        let content2 = r#"
+name = "same_name"
+description = "second"
+command = "echo second"
+"#;
+        std::fs::write(tmp.path().join("a_skill.toml"), content1).unwrap();
+        std::fs::write(tmp.path().join("b_skill.toml"), content2).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert_eq!(skills.len(), 1);
+        let skill = skills.get("same_name").unwrap();
+        assert!(skill.description == "first" || skill.description == "second");
+    }
+
+    #[test]
+    fn test_execute_skill_empty_param_value() {
+        let mut params = HashMap::new();
+        params.insert(
+            "name".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "a name".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "greet".to_string(),
+            description: "greet".to_string(),
+            command: "echo hello {name}".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: params,
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn test_execute_skill_no_params() {
+        let skill = Skill {
+            name: "simple".to_string(),
+            description: "test".to_string(),
+            command: "echo no_params".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("no_params"));
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_terminal_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_content = r#"
+name = "term_skill"
+description = "A terminal skill"
+command = "vim"
+terminal = true
+"#;
+        std::fs::write(tmp.path().join("term.toml"), skill_content).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        let skill = skills.get("term_skill").unwrap();
+        assert!(skill.terminal);
+    }
+
+    #[test]
+    fn test_skill_file_deserialization_invalid_missing_all() {
+        let toml_str = r#"
+timeout_seconds = 10
+"#;
+        let result: Result<SkillFile, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
 }

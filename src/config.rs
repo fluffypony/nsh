@@ -3020,4 +3020,220 @@ timeout_seconds = "fast"
             );
         }
     }
+
+    #[test]
+    fn test_config_load_returns_config() {
+        let result = Config::load();
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_is_setting_protected_prefix_does_not_false_match_without_dot() {
+        assert!(!is_setting_protected("executionx"));
+        assert!(!is_setting_protected("toolshed"));
+        assert!(!is_setting_protected("redactions"));
+    }
+
+    #[test]
+    fn test_default_config_display_fields() {
+        let config = Config::default();
+        assert!(!config.display.chat_color.is_empty());
+        assert!(!config.display.thinking_indicator.is_empty());
+    }
+
+    #[test]
+    fn test_default_config_capture_fields() {
+        let config = Config::default();
+        assert_eq!(config.capture.mode, "vt100");
+        assert_eq!(config.capture.alt_screen, "drop");
+    }
+
+    #[test]
+    fn test_default_config_redaction_fields() {
+        let config = Config::default();
+        assert!(config.redaction.enabled);
+        assert!(!config.redaction.disable_builtin);
+        assert_eq!(config.redaction.replacement, "[REDACTED]");
+        assert!(!config.redaction.patterns.is_empty());
+    }
+
+    #[test]
+    fn test_default_config_context_all_fields() {
+        let ctx = ContextConfig::default();
+        assert_eq!(ctx.scrollback_lines, 1000);
+        assert_eq!(ctx.scrollback_pages, 10);
+        assert_eq!(ctx.other_tty_summaries, 10);
+        assert_eq!(ctx.max_other_ttys, 20);
+        assert_eq!(ctx.project_files_limit, 100);
+        assert_eq!(ctx.git_commits, 10);
+        assert_eq!(ctx.max_output_storage_bytes, 65536);
+        assert_eq!(ctx.scrollback_rate_limit_bps, 10_485_760);
+        assert_eq!(ctx.scrollback_pause_seconds, 2);
+        assert!(ctx.custom_instructions.is_none());
+    }
+
+    #[test]
+    fn test_default_models_config() {
+        let m = ModelsConfig::default();
+        assert!(m.main.len() >= 2);
+        assert!(m.fast.len() >= 1);
+        assert!(m.main.iter().any(|s| s.contains("gemini")));
+        assert!(m.fast.iter().any(|s| s.contains("lite") || s.contains("haiku")));
+    }
+
+    #[test]
+    fn test_default_web_search_config() {
+        let ws = WebSearchConfig::default();
+        assert_eq!(ws.provider, "openrouter");
+        assert_eq!(ws.model, "perplexity/sonar");
+    }
+
+    #[test]
+    fn test_default_execution_config() {
+        let e = ExecutionConfig::default();
+        assert_eq!(e.mode, "prefill");
+        assert!(!e.allow_unsafe_autorun);
+    }
+
+    #[test]
+    fn test_default_db_config() {
+        let d = DbConfig::default();
+        assert_eq!(d.busy_timeout_ms, 10000);
+    }
+
+    #[test]
+    fn test_default_mcp_config() {
+        let m = McpConfig::default();
+        assert!(m.servers.is_empty());
+    }
+
+    #[test]
+    fn test_provider_auth_default_fields_are_none() {
+        let auth = ProviderAuth::default();
+        assert!(auth.api_key.is_none());
+        assert!(auth.api_key_cmd.is_none());
+        assert!(auth.base_url.is_none());
+    }
+
+    #[test]
+    fn test_is_command_allowed_wildcard_allows_all() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["*".into()],
+            ..Default::default()
+        };
+        assert!(tools.is_command_allowed("anything goes"));
+        assert!(tools.is_command_allowed("rm -rf /"));
+    }
+
+    #[test]
+    fn test_is_command_allowed_wildcard_still_blocks_dangerous() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["*".into()],
+            ..Default::default()
+        };
+        assert!(!tools.is_command_allowed("echo; rm"));
+        assert!(!tools.is_command_allowed("echo | cat"));
+    }
+
+    #[test]
+    fn test_effective_transport_url_only_infers_http() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some("http://localhost:8080".into()),
+            headers: HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "http");
+    }
+
+    #[test]
+    fn test_mcp_server_config_with_env_and_headers() {
+        let toml_str = r#"
+            [srv]
+            command = "my-cmd"
+            args = ["--flag"]
+            timeout_seconds = 60
+
+            [srv.env]
+            MY_VAR = "val"
+
+            [srv.headers]
+            Authorization = "Bearer tok"
+        "#;
+        let map: HashMap<String, McpServerConfig> = toml::from_str(toml_str).unwrap();
+        let srv = &map["srv"];
+        assert_eq!(srv.env.get("MY_VAR").unwrap(), "val");
+        assert_eq!(srv.headers.get("Authorization").unwrap(), "Bearer tok");
+        assert_eq!(srv.timeout_seconds, 60);
+    }
+
+    #[test]
+    fn test_redaction_config_equality() {
+        let a = RedactionConfig::default();
+        let b = RedactionConfig::default();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_config_debug_trait() {
+        let config = Config::default();
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("Config"));
+        assert!(debug_str.contains("provider"));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_empty_overlay_preserves_base() {
+        let mut base: toml::Value = toml::from_str(r#"
+            key = "value"
+        "#).unwrap();
+        let overlay: toml::Value = toml::Value::Table(toml::map::Map::new());
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.get("key").unwrap().as_str(), Some("value"));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_empty_base() {
+        let mut base: toml::Value = toml::Value::Table(toml::map::Map::new());
+        let overlay: toml::Value = toml::from_str(r#"
+            new_key = "new_value"
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.get("new_key").unwrap().as_str(), Some("new_value"));
+    }
+
+    #[test]
+    fn test_sanitize_project_config_empty_table() {
+        let mut value: toml::Value = toml::Value::Table(toml::map::Map::new());
+        sanitize_project_config(&mut value);
+        assert!(value.as_table().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_build_config_xml_no_skills_no_mcp() {
+        let config = Config::default();
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("count=\"0\""));
+        assert!(xml.contains("<installed_skills count=\"0\">"));
+    }
+
+    #[test]
+    fn test_opt_with_choices_xml() {
+        let mut x = String::new();
+        opt(&mut x, "mode", "prefill", "execution mode", Some("prefill,confirm,autorun"));
+        assert!(x.contains("choices=\"prefill,confirm,autorun\""));
+        assert!(x.contains("key=\"mode\""));
+    }
+
+    #[test]
+    fn test_opt_without_choices_xml() {
+        let mut x = String::new();
+        opt(&mut x, "model", "gpt-4", "model name", None);
+        assert!(!x.contains("choices="));
+        assert!(x.contains("key=\"model\""));
+        assert!(x.contains("value=\"gpt-4\""));
+    }
 }

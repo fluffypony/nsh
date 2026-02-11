@@ -3603,4 +3603,202 @@ mod tests {
         let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
         assert!(result.is_none());
     }
+
+    #[test]
+    fn test_build_xml_context_scrollback_with_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "$ echo '<script>alert(1)</script>'".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;script&gt;"));
+        assert!(!xml.contains("<script>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_project_with_git_status_and_no_commits() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("develop".into()),
+            git_status: Some("5 changed files".into()),
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("branch=\"develop\""));
+        assert!(xml.contains("status=\"5 changed files\""));
+        assert!(xml.contains("</git>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_project_with_many_files() {
+        let mut ctx = make_minimal_ctx();
+        let files: Vec<FileEntry> = (0..10)
+            .map(|i| FileEntry {
+                path: format!("file{i}.rs"),
+                kind: "file".into(),
+                size: format!("{i}KB"),
+            })
+            .collect();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files,
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("count=\"10\""));
+        assert!(xml.contains("file0.rs"));
+        assert!(xml.contains("file9.rs"));
+    }
+
+    #[test]
+    fn test_find_git_root_at_root_itself() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let root = find_git_root(tmp.path().to_str().unwrap());
+        assert_eq!(root, Some(tmp.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_detect_project_info_no_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        let config = Config::default();
+        let info = detect_project_info(tmp.path().to_str().unwrap(), &config);
+        assert!(info.root.is_some());
+        assert!(info.project_type.contains("Node"));
+        assert!(info.git_branch.is_none());
+    }
+
+    #[test]
+    fn test_list_project_files_empty_dir_v2() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entries = list_project_files(tmp.path().to_str().unwrap(), 100);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_read_scrollback_file_with_content_v2() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "read_test_sess";
+        let content = "line1\nline2\nline3\n";
+        std::fs::write(
+            tmp.path().join(format!("scrollback_{session}")),
+            content,
+        )
+        .unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_read_scrollback_file_nonexistent_dir() {
+        let result =
+            read_scrollback_file("xyz", std::path::Path::new("/nonexistent_dir_abc_123"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_build_xml_context_other_sessions_single_tty_multiple_cmds() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![
+            OtherSessionSummary {
+                command: "cmd1".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t1".into(),
+                summary: None,
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "s1".into(),
+            },
+            OtherSessionSummary {
+                command: "cmd2".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t2".into(),
+                summary: None,
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "s1".into(),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        let session_count = xml.matches("<session tty=").count();
+        assert_eq!(session_count, 1, "same tty should share one session tag");
+        assert!(xml.contains("<input>cmd1</input>"));
+        assert!(xml.contains("<input>cmd2</input>"));
+    }
+
+    #[test]
+    fn test_detect_project_type_setup_py_v2() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("setup.py"), "from setuptools import setup").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Python"), "expected Python, got: {t}");
+    }
+
+    #[test]
+    fn test_find_project_root_returns_something() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = find_project_root(tmp.path().to_str().unwrap());
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_list_project_files_with_ignore_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("real.txt"), "data").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                tmp.path().join("real.txt"),
+                tmp.path().join("link.txt"),
+            )
+            .unwrap();
+            let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
+            let link = entries.iter().find(|e| e.path == "link.txt");
+            assert!(link.is_some(), "should list symlink");
+            assert_eq!(link.unwrap().kind, "symlink");
+        }
+    }
+
+    #[test]
+    fn test_list_project_files_fallback_with_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("real.txt"), "data").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                tmp.path().join("real.txt"),
+                tmp.path().join("link.txt"),
+            )
+            .unwrap();
+            let entries = list_project_files_fallback(tmp.path(), 100);
+            let link = entries.iter().find(|e| e.path == "link.txt");
+            assert!(link.is_some(), "should list symlink");
+            assert_eq!(link.unwrap().kind, "symlink");
+            assert!(link.unwrap().size.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_format_size_small_kb() {
+        assert_eq!(format_size(2048), "2.0KB");
+        assert_eq!(format_size(1536), "1.5KB");
+    }
+
+    #[test]
+    fn test_format_size_large_mb() {
+        assert_eq!(format_size(10 * 1024 * 1024), "10.0MB");
+    }
+
+    #[test]
+    fn test_xml_escape_unicode_v2() {
+        assert_eq!(xml_escape("héllo wörld"), "héllo wörld");
+        assert_eq!(xml_escape("日本語 & test"), "日本語 &amp; test");
+    }
 }

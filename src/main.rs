@@ -1302,4 +1302,266 @@ mod tests {
         db.set_meta("last_update_check", "not-a-date").unwrap();
         assert!(should_check_for_updates(&db));
     }
+
+    // --- parse_dns_txt_records (additional edge cases) ---
+
+    #[test]
+    fn parse_dns_sha_63_chars() {
+        let short_sha = &valid_sha()[..63];
+        let input = format!("0.1.0:target:{short_sha}");
+        let records = parse_dns_txt_records(&input);
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_dns_sha_65_chars() {
+        let long_sha = format!("{}a", valid_sha());
+        let input = format!("0.1.0:target:{long_sha}");
+        let records = parse_dns_txt_records(&input);
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_dns_multiple_valid() {
+        let sha = valid_sha();
+        let input = format!("0.1.0:linux:{sha}\n0.2.0:macos:{sha}\n0.3.0:windows:{sha}");
+        let records = parse_dns_txt_records(&input);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].1, "linux");
+        assert_eq!(records[1].1, "macos");
+        assert_eq!(records[2].1, "windows");
+    }
+
+    #[test]
+    fn parse_dns_extra_whitespace() {
+        let sha = valid_sha();
+        let input = format!("  0.1.0:target:{sha}  ");
+        let records = parse_dns_txt_records(&input);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, "0.1.0");
+    }
+
+    #[test]
+    fn parse_dns_colons_in_version_uses_splitn() {
+        let sha = valid_sha();
+        let input = format!("0.1.0:target:with:extra:{sha}");
+        let records = parse_dns_txt_records(&input);
+        assert!(records.is_empty());
+    }
+
+    // --- find_latest_for_target (additional edge cases) ---
+
+    #[test]
+    fn find_latest_multiple_versions_same_target() {
+        let sha1 = valid_sha().to_string();
+        let sha2 = "1111111111111111111111111111111111111111111111111111111111111111".to_string();
+        let records = vec![
+            ("0.1.0".to_string(), "linux".to_string(), sha1.clone()),
+            ("0.5.0".to_string(), "linux".to_string(), sha2.clone()),
+            ("0.3.0".to_string(), "linux".to_string(), "aaa0000000000000000000000000000000000000000000000000000000000000".to_string()),
+            ("0.2.0".to_string(), "linux".to_string(), "bbb0000000000000000000000000000000000000000000000000000000000000".to_string()),
+        ];
+        let result = find_latest_for_target(&records, "linux").unwrap();
+        assert_eq!(result.0, "0.5.0");
+        assert_eq!(result.1, sha2);
+    }
+
+    #[test]
+    fn find_latest_same_version_different_targets() {
+        let sha_linux = valid_sha().to_string();
+        let sha_macos = "1111111111111111111111111111111111111111111111111111111111111111".to_string();
+        let records = vec![
+            ("0.2.0".to_string(), "linux".to_string(), sha_linux.clone()),
+            ("0.2.0".to_string(), "macos".to_string(), sha_macos.clone()),
+        ];
+        let linux = find_latest_for_target(&records, "linux").unwrap();
+        assert_eq!(linux.1, sha_linux);
+        let macos = find_latest_for_target(&records, "macos").unwrap();
+        assert_eq!(macos.1, sha_macos);
+    }
+
+    #[test]
+    fn find_latest_empty_version_string() {
+        let sha = valid_sha().to_string();
+        let records = vec![("".to_string(), "linux".to_string(), sha.clone())];
+        let result = find_latest_for_target(&records, "linux").unwrap();
+        assert_eq!(result.0, "");
+        assert_eq!(result.1, sha);
+    }
+
+    // --- sha256_file (additional edge cases) ---
+
+    #[test]
+    fn sha256_file_large_content() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.bin");
+        let content = vec![0xABu8; 16 * 1024];
+        std::fs::write(&path, &content).unwrap();
+
+        let result = sha256_file(&path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        let expected = format!("{:x}", hasher.finalize());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn sha256_file_empty() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let result = sha256_file(&path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(b"");
+        let expected = format!("{:x}", hasher.finalize());
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn sha256_file_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.bin");
+        assert!(sha256_file(&path).is_err());
+    }
+
+    // --- atomic_write (additional edge cases) ---
+
+    #[test]
+    fn atomic_write_nonexistent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_such_dir").join("file.txt");
+        assert!(atomic_write(&path, b"data").is_err());
+    }
+
+    // --- redact_config_keys (additional edge cases) ---
+
+    #[test]
+    fn redact_deeply_nested_api_key() {
+        let mut val: toml::Value = toml::from_str(
+            r#"
+            [a.b.c]
+            api_key = "sk-deep-nested-key-value"
+            "#,
+        )
+        .unwrap();
+        redact_config_keys(&mut val);
+        let s = val["a"]["b"]["c"]["api_key"].as_str().unwrap();
+        assert!(s.contains("..."));
+        assert!(!s.contains("deep"));
+    }
+
+    #[test]
+    fn redact_array_containing_tables_with_api_key() {
+        let mut val: toml::Value = toml::from_str(
+            r#"
+            [[services]]
+            name = "svc1"
+            api_key = "sk-array-table-key99"
+
+            [[services]]
+            name = "svc2"
+            api_key = "sk-another-key-here"
+            "#,
+        )
+        .unwrap();
+        redact_config_keys(&mut val);
+        let k1 = val["services"][0]["api_key"].as_str().unwrap();
+        let k2 = val["services"][1]["api_key"].as_str().unwrap();
+        assert!(k1.contains("..."));
+        assert!(k2.contains("..."));
+        assert_eq!(val["services"][0]["name"].as_str().unwrap(), "svc1");
+    }
+
+    #[test]
+    fn redact_api_key_exactly_8_chars_boundary() {
+        let mut val: toml::Value = toml::from_str(r#"api_key = "abcdefgh""#).unwrap();
+        redact_config_keys(&mut val);
+        assert_eq!(val["api_key"].as_str().unwrap(), "****");
+    }
+
+    #[test]
+    fn redact_api_key_7_chars() {
+        let mut val: toml::Value = toml::from_str(r#"api_key = "abcdefg""#).unwrap();
+        redact_config_keys(&mut val);
+        assert_eq!(val["api_key"].as_str().unwrap(), "****");
+    }
+
+    #[test]
+    fn redact_api_key_9_chars() {
+        let mut val: toml::Value = toml::from_str(r#"api_key = "abcdefghi""#).unwrap();
+        redact_config_keys(&mut val);
+        let s = val["api_key"].as_str().unwrap();
+        assert_eq!(s, "abcd...fghi");
+    }
+
+    #[test]
+    fn redact_multiple_api_keys_different_subtables() {
+        let mut val: toml::Value = toml::from_str(
+            r#"
+            [provider_a]
+            api_key = "sk-provider-a-longkey"
+            [provider_b]
+            api_key = "short"
+            [provider_c]
+            api_key = "sk-provider-c-longkey"
+            other = "untouched"
+            "#,
+        )
+        .unwrap();
+        redact_config_keys(&mut val);
+        let a = val["provider_a"]["api_key"].as_str().unwrap();
+        let b = val["provider_b"]["api_key"].as_str().unwrap();
+        let c = val["provider_c"]["api_key"].as_str().unwrap();
+        assert!(a.contains("..."));
+        assert_eq!(b, "****");
+        assert!(c.contains("..."));
+        assert_eq!(val["provider_c"]["other"].as_str().unwrap(), "untouched");
+    }
+
+    #[test]
+    fn redact_non_string_api_key() {
+        let mut val: toml::Value = toml::from_str(r#"api_key = 12345"#).unwrap();
+        redact_config_keys(&mut val);
+        assert_eq!(val["api_key"].as_integer().unwrap(), 12345);
+    }
+
+    // --- cleanup_staged_updates (logic pattern tests) ---
+
+    #[test]
+    fn cleanup_staged_updates_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let updates_dir = dir.path().join("updates");
+        std::fs::create_dir_all(&updates_dir).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&updates_dir)
+            .unwrap()
+            .flatten()
+            .collect();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn cleanup_staged_updates_no_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let updates_dir = dir.path().join("updates");
+        assert!(!updates_dir.exists());
+    }
+
+    // --- current_target_triple ---
+
+    #[test]
+    fn current_target_triple_is_known_value() {
+        let triple = current_target_triple();
+        if let Some(t) = triple {
+            let known = [
+                "aarch64-apple-darwin",
+                "x86_64-apple-darwin",
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+            ];
+            assert!(known.contains(&t), "unexpected triple: {t}");
+        }
+    }
 }

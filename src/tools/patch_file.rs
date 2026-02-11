@@ -457,4 +457,134 @@ mod tests {
         let err = validate_path(&azure).unwrap_err();
         assert!(err.to_string().contains("blocked"));
     }
+
+    #[test]
+    fn test_validate_path_allow_bypasses_sensitive_dirs() {
+        let home = dirs::home_dir().unwrap();
+        let ssh = home.join(".ssh/test_key");
+        assert!(validate_path_with_access(&ssh, "allow").is_ok());
+
+        let aws = home.join(".aws/credentials");
+        assert!(validate_path_with_access(&aws, "allow").is_ok());
+
+        let nsh = home.join(".nsh/something");
+        assert!(validate_path_with_access(&nsh, "allow").is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_directory_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = validate_path_with_access(dir.path(), "block").unwrap_err();
+        assert!(
+            err.to_string().contains("not a regular file"),
+            "expected not a regular file error, got: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_validate_path_symlink_to_sensitive_dir() {
+        let home = dirs::home_dir().unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let sensitive = home.join(".ssh");
+        if sensitive.exists() {
+            let link = dir.path().join("link_dir");
+            std::os::unix::fs::symlink(&sensitive, &link).unwrap();
+            let target = link.join("test_file");
+            let err = validate_path_with_access(&target, "block").unwrap_err();
+            assert!(
+                err.to_string().contains("blocked"),
+                "expected blocked error through symlink, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_path_nul_byte() {
+        let bad = PathBuf::from("foo\0bar");
+        let err = validate_path_with_access(&bad, "block").unwrap_err();
+        assert!(
+            err.to_string().contains("NUL"),
+            "expected NUL byte error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_backup_to_trash_name_with_spaces() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("file with spaces.txt");
+        std::fs::write(&path, "content").unwrap();
+
+        let backup_path = backup_to_trash(&path).unwrap();
+        assert!(backup_path.exists());
+        let name = backup_path.file_name().unwrap().to_string_lossy();
+        assert!(name.contains("file with spaces"));
+        assert!(name.contains("nsh_backup"));
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    #[test]
+    fn test_backup_to_trash_long_name() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let long_name = "a".repeat(200) + ".txt";
+        let path = dir.path().join(&long_name);
+        std::fs::write(&path, "content").unwrap();
+
+        let backup_path = backup_to_trash(&path).unwrap();
+        assert!(backup_path.exists());
+        assert!(backup_path.to_string_lossy().contains("nsh_backup"));
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    #[test]
+    fn test_write_nofollow_unicode_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("unicode.txt");
+        let content = "こんにちは世界 🌍 é à ü ñ «»";
+        write_nofollow(&path, content).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn test_write_nofollow_empty_string() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("empty.txt");
+        write_nofollow(&path, "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn test_expand_tilde_deeply_nested() {
+        let result = expand_tilde("~/a/b/c/d");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(result, home.join("a/b/c/d"));
+    }
+
+    #[test]
+    fn test_validate_path_etc_non_existent_requires_root() {
+        let etc = PathBuf::from("/etc/nsh_nonexistent_test_file");
+        let err = validate_path_with_access(&etc, "block").unwrap_err();
+        assert!(
+            err.to_string().contains("require root"),
+            "expected require root error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_blocked_kube() {
+        let home = dirs::home_dir().unwrap();
+        let kube = home.join(".kube/config");
+        let err = validate_path(&kube).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_docker() {
+        let home = dirs::home_dir().unwrap();
+        let docker = home.join(".docker/config.json");
+        let err = validate_path(&docker).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
 }
