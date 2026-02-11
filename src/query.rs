@@ -1245,4 +1245,167 @@ mod tests {
         let result = execute_sync_tool("nonexistent_tool", &input, &Config::default()).unwrap();
         assert_eq!(result, "Unknown tool: nonexistent_tool");
     }
+
+    #[test]
+    fn test_build_memories_xml_empty() {
+        let result = build_memories_xml(&[]);
+        assert_eq!(result, "<memories count=\"0\" />\n");
+    }
+
+    #[test]
+    fn test_build_memories_xml_single() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "editor".into(),
+            value: "vim".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("<memories count=\"1\">"));
+        assert!(result.contains("id=\"1\""));
+        assert!(result.contains("key=\"editor\""));
+        assert!(result.contains("vim"));
+        assert!(result.contains("</memories>"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_multiple() {
+        let mems = vec![
+            crate::db::Memory { id: 1, key: "k1".into(), value: "v1".into(), created_at: "2025-01-01".into(), updated_at: "2025-01-01".into() },
+            crate::db::Memory { id: 2, key: "k2".into(), value: "v2".into(), created_at: "2025-01-02".into(), updated_at: "2025-01-02".into() },
+        ];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("count=\"2\""));
+        assert!(result.contains("k1"));
+        assert!(result.contains("k2"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_escapes_special_chars() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "key <with> & \"special\"".into(),
+            value: "value <with> & chars".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("&lt;"));
+        assert!(result.contains("&amp;"));
+        assert!(!result.contains("<with>"));
+    }
+
+    #[test]
+    fn test_describe_tool_action_manage_config() {
+        let input = json!({"action": "set", "key": "provider.model"});
+        let desc = describe_tool_action("manage_config", &input);
+        assert_eq!(desc, "config set: provider.model");
+    }
+
+    #[test]
+    fn test_describe_tool_action_manage_config_remove() {
+        let input = json!({"action": "remove", "key": "mcp.servers.test"});
+        let desc = describe_tool_action("manage_config", &input);
+        assert_eq!(desc, "config remove: mcp.servers.test");
+    }
+
+    #[test]
+    fn test_describe_tool_action_install_skill() {
+        let input = json!({"name": "test_runner"});
+        let desc = describe_tool_action("install_skill", &input);
+        assert_eq!(desc, "installing skill: test_runner");
+    }
+
+    #[test]
+    fn test_describe_tool_action_install_mcp_server() {
+        let input = json!({"name": "filesystem"});
+        let desc = describe_tool_action("install_mcp_server", &input);
+        assert_eq!(desc, "installing MCP server: filesystem");
+    }
+
+    #[test]
+    fn test_describe_tool_action_remember() {
+        let input = json!({"key": "nas_ip"});
+        let desc = describe_tool_action("remember", &input);
+        assert_eq!(desc, "remembering: nas_ip");
+    }
+
+    #[test]
+    fn test_describe_tool_action_forget_memory() {
+        let input = json!({"id": 42});
+        let desc = describe_tool_action("forget_memory", &input);
+        assert_eq!(desc, "forgetting memory #42");
+    }
+
+    #[test]
+    fn test_describe_tool_action_update_memory() {
+        let input = json!({"id": 7});
+        let desc = describe_tool_action("update_memory", &input);
+        assert_eq!(desc, "updating memory #7");
+    }
+
+    #[test]
+    fn test_describe_tool_action_missing_fields_defaults() {
+        assert_eq!(describe_tool_action("search_history", &json!({})), "searching history for \"...\"");
+        assert_eq!(describe_tool_action("read_file", &json!({})), "reading file");
+        assert_eq!(describe_tool_action("list_directory", &json!({})), "listing .");
+        assert_eq!(describe_tool_action("run_command", &json!({})), "running `...`");
+        assert_eq!(describe_tool_action("web_search", &json!({})), "searching \"...\"");
+        assert_eq!(describe_tool_action("man_page", &json!({})), "reading man page: ?");
+    }
+
+    #[test]
+    fn test_validate_tool_input_remember_ok() {
+        let input = json!({"key": "editor", "value": "vim"});
+        assert!(validate_tool_input("remember", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_remember_missing_value() {
+        let input = json!({"key": "editor"});
+        let err = validate_tool_input("remember", &input).unwrap_err();
+        assert!(err.contains("value"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_forget_memory_ok() {
+        let input = json!({"id": 1});
+        assert!(validate_tool_input("forget_memory", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_forget_memory_missing() {
+        let input = json!({});
+        let err = validate_tool_input("forget_memory", &input).unwrap_err();
+        assert!(err.contains("id"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_update_memory_ok() {
+        let input = json!({"id": 1});
+        assert!(validate_tool_input("update_memory", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_update_memory_missing() {
+        let input = json!({});
+        let err = validate_tool_input("update_memory", &input).unwrap_err();
+        assert!(err.contains("id"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_memories() {
+        let ctx = make_test_ctx();
+        let memories = "<memories count=\"1\"><memory id=\"1\" key=\"test\">value</memory></memories>";
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", memories);
+        assert!(result.contains("memory id=\"1\""));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command_denied() {
+        let input = json!({"command": "rm -rf /"});
+        let result = execute_sync_tool("run_command", &input, &Config::default()).unwrap();
+        assert!(result.contains("DENIED"));
+    }
 }

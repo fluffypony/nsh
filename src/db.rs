@@ -3980,4 +3980,281 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         assert!(db.get_memory_by_id(99999).unwrap().is_none());
     }
+
+    #[test]
+    fn test_search_memories_no_results() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert_memory("editor", "vim").unwrap();
+        let results = db.search_memories("nonexistent_xyz").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_update_memory_key_only() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("old_key", "val").unwrap();
+        assert!(db.update_memory(id, Some("new_key"), None).unwrap());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "new_key");
+        assert_eq!(mem.value, "val");
+    }
+
+    #[test]
+    fn test_update_memory_value_only() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("key", "old_val").unwrap();
+        assert!(db.update_memory(id, None, Some("new_val")).unwrap());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "key");
+        assert_eq!(mem.value, "new_val");
+    }
+
+    #[test]
+    fn test_update_memory_neither_key_nor_value() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("k", "v").unwrap();
+        assert!(!db.update_memory(id, None, None).unwrap());
+    }
+
+    #[test]
+    fn test_upsert_memory_case_insensitive_key() {
+        let db = Db::open_in_memory().unwrap();
+        let (id1, _) = db.upsert_memory("Editor", "vim").unwrap();
+        let (id2, was_update) = db.upsert_memory("editor", "nvim").unwrap();
+        assert!(was_update);
+        assert_eq!(id1, id2);
+        let mem = db.get_memory_by_id(id1).unwrap().unwrap();
+        assert_eq!(mem.value, "nvim");
+    }
+
+    #[test]
+    fn test_mark_unsummarized_for_llm_empty() {
+        let db = test_db();
+        let marked = db.mark_unsummarized_for_llm().unwrap();
+        assert_eq!(marked, 0);
+    }
+
+    #[test]
+    fn test_commands_needing_llm_summary_empty() {
+        let db = test_db();
+        let cmds = db.commands_needing_llm_summary(10).unwrap();
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn test_commands_needing_llm_summary_respects_limit() {
+        let db = test_db();
+        for i in 0..5 {
+            db.insert_command(
+                "s1", &format!("cmd{i}"), "/tmp", Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"), None,
+                Some(&format!("output{i}")), "", "", 0,
+            ).unwrap();
+        }
+        db.mark_unsummarized_for_llm().unwrap();
+        let cmds = db.commands_needing_llm_summary(2).unwrap();
+        assert_eq!(cmds.len(), 2);
+    }
+
+    #[test]
+    fn test_prune_empty_db() {
+        let db = test_db();
+        let deleted = db.prune(30).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn test_end_session_nonexistent() {
+        let db = test_db();
+        db.end_session("no_such_session").unwrap();
+    }
+
+    #[test]
+    fn test_recent_commands_other_sessions_none() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.insert_command(
+            "s1", "my cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
+        ).unwrap();
+        let others = db.recent_commands_other_sessions("s1", 10).unwrap();
+        assert!(others.is_empty());
+    }
+
+    #[test]
+    fn test_find_pending_conversation_picks_most_recent() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        db.insert_conversation(
+            "s1", "first", "command", "echo first",
+            None, false, true,
+        ).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let id2 = db.insert_conversation(
+            "s1", "second", "command", "echo second",
+            None, false, true,
+        ).unwrap();
+
+        let pending = db.find_pending_conversation("s1").unwrap();
+        assert!(pending.is_some());
+        let (pid, resp) = pending.unwrap();
+        assert_eq!(pid, id2);
+        assert_eq!(resp, "echo second");
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_with_since() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "curl http://old.com", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "curl http://new.com", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("curl"), Some("2025-01-01T00:00:00Z"),
+            None, None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("new.com"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_with_failed_only() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "make deploy-ok", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "make deploy-fail", "/app", Some(1),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("deploy"), None, None,
+            None, true, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("deploy-fail"));
+    }
+
+    #[test]
+    fn test_other_sessions_with_summaries_empty_when_no_other() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.insert_command(
+            "s1", "only mine", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
+        ).unwrap();
+
+        let others = db.other_sessions_with_summaries("s1", 5, 10).unwrap();
+        assert!(others.is_empty());
+    }
+
+    #[test]
+    fn test_mark_summary_error_excludes_from_needing_summary() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
+        ).unwrap();
+
+        let needing_before = db.commands_needing_summary(10).unwrap();
+        assert_eq!(needing_before.len(), 1);
+
+        db.mark_summary_error(id, "timeout").unwrap();
+
+        let needing_after = db.commands_needing_summary(10).unwrap();
+        assert!(needing_after.is_empty());
+
+        let needing_llm = db.commands_needing_llm_summary(10).unwrap();
+        assert!(needing_llm.is_empty());
+    }
+
+    #[test]
+    fn test_update_summary_updates_fts() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "deploy app", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("deploying..."), "", "", 0,
+        ).unwrap();
+
+        let before = db.search_history("kubernetes_cluster_xyz", 10).unwrap();
+        assert!(before.is_empty());
+
+        db.update_summary(id, "deployed to kubernetes_cluster_xyz").unwrap();
+
+        let after = db.search_history("kubernetes_cluster_xyz", 10).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].command, "deploy app");
+    }
+
+    #[test]
+    fn test_delete_memory_nonexistent() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(!db.delete_memory(99999).unwrap());
+    }
+
+    #[test]
+    fn test_get_memories_empty() {
+        let db = Db::open_in_memory().unwrap();
+        let mems = db.get_memories(10).unwrap();
+        assert!(mems.is_empty());
+    }
+
+    #[test]
+    fn test_search_memories_matches_value() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert_memory("editor", "vim is great").unwrap();
+        db.upsert_memory("shell", "zsh").unwrap();
+        let results = db.search_memories("great").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "editor");
+    }
+
+    #[test]
+    fn test_command_count_after_prune() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "old", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "new", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        assert_eq!(db.command_count().unwrap(), 2);
+
+        db.prune(30).unwrap();
+        assert_eq!(db.command_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_search_history_advanced_no_filters_returns_all() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cmd1", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "cmd2", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, None, None, None, None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_update_heartbeat_nonexistent_session() {
+        let db = test_db();
+        db.update_heartbeat("no_such_session").unwrap();
+    }
 }

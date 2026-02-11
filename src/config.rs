@@ -1885,4 +1885,46 @@ key = "overridden"
         let result = find_project_config();
         assert!(result.is_none() || result.unwrap().exists());
     }
+
+    #[test]
+    fn test_config_path_ends_with_config_toml() {
+        let path = Config::path();
+        assert!(path.to_string_lossy().ends_with("config.toml"));
+    }
+
+    #[test]
+    fn test_default_config_provider() {
+        let config = Config::default();
+        assert_eq!(config.provider.default, "openrouter");
+    }
+
+    #[test]
+    fn test_default_config_context_limits() {
+        let config = Config::default();
+        assert!(config.context.history_limit > 0);
+        assert!(config.context.history_summaries > 0);
+        assert!(config.context.scrollback_lines > 0);
+    }
+
+    #[test]
+    fn test_config_from_partial_toml() {
+        let toml_str = r#"
+[provider]
+model = "gpt-4"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.model, "gpt-4");
+        assert_eq!(config.provider.default, "openrouter");
+    }
+
+    #[test]
+    fn test_build_config_xml_contains_sections() {
+        let config = Config::default();
+        let skills = vec![];
+        let mcp_info = vec![];
+        let xml = build_config_xml(&config, &skills, &mcp_info);
+        assert!(xml.contains("<nsh_configuration"));
+        assert!(xml.contains("</nsh_configuration>"));
+        assert!(xml.contains("provider"));
+    }
 }
