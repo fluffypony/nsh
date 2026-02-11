@@ -126,10 +126,15 @@ impl LlmProvider for AnthropicProvider {
     async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
         let mut body = self.build_body(&request);
         body["stream"] = json!(false);
+        // reqwest internally copies the value into its own buffer, so zeroization is best-effort
+        let api_key_val = Zeroizing::new(self.api_key.to_string());
+        let mut header_val = reqwest::header::HeaderValue::from_str(&api_key_val)
+            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(""));
+        header_val.set_sensitive(true);
         let resp = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &*self.api_key)
+            .header("x-api-key", header_val)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)
@@ -175,10 +180,14 @@ impl LlmProvider for AnthropicProvider {
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
         let mut body = self.build_body(&request);
         body["stream"] = json!(true);
+        let api_key_val = Zeroizing::new(self.api_key.to_string());
+        let mut header_val = reqwest::header::HeaderValue::from_str(&api_key_val)
+            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(""));
+        header_val.set_sensitive(true);
         let resp = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &*self.api_key)
+            .header("x-api-key", header_val)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)

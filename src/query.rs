@@ -105,7 +105,7 @@ pub async fn handle_query(
             eprint!("\x1b[0m");
             eprintln!("\nnsh: interrupted");
             mcp_client.lock().await.shutdown().await;
-            std::process::exit(130);
+            anyhow::bail!("interrupted");
         }
 
         let used_forced_json = force_json_next;
@@ -156,8 +156,15 @@ pub async fn handle_query(
             }
         };
 
-        let response =
-            streaming::consume_stream(&mut rx, &cancelled).await?;
+        let response = match streaming::consume_stream(&mut rx, &cancelled).await {
+            Ok(r) => r,
+            Err(e) if e.to_string().contains("interrupted") => {
+                eprintln!("\nnsh: interrupted");
+                mcp_client.lock().await.shutdown().await;
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
 
         // ── JSON fallback for models that don't use tool calling ──
         let has_tool_calls = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));

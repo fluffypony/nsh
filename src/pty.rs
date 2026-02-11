@@ -108,8 +108,14 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     let argv0_cstr =
         std::ffi::CString::new(format!("-{basename}")).expect("valid shell name");
     let shell_cstr = std::ffi::CString::new(shell.to_owned()).expect("valid shell path");
-    let env_key = std::ffi::CString::new("NSH_PTY_ACTIVE").unwrap();
-    let env_val = std::ffi::CString::new("1").unwrap();
+    let mut env_vec: Vec<std::ffi::CString> = std::env::vars()
+        .filter_map(|(k, v)| std::ffi::CString::new(format!("{k}={v}")).ok())
+        .collect();
+    env_vec.push(std::ffi::CString::new("NSH_PTY_ACTIVE=1").unwrap());
+    let env_ptrs: Vec<*const libc::c_char> = env_vec.iter()
+        .map(|e| e.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
 
     // Fork
     match unsafe { libc::fork() } {
@@ -134,9 +140,8 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             drop(pty.slave);
 
             unsafe {
-                libc::setenv(env_key.as_ptr(), env_val.as_ptr(), 1);
                 let argv = [argv0_cstr.as_ptr(), std::ptr::null()];
-                libc::execvp(shell_cstr.as_ptr(), argv.as_ptr());
+                libc::execve(shell_cstr.as_ptr(), argv.as_ptr(), env_ptrs.as_ptr());
                 libc::_exit(127);
             }
         }

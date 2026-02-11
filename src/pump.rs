@@ -726,7 +726,7 @@ fn handle_daemon_connection_inner(
     db_tx: &std::sync::mpsc::Sender<crate::daemon::DbCommand>,
     max_output_bytes: usize,
 ) {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
 
     stream
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -735,12 +735,12 @@ fn handle_daemon_connection_inner(
         .set_write_timeout(Some(Duration::from_millis(500)))
         .ok();
 
-    let mut reader = BufReader::new(&stream);
+    let bounded_stream = (&stream).take(256 * 1024);
+    let mut reader = BufReader::new(bounded_stream);
     let mut line = String::new();
     let read_result = reader.read_line(&mut line);
     let response = match read_result {
         Ok(0) => return,
-        Ok(n) if n > 256 * 1024 => crate::daemon::DaemonResponse::error("request too large"),
         Ok(_) => {
             let raw: serde_json::Value = match serde_json::from_str(&line) {
                 Ok(v) => v,

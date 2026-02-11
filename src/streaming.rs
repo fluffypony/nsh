@@ -130,8 +130,7 @@ pub async fn consume_stream(
                 if is_streaming_text {
                     eprint!("\x1b[0m");
                 }
-                eprintln!("\nnsh: interrupted");
-                std::process::exit(130);
+                anyhow::bail!("interrupted");
             }
         };
 

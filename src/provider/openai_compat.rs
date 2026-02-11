@@ -88,10 +88,15 @@ impl OpenAICompatProvider {
     }
 
     fn build_http_request(&self, body: &serde_json::Value, model: &str) -> reqwest::RequestBuilder {
+        // reqwest internally copies the value into its own buffer, so zeroization is best-effort
+        let auth_value = Zeroizing::new(format!("Bearer {}", &*self.api_key));
+        let mut header_val = reqwest::header::HeaderValue::from_str(&auth_value)
+            .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static(""));
+        header_val.set_sensitive(true);
         let mut req = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", &*self.api_key))
+            .header("Authorization", header_val)
             .json(body);
         for (k, v) in &self.extra_headers {
             req = req.header(k.as_str(), v.as_str());

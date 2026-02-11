@@ -123,7 +123,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             if private {
                 eprintln!("\x1b[2m🔒 private mode\x1b[0m");
             }
-            query::handle_query(&query_text, &config, &db, &session_id, think, private).await?;
+            let result = query::handle_query(&query_text, &config, &db, &session_id, think, private).await;
+            if let Err(ref e) = result {
+                if e.to_string().contains("interrupted") {
+                    std::process::exit(130);
+                }
+            }
+            result?;
         }
 
         Commands::Record {
