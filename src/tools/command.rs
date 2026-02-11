@@ -255,4 +255,68 @@ mod tests {
         let long_explanation = "x".repeat(200);
         display_command_preview("echo hi", &long_explanation, &RiskLevel::Elevated);
     }
+
+    #[test]
+    fn test_display_command_preview_unicode_command() {
+        display_command_preview("echo '日本語テスト'", "Prints unicode text", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_ansi_escape_in_command() {
+        display_command_preview(
+            "echo '\x1b[31mred\x1b[0m'",
+            "Command containing ANSI escapes",
+            &RiskLevel::Safe,
+        );
+    }
+
+    #[test]
+    fn test_display_command_preview_special_chars() {
+        display_command_preview(
+            "echo '╭─╮│╰─╯'",
+            "Command with box-drawing chars",
+            &RiskLevel::Elevated,
+        );
+    }
+
+    #[test]
+    fn test_display_command_preview_single_char_explanation() {
+        display_command_preview("ls", "X", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_content_width_at_min_boundary() {
+        let cmd = "a".repeat(19);
+        display_command_preview(&cmd, "short", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_content_width_at_clamp_lower() {
+        let cmd = "a".repeat(20);
+        display_command_preview(&cmd, "short", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_content_width_at_max_boundary() {
+        let cmd = "a".repeat(60);
+        display_command_preview(&cmd, "short", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_content_width_above_max() {
+        let cmd = "a".repeat(61);
+        display_command_preview(&cmd, "short", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_content_width_clamping_values() {
+        let clamp = |len: usize| len.max(0).clamp(20, 60);
+        assert_eq!(clamp(0), 20);
+        assert_eq!(clamp(19), 20);
+        assert_eq!(clamp(20), 20);
+        assert_eq!(clamp(40), 40);
+        assert_eq!(clamp(60), 60);
+        assert_eq!(clamp(61), 60);
+        assert_eq!(clamp(200), 60);
+    }
 }

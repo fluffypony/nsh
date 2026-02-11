@@ -203,3 +203,59 @@ mod exec {
         std::io::Error::last_os_error()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execvp_null_byte_in_command() {
+        let err = exec::execvp("cmd\0bad", &["arg"]);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("null byte"));
+    }
+
+    #[test]
+    fn test_execvp_null_byte_in_args() {
+        let err = exec::execvp("cmd", &["ok", "bad\0arg"]);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("null byte"));
+    }
+
+    #[test]
+    fn test_exec_execvp_null_byte_in_command() {
+        let err = exec_execvp("path\0nul", &["arg"]);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_exec_execvp_null_byte_in_args() {
+        let err = exec_execvp("/bin/true", &["ok", "a\0b"]);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_create_pty_returns_valid_fds() {
+        let pair = create_pty().expect("create_pty should succeed");
+        assert!(pair.master.as_raw_fd() >= 0);
+        assert!(pair.slave.as_raw_fd() >= 0);
+        assert_ne!(pair.master.as_raw_fd(), pair.slave.as_raw_fd());
+    }
+
+    #[test]
+    fn test_copy_winsize_between_ptys() {
+        let p1 = create_pty().unwrap();
+        let p2 = create_pty().unwrap();
+        let ws = libc::winsize {
+            ws_row: 42,
+            ws_col: 132,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        unsafe { libc::ioctl(p1.master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+        copy_winsize(p1.master.as_fd(), p2.master.as_fd()).unwrap();
+        let got = termios::tcgetwinsize(p2.master.as_fd()).unwrap();
+        assert_eq!(got.ws_row, 42);
+        assert_eq!(got.ws_col, 132);
+    }
+}

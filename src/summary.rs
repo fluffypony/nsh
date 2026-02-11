@@ -270,4 +270,84 @@ mod tests {
         assert!(prompt.contains("line 1"));
         assert!(prompt.contains("line 50"));
     }
+
+    #[test]
+    fn test_trivial_summary_cd_with_arguments() {
+        assert_eq!(
+            trivial_summary("cd /home/user/projects", 0, ""),
+            Some("Changed directory".into())
+        );
+        assert_eq!(
+            trivial_summary("cd ..", 1, ""),
+            Some("Changed directory".into())
+        );
+    }
+
+    #[test]
+    fn test_trivial_summary_output_with_failure() {
+        let output = "error: package `foo` not found in registry";
+        assert!(trivial_summary("cargo install foo", 1, output).is_none());
+    }
+
+    #[test]
+    fn test_trivial_summary_whitespace_only_output_nonzero_exit() {
+        assert!(trivial_summary("some_cmd", 1, "   \n\t\n  ").is_none());
+    }
+
+    #[test]
+    fn test_trivial_summary_empty_command() {
+        assert_eq!(
+            trivial_summary("", 0, ""),
+            Some("Ran `` successfully (no output)".into())
+        );
+    }
+
+    #[test]
+    fn test_build_summary_prompt_exactly_51_lines() {
+        let lines: Vec<String> = (1..=51).map(|i| format!("line {i}")).collect();
+        let output = lines.join("\n");
+        let cmd = CommandForSummary {
+            id: 20,
+            command: "fifty-one".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            output: Some(output),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains("[...]"));
+        assert!(prompt.contains("line 1"));
+        assert!(prompt.contains("line 25"));
+        assert!(prompt.contains("line 51"));
+        assert!(!prompt.contains("line 26\n"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_special_characters() {
+        let cmd = CommandForSummary {
+            id: 21,
+            command: r#"echo "hello 'world'" | grep -E '\d+'"#.into(),
+            cwd: Some("/tmp/path with spaces".into()),
+            exit_code: Some(0),
+            output: Some("résultat: <tag>&amp;</tag>\n\ttab\there".into()),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains(r#"echo "hello 'world'" | grep -E '\d+'"#));
+        assert!(prompt.contains("résultat"));
+        assert!(prompt.contains("<tag>&amp;</tag>"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_very_long_single_line() {
+        let long_line = "x".repeat(10_000);
+        let cmd = CommandForSummary {
+            id: 22,
+            command: "generate-data".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            output: Some(long_line.clone()),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(!prompt.contains("[...]"));
+        assert!(prompt.contains(&long_line));
+    }
 }

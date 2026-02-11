@@ -216,4 +216,57 @@ mod tests {
                 "Expected invalid: {name}");
         }
     }
+
+    #[test]
+    fn test_name_with_numbers_and_underscores() {
+        let input = json!({"name": "server_v2_test", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_ok(), "Name with numbers/underscores should pass validation");
+    }
+
+    #[test]
+    fn test_name_only_numbers() {
+        let input = json!({"name": "12345", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_ok(), "Numeric-only name should pass validation");
+    }
+
+    #[test]
+    fn test_name_with_unicode_rejected() {
+        let input = json!({"name": "test\x00server", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_name_with_emoji_rejected() {
+        let input = json!({"name": "test🚀", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_transport_stdio_with_command_passes_validation() {
+        let input = json!({"name": "valid", "transport": "stdio", "command": "node"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_ok(), "stdio with command should pass all validation");
+    }
+
+    #[test]
+    fn test_transport_http_with_url_passes_validation() {
+        let input = json!({"name": "valid", "transport": "http", "url": "http://localhost:3000"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_ok(), "http with url should pass all validation");
+    }
+
+    #[test]
+    fn test_transport_default_is_stdio() {
+        let input = json!({"name": "test"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("command"),
+            "Default transport should be stdio, requiring command");
+    }
 }

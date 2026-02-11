@@ -1057,3 +1057,249 @@ fn redact_config_keys(val: &mut toml::Value) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_sha() -> &'static str {
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+
+    // --- parse_dns_txt_records ---
+
+    #[test]
+    fn parse_dns_valid_records() {
+        let input = format!("0.1.0:aarch64-apple-darwin:{}", valid_sha());
+        let records = parse_dns_txt_records(&input);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, "0.1.0");
+        assert_eq!(records[0].1, "aarch64-apple-darwin");
+        assert_eq!(records[0].2, valid_sha());
+    }
+
+    #[test]
+    fn parse_dns_invalid_sha_length() {
+        let records = parse_dns_txt_records("0.1.0:target:abcdef");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_dns_non_hex_sha() {
+        let bad_sha = "zzzzzz0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let input = format!("0.1.0:target:{bad_sha}");
+        let records = parse_dns_txt_records(&input);
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_dns_too_few_parts() {
+        let records = parse_dns_txt_records("0.1.0:target_only");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_dns_empty_input() {
+        let records = parse_dns_txt_records("");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_dns_quoted_lines() {
+        let input = format!("\"0.1.0:aarch64-apple-darwin:{}\"", valid_sha());
+        let records = parse_dns_txt_records(&input);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, "0.1.0");
+    }
+
+    #[test]
+    fn parse_dns_mixed_valid_invalid() {
+        let sha = valid_sha();
+        let input = format!(
+            "0.1.0:target_a:{sha}\nbad_line\n0.2.0:target_b:{sha}\n0.3.0:target_c:tooshort"
+        );
+        let records = parse_dns_txt_records(&input);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].0, "0.1.0");
+        assert_eq!(records[1].0, "0.2.0");
+    }
+
+    // --- current_target_triple ---
+
+    #[test]
+    fn current_target_triple_returns_some() {
+        assert!(current_target_triple().is_some());
+    }
+
+    // --- find_latest_for_target ---
+
+    #[test]
+    fn find_latest_no_records() {
+        let records: Vec<(String, String, String)> = vec![];
+        assert!(find_latest_for_target(&records, "x86_64-unknown-linux-gnu").is_none());
+    }
+
+    #[test]
+    fn find_latest_single_match() {
+        let sha = valid_sha().to_string();
+        let records = vec![("0.5.0".to_string(), "linux".to_string(), sha.clone())];
+        let result = find_latest_for_target(&records, "linux");
+        assert_eq!(result, Some(("0.5.0".to_string(), sha)));
+    }
+
+    #[test]
+    fn find_latest_picks_highest_version() {
+        let sha = valid_sha().to_string();
+        let records = vec![
+            ("0.1.0".to_string(), "linux".to_string(), "sha_old".to_string()),
+            ("0.3.0".to_string(), "linux".to_string(), sha.clone()),
+            ("0.2.0".to_string(), "linux".to_string(), "sha_mid".to_string()),
+        ];
+        let result = find_latest_for_target(&records, "linux").unwrap();
+        assert_eq!(result.0, "0.3.0");
+        assert_eq!(result.1, sha);
+    }
+
+    #[test]
+    fn find_latest_no_matching_target() {
+        let sha = valid_sha().to_string();
+        let records = vec![("0.1.0".to_string(), "linux".to_string(), sha)];
+        assert!(find_latest_for_target(&records, "macos").is_none());
+    }
+
+    // --- sha256_file ---
+
+    #[test]
+    fn sha256_file_known_content() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.bin");
+        let content = b"hello world";
+        std::fs::write(&path, content).unwrap();
+
+        let result = sha256_file(&path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let expected = format!("{:x}", hasher.finalize());
+        assert_eq!(result, expected);
+    }
+
+    // --- atomic_write ---
+
+    #[test]
+    fn atomic_write_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.txt");
+        atomic_write(&path, b"test data").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "test data");
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.txt");
+        std::fs::write(&path, "old").unwrap();
+        atomic_write(&path, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    // --- redact_config_keys ---
+
+    #[test]
+    fn redact_long_api_key() {
+        let mut val: toml::Value =
+            toml::from_str(r#"api_key = "sk-1234567890abcdef""#).unwrap();
+        redact_config_keys(&mut val);
+        let s = val.get("api_key").unwrap().as_str().unwrap();
+        assert_eq!(s, "sk-1...cdef");
+    }
+
+    #[test]
+    fn redact_short_api_key() {
+        let mut val: toml::Value = toml::from_str(r#"api_key = "short""#).unwrap();
+        redact_config_keys(&mut val);
+        let s = val.get("api_key").unwrap().as_str().unwrap();
+        assert_eq!(s, "****");
+    }
+
+    #[test]
+    fn redact_exactly_8_chars() {
+        let mut val: toml::Value = toml::from_str(r#"api_key = "12345678""#).unwrap();
+        redact_config_keys(&mut val);
+        let s = val.get("api_key").unwrap().as_str().unwrap();
+        assert_eq!(s, "****");
+    }
+
+    #[test]
+    fn redact_nested_tables() {
+        let mut val: toml::Value = toml::from_str(
+            r#"
+            [provider]
+            api_key = "sk-abcdefghijklmnop"
+            [provider.sub]
+            api_key = "tiny"
+            "#,
+        )
+        .unwrap();
+        redact_config_keys(&mut val);
+        let outer = val["provider"]["api_key"].as_str().unwrap();
+        assert!(outer.contains("..."));
+        let inner = val["provider"]["sub"]["api_key"].as_str().unwrap();
+        assert_eq!(inner, "****");
+    }
+
+    #[test]
+    fn redact_array_of_tables() {
+        let mut val: toml::Value = toml::from_str(
+            r#"
+            [[providers]]
+            api_key = "sk-longkeyvalue1234"
+            [[providers]]
+            name = "other"
+            "#,
+        )
+        .unwrap();
+        redact_config_keys(&mut val);
+        let first = val["providers"][0]["api_key"].as_str().unwrap();
+        assert!(first.contains("..."));
+    }
+
+    #[test]
+    fn redact_no_api_key() {
+        let mut val: toml::Value = toml::from_str(r#"name = "hello""#).unwrap();
+        redact_config_keys(&mut val);
+        assert_eq!(val["name"].as_str().unwrap(), "hello");
+    }
+
+    // --- should_check_for_updates ---
+
+    #[test]
+    fn should_check_no_previous_check() {
+        let db = db::Db::open_in_memory().unwrap();
+        assert!(should_check_for_updates(&db));
+    }
+
+    #[test]
+    fn should_check_recent_check() {
+        let db = db::Db::open_in_memory().unwrap();
+        db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())
+            .unwrap();
+        assert!(!should_check_for_updates(&db));
+    }
+
+    #[test]
+    fn should_check_old_check() {
+        let db = db::Db::open_in_memory().unwrap();
+        let old = chrono::Utc::now() - chrono::Duration::hours(25);
+        db.set_meta("last_update_check", &old.to_rfc3339())
+            .unwrap();
+        assert!(should_check_for_updates(&db));
+    }
+
+    #[test]
+    fn should_check_invalid_timestamp() {
+        let db = db::Db::open_in_memory().unwrap();
+        db.set_meta("last_update_check", "not-a-date").unwrap();
+        assert!(should_check_for_updates(&db));
+    }
+}

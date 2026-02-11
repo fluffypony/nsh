@@ -847,6 +847,432 @@ mod tests {
         assert!(search_def.parameters["properties"]["q"].is_object());
     }
 
+    fn make_multi_server_client() -> McpClient {
+        let mut client = McpClient::new();
+        let make_server = |tools: Vec<(&str, &str)>| McpServer {
+            transport: McpTransport::Http {
+                client: reqwest::Client::new(),
+                url: "http://localhost".into(),
+                session_id: None,
+                headers: vec![],
+            },
+            tools: tools
+                .into_iter()
+                .map(|(n, d)| McpToolInfo {
+                    name: n.into(),
+                    description: d.into(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                })
+                .collect(),
+            next_id: 1,
+            timeout: Duration::from_secs(30),
+        };
+        client.servers.insert(
+            "alpha".into(),
+            make_server(vec![("list", "List items"), ("get", "Get item")]),
+        );
+        client.servers.insert(
+            "beta".into(),
+            make_server(vec![("create", "Create item"), ("delete", "Delete item")]),
+        );
+        client
+    }
+
+    #[test]
+    fn tool_definitions_multiple_servers() {
+        let client = make_multi_server_client();
+        let defs = client.tool_definitions();
+        assert_eq!(defs.len(), 4);
+        let names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+        assert!(names.contains(&"mcp_alpha_list".to_string()));
+        assert!(names.contains(&"mcp_alpha_get".to_string()));
+        assert!(names.contains(&"mcp_beta_create".to_string()));
+        assert!(names.contains(&"mcp_beta_delete".to_string()));
+    }
+
+    #[test]
+    fn tool_definitions_multiple_servers_descriptions() {
+        let client = make_multi_server_client();
+        let defs = client.tool_definitions();
+        let list_def = defs.iter().find(|d| d.name == "mcp_alpha_list").unwrap();
+        assert_eq!(list_def.description, "List items");
+        let delete_def = defs.iter().find(|d| d.name == "mcp_beta_delete").unwrap();
+        assert_eq!(delete_def.description, "Delete item");
+    }
+
+    #[test]
+    fn has_tool_multiple_underscores_in_tool_name() {
+        let mut client = McpClient::new();
+        client.servers.insert(
+            "srv".into(),
+            McpServer {
+                transport: McpTransport::Http {
+                    client: reqwest::Client::new(),
+                    url: "http://localhost".into(),
+                    session_id: None,
+                    headers: vec![],
+                },
+                tools: vec![McpToolInfo {
+                    name: "do_something_complex".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({}),
+                }],
+                next_id: 1,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        assert!(client.has_tool("mcp_srv_do_something_complex"));
+    }
+
+    #[test]
+    fn has_tool_empty_name() {
+        let client = make_populated_client();
+        assert!(!client.has_tool(""));
+    }
+
+    #[test]
+    fn has_tool_just_mcp_prefix() {
+        let client = make_populated_client();
+        assert!(!client.has_tool("mcp_"));
+    }
+
+    #[test]
+    fn parse_tool_name_tool_with_underscores() {
+        let mut client = McpClient::new();
+        client.servers.insert(
+            "db".into(),
+            McpServer {
+                transport: McpTransport::Http {
+                    client: reqwest::Client::new(),
+                    url: "http://localhost".into(),
+                    session_id: None,
+                    headers: vec![],
+                },
+                tools: vec![McpToolInfo {
+                    name: "get_all_records".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({}),
+                }],
+                next_id: 1,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        let result = client.parse_tool_name("mcp_db_get_all_records");
+        assert_eq!(result, Some(("db", "get_all_records")));
+    }
+
+    #[test]
+    fn parse_tool_name_long_server_name() {
+        let mut client = McpClient::new();
+        let long_name = "a".repeat(200);
+        client.servers.insert(
+            long_name.clone(),
+            McpServer {
+                transport: McpTransport::Http {
+                    client: reqwest::Client::new(),
+                    url: "http://localhost".into(),
+                    session_id: None,
+                    headers: vec![],
+                },
+                tools: vec![McpToolInfo {
+                    name: "x".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({}),
+                }],
+                next_id: 1,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        let tool_str = format!("mcp_{}_x", long_name);
+        let result = client.parse_tool_name(&tool_str);
+        assert_eq!(result, Some((long_name.as_str(), "x")));
+    }
+
+    #[test]
+    fn server_info_multiple_servers() {
+        let client = make_multi_server_client();
+        let info = client.server_info();
+        assert_eq!(info.len(), 2);
+        let mut sorted = info.clone();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(sorted[0].0, "alpha");
+        assert_eq!(sorted[0].1, 2);
+        assert_eq!(sorted[1].0, "beta");
+        assert_eq!(sorted[1].1, 2);
+    }
+
+    #[test]
+    fn drop_empty_client_does_not_panic() {
+        let client = McpClient::new();
+        drop(client);
+    }
+
+    #[test]
+    fn drop_populated_http_client_does_not_panic() {
+        let client = make_populated_client();
+        drop(client);
+    }
+
+    #[test]
+    fn find_event_boundary_only_delimiters_lf() {
+        assert_eq!(find_event_boundary(b"\n\n"), Some((0, 2)));
+    }
+
+    #[test]
+    fn find_event_boundary_only_delimiters_crlf() {
+        assert_eq!(find_event_boundary(b"\r\n\r\n"), Some((0, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_mixed_crlf_then_lf() {
+        let buf = b"data: a\r\n\r\ndata: b\n\n";
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((7, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_lf_before_crlf() {
+        // CRLF boundary is checked first, so \r\n\r\n at pos 16 is found before \n\n at pos 7
+        let buf = b"data: a\n\ndata: b\r\n\r\n";
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((16, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_no_crlf_only_lf_available_late() {
+        let buf = b"no boundary here yet\n\n";
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((20, 2)));
+    }
+
+    #[test]
+    fn jsonrpc_response_nested_result() {
+        let json = r#"{"jsonrpc":"2.0","id":10,"result":{"tools":[{"name":"search","inputSchema":{"type":"object","properties":{"q":{"type":"string","description":"query"}}}}]}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(10));
+        let result = resp.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "search");
+        assert_eq!(tools[0]["inputSchema"]["properties"]["q"]["type"], "string");
+    }
+
+    #[test]
+    fn jsonrpc_response_error_long_message() {
+        let long_msg = "x".repeat(5000);
+        let json = format!(
+            r#"{{"jsonrpc":"2.0","id":99,"error":{{"code":-32000,"message":"{}"}}}}"#,
+            long_msg
+        );
+        let resp: JsonRpcResponse = serde_json::from_str(&json).unwrap();
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert_eq!(err.message.len(), 5000);
+    }
+
+    #[test]
+    fn jsonrpc_response_error_with_result_absent() {
+        let json = r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32601,"message":"not found"}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn jsonrpc_request_various_methods() {
+        for method in &["initialize", "tools/list", "tools/call", "shutdown", "custom/method"] {
+            let req = JsonRpcRequest {
+                jsonrpc: "2.0",
+                id: 1,
+                method: method.to_string(),
+                params: None,
+            };
+            let json = serde_json::to_value(&req).unwrap();
+            assert_eq!(json["method"], *method);
+        }
+    }
+
+    #[test]
+    fn jsonrpc_request_complex_params() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 5,
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({
+                "name": "search",
+                "arguments": {
+                    "query": "hello world",
+                    "limit": 10,
+                    "nested": {"deep": [1, 2, 3]}
+                }
+            })),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["params"]["arguments"]["nested"]["deep"][1], 2);
+    }
+
+    #[test]
+    fn jsonrpc_request_empty_params_object() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "test".to_string(),
+            params: Some(serde_json::json!({})),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json["params"].is_object());
+        assert_eq!(json["params"].as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn mcp_tool_info_construction() {
+        let tool = McpToolInfo {
+            name: "my_tool".into(),
+            description: "Does things".into(),
+            input_schema: serde_json::json!({"type": "object", "properties": {"a": {"type": "number"}}}),
+        };
+        assert_eq!(tool.name, "my_tool");
+        assert_eq!(tool.description, "Does things");
+        assert_eq!(tool.input_schema["properties"]["a"]["type"], "number");
+    }
+
+    #[test]
+    fn mcp_tool_info_empty_fields() {
+        let tool = McpToolInfo {
+            name: String::new(),
+            description: String::new(),
+            input_schema: serde_json::json!({}),
+        };
+        assert!(tool.name.is_empty());
+        assert!(tool.description.is_empty());
+    }
+
+    #[test]
+    fn new_client_then_tool_definitions() {
+        let client = McpClient::new();
+        let defs = client.tool_definitions();
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn new_client_then_server_info() {
+        let client = McpClient::new();
+        let info = client.server_info();
+        assert!(info.is_empty());
+    }
+
+    #[test]
+    fn new_client_then_has_tool() {
+        let client = McpClient::new();
+        assert!(!client.has_tool("mcp_any_tool"));
+        assert!(!client.has_tool("anything"));
+        assert!(!client.has_tool(""));
+    }
+
+    #[test]
+    fn new_client_then_parse_tool_name() {
+        let client = McpClient::new();
+        assert!(client.parse_tool_name("mcp_server_tool").is_none());
+    }
+
+    #[test]
+    fn has_tool_across_multiple_servers() {
+        let client = make_multi_server_client();
+        assert!(client.has_tool("mcp_alpha_list"));
+        assert!(client.has_tool("mcp_alpha_get"));
+        assert!(client.has_tool("mcp_beta_create"));
+        assert!(client.has_tool("mcp_beta_delete"));
+        assert!(!client.has_tool("mcp_gamma_list"));
+    }
+
+    #[test]
+    fn parse_tool_name_across_multiple_servers() {
+        let client = make_multi_server_client();
+        assert_eq!(
+            client.parse_tool_name("mcp_alpha_list"),
+            Some(("alpha", "list"))
+        );
+        assert_eq!(
+            client.parse_tool_name("mcp_beta_delete"),
+            Some(("beta", "delete"))
+        );
+        assert!(client.parse_tool_name("mcp_gamma_x").is_none());
+    }
+
+    #[test]
+    fn jsonrpc_notification_method_with_slashes() {
+        let notif = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "notifications/tools/list_changed".to_string(),
+            params: None,
+        };
+        let json = serde_json::to_value(&notif).unwrap();
+        assert_eq!(json["method"], "notifications/tools/list_changed");
+    }
+
+    #[test]
+    fn jsonrpc_response_both_result_and_error() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true},"error":{"code":-1,"message":"odd"}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn jsonrpc_response_large_id() {
+        let json = r#"{"jsonrpc":"2.0","id":18446744073709551615,"result":{}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(u64::MAX));
+    }
+
+    #[test]
+    fn server_info_server_with_no_tools() {
+        let mut client = McpClient::new();
+        client.servers.insert(
+            "empty_srv".into(),
+            McpServer {
+                transport: McpTransport::Http {
+                    client: reqwest::Client::new(),
+                    url: "http://localhost".into(),
+                    session_id: None,
+                    headers: vec![],
+                },
+                tools: vec![],
+                next_id: 1,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        let info = client.server_info();
+        assert_eq!(info.len(), 1);
+        assert_eq!(info[0].1, 0);
+    }
+
+    #[test]
+    fn tool_definitions_server_with_no_tools() {
+        let mut client = McpClient::new();
+        client.servers.insert(
+            "empty_srv".into(),
+            McpServer {
+                transport: McpTransport::Http {
+                    client: reqwest::Client::new(),
+                    url: "http://localhost".into(),
+                    session_id: None,
+                    headers: vec![],
+                },
+                tools: vec![],
+                next_id: 1,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        assert!(client.tool_definitions().is_empty());
+    }
+
+    #[test]
+    fn mcp_protocol_version_format() {
+        assert!(MCP_PROTOCOL_VERSION.contains('-'));
+        assert_eq!(MCP_PROTOCOL_VERSION.len(), 10);
+    }
+
     #[test]
     fn parse_tool_name_longest_server_match() {
         let mut client = McpClient::new();

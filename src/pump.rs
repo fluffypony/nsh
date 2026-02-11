@@ -2303,4 +2303,193 @@ mod tests {
         let b = vec!["d", "e", "f"];
         assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
     }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_single_element_identical() {
+        let a = vec!["x"];
+        let b = vec!["x"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 1);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_single_element_different() {
+        let a = vec!["x"];
+        let b = vec!["y"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 0);
+    }
+
+    #[test]
+    fn test_set_size_clears_prev_visible_and_verifies() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"line1\r\nline2\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.set_size(40, 120);
+        assert!(eng.prev_visible.is_empty());
+    }
+
+    #[test]
+    fn test_set_size_multiple_calls() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"data\r\n");
+        eng.set_size(10, 40);
+        eng.process(b"more\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.set_size(50, 200);
+        assert!(eng.prev_visible.is_empty());
+        eng.process(b"final\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("final"));
+    }
+
+    #[test]
+    fn test_max_history_lines_zero_no_eviction() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 0, "vt100".into(), "drop".into());
+        for i in 0..50 {
+            eng.push_history_line(format!("line{i}"));
+        }
+        assert_eq!(eng.history_lines.len(), 50);
+    }
+
+    #[test]
+    fn test_get_lines_alternate_screen_returns_empty() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"visible stuff\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"alt screen data\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_get_lines_large_max_returns_all() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..10 {
+            eng.process(format!("line{i}\r\n").as_bytes());
+        }
+        let output = eng.get_lines(100_000);
+        for i in 0..10 {
+            assert!(output.contains(&format!("line{i}")));
+        }
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_both_empty_vecs() {
+        let prev: Vec<String> = vec![];
+        let cur: Vec<String> = vec![];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_single_element_replaced() {
+        let prev: Vec<String> = vec!["a".into()];
+        let cur: Vec<String> = vec!["b".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a"]);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_exactly_150_lines_boundary() {
+        let lines: Vec<String> = (0..150).map(|i| format!("L{i:04}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 1_000_000);
+        assert!(!result.contains("omitted"));
+        assert!(result.contains("L0000"));
+        assert!(result.contains("L0149"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_max_bytes_exceeded_with_many_lines() {
+        let lines: Vec<String> = (0..200).map(|i| "X".repeat(100) + &format!("{i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 500);
+        assert!(result.contains("[... truncated by nsh]"));
+        assert!(result.len() <= 500 + 50);
+    }
+
+    #[test]
+    fn test_sanitize_input_high_bytes_specific_values() {
+        let input: Vec<u8> = vec![0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0xFF];
+        let result = sanitize_input(&input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_input_interleaved_valid_invalid_high() {
+        let input = vec![0x00, 0x80, 0x03, 0xFF, 0x05, b'A', 0x0A];
+        let result = sanitize_input(&input);
+        assert_eq!(result, vec![0x80, 0xFF, b'A', 0x0A]);
+    }
+
+    #[test]
+    fn test_drop_mode_does_not_detect_scrolled_after_alt_screen() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"line1\r\nline2\r\n");
+        let hist_before = eng.total_line_count();
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"tui\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"line3\r\n");
+        let hist_after = eng.total_line_count();
+        assert_eq!(hist_after, hist_before, "drop mode should not detect scrolled lines after alt screen exit");
+    }
+
+    #[test]
+    fn test_snapshot_mode_preserves_prev_visible_across_alt() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "snapshot".into());
+        eng.process(b"before\r\n");
+        let saved = eng.prev_visible.clone();
+        assert!(!saved.is_empty());
+        eng.process(b"\x1b[?1049h");
+        assert!(eng.in_alternate_screen);
+        eng.process(b"\x1b[?1049l");
+        assert_eq!(eng.prev_visible, saved);
+    }
+
+    #[test]
+    fn test_capture_since_mark_double_call_second_is_none() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"initial\r\n");
+        eng.mark();
+        eng.process(b"captured\r\n");
+        assert!(eng.capture_since_mark(65536).is_some());
+        assert!(eng.capture_since_mark(65536).is_none());
+    }
+
+    #[test]
+    fn test_total_line_count_empty_engine() {
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        assert_eq!(eng.total_line_count(), 0);
+    }
+
+    #[test]
+    fn test_get_lines_strips_bracketed_paste_sequences() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"\x1b[200~pasted text\x1b[201~\r\n");
+        let output = eng.get_lines(100);
+        assert!(!output.contains("\x1b[200~"));
+        assert!(!output.contains("\x1b[201~"));
+    }
+
+    #[test]
+    fn test_set_size_then_process_captures_correctly() {
+        let mut eng = CaptureEngine::new(4, 40, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"small\r\n");
+        eng.set_size(24, 80);
+        eng.process(b"after resize content\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("after resize content"));
+    }
+
+    #[test]
+    fn test_new_engine_defaults() {
+        let eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        assert!(!eng.in_alternate_screen);
+        assert!(eng.mark_state.is_none());
+        assert!(eng.history_lines.is_empty());
+        assert!(eng.prev_visible.is_empty());
+        assert!(!eng.suppressed);
+        assert!(eng.paused_until.is_none());
+        assert_eq!(eng.max_history_lines, 10_000);
+    }
 }

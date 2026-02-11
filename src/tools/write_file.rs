@@ -482,4 +482,112 @@ mod tests {
         print_diff("a\nb\nc", "a\nb");
         print_diff("a\nb", "a\nb\nc");
     }
+
+    #[test]
+    fn test_print_diff_identical_multiline() {
+        let content = "line1\nline2\nline3\nline4\nline5";
+        print_diff(content, content);
+    }
+
+    #[test]
+    fn test_print_diff_empty_old_nonempty_new() {
+        print_diff("", "new line1\nnew line2\nnew line3");
+    }
+
+    #[test]
+    fn test_print_diff_nonempty_old_empty_new() {
+        print_diff("old line1\nold line2\nold line3", "");
+    }
+
+    #[test]
+    fn test_print_diff_exactly_100_lines() {
+        let content = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        print_diff(&content, &content);
+    }
+
+    #[test]
+    fn test_print_diff_truncation_over_100_lines() {
+        let old = (1..=101).map(|i| format!("old {i}")).collect::<Vec<_>>().join("\n");
+        let new = (1..=101).map(|i| format!("new {i}")).collect::<Vec<_>>().join("\n");
+        print_diff(&old, &new);
+    }
+
+    #[test]
+    fn test_print_preview_exactly_50_lines() {
+        let content = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        print_preview(&content);
+    }
+
+    #[test]
+    fn test_print_preview_51_lines_truncates() {
+        let content = (1..=51).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        print_preview(&content);
+    }
+
+    #[test]
+    fn test_validate_path_allow_sensitive() {
+        let home = dirs::home_dir().unwrap();
+        let ssh = home.join(".ssh/test_key");
+        assert!(validate_path_with_access(&ssh, "allow").is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_nul_byte() {
+        let bad = PathBuf::from("foo\0bar");
+        let err = validate_path_with_access(&bad, "block").unwrap_err();
+        assert!(
+            err.to_string().contains("NUL"),
+            "expected NUL byte error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_path_directory_target() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = validate_path_with_access(dir.path(), "block").unwrap_err();
+        assert!(
+            err.to_string().contains("not a regular file"),
+            "expected not a regular file error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_backup_to_trash_filename_format() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        writeln!(tmp, "content").unwrap();
+
+        let backup_path = backup_to_trash(tmp.path()).unwrap();
+        let name = backup_path.file_name().unwrap().to_string_lossy();
+        assert!(name.contains("nsh_backup"), "should contain nsh_backup: {name}");
+        assert!(
+            regex::Regex::new(r"\d{8}_\d{6}").unwrap().is_match(&name),
+            "should contain timestamp YYYYMMDD_HHMMSS: {name}"
+        );
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    #[test]
+    fn test_write_nofollow_empty_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("empty.txt");
+        write_nofollow(&path, "").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn test_write_nofollow_unicode_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("unicode.txt");
+        let content = "こんにちは世界 🌍 é à ü ñ";
+        write_nofollow(&path, content).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn test_expand_tilde_nested_path() {
+        let result = expand_tilde("~/a/b/c");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(result, home.join("a/b/c"));
+    }
 }

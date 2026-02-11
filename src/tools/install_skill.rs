@@ -139,4 +139,92 @@ mod tests {
         let result = super::execute(&input);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_name_numbers_only_valid() {
+        let input = json!({"name": "12345", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_ok(), "Numeric-only name should pass validation");
+    }
+
+    #[test]
+    fn test_name_leading_underscore_valid() {
+        let input = json!({"name": "_private", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_ok(), "Leading underscore name should pass validation");
+    }
+
+    #[test]
+    fn test_name_with_dash_rejected() {
+        let input = json!({"name": "my-skill", "description": "test", "command": "echo"});
+        let result = super::execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_toml_content_format() {
+        let input = json!({
+            "name": "test_skill",
+            "description": "A test skill",
+            "command": "echo hello",
+            "timeout_seconds": 60,
+            "terminal": true,
+        });
+
+        let name = input["name"].as_str().unwrap();
+        let description = input["description"].as_str().unwrap();
+        let command = input["command"].as_str().unwrap();
+        let timeout = input["timeout_seconds"].as_u64().unwrap();
+        let terminal = input["terminal"].as_bool().unwrap();
+
+        let toml_content = format!(
+            "name = {}\ndescription = {}\ncommand = {}\ntimeout_seconds = {}\nterminal = {}\n",
+            toml::Value::String(name.into()),
+            toml::Value::String(description.into()),
+            toml::Value::String(command.into()),
+            timeout,
+            terminal,
+        );
+
+        assert!(toml_content.contains("name = \"test_skill\""));
+        assert!(toml_content.contains("description = \"A test skill\""));
+        assert!(toml_content.contains("command = \"echo hello\""));
+        assert!(toml_content.contains("timeout_seconds = 60"));
+        assert!(toml_content.contains("terminal = true"));
+    }
+
+    #[test]
+    fn test_parameters_toml_generation() {
+        let params = serde_json::json!({
+            "query": {
+                "type": "string",
+                "description": "Search query"
+            },
+            "count": {
+                "type": "integer",
+                "description": "Number of results"
+            }
+        });
+
+        let mut toml_content = String::new();
+        if let serde_json::Value::Object(params_map) = &params {
+            for (param_name, param_def) in params_map {
+                let ptype = param_def["type"].as_str().unwrap_or("string");
+                let pdesc = param_def["description"].as_str().unwrap_or("");
+                toml_content.push_str(&format!(
+                    "\n[parameters.{param_name}]\ntype = {}\ndescription = {}\n",
+                    toml::Value::String(ptype.into()),
+                    toml::Value::String(pdesc.into()),
+                ));
+            }
+        }
+
+        assert!(toml_content.contains("[parameters.query]"));
+        assert!(toml_content.contains("type = \"string\""));
+        assert!(toml_content.contains("description = \"Search query\""));
+        assert!(toml_content.contains("[parameters.count]"));
+        assert!(toml_content.contains("type = \"integer\""));
+        assert!(toml_content.contains("description = \"Number of results\""));
+    }
 }
