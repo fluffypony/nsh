@@ -196,23 +196,11 @@ fn extract_host_filters(query: &str) -> Vec<String> {
 
 fn extract_ssh_target(command: &str) -> Option<String> {
     let tokens = shell_words::split(command).ok()?;
-    let mut i = 0usize;
-
-    while i < tokens.len() {
-        let tok = tokens[i].as_str();
-
-        if tok == "sudo" || tok == "env" || is_env_assignment(tok) {
-            i += 1;
-            continue;
-        }
-
-        if tok == "ssh" || tok.ends_with("/ssh") {
-            return parse_ssh_target_after(&tokens, i + 1);
-        }
-
-        i += 1;
+    let cmd_idx = find_invoked_command_index(&tokens)?;
+    let cmd = tokens[cmd_idx].as_str();
+    if cmd == "ssh" || cmd.ends_with("/ssh") {
+        return parse_ssh_target_after(&tokens, cmd_idx + 1);
     }
-
     None
 }
 
@@ -242,6 +230,76 @@ fn parse_ssh_target_after(tokens: &[String], mut i: usize) -> Option<String> {
 
 fn is_env_assignment(token: &str) -> bool {
     !token.starts_with('-') && token.contains('=') && !token.starts_with("ssh")
+}
+
+fn find_invoked_command_index(tokens: &[String]) -> Option<usize> {
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        if tok == "env" {
+            i += 1;
+            while i < tokens.len() {
+                let t = tokens[i].as_str();
+                if t == "--" {
+                    i += 1;
+                    break;
+                }
+                if t == "-u" {
+                    i = (i + 2).min(tokens.len());
+                    continue;
+                }
+                if t.starts_with('-') || is_env_assignment(t) {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
+        if tok == "sudo" {
+            i += 1;
+            while i < tokens.len() {
+                let t = tokens[i].as_str();
+                if t == "--" {
+                    i += 1;
+                    break;
+                }
+                if t == "-u"
+                    || t == "-g"
+                    || t == "-h"
+                    || t == "-p"
+                    || t == "-r"
+                    || t == "-t"
+                    || t == "-C"
+                    || t == "--user"
+                    || t == "--group"
+                    || t == "--host"
+                    || t == "--prompt"
+                    || t == "--chroot"
+                    || t == "--command-timeout"
+                {
+                    i = (i + 2).min(tokens.len());
+                    continue;
+                }
+                if t.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
+        if tok == "command" || tok == "builtin" || tok == "noglob" || tok == "nocorrect" {
+            i += 1;
+            continue;
+        }
+        if is_env_assignment(tok) {
+            i += 1;
+            continue;
+        }
+        return Some(i);
+    }
+    None
 }
 
 fn ssh_option_takes_value(tok: &str) -> bool {
@@ -697,6 +755,22 @@ mod tests {
     fn test_extract_ssh_target_skips_non_ssh() {
         assert_eq!(extract_ssh_target("systemctl restart sshd"), None);
         assert_eq!(extract_ssh_target("echo ssh"), None);
+        assert_eq!(
+            extract_ssh_target("nsh query --private what servers have I sshd into recently"),
+            None
+        );
+        assert_eq!(
+            extract_ssh_target("nsh query --private when did I last ssh into 135.181.128.145"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_extract_ssh_target_with_sudo_wrapper() {
+        assert_eq!(
+            extract_ssh_target("sudo -u deploy ssh admin@10.0.0.8"),
+            Some("admin@10.0.0.8".to_string())
+        );
     }
 
     #[test]
