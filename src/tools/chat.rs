@@ -11,8 +11,16 @@ pub fn execute(
 ) -> anyhow::Result<()> {
     let response = input["response"].as_str().unwrap_or("");
 
-    let skin = termimad::MadSkin::default();
-    skin.write_text_on(&mut std::io::stderr(), response)?;
+    if crate::streaming::json_output_enabled() {
+        let event = serde_json::json!({
+            "type": "chat",
+            "response": response,
+        });
+        eprintln!("{}", serde_json::to_string(&event)?);
+    } else {
+        let skin = termimad::MadSkin::default();
+        skin.write_text_on(&mut std::io::stderr(), response)?;
+    }
 
     if !private {
         crate::audit::audit_log(session_id, original_query, "chat", response, "safe");

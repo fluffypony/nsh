@@ -276,6 +276,7 @@ pub fn build_openai_tools(tools: &[crate::tools::ToolDefinition]) -> Vec<serde_j
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::provider::{ContentBlock, Message, Role};
@@ -1781,8 +1782,7 @@ mod tests {
             let mut buf = vec![0u8; 4096];
             let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
             let http = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
-                response_body
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{response_body}",
             );
             let _ = socket.write_all(http.as_bytes()).await;
             let _ = socket.shutdown().await;

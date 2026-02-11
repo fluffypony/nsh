@@ -381,11 +381,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_daemon_protocol_version() {
-        assert!(DAEMON_PROTOCOL_VERSION >= 1);
-    }
-
-    #[test]
     fn test_default_max_lines() {
         assert_eq!(default_max_lines(), 1000);
     }
@@ -1123,13 +1118,8 @@ mod tests {
     fn test_handle_record_db_thread_hung_up() {
         let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
         std::thread::spawn(move || {
-            if let Ok(cmd) = rx.recv() {
-                match cmd {
-                    DbCommand::Record { reply, .. } => {
-                        drop(reply);
-                    }
-                    _ => {}
-                }
+            if let Ok(DbCommand::Record { reply, .. }) = rx.recv() {
+                drop(reply);
             }
         });
 
@@ -1371,18 +1361,18 @@ mod tests {
     #[test]
     fn test_daemon_request_debug_trait() {
         let req = DaemonRequest::Status;
-        let dbg = format!("{:?}", req);
+        let dbg = format!("{req:?}");
         assert!(dbg.contains("Status"));
     }
 
     #[test]
     fn test_daemon_response_debug_trait() {
         let resp = DaemonResponse::ok();
-        let dbg = format!("{:?}", resp);
+        let dbg = format!("{resp:?}");
         assert!(dbg.contains("Ok"));
 
         let resp_err = DaemonResponse::error("fail");
-        let dbg_err = format!("{:?}", resp_err);
+        let dbg_err = format!("{resp_err:?}");
         assert!(dbg_err.contains("Error"));
         assert!(dbg_err.contains("fail"));
     }
@@ -1453,13 +1443,8 @@ mod tests {
     fn test_handle_heartbeat_db_thread_hung_up() {
         let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
         std::thread::spawn(move || {
-            if let Ok(cmd) = rx.recv() {
-                match cmd {
-                    DbCommand::Heartbeat { reply, .. } => {
-                        drop(reply);
-                    }
-                    _ => {}
-                }
+            if let Ok(DbCommand::Heartbeat { reply, .. }) = rx.recv() {
+                drop(reply);
             }
         });
 
@@ -2162,9 +2147,8 @@ mod tests {
         let (db_tx, db_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             while let Ok(cmd) = db_rx.recv() {
-                match cmd {
-                    DbCommand::GenerateSummaries => break,
-                    _ => {}
+                if let DbCommand::GenerateSummaries = cmd {
+                    break;
                 }
             }
         });

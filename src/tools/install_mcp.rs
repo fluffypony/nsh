@@ -197,7 +197,6 @@ mod tests {
     fn test_execute_valid_name_with_hyphens() {
         // Valid name with hyphens should pass validation
         // but will fail on interactive prompt (which is fine for validation test)
-        let input = json!({"name": "my-server", "transport": "stdio", "command": "echo"});
         // This will try to read stdin and fail in test, but at least validates the name
         // Actually we can't easily test past the stdin read. Let's just test validation:
         assert!("my-server".chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'));

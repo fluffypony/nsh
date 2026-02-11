@@ -85,7 +85,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             words,
             think,
             private,
-            json: _,
+            json,
         } => {
             if words.is_empty() {
                 eprintln!("Usage: ? <your question>");
@@ -120,9 +120,28 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             if private {
-                eprintln!("\x1b[2m🔒 private mode\x1b[0m");
+                if json {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({"type": "private_mode", "enabled": true})
+                    );
+                } else {
+                    eprintln!("\x1b[2m🔒 private mode\x1b[0m");
+                }
             }
-            let result = query::handle_query(&query_text, &config, &db, &session_id, think, private, force_autorun).await;
+            let result = query::handle_query(
+                &query_text,
+                &config,
+                &db,
+                &session_id,
+                query::QueryOptions {
+                    think,
+                    private,
+                    force_autorun,
+                    json_output: json,
+                },
+            )
+            .await;
             if let Err(ref e) = result {
                 if e.to_string().contains("interrupted") {
                     std::process::exit(130);
@@ -634,8 +653,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         }
                     }
                 }
-                if let Err(e) =
-                    query::handle_query(line, &config, &db, &session_id, false, false, false).await
+                if let Err(e) = query::handle_query(
+                    line,
+                    &config,
+                    &db,
+                    &session_id,
+                    query::QueryOptions::default(),
+                )
+                .await
                 {
                     eprintln!("\x1b[33mnsh: {e}\x1b[0m");
                 }
@@ -1578,7 +1603,7 @@ mod tests {
     fn redact_non_string_api_key_bool() {
         let mut val: toml::Value = toml::from_str("api_key = true").unwrap();
         redact_config_keys(&mut val);
-        assert_eq!(val["api_key"].as_bool().unwrap(), true);
+        assert!(val["api_key"].as_bool().unwrap());
     }
 
     #[test]

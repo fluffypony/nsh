@@ -1,398 +1,446 @@
-# nsh — Natural Shell
+# nsh - Natural Shell
 
-An AI-powered shell assistant that lives in your terminal. Ask questions in
-natural language, get commands prefilled at your prompt, and let the AI
-investigate your environment before answering — reading files, searching
-history, browsing the web, and more.
+AI-powered shell assistant for `zsh`, `bash`, and `fish`.
 
-## Features
+`nsh` sits in your terminal loop: it records command history, understands your active
+project context, and turns natural-language requests into either:
 
-- **Natural language queries** — type `?` or `??` followed by what you want
-- **Command prefill** — suggested commands appear at your prompt for review before execution
-- **Context-aware** — captures per-command output with AI summaries, scrollback, project info, and cross-session activity via XML context injection
-- **Tool-augmented AI** — the LLM can search history (FTS5/regex), read files, browse the web, list directories, run safe commands, read man pages, and ask you questions
-- **Multi-step workflows** — the AI chains investigative steps before suggesting a command (up to 10 iterations)
-- **Full-text search** — SQLite FTS5-backed search across all command history and output
-- **Multi-session awareness** — sees what you're doing in other active terminal sessions
-- **Conversation memory** — maintains context within a session for follow-up queries
+- a prefilled shell command for you to review, or
+- a direct chat response when no command is needed.
+
+It can investigate with built-in tools (history search, file reads, safe command execution,
+web search, config editing, memory, MCP servers, and more) before deciding what to do.
+
+## Highlights
+
+- Natural-language aliases: `?`, `??`, and `?!`
+- Command prefill workflow (no blind auto-execution by default)
+- Multi-step agent loop with tool calling and follow-up actions
+- SQLite-backed command/session/conversation history with FTS5 search
+- Cross-session context from other active TTYs (optional)
+- PTY capture mode for scrollback-aware assistance
+- Secret redaction before model calls
+- Multiple providers: `openrouter`, `anthropic`, `openai`, `ollama`, `gemini`
+- Built-in self-update flow with SHA256 verification
 
 ## Requirements
 
-- **Rust 1.85+** (2024 edition)
-- **macOS or Linux** (uses POSIX PTY APIs)
-- **Zsh or Bash**
-- An [OpenRouter](https://openrouter.ai/) API key
-
-## Quick Start
-
-```bash
-cargo install --path .
-
-mkdir -p ~/.nsh
-cat > ~/.nsh/config.toml << 'EOF'
-[provider]
-default = "openrouter"
-
-[provider.openrouter]
-api_key = "sk-or-v1-..."
-EOF
-```
-
-Add shell integration to your shell config:
-
-```bash
-# Zsh (~/.zshrc)
-eval "$(nsh init zsh)"
-
-# Bash (~/.bashrc)
-eval "$(nsh init bash)"
-```
-
-Start a new shell session, then:
-
-```bash
-? why is my docker build failing
-? install ripgrep
-?? set up a python venv for this project
-```
+- Rust 1.85+ (edition 2024)
+- macOS or Linux
+- `zsh`, `bash`, or `fish`
+- At least one model provider configured (OpenRouter is the default path)
 
 ## Installation
 
-```bash
-# Install from source (puts binary in ~/.cargo/bin)
-cargo install --path .
+### Option 1: Install script
 
-# Or build a release binary manually
+```bash
+curl -fsSL https://raw.githubusercontent.com/fluffypony/nsh/main/install.sh | bash
+```
+
+### Option 2: Build/install from source
+
+```bash
+cargo install --path . --locked
+```
+
+### Option 3: Build local release binary
+
+```bash
 cargo build --release
-# Binary at target/release/nsh
+# target/release/nsh
 ```
 
-The release profile is optimized for size with LTO, single codegen unit,
-symbol stripping, and `opt-level = "z"`.
+## Quick Start
 
-## Setup
+### 1) Configure a provider
 
-### 1. Shell Integration
+Create `~/.nsh/config.toml`:
 
-Add one of these to your shell config file:
-
-```bash
-# Zsh (~/.zshrc)
-eval "$(nsh init zsh)"
-
-# Bash (~/.bashrc)
-eval "$(nsh init bash)"
-```
-
-This installs:
-- `?` and `??` aliases that route queries to `nsh query`
-- `preexec`/`precmd` hooks (zsh) or `DEBUG` trap + `PROMPT_COMMAND` (bash) to record commands and exit codes
-- A pending-command check that prefills suggested commands at your prompt
-- Session cleanup on shell exit via `EXIT` trap
-
-Each `eval` generates a unique `NSH_SESSION_ID` (UUID v4) for the shell
-session and exports it along with `NSH_TTY`.
-
-### 2. API Key
-
-```bash
-mkdir -p ~/.nsh
-cat > ~/.nsh/config.toml << 'EOF'
+```toml
 [provider]
 default = "openrouter"
 model = "google/gemini-2.5-flash"
 
 [provider.openrouter]
 api_key = "sk-or-v1-..."
-EOF
+# or: api_key_cmd = "op read 'op://Vault/OpenRouter/credential'"
 ```
 
-To retrieve the key from a command (e.g. a password manager) instead of
-storing it in plaintext:
+Environment variable fallback is also supported:
 
-```toml
-[provider.openrouter]
-api_key_cmd = "op read 'op://Vault/OpenRouter/credential'"
-```
+- `OPENROUTER_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 
-When both `api_key` and `api_key_cmd` are set, `api_key` takes precedence
-if non-empty. The command is run via `sh -c`.
+### 2) Enable shell integration
 
-### 3. Scrollback Capture (Optional)
-
-To let the AI read your recent terminal output via the `scrollback` tool,
-start your shell through the PTY wrapper:
+Add one line to your shell rc file:
 
 ```bash
-# Add to your shell config, BEFORE the eval line
-nsh wrap
+# zsh
+command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
+eval "$(nsh init zsh)"
+
+# bash
+command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
+eval "$(nsh init bash)"
+
+# fish
+command -v nsh >/dev/null; and not set -q NSH_PTY_ACTIVE; and nsh wrap
+nsh init fish | source
 ```
 
-`nsh wrap` replaces the current process with a PTY-wrapped shell. Without
-it, the `scrollback` tool reports that PTY wrap mode is not active.
+`nsh wrap` is optional but recommended for scrollback-aware behavior.
 
-By default `nsh wrap` launches `$SHELL`; override with `--shell /path/to/shell`.
-
-## Usage
+### 3) Start using it
 
 ```bash
-# Ask a question — the AI picks the best tool
-? why is my docker build failing
-? install ripgrep
-? what does the -r flag do in cp
-
-# Same behavior with ??
-?? set up a python venv for this project
-
-# Search your command history (FTS5 full-text search)
-nsh history search "cargo build"
-nsh history search "docker" --limit 50
-
-# Clear conversation context for current session
-nsh reset
-
-# View or edit configuration
-nsh config            # Print config file path (default action)
-nsh config path       # Same as above
-nsh config show       # Print current config file contents
-nsh config edit       # Open in $EDITOR (defaults to vi)
+? why did my last command fail
+?? set up a python virtualenv for this repo
+?! what is the safest way to clean docker images
 ```
 
-## How It Works
+## Query Modes
 
-1. Shell hooks capture every command and its exit code into a local SQLite database
-2. `?` / `??` sends your natural language query to the configured LLM with context:
-   - OS, shell, current directory, and username
-   - Recent conversation history from this session
-   - Recent commands from other active terminal sessions (cross-TTY context)
-3. The LLM responds exclusively via tool calls in an agentic loop (up to 10 iterations)
-4. **Terminal tools** end the loop:
-   - `command` — writes the suggested command to a pending file; the shell hook prefills it at your prompt
-   - `chat` — displays a text response for knowledge questions
-5. **Intermediate tools** gather more context and the loop continues:
-   - `search_history` — FTS5/regex search across all command history, output, and summaries
-   - `grep_file` — regex search or read a local file
-   - `list_directory` — list files with metadata
-   - `web_search` — search the web via Perplexity/Sonar on OpenRouter
-   - `run_command` — execute safe, allowlisted commands silently
-   - `ask_user` — prompt for clarification or confirmation
-   - `man_page` — retrieve man page for a command
+- `? ...`: normal mode
+- `?? ...`: reasoning mode (`--think`)
+- `?! ...`: private mode (`--private`, avoids query/response history writes)
+- `nsh query --json ...`: JSON event stream output
 
-## Configuration
+Example JSON mode output includes event lines like:
 
-Configuration lives at `~/.nsh/config.toml`. All fields are optional; the
-defaults below are from the source code.
-
-```toml
-[provider]
-default = "openrouter"                           # LLM provider (openrouter, anthropic, or openai)
-model = "google/gemini-2.5-flash"                # Primary model
-fallback_model = "anthropic/claude-sonnet-4.5"  # Used if primary fails
-web_search_model = "perplexity/sonar"            # Model for the web_search tool
-
-[provider.openrouter]
-api_key = "sk-or-..."                            # API key (plaintext)
-api_key_cmd = "pass show openrouter"             # Or retrieve from command
-base_url = "https://openrouter.ai/api/v1"        # Custom base URL
-
-[context]
-scrollback_lines = 1000       # Max scrollback lines in capture buffer
-scrollback_pages = 10         # Pages of scrollback to inject into context
-history_summaries = 100       # Max command summaries in session context
-history_limit = 20            # Conversation history entries per session
-other_tty_summaries = 10      # Summaries per other TTY session
-max_other_ttys = 20           # Max other TTY sessions to include
-project_files_limit = 100     # Max project files in context
-git_commits = 10              # Recent git commits in context
-retention_days = 1095         # Auto-prune commands older than this (3 years)
-include_other_tty = false     # Include other terminal sessions in context
-custom_instructions = ""      # Custom instructions for the AI
-
-[tools]
-run_command_allowlist = [     # Commands the AI can run without approval
-    "uname", "which", "cat", "head", "tail", "wc",
-    "file", "stat", "ls", "echo", "whoami", "hostname",
-    "date", "env", "printenv", "id", "df", "free",
-    "python3 --version", "node --version",
-    "git status", "git branch", "git log", "git diff",
-    "pip list", "cargo --version",
-]
-# Set to ["*"] to allow all commands (use with caution)
-
-[display]
-chat_color = "\x1b[3;36m"                       # ANSI escape for responses (default: cyan italic)
-thinking_indicator = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"   # Spinner frames
+```json
+{"type":"private_mode","enabled":true}
+{"type":"tool_start","name":"chat"}
+{"type":"tool_end","name":"chat"}
+{"type":"done"}
+{"type":"chat","response":"..."}
 ```
-
-### Command Allowlist Matching
-
-The `run_command_allowlist` uses three matching strategies (checked in order):
-
-1. **Exact match** — `"git status"` matches `git status`
-2. **Prefix match** — `"git log"` matches `git log --oneline`
-3. **First-word match** — `"echo"` matches `echo hello world`
-
-Commands not on the allowlist are denied; the AI is told to use the `command`
-tool instead so you can review them at your prompt.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│  Shell (zsh/bash)                               │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ ? alias  │  │ preexec/ │  │ pending_cmd   │  │
-│  │ ?? alias │  │ precmd   │  │ prefill check │  │
-│  └────┬─────┘  └────┬─────┘  └───────┬───────┘  │
-└───────┼─────────────┼────────────────┼──────────┘
-        │             │                │
-        ▼             ▼                ▲
-  nsh query      nsh record     ~/.nsh/pending_cmd_{id}
-        │             │                │
-        ▼             ▼                │
-  ┌───────────────────────────────┐    │
-  │  Query Engine (query.rs)      │    │
-  │  ┌─────────────────────────┐  │    │
-  │  │ Context Builder         │  │    │
-  │  │ (OS, shell, CWD, hist.) │  │    │
-  │  └─────────────────────────┘  │    │
-  │  ┌─────────────────────────┐  │    │
-  │  │ Agentic Tool Loop       │──┼────┘
-  │  │ (max 10 iterations)     │  │
-  │  └─────────────────────────┘  │
-  │            │                  │
-  │            ▼                  │
-  │  ┌─────────────────────────┐  │
-  │  │ LLM Provider            │  │
-  │  │ (OpenRouter + streaming)│  │
-  │  └─────────────────────────┘  │
-  └───────────────────────────────┘
-        │
-        ▼
-  ┌──────────────┐
-  │ SQLite DB    │
-  │ (WAL mode)   │
-  │ ┌──────────┐ │
-  │ │ sessions │ │
-  │ │ commands │ │
-  │ │ FTS5 idx │ │
-  │ │ convos   │ │
-  │ └──────────┘ │
-  └──────────────┘
-```
-
-### File-Based IPC
-
-nsh uses the filesystem for inter-process communication between the query
-engine and the shell:
-
-| File | Purpose |
-|------|---------|
-| `~/.nsh/pending_cmd_{session_id}` | Command to prefill at the prompt |
-| `~/.nsh/pending_flag_{session_id}` | Signals a multi-step sequence (AI expects to see output) |
-| `~/.nsh/scrollback_{session_id}` | PTY scrollback buffer flushed to disk |
-| `~/.nsh/nsh.db` | SQLite database (WAL mode) |
-| `~/.nsh/config.toml` | User configuration |
-
-### Database Schema
-
-The SQLite database (`~/.nsh/nsh.db`) uses WAL mode with `busy_timeout = 5000`
-and foreign keys enabled. It contains four tables:
-
-- **sessions** — one row per shell session (`id`, `tty`, `shell`, `pid`, `started_at`, `ended_at`, `hostname`, `username`)
-- **commands** — individual commands with `exit_code`, `cwd`, `started_at`, `duration_ms`, and optional `output`
-- **commands_fts** — FTS5 virtual table indexing `command`, `output`, and `cwd` (porter + unicode61 tokenizer)
-- **conversations** — LLM query/response pairs per session for multi-turn context (`query`, `response_type`, `response`, `explanation`, `executed`, `pending`)
-
-Triggers keep the FTS5 index in sync automatically on INSERT, UPDATE, and DELETE.
 
 ## CLI Reference
 
-| Command | Description |
-|---------|-------------|
-| `nsh init <shell>` | Print shell integration script (`zsh` or `bash`) |
-| `nsh wrap [--shell <path>]` | Start PTY wrapper for scrollback capture (defaults to `$SHELL`) |
-| `nsh query <words...>` | Send a natural language query to the LLM |
-| `nsh record --session <id> --command <cmd> --cwd <dir> --exit-code <n> --started-at <ts>` | Record a command (called by shell hooks) |
-| `nsh session end --session <id>` | End a session |
-| `nsh history search <query> [--limit <n>]` | Full-text search across command history (default limit: 20) |
-| `nsh reset` | Clear conversation context for current session |
-| `nsh config` | Print config file path (default when no subcommand given) |
-| `nsh config path` | Print config file path |
-| `nsh config show` | Print current config file contents |
-| `nsh config edit` | Open config in `$EDITOR` (defaults to `vi`) |
+### User-facing commands
 
-## Environment Variables
+| Command | Purpose |
+|---|---|
+| `nsh init <shell>` | Print shell integration script (`zsh`, `bash`, `fish`) |
+| `nsh wrap [--shell <path>]` | Run your shell inside nsh PTY wrapper |
+| `nsh query [--think] [--private] [--json] <words...>` | Ask the assistant |
+| `nsh chat` | Interactive REPL chat mode |
+| `nsh history search <query> [--limit N]` | Search command history |
+| `nsh status` | Show current nsh runtime state |
+| `nsh doctor [--no-prune] [--no-vacuum] [--prune-days D]` | DB integrity and cleanup |
+| `nsh config [path|show|edit]` | Config path/view/edit |
+| `nsh reset` | Clear current session conversation context |
+| `nsh cost [today|week|month|all]` | Usage and cost summary |
+| `nsh export [--format markdown|json] [--session ID]` | Export conversation history |
+| `nsh provider list-local` | List local Ollama models |
+| `nsh update` | Download and stage latest verified binary update |
+| `nsh redact-next` | Skip capture for the next command |
+| `nsh completions <shell>` | Emit shell completion script |
 
-| Variable | Description |
-|----------|-------------|
-| `NSH_SESSION_ID` | Unique session UUID, set by `nsh init` |
-| `NSH_TTY` | TTY path for the session, set by `nsh init` |
-| `SHELL` | Used to detect shell type and as the default for `nsh wrap` |
-| `EDITOR` | Used by `nsh config edit` (defaults to `vi`) |
-| `RUST_LOG` | Controls tracing output (e.g., `RUST_LOG=debug`) |
+### Hook/daemon/internal commands
+
+| Command | Purpose |
+|---|---|
+| `nsh record ...` | Command capture hook endpoint |
+| `nsh session start|end|label ...` | Session lifecycle |
+| `nsh heartbeat --session ID` | Keep session alive |
+| `nsh daemon-send ...` | Send request to daemon |
+| `nsh daemon-read ...` | Read daemon capture/scrollback |
+
+## Configuration
+
+Main config file: `~/.nsh/config.toml`
+
+Project-local overrides are supported from either:
+
+- `.nsh.toml`
+- `.nsh/config.toml`
+
+Project config is intentionally restricted to `context` and `display` sections only.
+
+### Full default config (reference)
+
+```toml
+[provider]
+default = "openrouter"
+model = "google/gemini-2.5-flash"
+fallback_model = "anthropic/claude-sonnet-4.5"
+web_search_model = "perplexity/sonar"
+timeout_seconds = 120
+
+[provider.openrouter]
+# api_key = "..."
+# api_key_cmd = "..."
+# base_url = "https://openrouter.ai/api/v1"
+
+[provider.anthropic]
+# api_key = "..."
+# api_key_cmd = "..."
+# base_url = "..."
+
+[provider.openai]
+# api_key = "..."
+# api_key_cmd = "..."
+# base_url = "..."
+
+[provider.ollama]
+# base_url = "http://localhost:11434"
+
+[provider.gemini]
+# api_key = "..."
+# api_key_cmd = "..."
+# base_url = "..."
+
+[context]
+scrollback_lines = 1000
+scrollback_pages = 10
+history_summaries = 100
+history_limit = 20
+other_tty_summaries = 10
+max_other_ttys = 20
+project_files_limit = 100
+git_commits = 10
+retention_days = 1095
+max_output_storage_bytes = 65536
+scrollback_rate_limit_bps = 10485760
+scrollback_pause_seconds = 2
+include_other_tty = false
+# custom_instructions = "..."
+
+[models]
+main = [
+  "google/gemini-2.5-flash",
+  "google/gemini-3-flash-preview",
+  "anthropic/claude-sonnet-4.5",
+]
+fast = [
+  "google/gemini-2.5-flash-lite",
+  "anthropic/claude-haiku-4.5",
+]
+
+[tools]
+run_command_allowlist = [
+  "uname",
+  "which",
+  "wc",
+  "file",
+  "stat",
+  "ls",
+  "echo",
+  "whoami",
+  "hostname",
+  "date",
+  "env",
+  "printenv",
+  "id",
+  "df",
+  "free",
+  "python3 --version",
+  "node --version",
+  "git status",
+  "git branch",
+  "git log",
+  "git diff",
+  "pip list",
+  "cargo --version",
+]
+sensitive_file_access = "block" # block | ask | allow
+
+[web_search]
+provider = "openrouter"
+model = "perplexity/sonar"
+
+[display]
+chat_color = "\x1b[3;36m"
+thinking_indicator = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+[redaction]
+enabled = true
+replacement = "[REDACTED]"
+disable_builtin = false
+patterns = [] # add custom regex patterns if needed
+
+[capture]
+mode = "vt100"
+alt_screen = "drop" # drop | snapshot
+
+[db]
+busy_timeout_ms = 10000
+
+[execution]
+mode = "prefill" # prefill | confirm | autorun
+allow_unsafe_autorun = false
+
+[mcp]
+# [mcp.servers.example]
+# transport = "stdio" # or "http"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# env = { EXAMPLE = "1" }
+# timeout_seconds = 30
+# or for http:
+# url = "https://mcp.example.com"
+# headers = { Authorization = "Bearer ..." }
+```
+
+### Protected settings
+
+The assistant cannot change these via `manage_config` tool:
+
+- `execution.allow_unsafe_autorun`
+- `tools.sensitive_file_access`
+- `tools.run_command_allowlist`
+- `redaction.enabled`
+- `redaction.disable_builtin`
+- any key segment named `api_key`, `api_key_cmd`, or `base_url`
+
+## Built-in Tool Catalog (LLM side)
+
+`nsh` exposes 18 built-in tools to the model:
+
+1. `command`
+2. `chat`
+3. `search_history`
+4. `grep_file`
+5. `read_file`
+6. `list_directory`
+7. `web_search`
+8. `run_command`
+9. `ask_user`
+10. `write_file`
+11. `patch_file`
+12. `man_page`
+13. `manage_config`
+14. `install_skill`
+15. `install_mcp_server`
+16. `remember`
+17. `forget_memory`
+18. `update_memory`
+
+Custom skills and MCP tools are added on top of these.
+
+## Data and Runtime Files
+
+Default location: `~/.nsh/`
+
+- `config.toml` - user config
+- `nsh.db` - SQLite database
+- `pending_cmd_<session>` - command prefill file
+- `pending_flag_<session>` - pending multi-step continuation marker
+- `scrollback_<session>` - scrollback/capture buffers
+- `update_pending` / `updates/` - staged self-update files
+
+DB includes tables for `sessions`, `commands`, `commands_fts`, `conversations`,
+`usage`, `audit_log`, `memories`, and `meta`.
+
+## Live Smoke Test Checklist
+
+Useful pre-release checks in your real shell environment:
+
+```bash
+# status + DB health
+target/debug/nsh status
+target/debug/nsh doctor --no-prune --no-vacuum
+
+# session flow
+SESSION="release-smoke-$$"
+target/debug/nsh session start --session "$SESSION" --tty "$(tty)" --shell "$SHELL" --pid $$
+target/debug/nsh heartbeat --session "$SESSION"
+target/debug/nsh record --session "$SESSION" --command "echo release-smoke" --cwd "$PWD" --exit-code 0 --started-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --tty "$(tty)" --pid $$ --shell "$(basename "$SHELL")"
+target/debug/nsh history search "release-smoke" --limit 3
+target/debug/nsh session end --session "$SESSION"
+
+# provider reachability (private)
+target/debug/nsh query --private "respond with exactly release_smoke_ok"
+```
+
+## Release Builds and Cross-Compilation
+
+Use the release build helper:
+
+```bash
+# host artifact only
+scripts/release-builds.sh --host-only
+
+# default matrix (macOS + Linux, x86_64 + aarch64)
+scripts/release-builds.sh
+
+# explicit targets
+scripts/release-builds.sh --targets x86_64-apple-darwin,aarch64-apple-darwin
+
+# force backend (auto | cargo | cross | zigbuild)
+scripts/release-builds.sh --backend cross
+```
+
+The script outputs:
+
+- `dist/nsh-<target>.tar.gz`
+- `dist/nsh-<target>.tar.gz.sha256`
+- `dist/update-records.txt` (lines: `<version>:<target>:<binary_sha256>`)
+
+`update-records.txt` is intended for `update.nsh.tools` DNS TXT entries used by
+`nsh update` verification.
+
+### Linux cross-build prerequisites on macOS
+
+For Linux targets from macOS, install one approach:
+
+1. `cross` backend:
+```bash
+cargo install cross --locked
+```
+2. `zigbuild` backend:
+```bash
+brew install zig
+cargo install cargo-zigbuild --locked
+```
+3. Native GNU cross toolchains (plain cargo backend):
+```bash
+brew tap messense/macos-cross-toolchains
+brew install aarch64-unknown-linux-gnu
+brew install x86_64-unknown-linux-gnu
+```
 
 ## Development
 
 ```bash
-# Run all tests (unit + integration)
+# format check
+cargo fmt -- --check
+
+# lint (warnings are errors)
+cargo clippy --all-targets -- -D warnings
+
+# full tests
 cargo test
 
-# Build debug
-cargo build
-
-# Build release (LTO + size-optimized)
-cargo build --release
-
-# Run with tracing
-RUST_LOG=debug cargo run -- query hello
+# run local binary
+cargo run -- status
 ```
 
-### Project Structure
+`cargo-make` tasks are defined in `Makefile.toml`, including:
 
-```
-src/
-├── main.rs              # Entry point, CLI dispatch via clap
-├── cli.rs               # Clap CLI argument definitions
-├── config.rs            # TOML config parsing with defaults
-├── db.rs                # SQLite schema, CRUD, FTS5 search
-├── query.rs             # Agentic LLM tool loop (max 10 iterations)
-├── context.rs           # XML context builder (environment, project, history, scrollback)
-├── summary.rs           # Command summary generation (trivial + LLM)
-├── daemon.rs            # Daemon request/response types + DB thread
-├── daemon_client.rs     # Thin Unix socket client for daemon
-├── streaming.rs         # SSE stream consumer + spinner display
-├── init.rs              # Shell init script generator (zsh/bash)
-├── pty.rs               # PTY creation and shell wrapping (fork/exec)
-├── pump.rs              # PTY I/O pump + incremental capture engine
-├── ansi.rs              # ANSI escape sequence stripping
-├── shell_hooks.rs       # Pending command file path constants + cleanup
-├── util.rs              # String truncation helper
-├── provider/
-│   ├── mod.rs           # LlmProvider trait, message types, factory
-│   ├── openrouter.rs    # OpenRouter provider (fully implemented)
-│   ├── anthropic.rs     # Anthropic provider (stub)
-│   └── openai.rs        # OpenAI provider (stub)
-└── tools/
-    ├── mod.rs           # Tool definitions + registry (9 tools)
-    ├── command.rs       # Prefill command at prompt
-    ├── chat.rs          # Text response display
-    ├── search_history.rs # Advanced history search (FTS5/regex/date/exit code)
-    ├── grep_file.rs     # Regex search / file read
-    ├── list_directory.rs # Directory listing with metadata
-    ├── web_search.rs    # Web search via Perplexity/Sonar
-    ├── run_command.rs   # Allowlisted command execution
-    ├── ask_user.rs      # Interactive user prompting
-    └── man_page.rs      # Man page retrieval
+- `cargo make test`
+- `cargo make quality`
+- `cargo make release-host`
+- `cargo make release-matrix`
 
-shell/
-├── nsh.zsh              # Zsh integration hooks
-└── nsh.bash             # Bash integration hooks
+## Troubleshooting
 
-tests/
-└── integration.rs       # Integration tests (CLI, init, config, history)
-```
+- `nsh status` - inspect session/provider/db state
+- `nsh doctor` - integrity check + prune/vacuum maintenance
+- `nsh config show` - verify effective config file content
+- `RUST_LOG=debug nsh query ...` - debug logging
+
+If API calls fail, verify key resolution order for your provider:
+
+1. `api_key` in config
+2. `api_key_cmd` in config
+3. provider env var fallback
 
 ## License
 
-BSD 3-Clause — see [LICENSE](LICENSE) for details.
+BSD 3-Clause - see [LICENSE](LICENSE).

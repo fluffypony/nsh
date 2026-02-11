@@ -82,6 +82,7 @@ fn rotate_audit_log_in_dir(dir: &Path) {
     cleanup_old_archives_in_dir(dir);
 }
 
+#[cfg(test)]
 fn cleanup_old_archives() {
     let dir = crate::config::Config::nsh_dir();
     cleanup_old_archives_in_dir(&dir);

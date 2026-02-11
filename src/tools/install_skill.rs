@@ -249,7 +249,7 @@ mod tests {
         );
 
         assert_eq!(timeout, 30);
-        assert_eq!(terminal, false);
+        assert!(!terminal);
         assert!(toml_content.contains("timeout_seconds = 30"));
         assert!(toml_content.contains("terminal = false"));
     }

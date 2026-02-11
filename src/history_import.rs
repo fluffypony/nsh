@@ -221,7 +221,7 @@ fn parse_zsh_extended(content: &str) -> Vec<(String, DateTime<Utc>)> {
         if let Some(caps) = re.captures(lines[i]) {
             let ts_val: i64 = caps[1].parse().unwrap_or(0);
             let timestamp =
-                DateTime::from_timestamp(ts_val, 0).unwrap_or_else(|| Utc::now());
+                DateTime::from_timestamp(ts_val, 0).unwrap_or_else(Utc::now);
             let mut cmd = caps[2].to_string();
 
             while cmd.ends_with('\\') && i + 1 < lines.len() {

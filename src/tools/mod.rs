@@ -761,9 +761,8 @@ mod tests {
     #[test]
     fn test_validate_read_path_relative_path() {
         let result = validate_read_path("Cargo.toml");
-        match result {
-            Ok(p) => assert!(p.is_absolute()),
-            Err(_) => {}
+        if let Ok(p) = result {
+            assert!(p.is_absolute());
         }
     }
 
@@ -923,7 +922,7 @@ mod tests {
             description: "desc".into(),
             parameters: json!({}),
         };
-        let debug_str = format!("{:?}", tool);
+        let debug_str = format!("{tool:?}");
         assert!(debug_str.contains("debug_test"));
     }
 
@@ -1235,18 +1234,16 @@ mod tests {
     #[test]
     fn test_validate_read_path_nonexistent_under_tmp() {
         let result = validate_read_path("/tmp/nsh_nonexistent_subdir/foo/bar.txt");
-        match result {
-            Ok(p) => assert!(p.is_absolute()),
-            Err(_) => {}
+        if let Ok(p) = result {
+            assert!(p.is_absolute());
         }
     }
 
     #[test]
     fn test_validate_read_path_empty_string() {
         let result = validate_read_path("");
-        match result {
-            Ok(p) => assert!(p.is_absolute()),
-            Err(_) => {}
+        if let Ok(p) = result {
+            assert!(p.is_absolute());
         }
     }
 

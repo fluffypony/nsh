@@ -59,8 +59,19 @@ pub fn execute(
         RiskLevel::Safe => {}
     }
 
-    // Display rich command preview
-    display_command_preview(command, explanation, &risk);
+    // Display rich command preview (or JSON event in --json mode)
+    if crate::streaming::json_output_enabled() {
+        let event = serde_json::json!({
+            "type": "command",
+            "command": command,
+            "explanation": explanation,
+            "risk": risk.to_string(),
+            "pending": pending,
+        });
+        eprintln!("{}", serde_json::to_string(&event)?);
+    } else {
+        display_command_preview(command, explanation, &risk);
+    }
 
     let can_autorun = match risk {
         RiskLevel::Safe => true,

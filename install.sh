@@ -74,6 +74,18 @@ install_from_release() {
             warn "No checksum file available, skipping verification"
         fi
 
+        tar xzf "$TMP/nsh.tar.gz" -C "$TMP"
+
+        # Compute SHA256 of extracted binary (used by DNS TXT update records)
+        local binary_sha=""
+        if [[ -f "$TMP/nsh" ]]; then
+            if command -v sha256sum &>/dev/null; then
+                binary_sha="$(sha256sum "$TMP/nsh" | awk '{print $1}')"
+            elif command -v shasum &>/dev/null; then
+                binary_sha="$(shasum -a 256 "$TMP/nsh" | awk '{print $1}')"
+            fi
+        fi
+
         # DNS TXT cross-check
         local dns_verify_sha=""
         if command -v dig &>/dev/null; then
@@ -81,9 +93,9 @@ install_from_release() {
             dns_records="$(dig +short TXT update.nsh.tools 2>/dev/null | tr -d '"')"
             dns_verify_sha="$(echo "$dns_records" | grep "^${LATEST#v}:${TARGET}:" | head -1 | cut -d: -f3)"
         fi
-        if [[ -n "$dns_verify_sha" && -n "$actual_sha" ]]; then
-            if [[ "$actual_sha" != "$dns_verify_sha" ]]; then
-                error "DNS verification failed! Binary SHA does not match DNS TXT record."
+        if [[ -n "$dns_verify_sha" && -n "$binary_sha" ]]; then
+            if [[ "$binary_sha" != "$dns_verify_sha" ]]; then
+                error "DNS verification failed! Extracted binary SHA does not match DNS TXT record."
             fi
             ok "DNS verified"
         elif [[ -n "$dns_verify_sha" ]]; then
@@ -94,7 +106,6 @@ install_from_release() {
             warn "No verification available, proceeding with unverified binary"
         fi
 
-        tar xzf "$TMP/nsh.tar.gz" -C "$TMP"
         mkdir -p "$INSTALL_DIR"
         install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
         return 0

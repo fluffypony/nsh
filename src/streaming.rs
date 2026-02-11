@@ -6,6 +6,7 @@ use tokio::sync::mpsc;
 
 static SPINNER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SPINNER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 static CHAT_COLOR: OnceLock<String> = OnceLock::new();
 static SPINNER_FRAMES: OnceLock<Vec<String>> = OnceLock::new();
@@ -20,6 +21,14 @@ pub fn configure_display(config: &crate::config::DisplayConfig) {
     if !frames.is_empty() {
         let _ = SPINNER_FRAMES.set(frames);
     }
+}
+
+pub fn set_json_output(enabled: bool) {
+    JSON_OUTPUT.store(enabled, Ordering::SeqCst);
+}
+
+pub fn json_output_enabled() -> bool {
+    JSON_OUTPUT.load(Ordering::SeqCst)
 }
 
 fn chat_color() -> &'static str {
@@ -112,13 +121,22 @@ pub async fn consume_stream(
     cancelled: &Arc<AtomicBool>,
 ) -> anyhow::Result<Message> {
     let mut is_streaming = false;
+    let mut json_display = if JSON_OUTPUT.load(Ordering::SeqCst) {
+        Some(crate::json_display::JsonDisplay::new())
+    } else {
+        None
+    };
     let color = chat_color().to_string();
     let (msg, _usage) = crate::stream_consumer::consume_stream(rx, cancelled, &mut |event| {
+        if let Some(display) = json_display.as_mut() {
+            display.handle_event(event);
+            return;
+        }
         match event {
             crate::stream_consumer::DisplayEvent::TextChunk(text) => {
                 if !is_streaming {
                     is_streaming = true;
-                    eprint!("{}", color);
+                    eprint!("{color}");
                 }
                 eprint!("{text}");
                 io::stderr().flush().ok();

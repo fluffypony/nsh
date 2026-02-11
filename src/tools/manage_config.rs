@@ -252,11 +252,11 @@ mod tests {
 
     #[test]
     fn test_json_to_toml_edit_float() {
-        let v = json!(3.14);
+        let v = json!(2.5);
         let t = json_to_toml_edit(&v);
         assert!(t.is_value());
         if let Some(f) = t.as_float() {
-            assert!((f - 3.14).abs() < 0.001);
+            assert!((f - 2.5).abs() < 0.001);
         } else {
             panic!("expected float");
         }

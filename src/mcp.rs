@@ -441,7 +441,7 @@ impl McpClient {
     fn parse_tool_name<'a>(&'a self, prefixed_name: &'a str) -> Option<(&'a str, &'a str)> {
         let rest = prefixed_name.strip_prefix("mcp_")?;
         let mut keys: Vec<&str> = self.servers.keys().map(|s| s.as_str()).collect();
-        keys.sort_by(|a, b| b.len().cmp(&a.len()));
+        keys.sort_by_key(|name| std::cmp::Reverse(name.len()));
         for server_name in keys {
             if let Some(tool_name) =
                 rest.strip_prefix(server_name).and_then(|s| s.strip_prefix('_'))
@@ -514,7 +514,7 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        for (_, server) in &mut self.servers {
+        for server in self.servers.values_mut() {
             if let McpTransport::Stdio { ref mut child, .. } = server.transport {
                 let _ = child.start_kill();
             }
@@ -809,11 +809,6 @@ mod tests {
     }
 
     #[test]
-    fn mcp_protocol_version_is_set() {
-        assert!(!MCP_PROTOCOL_VERSION.is_empty());
-    }
-
-    #[test]
     fn parse_tool_name_empty_string() {
         let client = McpClient::new();
         assert!(client.parse_tool_name("").is_none());
@@ -983,7 +978,7 @@ mod tests {
                 timeout: Duration::from_secs(30),
             },
         );
-        let tool_str = format!("mcp_{}_x", long_name);
+        let tool_str = format!("mcp_{long_name}_x");
         let result = client.parse_tool_name(&tool_str);
         assert_eq!(result, Some((long_name.as_str(), "x")));
     }
@@ -1060,10 +1055,8 @@ mod tests {
     #[test]
     fn jsonrpc_response_error_long_message() {
         let long_msg = "x".repeat(5000);
-        let json = format!(
-            r#"{{"jsonrpc":"2.0","id":99,"error":{{"code":-32000,"message":"{}"}}}}"#,
-            long_msg
-        );
+        let json =
+            format!(r#"{{"jsonrpc":"2.0","id":99,"error":{{"code":-32000,"message":"{long_msg}"}}}}"#);
         let resp: JsonRpcResponse = serde_json::from_str(&json).unwrap();
         let err = resp.error.unwrap();
         assert_eq!(err.code, -32000);

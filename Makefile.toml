@@ -63,3 +63,13 @@ dependencies = [
     "quality",
     "geiger",
 ]
+
+[tasks.release-host]
+description = "Build and package release artifact for current host target"
+command = "bash"
+args = ["scripts/release-builds.sh", "--host-only"]
+
+[tasks.release-matrix]
+description = "Build release artifacts for macOS/Linux x86_64+aarch64"
+command = "bash"
+args = ["scripts/release-builds.sh"]

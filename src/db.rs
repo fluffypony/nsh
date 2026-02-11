@@ -1656,6 +1656,16 @@ fn gethostname() -> String {
 mod tests {
     use super::*;
 
+    type UsageRow = (
+        String,
+        String,
+        Option<u32>,
+        Option<u32>,
+        Option<f64>,
+        Option<String>,
+        Option<String>,
+    );
+
     fn test_db() -> Db {
         Db::open_in_memory().expect("in-memory db")
     }
@@ -3012,9 +3022,7 @@ mod tests {
         ).unwrap();
         assert!(id > 0);
 
-        let (model, provider, input, output, cost, gen_id, query): (
-            String, String, Option<u32>, Option<u32>, Option<f64>, Option<String>, Option<String>,
-        ) = db.conn.query_row(
+        let (model, provider, input, output, cost, gen_id, query): UsageRow = db.conn.query_row(
             "SELECT model, provider, input_tokens, output_tokens, cost_usd, generation_id, query_text FROM usage WHERE id = ?",
             params![id], |row| Ok((
                 row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,

@@ -2992,8 +2992,8 @@ timeout_seconds = "fast"
 
     #[test]
     fn test_tool_blocked_keys_non_empty() {
-        assert!(!TOOL_BLOCKED_KEYS.is_empty());
-        assert!(!TOOL_BLOCKED_KEY_SEGMENTS.is_empty());
+        assert!(TOOL_BLOCKED_KEYS.contains(&"tools.run_command_allowlist"));
+        assert!(TOOL_BLOCKED_KEY_SEGMENTS.contains(&"api_key"));
     }
 
     #[test]
@@ -3076,7 +3076,7 @@ timeout_seconds = "fast"
     fn test_default_models_config() {
         let m = ModelsConfig::default();
         assert!(m.main.len() >= 2);
-        assert!(m.fast.len() >= 1);
+        assert!(!m.fast.is_empty());
         assert!(m.main.iter().any(|s| s.contains("gemini")));
         assert!(m.fast.iter().any(|s| s.contains("lite") || s.contains("haiku")));
     }

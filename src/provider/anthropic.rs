@@ -277,7 +277,6 @@ impl LlmProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::*;
     use crate::tools::ToolDefinition;
     use serde_json::json;
 
@@ -1416,7 +1415,7 @@ mod tests {
         let event = rx.recv().await.unwrap();
         match event {
             StreamEvent::Error(msg) => assert_eq!(msg, "overloaded"),
-            other => panic!("expected Error, got {:?}", other),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

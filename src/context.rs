@@ -2457,9 +2457,8 @@ mod tests {
     #[test]
     fn test_detect_container_returns_option() {
         let result = detect_container();
-        match result {
-            Some(ref s) => assert!(s.contains("<container")),
-            None => {}
+        if let Some(ref s) = result {
+            assert!(s.contains("<container"));
         }
     }
 
@@ -2775,8 +2774,7 @@ mod tests {
         let (_branch, status, _commits) = detect_git_info(dir, 5);
         assert!(
             status.as_deref().unwrap().contains("changed files"),
-            "got: {:?}",
-            status
+            "got: {status:?}"
         );
     }
 
@@ -4495,9 +4493,8 @@ mod tests {
     #[test]
     fn test_list_project_files_with_ignore_returns_none_on_errors_only() {
         let entries = list_project_files_with_ignore(std::path::Path::new("/nonexistent_abc_xyz"), 100);
-        match entries {
-            Some(e) => assert!(e.is_empty()),
-            None => {}
+        if let Some(e) = entries {
+            assert!(e.is_empty());
         }
     }
 

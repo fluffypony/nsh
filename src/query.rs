@@ -3,16 +3,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{config::Config, context, db::Db, provider::*, streaming, tools};
 
+type ToolFuture = std::pin::Pin<
+    Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>,
+>;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct QueryOptions {
+    pub think: bool,
+    pub private: bool,
+    pub force_autorun: bool,
+    pub json_output: bool,
+}
+
 pub async fn handle_query(
     query: &str,
     config: &Config,
     db: &Db,
     session_id: &str,
-    think: bool,
-    private: bool,
-    force_autorun: bool,
+    opts: QueryOptions,
 ) -> anyhow::Result<()> {
     crate::streaming::configure_display(&config.display);
+    crate::streaming::set_json_output(opts.json_output);
 
     let cancelled = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
@@ -132,10 +143,14 @@ pub async fn handle_query(
             extra_body,
         };
 
-        let _spinner = streaming::SpinnerGuard::new();
-        let chain_result = chain::call_chain_with_fallback_think(
-            provider.as_ref(), request, chain, think,
-        ).await;
+        let _spinner = if opts.json_output {
+            None
+        } else {
+            Some(streaming::SpinnerGuard::new())
+        };
+        let chain_result =
+            chain::call_chain_with_fallback_think(provider.as_ref(), request, chain, opts.think)
+                .await;
         drop(_spinner);
 
         let (mut rx, _used_model) = match chain_result {
@@ -239,24 +254,45 @@ pub async fn handle_query(
                     "command" => {
                         has_terminal_tool = true;
                         tools::command::execute(
-                            input, query, db, session_id, private, config, force_autorun,
+                            input,
+                            query,
+                            db,
+                            session_id,
+                            opts.private,
+                            config,
+                            opts.force_autorun,
                         )?;
                     }
                     "chat" => {
                         has_terminal_tool = true;
                         tools::chat::execute(
-                            input, query, db, session_id, private, config,
+                            input,
+                            query,
+                            db,
+                            session_id,
+                            opts.private,
+                            config,
                         )?;
                     }
                     "write_file" => {
                         has_terminal_tool = true;
                         tools::write_file::execute(
-                            input, query, db, session_id, private, config,
+                            input,
+                            query,
+                            db,
+                            session_id,
+                            opts.private,
+                            config,
                         )?;
                     }
                     "patch_file" => {
                         match tools::patch_file::execute(
-                            input, query, db, session_id, private, config,
+                            input,
+                            query,
+                            db,
+                            session_id,
+                            opts.private,
+                            config,
                         )? {
                             None => {
                                 has_terminal_tool = true;
@@ -337,9 +373,7 @@ pub async fn handle_query(
 
         // ── Execute intermediate tools ─────────────────
         if !parallel_calls.is_empty() {
-            let mut futs: Vec<std::pin::Pin<Box<dyn std::future::Future<
-                Output = (String, String, Result<String, String>),
-            >>>> = Vec::new();
+            let mut futs: Vec<ToolFuture> = Vec::new();
 
             for (id, name, input) in parallel_calls {
                 eprintln!("  \x1b[2m↳ {}\x1b[0m", describe_tool_action(&name, &input));
