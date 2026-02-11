@@ -292,6 +292,19 @@ pub struct Db {
 }
 
 impl Db {
+    fn to_fts_literal_query(query: &str) -> String {
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+            .collect();
+        if terms.is_empty() {
+            query.to_string()
+        } else {
+            terms.join(" ")
+        }
+    }
+
     pub fn open() -> anyhow::Result<Self> {
         let dir = crate::config::Config::nsh_dir();
         std::fs::create_dir_all(&dir)?;
@@ -452,6 +465,7 @@ impl Db {
     // ── FTS5 search ────────────────────────────────────────────────
 
     pub fn search_history(&self, query: &str, limit: usize) -> rusqlite::Result<Vec<HistoryMatch>> {
+        let fts_query = Self::to_fts_literal_query(query);
         let mut stmt = self.conn.prepare(
             "SELECT c.id, c.session_id, c.command, c.cwd,
                     c.exit_code, c.started_at, c.output,
@@ -463,7 +477,7 @@ impl Db {
              ORDER BY bm25(commands_fts, 1.0, 0.5, 2.0, 0.5)
              LIMIT ?",
         )?;
-        let rows = stmt.query_map(params![query, limit as i64], |row| {
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             Ok(HistoryMatch {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -1075,6 +1089,7 @@ impl Db {
         limit: usize,
     ) -> rusqlite::Result<Vec<HistoryMatch>> {
         if let Some(fts) = fts_query {
+            let fts = Self::to_fts_literal_query(fts);
             let mut sql = String::from(
                 "SELECT c.id, c.session_id, c.command, c.cwd,
                         c.exit_code, c.started_at, c.output,
@@ -1115,7 +1130,7 @@ impl Db {
 
             // Build params dynamically - collect into Vec<Box<dyn rusqlite::types::ToSql>>
             let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            params_vec.push(Box::new(fts.to_string()));
+            params_vec.push(Box::new(fts));
             if let Some(s) = since {
                 params_vec.push(Box::new(s.to_string()));
             }
@@ -2863,6 +2878,19 @@ mod tests {
 
         let results = db.search_history("searchable", 10).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_history_hyphenated_term() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "echo from-ht", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("from-ht"), "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history("from-ht", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "echo from-ht");
     }
 
     #[test]
@@ -5133,6 +5161,21 @@ mod tests {
         ).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "cargo test");
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_hyphenated_term() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "echo from-ht", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("from-ht"), "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("from-ht"), None, None, None, None, false, None, None, 10,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "echo from-ht");
     }
 
     #[test]

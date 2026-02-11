@@ -152,6 +152,11 @@ fn extract_flags(tokens: &[&str]) -> HashSet<char> {
 }
 
 fn is_dangerous_target(arg: &str) -> bool {
+    let mut arg = arg;
+    while arg.len() > 1 && arg.ends_with('/') {
+        arg = &arg[..arg.len() - 1];
+    }
+
     let critical_paths = [
         "/", "/*", "~", "~/*", "*", "/etc", "/usr", "/var", "/bin", "/sbin",
         "/lib", "/boot", "/home", "/dev", "/sys", "/proc",
@@ -496,6 +501,18 @@ mod tests {
     #[test]
     fn test_dangerous_rm_rf_home() {
         let (level, _) = assess_command("rm -rf ~");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_dangerous_rm_rf_home_trailing_slash() {
+        let (level, _) = assess_command("rm -rf ~/");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_dangerous_rm_rf_etc_trailing_slash() {
+        let (level, _) = assess_command("rm -rf /etc/");
         assert_eq!(level, RiskLevel::Dangerous);
     }
 
