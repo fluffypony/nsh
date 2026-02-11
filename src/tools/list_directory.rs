@@ -125,4 +125,65 @@ mod tests {
         let result = execute(&input).unwrap();
         assert!(result.contains("Path does not exist"));
     }
+
+    #[test]
+    fn test_list_directory_not_a_directory() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let path = f.path().to_str().unwrap();
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("Not a directory"));
+    }
+
+    #[test]
+    fn test_list_directory_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("Empty directory"));
+    }
+
+    #[test]
+    fn test_list_directory_default_path() {
+        let input = json!({});
+        let result = execute(&input).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_list_directory_with_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "content").unwrap();
+        let path = dir.path().to_str().unwrap();
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("subdir"));
+        assert!(result.contains("file.txt"));
+        assert!(result.contains("dir"));
+    }
+
+    #[test]
+    fn test_list_directory_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        std::fs::write(&target, "data").unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("link.txt")).unwrap();
+        let path = dir.path().to_str().unwrap();
+        let input = json!({"path": path, "show_hidden": false});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("link"));
+    }
+
+    #[test]
+    fn test_human_size() {
+        assert_eq!(human_size(0), "0B");
+        assert_eq!(human_size(500), "500B");
+        assert_eq!(human_size(1024), "1KB");
+        assert_eq!(human_size(1048576), "1MB");
+        assert_eq!(human_size(1073741824), "1GB");
+        assert_eq!(human_size(1099511627776), "1TB");
+        assert_eq!(human_size(1125899906842624), "1PB");
+    }
 }

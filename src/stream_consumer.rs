@@ -330,4 +330,30 @@ mod tests {
         assert!(event_names.contains(&"tool_end"));
         assert!(event_names.contains(&"done"));
     }
+
+    #[tokio::test]
+    async fn test_consume_stream_cancelled_while_streaming_text() {
+        let (tx, mut rx) = mpsc::channel::<StreamEvent>(16);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel2 = cancel.clone();
+        let mut got_done = false;
+
+        tx.send(StreamEvent::TextDelta("partial".into())).await.unwrap();
+
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            cancel2.store(true, Ordering::SeqCst);
+        });
+
+        let result = consume_stream(&mut rx, &cancel, &mut |e| {
+            if matches!(e, DisplayEvent::Done) {
+                got_done = true;
+            }
+        }).await;
+
+        handle.await.unwrap();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("interrupted"));
+        assert!(got_done, "should emit Done when cancelled while streaming text");
+    }
 }

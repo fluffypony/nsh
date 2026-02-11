@@ -2206,4 +2206,921 @@ mod tests {
         let count = t.matches("Rust/Cargo").count();
         assert_eq!(count, 1, "should not duplicate: {t}");
     }
+
+    #[test]
+    fn test_build_xml_context_multiple_commits_and_files() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/home/user/myproject".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("main".into()),
+            git_status: Some("3 files changed".into()),
+            git_commits: vec![
+                GitCommit {
+                    hash: "abc1234".into(),
+                    message: "initial commit".into(),
+                    relative_time: "2 hours ago".into(),
+                },
+                GitCommit {
+                    hash: "def5678".into(),
+                    message: "add feature".into(),
+                    relative_time: "1 hour ago".into(),
+                },
+            ],
+            files: vec![
+                FileEntry {
+                    path: "src/main.rs".into(),
+                    kind: "file".into(),
+                    size: "1.2KB".into(),
+                },
+                FileEntry {
+                    path: "Cargo.toml".into(),
+                    kind: "file".into(),
+                    size: "512B".into(),
+                },
+            ],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("status=\"3 files changed\""));
+        assert!(xml.contains("hash=\"abc1234\""));
+        assert!(xml.contains("hash=\"def5678\""));
+        assert!(xml.contains("add feature"));
+        assert!(xml.contains("ts=\"2 hours ago\""));
+        assert!(xml.contains("count=\"2\""));
+        assert!(xml.contains("path=\"Cargo.toml\""));
+        assert!(xml.contains("size=\"1.2KB\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_scrollback_multiline() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "$ cargo build\n   Compiling nsh v0.1.0\n    Finished".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("Compiling nsh"));
+        assert!(xml.contains("Finished"));
+        assert!(xml.contains("</recent_terminal>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_custom_instructions_with_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.custom_instructions = Some("Use <json> & \"strict\" mode".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<custom_instructions>"));
+        assert!(xml.contains("&lt;json&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;strict&quot;"));
+        assert!(xml.contains("</custom_instructions>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_ssh_and_container_combined() {
+        let mut ctx = make_minimal_ctx();
+        ctx.ssh_context = Some("<ssh host=\"remote-server\" user=\"deploy\" />".into());
+        ctx.container_context =
+            Some("<container runtime=\"docker\" image=\"ubuntu:22.04\" />".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<ssh host=\"remote-server\" user=\"deploy\" />"));
+        assert!(xml.contains("<container runtime=\"docker\" image=\"ubuntu:22.04\" />"));
+    }
+
+    #[test]
+    fn test_build_xml_context_session_history_multiple_cmds() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![
+            CommandWithSummary {
+                command: "cargo test".into(),
+                cwd: Some("/home/user/proj".into()),
+                exit_code: Some(0),
+                started_at: "2025-01-01T10:00:00Z".into(),
+                duration_ms: Some(1500),
+                summary: Some("all 42 tests passed".into()),
+            },
+            CommandWithSummary {
+                command: "git status".into(),
+                cwd: Some("/home/user/proj".into()),
+                exit_code: Some(0),
+                started_at: "2025-01-01T10:01:00Z".into(),
+                duration_ms: None,
+                summary: None,
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("count=\"2\""));
+        assert!(xml.contains("<input>cargo test</input>"));
+        assert!(xml.contains("<summary>all 42 tests passed</summary>"));
+        assert!(xml.contains("duration=\"1500ms\""));
+        assert!(xml.contains("cwd=\"/home/user/proj\""));
+        assert!(xml.contains("<input>git status</input>"));
+        assert!(!xml.contains("<summary></summary>"), "no empty summary tags for None");
+        assert!(xml.contains("</session_history>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_other_sessions_multiple_ttys() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![
+            OtherSessionSummary {
+                command: "npm start".into(),
+                cwd: Some("/home/user/web".into()),
+                exit_code: Some(0),
+                started_at: "2025-01-01T09:00:00Z".into(),
+                summary: Some("dev server started on port 3000".into()),
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "sess-001".into(),
+            },
+            OtherSessionSummary {
+                command: "tail -f logs".into(),
+                cwd: Some("/var/log".into()),
+                exit_code: Some(1),
+                started_at: "2025-01-01T09:05:00Z".into(),
+                summary: None,
+                tty: "/dev/ttys002".into(),
+                shell: "zsh".into(),
+                session_id: "sess-002".into(),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("tty=\"/dev/ttys001\""));
+        assert!(xml.contains("shell=\"bash\""));
+        assert!(xml.contains("<input>npm start</input>"));
+        assert!(xml.contains("<summary>dev server started on port 3000</summary>"));
+        assert!(xml.contains("tty=\"/dev/ttys002\""));
+        assert!(xml.contains("shell=\"zsh\""));
+        assert!(xml.contains("exit=\"1\""));
+        assert!(xml.contains("</other_sessions>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_conversation_history_multiple_exchanges() {
+        let mut ctx = make_minimal_ctx();
+        ctx.conversation_history = vec![
+            ConversationExchange {
+                query: "how do I list files?".into(),
+                response_type: "command".into(),
+                response: "ls -la".into(),
+                explanation: Some("lists all files with details".into()),
+                result_exit_code: Some(0),
+                result_output_snippet: Some("total 42".into()),
+            },
+            ConversationExchange {
+                query: "what is my IP?".into(),
+                response_type: "answer".into(),
+                response: "Use curl ifconfig.me".into(),
+                explanation: None,
+                result_exit_code: None,
+                result_output_snippet: None,
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<context>"));
+        assert!(xml.contains("</context>"));
+        assert!(xml.contains("os=\"macOS 15.0\""));
+    }
+
+    #[test]
+    fn test_format_size_zero() {
+        assert_eq!(format_size(0), "0B");
+    }
+
+    #[test]
+    fn test_format_size_exactly_1mb() {
+        assert_eq!(format_size(1024 * 1024), "1.0MB");
+    }
+
+    #[test]
+    fn test_format_size_multi_gb() {
+        let five_gb = 5 * 1024 * 1024 * 1024_u64;
+        let result = format_size(five_gb);
+        assert!(result.ends_with("MB"), "got: {result}");
+        assert!(result.contains("5120"), "expected ~5120MB, got: {result}");
+    }
+
+    #[test]
+    fn test_format_size_1_byte() {
+        assert_eq!(format_size(1), "1B");
+    }
+
+    #[test]
+    fn test_format_size_large_kb() {
+        assert_eq!(format_size(999 * 1024), "999.0KB");
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_global_only() {
+        let mut config = Config::default();
+        config.context.custom_instructions = Some("Be verbose".into());
+        let result = gather_custom_instructions(&config, "/nonexistent_path_xyz");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "Be verbose");
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_none_when_no_config() {
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, "/nonexistent_path_xyz");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_ssh_context_with_env() {
+        unsafe {
+            std::env::set_var("SSH_CLIENT", "10.0.0.5 12345 22");
+        }
+        let result = detect_ssh_context();
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+        }
+        assert!(result.is_some());
+        let xml = result.unwrap();
+        assert!(xml.contains("10.0.0.5"));
+        assert!(xml.contains("<ssh"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_ssh_context_with_connection_env() {
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+            std::env::set_var("SSH_CONNECTION", "192.168.1.100 54321 192.168.1.1 22");
+        }
+        let result = detect_ssh_context();
+        unsafe {
+            std::env::remove_var("SSH_CONNECTION");
+        }
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("192.168.1.100"));
+    }
+
+    #[test]
+    fn test_detect_container_returns_option() {
+        let result = detect_container();
+        match result {
+            Some(ref s) => assert!(s.contains("<container")),
+            None => {}
+        }
+    }
+
+    #[test]
+    fn test_build_xml_context_empty_everything() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.starts_with("<context>"));
+        assert!(xml.ends_with("</context>"));
+        assert!(!xml.contains("<session_history"));
+        assert!(!xml.contains("<other_sessions"));
+        assert!(!xml.contains("<recent_terminal"));
+        assert!(!xml.contains("<custom_instructions"));
+        assert!(!xml.contains("<project"));
+        assert!(!xml.contains("<ssh"));
+        assert!(!xml.contains("<container"));
+    }
+
+    #[test]
+    fn test_build_xml_context_no_project_root() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: None,
+            project_type: "unknown".into(),
+            git_branch: Some("main".into()),
+            git_status: Some("clean".into()),
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<project"));
+        assert!(!xml.contains("<git"));
+    }
+
+    #[test]
+    fn test_detect_project_type_cmake_marker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("C/C++ (CMake)"), "expected C/C++ (CMake), got: {t}");
+    }
+
+    #[test]
+    fn test_detect_project_type_nix_combined() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("flake.nix"), "").unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Nix"), "expected Nix, got: {t}");
+        assert!(t.contains("Rust"), "expected Rust, got: {t}");
+    }
+
+    #[test]
+    fn test_detect_project_type_ruby_gemfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Gemfile"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Ruby"), "got: {t}");
+    }
+
+    #[test]
+    fn test_build_xml_context_only_ssh() {
+        let mut ctx = make_minimal_ctx();
+        ctx.ssh_context = Some("<ssh remote_ip=\"1.2.3.4\" />".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<ssh remote_ip=\"1.2.3.4\" />"));
+        assert!(!xml.contains("<container"));
+    }
+
+    #[test]
+    fn test_build_xml_context_only_container() {
+        let mut ctx = make_minimal_ctx();
+        ctx.container_context = Some("<container type=\"podman\" />".into());
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<container type=\"podman\" />"));
+        assert!(!xml.contains("<ssh"));
+    }
+
+    #[test]
+    fn test_build_xml_context_empty_scrollback() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<recent_terminal"));
+    }
+
+    #[test]
+    fn test_build_xml_context_empty_session_history() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<session_history"));
+    }
+
+    #[test]
+    fn test_build_xml_context_empty_other_sessions() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<other_sessions"));
+    }
+
+    // --- list_project_files_with_ignore ---
+
+    #[test]
+    fn test_list_project_files_with_ignore_respects_gitignore() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // The ignore crate needs a .git dir to honor .gitignore
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join(".gitignore"), "*.log\nbuild/\n").unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(tmp.path().join("debug.log"), "log data").unwrap();
+        let build_dir = tmp.path().join("build");
+        std::fs::create_dir(&build_dir).unwrap();
+        std::fs::write(build_dir.join("output.o"), "").unwrap();
+
+        let entries = list_project_files_with_ignore(tmp.path(), 100);
+        assert!(entries.is_some());
+        let entries = entries.unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"main.rs"), "should include main.rs: {paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.ends_with(".log")),
+            "should exclude .log files: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.starts_with("build")),
+            "should exclude build/ dir: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_list_project_files_with_ignore_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..20 {
+            std::fs::write(tmp.path().join(format!("file{i:02}.txt")), "x").unwrap();
+        }
+        let entries = list_project_files_with_ignore(tmp.path(), 5);
+        assert!(entries.is_some());
+        assert!(entries.unwrap().len() <= 5);
+    }
+
+    #[test]
+    fn test_list_project_files_with_ignore_classifies_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("subdir")).unwrap();
+        std::fs::write(tmp.path().join("file.txt"), "hi").unwrap();
+        let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
+        let dir_entry = entries.iter().find(|e| e.path == "subdir");
+        assert!(dir_entry.is_some(), "should list subdir");
+        assert_eq!(dir_entry.unwrap().kind, "dir");
+        assert!(dir_entry.unwrap().size.is_empty());
+        let file_entry = entries.iter().find(|e| e.path == "file.txt");
+        assert!(file_entry.is_some());
+        assert_eq!(file_entry.unwrap().kind, "file");
+        assert!(!file_entry.unwrap().size.is_empty());
+    }
+
+    #[test]
+    fn test_list_project_files_with_ignore_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entries = list_project_files_with_ignore(tmp.path(), 100);
+        assert!(entries.is_some());
+        assert!(entries.unwrap().is_empty());
+    }
+
+    // --- list_project_files_fallback depth limit ---
+
+    #[test]
+    fn test_list_project_files_fallback_depth_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut deep = tmp.path().to_path_buf();
+        for i in 0..8 {
+            deep = deep.join(format!("level{i}"));
+            std::fs::create_dir_all(&deep).unwrap();
+        }
+        std::fs::write(deep.join("deep_file.txt"), "deep").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 1000);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            !paths.iter().any(|p| p.contains("deep_file.txt")),
+            "should not traverse beyond depth 5: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_list_project_files_fallback_respects_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for i in 0..30 {
+            std::fs::write(tmp.path().join(format!("f{i:02}.txt")), "x").unwrap();
+        }
+        let entries = list_project_files_fallback(tmp.path(), 10);
+        assert!(entries.len() <= 10, "got {} entries", entries.len());
+    }
+
+    #[test]
+    fn test_list_project_files_fallback_skips_all_known_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for skip in &[
+            ".git",
+            "target",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+            ".next",
+            ".cache",
+            "vendor",
+        ] {
+            let d = tmp.path().join(skip);
+            std::fs::create_dir(&d).unwrap();
+            std::fs::write(d.join("file.txt"), "").unwrap();
+        }
+        std::fs::write(tmp.path().join("keep.txt"), "").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 1000);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"keep.txt"));
+        for skip in &[
+            ".git",
+            "target",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+            ".next",
+            ".cache",
+            "vendor",
+        ] {
+            assert!(
+                !paths.iter().any(|p| p.starts_with(skip)),
+                "should skip {skip}: {paths:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_list_project_files_fallback_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        assert!(entries.is_empty());
+    }
+
+    // --- detect_git_info edge cases ---
+
+    #[test]
+    fn test_detect_git_info_clean_status() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let (_branch, status, _commits) = detect_git_info(dir, 5);
+        assert_eq!(status.as_deref(), Some("clean"));
+    }
+
+    #[test]
+    fn test_detect_git_info_dirty_status() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "changed").unwrap();
+        std::fs::write(tmp.path().join("new.txt"), "new").unwrap();
+        let (_branch, status, _commits) = detect_git_info(dir, 5);
+        assert!(
+            status.as_deref().unwrap().contains("changed files"),
+            "got: {:?}",
+            status
+        );
+    }
+
+    #[test]
+    fn test_detect_git_info_multiple_commits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        for i in 0..3 {
+            std::fs::write(tmp.path().join(format!("f{i}.txt")), format!("v{i}")).unwrap();
+            std::process::Command::new("git")
+                .args(["add", "."])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            std::process::Command::new("git")
+                .args(["commit", "-m", &format!("commit {i}")])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+        }
+        let (_branch, _status, commits) = detect_git_info(dir, 5);
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].message, "commit 2");
+        assert_eq!(commits[2].message, "commit 0");
+    }
+
+    #[test]
+    fn test_detect_git_info_limits_commits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        for i in 0..5 {
+            std::fs::write(tmp.path().join(format!("f{i}.txt")), format!("v{i}")).unwrap();
+            std::process::Command::new("git")
+                .args(["add", "."])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            std::process::Command::new("git")
+                .args(["commit", "-m", &format!("commit {i}")])
+                .current_dir(dir)
+                .output()
+                .unwrap();
+        }
+        let (_branch, _status, commits) = detect_git_info(dir, 2);
+        assert_eq!(commits.len(), 2);
+    }
+
+    // --- find_project_root ---
+
+    #[test]
+    fn test_find_project_root_in_git_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let result = find_project_root(dir);
+        assert!(result.is_some());
+        let root = result.unwrap();
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_find_project_root_no_git_falls_back_to_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = find_project_root(tmp.path().to_str().unwrap());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), std::path::PathBuf::from(tmp.path()));
+    }
+
+    // --- detect_project_info with git ---
+
+    #[test]
+    fn test_detect_project_info_with_git_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("src.rs"), "fn main() {}").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let config = Config::default();
+        let info = detect_project_info(dir, &config);
+        assert!(info.project_type.contains("Rust"));
+        assert!(info.root.is_some());
+        assert!(info.git_branch.is_some());
+        assert!(info.git_status.is_some());
+        assert!(!info.git_commits.is_empty());
+        assert!(!info.files.is_empty());
+    }
+
+    // --- run_git_with_timeout edge cases ---
+
+    #[test]
+    fn test_run_git_with_timeout_nonexistent_dir() {
+        let result = run_git_with_timeout(&["status"], "/nonexistent_dir_xyz_12345");
+        assert!(result.is_none());
+    }
+
+    // --- read_scrollback_file with content ---
+
+    #[test]
+    fn test_read_scrollback_file_with_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "sess_abc";
+        let content = "$ whoami\nroot\n$ ls\nfile1  file2\n";
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), content).unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_read_scrollback_file_empty_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "sess_empty";
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), "").unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert!(result.is_empty());
+    }
+
+    // --- detect_project_type walks up to .git ---
+
+    #[test]
+    fn test_detect_project_type_walks_up_to_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let subdir = tmp.path().join("src").join("deep");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let t = detect_project_type(subdir.to_str().unwrap());
+        assert!(
+            t.contains("Rust"),
+            "should find Cargo.toml by walking up: {t}"
+        );
+    }
+
+    #[test]
+    fn test_detect_project_type_stops_at_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert_eq!(t, "unknown");
+    }
+
+    // --- list_project_files dispatches correctly ---
+
+    #[test]
+    fn test_list_project_files_includes_file_sizes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), "hello world").unwrap();
+        let entries = list_project_files(tmp.path().to_str().unwrap(), 100);
+        let hello = entries.iter().find(|e| e.path == "hello.txt").unwrap();
+        assert_eq!(hello.kind, "file");
+        assert_eq!(hello.size, "11B");
+    }
+
+    // --- find_git_root from subdirectory ---
+
+    #[test]
+    fn test_find_git_root_from_deep_subdirectory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let deep = tmp.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep).unwrap();
+        let root = find_git_root(deep.to_str().unwrap());
+        assert_eq!(root, Some(tmp.path().to_path_buf()));
+    }
+
+    // --- check_project_markers directly ---
+
+    #[test]
+    fn test_check_project_markers_all_types_at_once() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("package.json"), "").unwrap();
+        std::fs::write(tmp.path().join("go.mod"), "").unwrap();
+        std::fs::write(tmp.path().join("Makefile"), "").unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), "").unwrap();
+        std::fs::write(tmp.path().join("Gemfile"), "").unwrap();
+        std::fs::write(tmp.path().join("pom.xml"), "").unwrap();
+        std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("flake.nix"), "").unwrap();
+        std::fs::write(tmp.path().join("pyproject.toml"), "").unwrap();
+        let mut types = Vec::new();
+        check_project_markers(tmp.path(), &mut types);
+        assert!(types.contains(&"Rust/Cargo"));
+        assert!(types.contains(&"Node.js"));
+        assert!(types.contains(&"Go"));
+        assert!(types.contains(&"Make"));
+        assert!(types.contains(&"Docker"));
+        assert!(types.contains(&"Ruby"));
+        assert!(types.contains(&"Java"));
+        assert!(types.contains(&"C/C++ (CMake)"));
+        assert!(types.contains(&"Nix"));
+        assert!(types.contains(&"Python"));
+    }
+
+    #[test]
+    fn test_check_project_markers_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut types = Vec::new();
+        check_project_markers(tmp.path(), &mut types);
+        assert!(types.is_empty());
+    }
+
+    // --- gather_custom_instructions with .nsh/instructions.md in parent ---
+
+    #[test]
+    fn test_gather_custom_instructions_project_file_in_git_root() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nsh")).unwrap();
+        std::fs::write(
+            tmp.path().join(".nsh").join("instructions.md"),
+            "Use Rust 2024 edition",
+        )
+        .unwrap();
+        let subdir = tmp.path().join("src").join("lib");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, subdir.to_str().unwrap());
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Use Rust 2024 edition"));
+    }
+
+    // --- detect_git_info branch name ---
+
+    #[test]
+    fn test_detect_git_info_branch_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-b", "develop"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "x").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let (branch, _status, _commits) = detect_git_info(dir, 5);
+        assert_eq!(branch.as_deref(), Some("develop"));
+    }
+
+    // --- list_project_files_with_ignore handles hidden files ---
+
+    #[test]
+    fn test_list_project_files_with_ignore_includes_hidden() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join(".hidden"), "secret").unwrap();
+        std::fs::write(tmp.path().join("visible.txt"), "hi").unwrap();
+        let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&".hidden"), "should include hidden files: {paths:?}");
+        assert!(paths.contains(&"visible.txt"));
+    }
+
+    // --- list_project_files_fallback handles file kinds ---
+
+    #[test]
+    fn test_list_project_files_fallback_file_kind_and_size() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), "hello").unwrap();
+        std::fs::create_dir(tmp.path().join("mydir")).unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        let file = entries.iter().find(|e| e.path == "hello.txt").unwrap();
+        assert_eq!(file.kind, "file");
+        assert_eq!(file.size, "5B");
+        let dir = entries.iter().find(|e| e.path == "mydir").unwrap();
+        assert_eq!(dir.kind, "dir");
+        assert!(dir.size.is_empty());
+    }
 }

@@ -154,4 +154,12 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("at least"));
     }
+
+    #[test]
+    fn test_update_nonexistent_id() {
+        let db = test_db();
+        let input = json!({"id": 9999, "value": "new_value"});
+        let result = execute_update(&input, &db);
+        assert!(result.is_ok());
+    }
 }

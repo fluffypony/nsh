@@ -230,4 +230,24 @@ mod tests {
         let long = "a".repeat(100);
         display_command_preview(&long, "Long command", &RiskLevel::Safe);
     }
+
+    #[test]
+    fn test_display_command_preview_multiline_explanation() {
+        display_command_preview(
+            "ls -la",
+            "First line of explanation\nSecond line of explanation\nThird line",
+            &RiskLevel::Safe,
+        );
+    }
+
+    #[test]
+    fn test_display_command_preview_empty_command() {
+        display_command_preview("", "Some explanation", &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_very_long_explanation() {
+        let long_explanation = "x".repeat(200);
+        display_command_preview("echo hi", &long_explanation, &RiskLevel::Elevated);
+    }
 }

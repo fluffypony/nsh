@@ -260,4 +260,72 @@ mod tests {
         let result = execute(&db, &input, &config, "test_sess").unwrap();
         assert!(result.contains("No matching commands found"));
     }
+
+    #[test]
+    fn test_execute_with_session_current() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo", "session": "current"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
+
+    #[test]
+    fn test_execute_with_session_all() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo", "session": "all"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
+
+    #[test]
+    fn test_execute_with_session_specific() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo", "session": "test_sess"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
+
+    #[test]
+    fn test_execute_with_failed_only() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"failed_only": true});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_execute_with_exit_code() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"exit_code": 1});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo test"));
+    }
+
+    #[test]
+    fn test_resolve_relative_time_invalid_number() {
+        let result = resolve_relative_time("abch");
+        let parsed = result.parse::<DateTime<Utc>>().unwrap();
+        let expected = Utc::now() - chrono::Duration::hours(1);
+        assert!((parsed - expected).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn test_execute_with_limit() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo", "limit": 1});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
 }

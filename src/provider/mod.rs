@@ -350,6 +350,18 @@ mod tests {
     }
 
     #[test]
+    fn create_provider_gemini_with_api_key() {
+        let mut config = crate::config::Config::default();
+        config.provider.gemini = Some(crate::config::ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let result = create_provider("gemini", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn content_block_serialization_roundtrip() {
         let blocks = vec![
             ContentBlock::Text {

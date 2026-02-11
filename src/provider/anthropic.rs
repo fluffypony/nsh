@@ -492,4 +492,148 @@ mod tests {
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs[0]["content"], "hello\nworld");
     }
+
+    #[test]
+    fn test_build_body_tool_result_is_error_true() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu1".into(),
+                    content: "command failed".into(),
+                    is_error: true,
+                }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["is_error"], true);
+        assert_eq!(content[0]["content"], "command failed");
+    }
+
+    #[test]
+    fn test_build_body_multiple_tool_results_in_one_message() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Tool,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tu1".into(),
+                        content: "result one".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tu2".into(),
+                        content: "result two".into(),
+                        is_error: true,
+                    },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["tool_use_id"], "tu1");
+        assert_eq!(content[0]["is_error"], false);
+        assert_eq!(content[1]["tool_use_id"], "tu2");
+        assert_eq!(content[1]["is_error"], true);
+    }
+
+    #[test]
+    fn test_build_body_mixed_text_and_tool_use_in_assistant() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text { text: "Let me check".into() },
+                    ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "search".into(),
+                        input: json!({"q": "test"}),
+                    },
+                    ContentBlock::Text { text: "Also this".into() },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Let me check");
+        assert_eq!(content[1]["type"], "tool_use");
+        assert_eq!(content[1]["name"], "search");
+        assert_eq!(content[2]["type"], "text");
+        assert_eq!(content[2]["text"], "Also this");
+    }
+
+    #[test]
+    fn test_build_body_user_filters_non_text_content() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text { text: "hello".into() },
+                    ContentBlock::ToolUse {
+                        id: "x".into(),
+                        name: "y".into(),
+                        input: json!({}),
+                    },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["content"], "hello");
+    }
+
+    #[test]
+    fn test_build_body_assistant_filters_tool_result_blocks() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text { text: "response".into() },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tr1".into(),
+                        content: "ignored".into(),
+                        is_error: false,
+                    },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        let content = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "text");
+    }
+
+    #[test]
+    fn test_build_body_empty_tools_no_tool_choice() {
+        let provider = make_provider();
+        let req = make_request(vec![], vec![], ToolChoice::Required);
+        let body = provider.build_body(&req);
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
 }

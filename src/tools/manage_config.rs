@@ -411,4 +411,75 @@ c = 42
         assert!(result.contains("new"));
         assert!(!result.contains("old"));
     }
+
+    #[test]
+    fn test_json_to_toml_edit_nested_object() {
+        let v = json!({"outer": {"inner": "deep", "num": 7}});
+        let t = json_to_toml_edit(&v);
+        assert!(t.is_table());
+        let outer = t.as_table().unwrap().get("outer").unwrap();
+        assert!(outer.is_table());
+        let inner_table = outer.as_table().unwrap();
+        assert_eq!(inner_table.get("inner").unwrap().as_str(), Some("deep"));
+        assert_eq!(inner_table.get("num").unwrap().as_integer(), Some(7));
+    }
+
+    #[test]
+    fn test_json_to_toml_edit_array_of_numbers() {
+        let v = json!([1, 2, 3]);
+        let t = json_to_toml_edit(&v);
+        let arr = t.as_value().unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr.get(0).unwrap().as_integer(), Some(1));
+        assert_eq!(arr.get(2).unwrap().as_integer(), Some(3));
+    }
+
+    #[test]
+    fn test_json_to_toml_edit_array_of_bools() {
+        let v = json!([true, false, true]);
+        let t = json_to_toml_edit(&v);
+        let arr = t.as_value().unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr.get(0).unwrap().as_bool(), Some(true));
+        assert_eq!(arr.get(1).unwrap().as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_json_to_toml_edit_array_mixed() {
+        let v = json!(["hello", 42, true]);
+        let t = json_to_toml_edit(&v);
+        let arr = t.as_value().unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr.get(0).unwrap().as_str(), Some("hello"));
+        assert_eq!(arr.get(1).unwrap().as_integer(), Some(42));
+        assert_eq!(arr.get(2).unwrap().as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_set_then_get_deep_nesting() {
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_value(&mut doc, "a.b.c.d", toml_edit::value("leaf")).unwrap();
+        let val = get_toml_value(&doc, "a.b.c.d");
+        assert!(val.is_some());
+        assert!(val.unwrap().contains("leaf"));
+        assert!(get_toml_value(&doc, "a.b.c").is_some());
+        assert!(get_toml_value(&doc, "a.b").is_some());
+    }
+
+    #[test]
+    fn test_remove_from_deep_nesting() {
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_value(&mut doc, "x.y.z", toml_edit::value(100)).unwrap();
+        assert!(get_toml_value(&doc, "x.y.z").is_some());
+        assert!(remove_toml_value(&mut doc, "x.y.z").unwrap());
+        assert!(get_toml_value(&doc, "x.y.z").is_none());
+        assert!(get_toml_value(&doc, "x.y").is_some());
+    }
+
+    #[test]
+    fn test_remove_when_parent_is_not_table() {
+        let mut doc: toml_edit::DocumentMut = "val = 42\n".parse().unwrap();
+        let result = remove_toml_value(&mut doc, "val.child").unwrap();
+        assert!(!result);
+    }
 }

@@ -433,4 +433,70 @@ mod tests {
             Some("1")
         );
     }
+
+    #[test]
+    fn parse_bash_nonexistent_file() {
+        let results = parse_bash(Path::new("/nonexistent/path/bash_history"), fixed_mtime());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_fish_nonexistent_file() {
+        let results = parse_fish(Path::new("/nonexistent/path/fish_history"), fixed_mtime());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_zsh_detects_extended_format() {
+        let f = write_temp(": 1700000100:0;git status\n: 1700000200:0;ls\n");
+        let results = parse_zsh(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "git status");
+        assert_eq!(results[0].1.timestamp(), 1_700_000_100);
+    }
+
+    #[test]
+    fn parse_zsh_detects_plain_format() {
+        let f = write_temp("ls\npwd\nwhoami\n");
+        let results = parse_zsh(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[2].0, "whoami");
+    }
+
+    #[test]
+    fn detect_shell_from_content_empty_file() {
+        let f = write_temp("");
+        assert_eq!(detect_shell_from_content(f.path()), Shell::Bash);
+    }
+
+    #[test]
+    fn parse_zsh_extended_no_matching_lines() {
+        let results = parse_zsh_extended("plain line\nanother line\n");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_bash_comments_not_timestamps_kept_as_commands() {
+        let f = write_temp("#comment\nls\n#notanumber\npwd\n");
+        let results = parse_bash(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].0, "#comment");
+        assert_eq!(results[1].0, "ls");
+        assert_eq!(results[2].0, "#notanumber");
+        assert_eq!(results[3].0, "pwd");
+    }
+
+    #[test]
+    fn import_skips_when_db_has_commands() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.create_session("s1", "test", "test", 0).unwrap();
+        db.insert_command("s1", "echo hi", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
+        assert!(db.get_meta("shell_history_imported").unwrap().is_none());
+        import_if_needed(&db);
+        assert_eq!(
+            db.get_meta("shell_history_imported").unwrap().as_deref(),
+            Some("1")
+        );
+    }
 }

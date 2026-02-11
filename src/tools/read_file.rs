@@ -119,4 +119,22 @@ mod tests {
         let result = execute(&input).unwrap();
         assert!(result.contains("Binary file"));
     }
+
+    #[test]
+    fn test_read_file_path_with_dotdot() {
+        let input = json!({"path": "/tmp/../etc/passwd"});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("Access denied") || result.contains(".."));
+    }
+
+    #[test]
+    fn test_read_file_invalid_utf8_no_nulls() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(&[0x80, 0x81, 0x82, 0xFE, 0xFF]).unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("Binary file"));
+    }
 }

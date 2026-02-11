@@ -1118,6 +1118,160 @@ mod tests {
     fn is_anthropic_model_claude_substring() {
         assert!(is_anthropic_model("openrouter/claude-3.5-sonnet"));
     }
+
+    #[test]
+    fn build_request_body_anthropic_cache_control_on_system() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "claude-3-haiku",
+            "be brief",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(sys[0]["text"], "be brief");
+    }
+
+    #[test]
+    fn build_request_body_extra_body_map_multiple_keys() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(json!({"temperature": 0.7, "frequency_penalty": 1.2, "custom_field": "abc"})),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["frequency_penalty"], 1.2);
+        assert_eq!(body["custom_field"], "abc");
+    }
+
+    #[test]
+    fn build_request_body_tool_choice_required() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![ToolDefinition {
+                name: "t".into(),
+                description: "d".into(),
+                parameters: json!({}),
+            }],
+            ToolChoice::Required,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    #[test]
+    fn build_request_body_tool_choice_none_value() {
+        let provider = make_provider();
+        let req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::None, None);
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["tool_choice"], "none");
+    }
+
+    #[test]
+    fn build_request_body_tool_choice_auto_value() {
+        let provider = make_provider();
+        let req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::Auto, None);
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn build_openai_tools_multiple_preserves_all() {
+        let tools = vec![
+            ToolDefinition {
+                name: "tool_a".into(),
+                description: "desc a".into(),
+                parameters: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
+            },
+            ToolDefinition {
+                name: "tool_b".into(),
+                description: "desc b".into(),
+                parameters: json!({"type": "object", "properties": {"y": {"type": "integer"}}}),
+            },
+            ToolDefinition {
+                name: "tool_c".into(),
+                description: "desc c".into(),
+                parameters: json!({"type": "object"}),
+            },
+        ];
+        let result = build_openai_tools(&tools);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0]["function"]["name"], "tool_a");
+        assert_eq!(result[1]["function"]["name"], "tool_b");
+        assert_eq!(result[2]["function"]["name"], "tool_c");
+        assert_eq!(result[0]["function"]["parameters"]["properties"]["x"]["type"], "string");
+        assert_eq!(result[1]["function"]["parameters"]["properties"]["y"]["type"], "integer");
+    }
+
+    #[test]
+    fn build_openai_messages_empty_content_blocks() {
+        let msgs = vec![Message {
+            role: Role::User,
+            content: vec![],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "user");
+        assert_eq!(result[0]["content"], "");
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_empty_content() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+        assert!(result[0].get("content").is_none());
+        assert!(result[0].get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn is_anthropic_model_various_strings() {
+        assert!(is_anthropic_model("claude-instant"));
+        assert!(is_anthropic_model("anthropic/gemma"));
+        assert!(!is_anthropic_model("gpt-3.5-turbo"));
+        assert!(!is_anthropic_model("mistral-large"));
+        assert!(!is_anthropic_model("deepseek-coder"));
+    }
+
+    #[test]
+    fn thinking_model_name_non_google_no_change() {
+        assert_eq!(thinking_model_name("claude-3-opus", true), "claude-3-opus");
+        assert_eq!(thinking_model_name("gpt-4o", false), "gpt-4o");
+    }
+
+    #[test]
+    fn apply_thinking_mode_no_think_non_gemini3() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "claude-3.5-sonnet", false);
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn apply_thinking_mode_think_claude_non_sonnet_no_reasoning() {
+        let mut body = json!({});
+        apply_thinking_mode(&mut body, "claude-3-haiku", true);
+        assert!(body.get("reasoning").is_none());
+    }
 }
 
 pub fn spawn_openai_stream(

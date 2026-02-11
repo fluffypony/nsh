@@ -580,4 +580,129 @@ mod tests {
         let client = McpClient::new();
         assert!(client.server_info().is_empty());
     }
+
+    #[test]
+    fn find_event_boundary_empty_buffer() {
+        assert_eq!(find_event_boundary(b""), None);
+    }
+
+    #[test]
+    fn find_event_boundary_single_newline() {
+        assert_eq!(find_event_boundary(b"\n"), None);
+    }
+
+    #[test]
+    fn find_event_boundary_single_crlf() {
+        assert_eq!(find_event_boundary(b"\r\n"), None);
+    }
+
+    #[test]
+    fn find_event_boundary_three_bytes() {
+        assert_eq!(find_event_boundary(b"\n\n\n"), Some((0, 2)));
+    }
+
+    fn make_populated_client() -> McpClient {
+        let mut client = McpClient::new();
+        let server = McpServer {
+            transport: McpTransport::Http {
+                client: reqwest::Client::new(),
+                url: "http://localhost".into(),
+                session_id: None,
+                headers: vec![],
+            },
+            tools: vec![
+                McpToolInfo {
+                    name: "search".into(),
+                    description: "Search files".into(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+                },
+                McpToolInfo {
+                    name: "read".into(),
+                    description: "Read a file".into(),
+                    input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                },
+            ],
+            next_id: 1,
+            timeout: Duration::from_secs(30),
+        };
+        client.servers.insert("myserver".into(), server);
+        client
+    }
+
+    #[test]
+    fn parse_tool_name_with_populated_client() {
+        let client = make_populated_client();
+        let result = client.parse_tool_name("mcp_myserver_search");
+        assert_eq!(result, Some(("myserver", "search")));
+    }
+
+    #[test]
+    fn parse_tool_name_no_prefix() {
+        let client = make_populated_client();
+        assert!(client.parse_tool_name("myserver_search").is_none());
+    }
+
+    #[test]
+    fn parse_tool_name_wrong_server() {
+        let client = make_populated_client();
+        assert!(client.parse_tool_name("mcp_other_search").is_none());
+    }
+
+    #[test]
+    fn has_tool_populated() {
+        let client = make_populated_client();
+        assert!(client.has_tool("mcp_myserver_search"));
+        assert!(client.has_tool("mcp_myserver_read"));
+        assert!(client.has_tool("mcp_myserver_write"));
+        assert!(!client.has_tool("mcp_other_search"));
+        assert!(!client.has_tool("no_prefix"));
+    }
+
+    #[test]
+    fn tool_definitions_populated() {
+        let client = make_populated_client();
+        let defs = client.tool_definitions();
+        assert_eq!(defs.len(), 2);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(names.contains(&"mcp_myserver_search"));
+        assert!(names.contains(&"mcp_myserver_read"));
+        let search_def = defs.iter().find(|d| d.name == "mcp_myserver_search").unwrap();
+        assert_eq!(search_def.description, "Search files");
+    }
+
+    #[test]
+    fn server_info_populated() {
+        let client = make_populated_client();
+        let info = client.server_info();
+        assert_eq!(info.len(), 1);
+        assert_eq!(info[0].0, "myserver");
+        assert_eq!(info[0].1, 2);
+    }
+
+    #[test]
+    fn parse_tool_name_longest_server_match() {
+        let mut client = McpClient::new();
+        let make_server = |tools: Vec<&str>| McpServer {
+            transport: McpTransport::Http {
+                client: reqwest::Client::new(),
+                url: "http://localhost".into(),
+                session_id: None,
+                headers: vec![],
+            },
+            tools: tools
+                .into_iter()
+                .map(|n| McpToolInfo {
+                    name: n.into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({}),
+                })
+                .collect(),
+            next_id: 1,
+            timeout: Duration::from_secs(30),
+        };
+        client.servers.insert("ab".into(), make_server(vec!["x"]));
+        client.servers.insert("ab_cd".into(), make_server(vec!["x"]));
+        let result = client.parse_tool_name("mcp_ab_cd_x");
+        assert_eq!(result, Some(("ab_cd", "x")));
+    }
 }

@@ -111,4 +111,74 @@ mod tests {
         let result = execute(&input).unwrap();
         assert!(result.contains("Error reading"));
     }
+
+    #[test]
+    fn test_grep_file_missing_path() {
+        let input = json!({"pattern": "test"});
+        let result = execute(&input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("path is required"));
+    }
+
+    #[test]
+    fn test_grep_file_invalid_regex() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "hello").unwrap();
+        let path = f.path().to_str().unwrap();
+        let input = json!({"path": path, "pattern": "[invalid"});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("Invalid regex"));
+    }
+
+    #[test]
+    fn test_grep_file_no_pattern_reads_file() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "line one").unwrap();
+        writeln!(f, "line two").unwrap();
+        writeln!(f, "line three").unwrap();
+        let path = f.path().to_str().unwrap();
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("line one"));
+        assert!(result.contains("line two"));
+        assert!(result.contains("line three"));
+    }
+
+    #[test]
+    fn test_grep_file_max_lines_truncation() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..10 {
+            writeln!(f, "line {i}").unwrap();
+        }
+        let path = f.path().to_str().unwrap();
+        let input = json!({"path": path, "max_lines": 3});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("more lines"));
+    }
+
+    #[test]
+    fn test_grep_file_context_lines() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..10 {
+            writeln!(f, "line {i}").unwrap();
+        }
+        let path = f.path().to_str().unwrap();
+        let input = json!({"path": path, "pattern": "line 5", "context_lines": 1});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("line 4"));
+        assert!(result.contains("line 5"));
+        assert!(result.contains("line 6"));
+    }
+
+    #[test]
+    fn test_grep_file_match_truncated_by_max_lines() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..20 {
+            writeln!(f, "match {i}").unwrap();
+        }
+        let path = f.path().to_str().unwrap();
+        let input = json!({"path": path, "pattern": "match", "context_lines": 0, "max_lines": 5});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("truncated"));
+    }
 }

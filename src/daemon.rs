@@ -842,4 +842,387 @@ mod tests {
             _ => panic!("expected Error"),
         }
     }
+
+    #[test]
+    fn test_daemon_request_record_roundtrip_minimal() {
+        let json_str = r#"{"type":"record","session":"abc","command":"pwd","cwd":"/home","exit_code":1,"started_at":"2025-06-01T12:00:00Z"}"#;
+        let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
+        let re_json = serde_json::to_string(&req).unwrap();
+        let re_parsed: DaemonRequest = serde_json::from_str(&re_json).unwrap();
+        if let DaemonRequest::Record { session, command, exit_code, duration_ms, output, .. } = re_parsed {
+            assert_eq!(session, "abc");
+            assert_eq!(command, "pwd");
+            assert_eq!(exit_code, 1);
+            assert!(duration_ms.is_none());
+            assert!(output.is_none());
+        } else {
+            panic!("expected Record");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_mcp_tool_call_complex_input() {
+        let req = DaemonRequest::McpToolCall {
+            tool: "file_search".into(),
+            input: serde_json::json!({"paths": ["/a", "/b"], "recursive": true, "depth": 5}),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        if let DaemonRequest::McpToolCall { tool, input } = parsed {
+            assert_eq!(tool, "file_search");
+            assert_eq!(input["paths"][0], "/a");
+            assert_eq!(input["recursive"], true);
+            assert_eq!(input["depth"], 5);
+        } else {
+            panic!("expected McpToolCall");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_capture_read_custom_max_lines() {
+        let json_str = r#"{"type":"capture_read","session":"s2","max_lines":42}"#;
+        let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
+        if let DaemonRequest::CaptureRead { session, max_lines } = req {
+            assert_eq!(session, "s2");
+            assert_eq!(max_lines, 42);
+        } else {
+            panic!("expected CaptureRead");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_all_variants_tag_values() {
+        let variants = vec![
+            (r#"{"type":"heartbeat","session":"s"}"#, "heartbeat"),
+            (r#"{"type":"capture_mark","session":"s"}"#, "capture_mark"),
+            (r#"{"type":"capture_read","session":"s"}"#, "capture_read"),
+            (r#"{"type":"scrollback"}"#, "scrollback"),
+            (r#"{"type":"context","session":"s"}"#, "context"),
+            (r#"{"type":"status"}"#, "status"),
+            (r#"{"type":"mcp_tool_call","tool":"t","input":{}}"#, "mcp_tool_call"),
+            (r#"{"type":"summarize_check","session":"s"}"#, "summarize_check"),
+        ];
+        for (json_str, tag) in variants {
+            let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
+            let serialized = serde_json::to_string(&req).unwrap();
+            assert!(serialized.contains(&format!("\"type\":\"{tag}\"")), "tag mismatch for {tag}");
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_data_roundtrip() {
+        let resp = DaemonResponse::ok_with_data(serde_json::json!({"list": [1, 2, 3], "nested": {"a": true}}));
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        if let DaemonResponse::Ok { data: Some(d) } = parsed {
+            assert_eq!(d["list"][1], 2);
+            assert_eq!(d["nested"]["a"], true);
+        } else {
+            panic!("expected Ok with data");
+        }
+    }
+
+    #[test]
+    fn test_default_max_lines_value() {
+        assert_eq!(default_max_lines(), 1000);
+        let json_str = r#"{"type":"scrollback"}"#;
+        let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
+        if let DaemonRequest::Scrollback { max_lines } = req {
+            assert_eq!(max_lines, default_max_lines());
+        } else {
+            panic!("expected Scrollback");
+        }
+    }
+
+    #[test]
+    fn test_daemon_socket_path_format() {
+        let path = daemon_socket_path("abc123");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "daemon_abc123.sock");
+    }
+
+    #[test]
+    fn test_daemon_pid_path_format() {
+        let path = daemon_pid_path("xyz789");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "daemon_xyz789.pid");
+    }
+
+    #[test]
+    fn test_daemon_request_record_full_roundtrip() {
+        let json_str = r#"{
+            "type": "record",
+            "session": "s1",
+            "command": "ls -la",
+            "cwd": "/home/user",
+            "exit_code": 42,
+            "started_at": "2025-06-01T12:00:00Z",
+            "tty": "/dev/pts/5",
+            "pid": 9999,
+            "shell": "fish",
+            "duration_ms": 1500,
+            "output": "file1\nfile2"
+        }"#;
+        let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
+        let json = serde_json::to_string(&req).unwrap();
+        let re: DaemonRequest = serde_json::from_str(&json).unwrap();
+        if let DaemonRequest::Record { session, command, cwd, exit_code, tty, pid, shell, duration_ms, output, .. } = re {
+            assert_eq!(session, "s1");
+            assert_eq!(command, "ls -la");
+            assert_eq!(cwd, "/home/user");
+            assert_eq!(exit_code, 42);
+            assert_eq!(tty, "/dev/pts/5");
+            assert_eq!(pid, 9999);
+            assert_eq!(shell, "fish");
+            assert_eq!(duration_ms, Some(1500));
+            assert_eq!(output.as_deref(), Some("file1\nfile2"));
+        } else {
+            panic!("expected Record");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_summarize_check_roundtrip() {
+        let req = DaemonRequest::SummarizeCheck { session: "sess42".into() };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        if let DaemonRequest::SummarizeCheck { session } = parsed {
+            assert_eq!(session, "sess42");
+        } else {
+            panic!("expected SummarizeCheck");
+        }
+    }
+
+    #[test]
+    fn test_handle_record_with_real_db_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "test_real_db".into(),
+                command: "echo hello".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-06-01T00:00:00Z".into(),
+                tty: "/dev/pts/0".into(),
+                pid: 1234,
+                shell: "zsh".into(),
+                duration_ms: Some(50),
+                output: Some("hello".into()),
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert!(d["id"].is_number());
+            }
+            DaemonResponse::Error { message } => {
+                panic!("unexpected error: {message}");
+            }
+            _ => panic!("expected Ok with id"),
+        }
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_handle_heartbeat_with_real_db_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "test_hb_sess".into() },
+            &capture,
+            &tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_handle_record_db_error_reply() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    DbCommand::Record { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!("simulated error")));
+                    }
+                    DbCommand::Shutdown => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "fail".into(),
+                cwd: "/tmp".into(),
+                exit_code: 1,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("simulated error"));
+            }
+            _ => panic!("expected Error"),
+        }
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_handle_heartbeat_db_error_reply() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    DbCommand::Heartbeat { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!("heartbeat fail")));
+                    }
+                    DbCommand::Shutdown => break,
+                    _ => {}
+                }
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "s1".into() },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("heartbeat fail"));
+            }
+            _ => panic!("expected Error"),
+        }
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_handle_record_db_thread_hung_up() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(cmd) = rx.recv() {
+                match cmd {
+                    DbCommand::Record { reply, .. } => {
+                        drop(reply);
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "test".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("hung up") || message.contains("timeout"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_db_command_generate_summaries_via_real_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let _ = tx.send(DbCommand::GenerateSummaries);
+
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::SearchHistory {
+            query: "nonexistent_test_xyz".into(),
+            limit: 5,
+            reply: reply_tx,
+        });
+        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_db_command_insert_conversation_via_real_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Record {
+            session: "conv_test_sess".into(),
+            command: "echo setup".into(),
+            cwd: "/tmp".into(),
+            exit_code: 0,
+            started_at: "2025-06-01T00:00:00Z".into(),
+            tty: "".into(),
+            pid: 0,
+            shell: "".into(),
+            duration_ms: None,
+            output: None,
+            reply: rec_tx,
+        });
+        let _ = rec_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::InsertConversation {
+            session_id: "conv_test_sess".into(),
+            query: "what is rust".into(),
+            response_type: "chat".into(),
+            response: "A systems language".into(),
+            explanation: None,
+            executed: false,
+            pending: false,
+            reply: reply_tx,
+        });
+        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_db_command_shutdown_stops_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || run_db_thread(rx));
+
+        let _ = tx.send(DbCommand::Shutdown);
+        handle.join().expect("db thread should exit cleanly");
+    }
 }

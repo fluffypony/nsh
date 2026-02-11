@@ -1766,4 +1766,219 @@ mod tests {
         let scrolled = detect_scrolled_lines(&prev, &cur);
         assert!(scrolled.is_empty());
     }
+
+    #[test]
+    fn test_detect_scrolled_lines_completely_disjoint() {
+        let prev: Vec<String> = vec!["x", "y", "z"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["x", "y", "z"]);
+    }
+
+    #[test]
+    fn test_push_history_line_evicts_oldest_when_at_capacity() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 5, "vt100".into(), "drop".into());
+        for i in 0..10 {
+            eng.push_history_line(format!("h{i}"));
+        }
+        assert_eq!(eng.history_lines.len(), 5);
+        assert_eq!(eng.history_lines[0], "h5");
+        assert_eq!(eng.history_lines[4], "h9");
+    }
+
+    #[test]
+    fn test_push_history_line_eviction_boundary() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 3, "vt100".into(), "drop".into());
+        eng.push_history_line("a".into());
+        eng.push_history_line("b".into());
+        eng.push_history_line("c".into());
+        assert_eq!(eng.history_lines.len(), 3);
+        eng.push_history_line("d".into());
+        assert_eq!(eng.history_lines.len(), 3);
+        assert_eq!(eng.history_lines[0], "b");
+        assert_eq!(eng.history_lines[2], "d");
+    }
+
+    #[test]
+    fn test_process_rate_limit_pause_drops_then_resumes_after_expiry() {
+        let mut eng = CaptureEngine::new(24, 80, 50, 5, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'A'; 100]);
+        assert!(eng.paused_until.is_some());
+        eng.process(b"dropped\r\n");
+        let out = eng.get_lines(100);
+        assert!(!out.contains("dropped"));
+
+        eng.paused_until = Some(Instant::now() - Duration::from_secs(1));
+        eng.process(b"resumed\r\n");
+        assert!(eng.paused_until.is_none());
+        let out2 = eng.get_lines(100);
+        assert!(out2.contains("resumed"));
+    }
+
+    #[test]
+    fn test_process_rate_limit_multiple_calls_within_window() {
+        let mut eng = CaptureEngine::new(24, 80, 200, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'A'; 50]);
+        assert!(eng.paused_until.is_none());
+        eng.process(&[b'B'; 50]);
+        assert!(eng.paused_until.is_none());
+        eng.process(&[b'C'; 150]);
+        assert!(eng.paused_until.is_some());
+    }
+
+    #[test]
+    fn test_alt_screen_snapshot_mode_no_prev_visible_clear() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "snapshot".into());
+        eng.process(b"line1\r\nline2\r\n");
+        let before = eng.prev_visible.clone();
+        assert!(!before.is_empty());
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"tui stuff\r\n");
+        eng.process(b"\x1b[?1049l");
+        assert_eq!(eng.prev_visible, before);
+        eng.process(b"post alt\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("post alt"));
+    }
+
+    #[test]
+    fn test_alt_screen_snapshot_mark_capture_across_alt() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "snapshot".into());
+        eng.process(b"before\r\n");
+        eng.mark();
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"alt content\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"after alt\r\n");
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.contains("after alt"));
+    }
+
+    #[test]
+    fn test_capture_since_mark_max_bytes_causes_truncation_marker() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        for i in 0..200 {
+            eng.process(format!("data line number {i}\r\n").as_bytes());
+        }
+        let captured = eng.capture_since_mark(80).unwrap();
+        assert!(captured.contains("[... truncated by nsh]") || captured.contains("lines omitted"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_byte_limit_exceeded_short_input() {
+        let input = "short line 1\nshort line 2\nshort line 3";
+        let result = truncate_for_storage(input, 10);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_many_lines_then_byte_limit() {
+        let lines: Vec<String> = (0..200).map(|i| format!("line {i:05}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 100);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_sanitize_input_utf8_high_bytes() {
+        let input = vec![0x80, 0xC0, 0xE0, 0xF0, 0xFF];
+        let result = sanitize_input(&input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_input_mixed_high_and_filtered() {
+        let input = vec![0x00, 0x80, 0x01, 0xBF, 0x07, 0xFF];
+        let result = sanitize_input(&input);
+        assert_eq!(result, vec![0x80, 0xBF, 0xFF]);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_both_empty() {
+        let empty: Vec<&str> = vec![];
+        assert_eq!(longest_suffix_prefix_overlap(&empty, &empty), 0);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_a_empty() {
+        let empty: Vec<&str> = vec![];
+        let b = vec!["x", "y"];
+        assert_eq!(longest_suffix_prefix_overlap(&empty, &b), 0);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_b_empty() {
+        let a = vec!["x", "y"];
+        let empty: Vec<&str> = vec![];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &empty), 0);
+    }
+
+    #[test]
+    fn test_get_lines_history_combined_with_visible() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..30 {
+            eng.process(format!("line{i}\r\n").as_bytes());
+        }
+        assert!(eng.total_line_count() > 0);
+        let output = eng.get_lines(1000);
+        assert!(output.contains("line0"));
+        assert!(output.contains("line29"));
+        let line_count = output.lines().filter(|l| !l.is_empty()).count();
+        assert!(line_count > 4, "should include history + visible lines");
+    }
+
+    #[test]
+    fn test_get_lines_max_less_than_visible() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..10 {
+            eng.process(format!("vis{i}\r\n").as_bytes());
+        }
+        let output = eng.get_lines(2);
+        let lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+        assert!(lines.len() <= 2);
+    }
+
+    #[test]
+    fn test_capture_engine_snapshot_enter_leave_multiple_cycles() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "snapshot".into());
+        eng.process(b"before1\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"tui1\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"between\r\n");
+        eng.process(b"\x1b[?1049h");
+        eng.process(b"tui2\r\n");
+        eng.process(b"\x1b[?1049l");
+        eng.process(b"final\r\n");
+        let output = eng.get_lines(1000);
+        assert!(output.contains("final"));
+        assert!(!output.contains("tui1"));
+        assert!(!output.contains("tui2"));
+    }
+
+    #[test]
+    fn test_push_history_line_zero_max_still_pushes() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 0, "vt100".into(), "drop".into());
+        eng.push_history_line("line".into());
+        assert_eq!(eng.history_lines.len(), 1);
+    }
+
+    #[test]
+    fn test_rate_limit_window_resets_after_one_second() {
+        let mut eng = CaptureEngine::new(24, 80, 100, 2, 10_000, "vt100".into(), "drop".into());
+        eng.rate_bytes = 90;
+        eng.rate_window_start = Instant::now() - Duration::from_secs(2);
+        eng.process(b"new data\r\n");
+        assert_eq!(eng.rate_bytes, b"new data\r\n".len());
+        assert!(eng.paused_until.is_none());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_single_element_overlap() {
+        let prev: Vec<String> = vec!["a".into(), "b".into()];
+        let cur: Vec<String> = vec!["b".into(), "c".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a"]);
+    }
 }

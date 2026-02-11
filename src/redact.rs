@@ -1156,3 +1156,40 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    fn test_config() -> RedactionConfig {
+        RedactionConfig {
+            enabled: true,
+            patterns: vec![],
+            replacement: String::new(),
+            disable_builtin: false,
+        }
+    }
+
+    #[test]
+    fn test_redact_url_query_param_without_equals() {
+        let url = "https://example.com/path?bare_param&token=secret";
+        let result = redact_url(url);
+        assert!(result.contains("bare_param"));
+        assert!(result.contains("token="));
+    }
+
+    #[test]
+    fn test_redact_url_no_query_no_scheme() {
+        let url = "/just/a/path";
+        let result = redact_url(url);
+        assert_eq!(result, url);
+    }
+
+    #[test]
+    fn test_redact_twilio_api_key() {
+        let config = test_config();
+        let input = "SK0123456789abcdef0123456789abcdef";
+        let result = redact_secrets(input, &config);
+        assert!(result.contains("REDACTED"), "should redact Twilio key, got: {result}");
+    }
+}

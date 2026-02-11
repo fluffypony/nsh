@@ -71,4 +71,19 @@ mod tests {
         assert!(result.contains("hello"));
         assert!(result.contains("[exit code: 0]"));
     }
+
+    #[test]
+    fn test_run_command_sensitive_path_denied() {
+        let config = test_config_with_allowlist(vec!["cat".into()]);
+        let result = execute("cat ~/.ssh/id_rsa", &config).unwrap();
+        assert!(result.contains("DENIED"));
+        assert!(result.contains("sensitive path"));
+    }
+
+    #[test]
+    fn test_run_command_with_stderr() {
+        let config = test_config_with_allowlist(vec!["ls".into()]);
+        let result = execute("ls /nonexistent_path_xyz_12345", &config).unwrap();
+        assert!(result.contains("--- stderr ---"));
+    }
 }

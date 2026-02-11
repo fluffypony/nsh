@@ -679,4 +679,98 @@ mod tests {
             assert!(obj.contains_key("required"), "tool '{}' missing 'required' field", tool.name);
         }
     }
+
+    #[test]
+    fn test_validate_read_path_tilde_expansion() {
+        let _home = dirs::home_dir().unwrap();
+        let result = validate_read_path("~/Desktop");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => assert!(
+                e.contains("sensitive") || e.contains("Access denied"),
+                "unexpected error: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_tilde_alone() {
+        let result = validate_read_path("~");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => assert!(
+                e.contains("sensitive") || e.contains("Access denied"),
+                "unexpected error: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_rejects_parent_dir() {
+        let result = validate_read_path("/tmp/../etc/passwd");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".."));
+    }
+
+    #[test]
+    fn test_validate_read_path_relative_path() {
+        let result = validate_read_path("Cargo.toml");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_nonexistent_file() {
+        let result = validate_read_path("/tmp/nsh_test_nonexistent_file_xyz_99999.txt");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => assert!(e.contains("Access denied"), "unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_ssh() {
+        let result = validate_read_path("~/.ssh/id_rsa");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_nsh() {
+        let result = validate_read_path("~/.nsh/config.toml");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_aws() {
+        let result = validate_read_path("~/.aws/credentials");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_gnupg() {
+        let result = validate_read_path("~/.gnupg/pubring.kbx");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_absolute_valid() {
+        let result = validate_read_path("/tmp");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_validate_read_path_existing_but_cannot_resolve() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+        let result = validate_read_path(file_path.to_str().unwrap());
+        assert!(result.is_ok());
+    }
 }

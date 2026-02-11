@@ -125,3 +125,124 @@ fn test_reset_without_session() {
         "Expected confirmation message, got: {stderr}"
     );
 }
+
+#[test]
+fn test_version_flag() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "--version"])
+        .output()
+        .expect("failed to run nsh --version");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("nsh"),
+        "Expected 'nsh' in version output, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_help_flag() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "--help"])
+        .output()
+        .expect("failed to run nsh --help");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Usage"),
+        "Expected 'Usage' in help output, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Natural Shell"),
+        "Expected 'Natural Shell' in help output, got: {stdout}"
+    );
+}
+
+#[test]
+fn test_config_show() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "config", "show"])
+        .output()
+        .expect("failed to run nsh config show");
+
+    assert!(
+        output.status.success(),
+        "nsh config show should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_cost_subcommand() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "cost", "all"])
+        .output()
+        .expect("failed to run nsh cost");
+
+    assert!(
+        output.status.success(),
+        "nsh cost all should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_status_subcommand() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "status"])
+        .output()
+        .expect("failed to run nsh status");
+
+    assert!(
+        output.status.success(),
+        "nsh status should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_completions_zsh() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "completions", "zsh"])
+        .output()
+        .expect("failed to run nsh completions zsh");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.is_empty(),
+        "Expected non-empty completions output"
+    );
+}
+
+#[test]
+fn test_completions_bash() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "completions", "bash"])
+        .output()
+        .expect("failed to run nsh completions bash");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.is_empty(),
+        "Expected non-empty completions output"
+    );
+}
+
+#[test]
+fn test_completions_fish() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "completions", "fish"])
+        .output()
+        .expect("failed to run nsh completions fish");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.is_empty(),
+        "Expected non-empty completions output"
+    );
+}

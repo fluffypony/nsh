@@ -1927,4 +1927,397 @@ model = "gpt-4"
         assert!(xml.contains("</nsh_configuration>"));
         assert!(xml.contains("provider"));
     }
+
+    // ── deep_merge_toml ─────────────────────────────────
+
+    #[test]
+    fn test_deep_merge_toml_overlapping_keys() {
+        let mut base: toml::Value = toml::from_str(r#"
+            a = 1
+            b = 2
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            b = 99
+            c = 3
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        let t = base.as_table().unwrap();
+        assert_eq!(t["a"].as_integer(), Some(1));
+        assert_eq!(t["b"].as_integer(), Some(99));
+        assert_eq!(t["c"].as_integer(), Some(3));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_non_table_values() {
+        let mut base: toml::Value = toml::Value::Integer(10);
+        let overlay = toml::Value::Integer(20);
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.as_integer(), Some(20));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_nested_tables() {
+        let mut base: toml::Value = toml::from_str(r#"
+            [outer]
+            keep = "yes"
+            inner_val = "old"
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            [outer]
+            inner_val = "new"
+            added = true
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        let outer = base.get("outer").unwrap().as_table().unwrap();
+        assert_eq!(outer["keep"].as_str(), Some("yes"));
+        assert_eq!(outer["inner_val"].as_str(), Some("new"));
+        assert_eq!(outer["added"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_overlay_adds_new_table() {
+        let mut base: toml::Value = toml::from_str(r#"
+            [a]
+            x = 1
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            [b]
+            y = 2
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.get("a").unwrap().get("x").unwrap().as_integer(), Some(1));
+        assert_eq!(base.get("b").unwrap().get("y").unwrap().as_integer(), Some(2));
+    }
+
+    // ── sanitize_project_config ─────────────────────────
+
+    #[test]
+    fn test_sanitize_project_config_only_allowed_keys() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [context]
+            history_limit = 10
+            [display]
+            chat_color = "blue"
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert!(t.contains_key("context"));
+        assert!(t.contains_key("display"));
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn test_sanitize_project_config_disallowed_removed() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [provider]
+            default = "anthropic"
+            [tools]
+            run_command_allowlist = ["rm"]
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert!(!t.contains_key("provider"));
+        assert!(!t.contains_key("tools"));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_project_config_mixed() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [context]
+            history_limit = 5
+            [provider]
+            model = "evil-model"
+            [display]
+            chat_color = "green"
+            [mcp]
+            ignored = true
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert!(t.contains_key("context"));
+        assert!(t.contains_key("display"));
+        assert!(!t.contains_key("provider"));
+        assert!(!t.contains_key("mcp"));
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn test_sanitize_project_config_non_table_noop() {
+        let mut value = toml::Value::String("not a table".into());
+        sanitize_project_config(&mut value);
+        assert_eq!(value.as_str(), Some("not a table"));
+    }
+
+    // ── build_config_xml with skills and MCP ────────────
+
+    #[test]
+    fn test_build_config_xml_with_skills_list() {
+        let config = Config::default();
+        let skills = vec![
+            crate::skills::Skill {
+                name: "deploy".into(),
+                description: "Deploy the app".into(),
+                command: "make deploy".into(),
+                timeout_seconds: 60,
+                terminal: true,
+                parameters: HashMap::new(),
+                is_project: false,
+            },
+            crate::skills::Skill {
+                name: "lint".into(),
+                description: "Run linter".into(),
+                command: "cargo clippy".into(),
+                timeout_seconds: 30,
+                terminal: false,
+                parameters: HashMap::new(),
+                is_project: true,
+            },
+        ];
+        let xml = build_config_xml(&config, &skills, &[]);
+        assert!(xml.contains("name=\"deploy\""));
+        assert!(xml.contains("source=\"global\""));
+        assert!(xml.contains("name=\"lint\""));
+        assert!(xml.contains("source=\"project\""));
+        assert!(xml.contains("terminal=\"true\""));
+        assert!(xml.contains("terminal=\"false\""));
+        assert!(xml.contains("count=\"2\""));
+    }
+
+    #[test]
+    fn test_build_config_xml_all_sections_present() {
+        let config = Config::default();
+        let xml = build_config_xml(&config, &[], &[]);
+        for section in [
+            "provider", "context", "models", "tools", "web_search",
+            "display", "redaction", "capture", "execution", "db",
+        ] {
+            assert!(xml.contains(&format!("name=\"{section}\"")),
+                "missing section: {section}");
+        }
+        assert!(xml.contains("<mcp_servers"));
+        assert!(xml.contains("<installed_skills"));
+    }
+
+    #[test]
+    fn test_build_config_xml_mcp_started_and_not() {
+        let toml_str = r#"
+            [mcp.servers.s1]
+            command = "cmd1"
+            [mcp.servers.s2]
+            url = "http://localhost:9090"
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let started = vec![("s1".to_string(), 7)];
+        let xml = build_config_xml(&config, &[], &started);
+        assert!(xml.contains("name=\"s1\""));
+        assert!(xml.contains("tools=\"7\""));
+        assert!(xml.contains("name=\"s2\""));
+        assert!(xml.contains("status=\"not_started\""));
+        assert!(xml.contains("transport=\"http\""));
+    }
+
+    // ── Config full deserialization ─────────────────────
+
+    #[test]
+    fn test_config_full_deserialization() {
+        let toml_str = r#"
+[provider]
+default = "gemini"
+model = "gemini-pro"
+fallback_model = "gemini-flash"
+web_search_model = "perplexity/sonar-pro"
+timeout_seconds = 60
+
+[provider.gemini]
+api_key = "test-key"
+base_url = "https://custom.endpoint"
+
+[context]
+scrollback_lines = 500
+scrollback_pages = 5
+history_summaries = 50
+history_limit = 10
+other_tty_summaries = 5
+max_other_ttys = 10
+project_files_limit = 200
+git_commits = 20
+retention_days = 365
+max_output_storage_bytes = 32768
+include_other_tty = true
+custom_instructions = "Be concise"
+
+[tools]
+run_command_allowlist = ["echo", "ls", "cat"]
+
+[models]
+main = ["model-a", "model-b"]
+fast = ["model-c"]
+
+[web_search]
+provider = "brave"
+model = "brave/search"
+
+[display]
+chat_color = "\\x1b[31m"
+
+[redaction]
+enabled = false
+replacement = "[HIDDEN]"
+disable_builtin = true
+patterns = ["custom-pattern"]
+
+[capture]
+mode = "raw"
+alt_screen = "snapshot"
+
+[execution]
+mode = "autorun"
+
+[db]
+busy_timeout_ms = 5000
+
+[mcp.servers.test_srv]
+command = "test-cmd"
+args = ["--verbose"]
+timeout_seconds = 45
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(config.provider.default, "gemini");
+        assert_eq!(config.provider.model, "gemini-pro");
+        assert_eq!(config.provider.fallback_model.as_deref(), Some("gemini-flash"));
+        assert_eq!(config.provider.timeout_seconds, 60);
+        let gemini_auth = config.provider.gemini.as_ref().unwrap();
+        assert_eq!(gemini_auth.api_key.as_deref(), Some("test-key"));
+        assert_eq!(gemini_auth.base_url.as_deref(), Some("https://custom.endpoint"));
+
+        assert_eq!(config.context.scrollback_lines, 500);
+        assert_eq!(config.context.history_limit, 10);
+        assert_eq!(config.context.git_commits, 20);
+        assert!(config.context.include_other_tty);
+        assert_eq!(config.context.custom_instructions.as_deref(), Some("Be concise"));
+        assert_eq!(config.context.project_files_limit, 200);
+        assert_eq!(config.context.max_output_storage_bytes, 32768);
+
+        assert_eq!(config.tools.run_command_allowlist, vec!["echo", "ls", "cat"]);
+
+        assert_eq!(config.models.main, vec!["model-a", "model-b"]);
+        assert_eq!(config.models.fast, vec!["model-c"]);
+
+        assert_eq!(config.web_search.provider, "brave");
+        assert_eq!(config.web_search.model, "brave/search");
+
+        assert!(!config.redaction.enabled);
+        assert_eq!(config.redaction.replacement, "[HIDDEN]");
+        assert!(config.redaction.disable_builtin);
+        assert_eq!(config.redaction.patterns, vec!["custom-pattern"]);
+
+        assert_eq!(config.capture.mode, "raw");
+        assert_eq!(config.capture.alt_screen, "snapshot");
+
+        assert_eq!(config.execution.mode, "autorun");
+        assert_eq!(config.db.busy_timeout_ms, 5000);
+
+        let srv = config.mcp.servers.get("test_srv").unwrap();
+        assert_eq!(srv.command.as_deref(), Some("test-cmd"));
+        assert_eq!(srv.args, vec!["--verbose"]);
+        assert_eq!(srv.timeout_seconds, 45);
+    }
+
+    // ── ProviderAuth::resolve_api_key ───────────────────
+
+    #[test]
+    fn test_resolve_api_key_with_api_key_present() {
+        let auth = ProviderAuth {
+            api_key: Some("direct-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "direct-key");
+    }
+
+    #[test]
+    fn test_resolve_api_key_empty_string_ignored() {
+        let auth = ProviderAuth {
+            api_key: Some("".into()),
+            api_key_cmd: None,
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("unknown_provider");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_api_key_via_cmd() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("echo cmd-key".into()),
+            base_url: None,
+        };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "cmd-key");
+    }
+
+    #[test]
+    fn test_resolve_api_key_cmd_failure() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("false".into()),
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("openrouter");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("api_key_cmd failed"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_cmd_empty_output() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("printf ''".into()),
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("openrouter");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty string"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_prefers_api_key_over_cmd() {
+        let auth = ProviderAuth {
+            api_key: Some("direct".into()),
+            api_key_cmd: Some("echo cmd".into()),
+            base_url: None,
+        };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "direct");
+    }
+
+    // ── McpServerConfig defaults ────────────────────────
+
+    #[test]
+    fn test_mcp_server_config_from_toml_defaults() {
+        let toml_str = r#"
+            [srv]
+            command = "my-cmd"
+        "#;
+        let map: HashMap<String, McpServerConfig> = toml::from_str(toml_str).unwrap();
+        let srv = &map["srv"];
+        assert_eq!(srv.command.as_deref(), Some("my-cmd"));
+        assert!(srv.transport.is_none());
+        assert!(srv.args.is_empty());
+        assert!(srv.env.is_empty());
+        assert!(srv.url.is_none());
+        assert!(srv.headers.is_empty());
+        assert_eq!(srv.timeout_seconds, 30);
+    }
+
+    // ── default_mcp_timeout ─────────────────────────────
+
+    #[test]
+    fn test_default_mcp_timeout_value() {
+        assert_eq!(default_mcp_timeout(), 30);
+    }
 }
