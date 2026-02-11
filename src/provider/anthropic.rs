@@ -1140,6 +1140,361 @@ mod tests {
         assert_eq!(tools[0]["input_schema"], params);
     }
 
+    fn make_provider_with_base_url(base_url: &str) -> AnthropicProvider {
+        AnthropicProvider {
+            client: reqwest::Client::new(),
+            api_key: Zeroizing::new("test-key".into()),
+            base_url: base_url.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_text_response() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [
+                    {"type": "text", "text": "Hello world"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let msg = provider.complete(req).await.unwrap();
+        assert!(matches!(msg.role, Role::Assistant));
+        assert_eq!(msg.content.len(), 1);
+        match &msg.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "Hello world"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_tool_use_response() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_123",
+                        "name": "search",
+                        "input": {"query": "test"}
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let msg = provider.complete(req).await.unwrap();
+        match &msg.content[0] {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_123");
+                assert_eq!(name, "search");
+                assert_eq!(input["query"], "test");
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_mixed_content_blocks() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [
+                    {"type": "text", "text": "thinking..."},
+                    {"type": "tool_use", "id": "t1", "name": "cmd", "input": {}},
+                    {"type": "unknown_type", "data": "ignored"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let msg = provider.complete(req).await.unwrap();
+        assert_eq!(msg.content.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_complete_empty_content() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": []
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let msg = provider.complete(req).await.unwrap();
+        assert!(msg.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_complete_no_content_field() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_123"
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let msg = provider.complete(req).await.unwrap();
+        assert!(msg.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_complete_api_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let err = provider.complete(req).await.unwrap_err();
+        assert!(err.to_string().contains("429"));
+        assert!(err.to_string().contains("rate limited"));
+    }
+
+    #[tokio::test]
+    async fn test_stream_api_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let err = provider.stream(req).await.unwrap_err();
+        assert!(err.to_string().contains("500"));
+    }
+
+    #[tokio::test]
+    async fn test_stream_text_delta_and_done() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+
+        let sse_body = [
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        ].concat();
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body)
+            )
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let mut rx = provider.stream(req).await.unwrap();
+
+        let mut texts = Vec::new();
+        let mut got_done = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::TextDelta(t) => texts.push(t),
+                StreamEvent::Done { .. } => { got_done = true; break; }
+                _ => {}
+            }
+        }
+        assert_eq!(texts, vec!["Hello", " world"]);
+        assert!(got_done);
+    }
+
+    #[tokio::test]
+    async fn test_stream_tool_use_events() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+
+        let sse_body = [
+            "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_1\",\"name\":\"search\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"test\\\"}\"}}\n\n",
+            "event: content_block_stop\ndata: {}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        ].concat();
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body)
+            )
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let mut rx = provider.stream(req).await.unwrap();
+
+        let mut events_log = Vec::new();
+        while let Some(event) = rx.recv().await {
+            match &event {
+                StreamEvent::ToolUseStart { id, name } => {
+                    events_log.push(format!("start:{id}:{name}"));
+                }
+                StreamEvent::ToolUseDelta(json) => {
+                    events_log.push(format!("delta:{json}"));
+                }
+                StreamEvent::ToolUseEnd => {
+                    events_log.push("end".into());
+                }
+                StreamEvent::Done { .. } => {
+                    events_log.push("done".into());
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(events_log[0], "start:tu_1:search");
+        assert!(events_log.contains(&"end".to_string()));
+        assert!(events_log.last().unwrap() == "done");
+    }
+
+    #[tokio::test]
+    async fn test_stream_error_event() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+
+        let sse_body = "event: error\ndata: {\"error\":{\"message\":\"overloaded\"}}\n\n";
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body)
+            )
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let mut rx = provider.stream(req).await.unwrap();
+
+        let event = rx.recv().await.unwrap();
+        match event {
+            StreamEvent::Error(msg) => assert_eq!(msg, "overloaded"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_content_block_start_text_not_tool_use() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+
+        let sse_body = [
+            "event: content_block_start\ndata: {\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+            "event: content_block_stop\ndata: {}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        ].concat();
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body)
+            )
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let mut rx = provider.stream(req).await.unwrap();
+
+        let mut got_tool_start = false;
+        let mut got_tool_end = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::ToolUseStart { .. } => got_tool_start = true,
+                StreamEvent::ToolUseEnd => got_tool_end = true,
+                StreamEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        assert!(!got_tool_start);
+        assert!(!got_tool_end);
+    }
+
+    #[tokio::test]
+    async fn test_stream_message_stop_closes_open_tool_use() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+
+        let sse_body = [
+            "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu_2\",\"name\":\"cmd\"}}\n\n",
+            "event: message_stop\ndata: {}\n\n",
+        ].concat();
+
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body)
+            )
+            .mount(&server)
+            .await;
+
+        let provider = make_provider_with_base_url(&server.uri());
+        let req = make_request(vec![], vec![], ToolChoice::Auto);
+        let mut rx = provider.stream(req).await.unwrap();
+
+        let mut got_tool_end = false;
+        while let Some(event) = rx.recv().await {
+            match event {
+                StreamEvent::ToolUseEnd => got_tool_end = true,
+                StreamEvent::Done { .. } => break,
+                _ => {}
+            }
+        }
+        assert!(got_tool_end);
+    }
+
     #[test]
     fn test_build_body_assistant_tool_use_id_preserved() {
         let provider = make_provider();

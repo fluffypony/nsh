@@ -322,6 +322,61 @@ mod tests {
     }
 
     #[test]
+    fn test_trivial_summary_whitespace_output_success() {
+        assert_eq!(
+            trivial_summary("touch file", 0, "   \n\t  "),
+            Some("Ran `touch file` successfully (no output)".into())
+        );
+    }
+
+    #[test]
+    fn test_trivial_summary_short_output_under_20_chars() {
+        assert!(trivial_summary("echo a", 0, "a").is_none());
+        assert!(trivial_summary("date", 0, "2025-02-11").is_none());
+        assert!(trivial_summary("wc -l", 0, "42 lines").is_none());
+    }
+
+    #[test]
+    fn test_trivial_summary_short_output_exactly_20_chars() {
+        let output = "x".repeat(20);
+        assert!(trivial_summary("cmd", 0, &output).is_none());
+    }
+
+    #[test]
+    fn test_trivial_summary_unknown_cmd_nonzero_exit_with_short_output() {
+        assert!(trivial_summary("bad_cmd", 127, "not found").is_none());
+    }
+
+    #[test]
+    fn test_build_summary_prompt_empty_output_string() {
+        let cmd = CommandForSummary {
+            id: 100,
+            command: "ls".into(),
+            cwd: Some("/home".into()),
+            exit_code: Some(0),
+            output: Some("".into()),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains("ls"));
+        assert!(prompt.contains("Exit code: 0"));
+        assert!(!prompt.contains("[...]"));
+    }
+
+    #[test]
+    fn test_build_summary_prompt_single_line_output() {
+        let cmd = CommandForSummary {
+            id: 101,
+            command: "echo hello".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            output: Some("hello".into()),
+        };
+        let prompt = build_summary_prompt(&cmd);
+        assert!(prompt.contains("hello"));
+        assert!(!prompt.contains("[...]"));
+    }
+
+    #[test]
     fn test_build_summary_prompt_special_characters() {
         let cmd = CommandForSummary {
             id: 21,

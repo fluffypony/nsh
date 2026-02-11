@@ -5720,6 +5720,185 @@ mod tests {
     }
 
     #[test]
+    fn test_search_history_advanced_no_fts_regex_with_current_session_no_current() {
+        let db = test_db();
+        db.insert_command(
+            "default", "echo fallback", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "other", "echo other", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("echo"), None, None, None, false,
+            Some("current"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("fallback"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_no_fts_no_regex_with_until() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "early_cmd", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "late_cmd", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, None, None, Some("2025-01-01T00:00:00Z"),
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("early_cmd"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_no_fts_no_regex_with_exit_code() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "success_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "fail_cmd_42", "/tmp", Some(42),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, None, None, None, Some(42), false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("fail_cmd_42"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_no_fts_no_regex_failed_only() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "ok_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "broken_cmd", "/tmp", Some(3),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, None, None, None, None, true, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("broken_cmd"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_no_fts_no_regex_session_filter_literal() {
+        let db = test_db();
+        db.insert_command(
+            "sess_alpha", "alpha_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "sess_beta", "beta_cmd", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, None, None, None, None, false,
+            Some("sess_alpha"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("alpha_cmd"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_regex_invalid_regex_ignored() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo build something", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("cargo"), Some("[invalid(regex"), None, None,
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_current_session_alias() {
+        let db = test_db();
+        db.insert_command(
+            "my_fts_sess", "npm install fts_target", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "other_fts_sess", "npm install fts_other", "/app", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("npm"), None, None, None, None, false,
+            Some("my_fts_sess"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("fts_target"));
+    }
+
+    #[test]
+    fn test_search_memories_case_insensitive_like() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert_memory("OS", "macOS Sequoia").unwrap();
+        let results = db.search_memories("macos").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_get_memories_ordered_by_updated_at() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert_memory("first", "1").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.upsert_memory("second", "2").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.upsert_memory("third", "3").unwrap();
+
+        let mems = db.get_memories(10).unwrap();
+        assert_eq!(mems.len(), 3);
+        assert_eq!(mems[0].key, "third");
+        assert_eq!(mems[2].key, "first");
+    }
+
+    #[test]
+    fn test_update_memory_updates_timestamp() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("ts_key", "v1").unwrap();
+        let before = db.get_memory_by_id(id).unwrap().unwrap().updated_at;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.update_memory(id, None, Some("v2")).unwrap();
+        let after = db.get_memory_by_id(id).unwrap().unwrap().updated_at;
+        assert!(after > before);
+    }
+
+    #[test]
+    fn test_upsert_memory_preserves_created_at_on_update() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("pkey", "v1").unwrap();
+        let created1 = db.get_memory_by_id(id).unwrap().unwrap().created_at;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        db.upsert_memory("pkey", "v2").unwrap();
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.created_at, created1);
+        assert_ne!(mem.updated_at, created1);
+    }
+
+    #[test]
     fn test_conversation_exchange_to_tool_result_chat_with_exit_code() {
         let exchange = ConversationExchange {
             query: "q".to_string(),

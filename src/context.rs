@@ -4267,4 +4267,387 @@ mod tests {
         assert!(xml.contains("&amp;"));
         assert!(xml.contains("&quot;quotes&quot;"));
     }
+
+    #[test]
+    fn test_read_scrollback_file_returns_full_content_when_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "scrollback_full_test";
+        let mut big = String::new();
+        for i in 0..50 {
+            big.push_str(&format!("$ command_{i}\noutput_{i}\n"));
+        }
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), &big).unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result.lines().count(), big.lines().count());
+    }
+
+    #[test]
+    fn test_read_scrollback_file_special_session_id() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "sess-with.dots_and-dashes";
+        std::fs::write(
+            tmp.path().join(format!("scrollback_{session}")),
+            "content",
+        )
+        .unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result, "content");
+    }
+
+    #[test]
+    fn test_build_xml_context_session_history_duration_zero() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "true".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: Some(0),
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("duration=\"0ms\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_session_history_negative_exit() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "crash".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(-11),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("exit=\"-11\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_other_sessions_switching_back_to_same_tty() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![
+            OtherSessionSummary {
+                command: "a".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t1".into(),
+                summary: None,
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "s1".into(),
+            },
+            OtherSessionSummary {
+                command: "b".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t2".into(),
+                summary: None,
+                tty: "/dev/ttys002".into(),
+                shell: "zsh".into(),
+                session_id: "s2".into(),
+            },
+            OtherSessionSummary {
+                command: "c".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t3".into(),
+                summary: None,
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "s1".into(),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        let session_count = xml.matches("<session tty=").count();
+        assert_eq!(session_count, 3, "switching back to same tty opens new session tag");
+        let close_count = xml.matches("</session>").count();
+        assert_eq!(close_count, 3);
+    }
+
+    #[test]
+    fn test_build_xml_context_other_sessions_summary_with_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![OtherSessionSummary {
+            command: "make".into(),
+            cwd: None,
+            exit_code: Some(2),
+            started_at: "t1".into(),
+            summary: Some("Error: <missing> & \"file\"".into()),
+            tty: "/dev/ttys001".into(),
+            shell: "bash".into(),
+            session_id: "s1".into(),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;missing&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;file&quot;"));
+    }
+
+    #[test]
+    fn test_build_xml_context_scrollback_empty_after_strip() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "   \n  \n  ".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<recent_terminal"));
+    }
+
+    #[test]
+    fn test_build_xml_context_session_history_cwd_with_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "ls".into(),
+            cwd: Some("/path/<with>&\"chars\"".into()),
+            exit_code: Some(0),
+            started_at: "t1".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("cwd=\"/path/&lt;with&gt;&amp;&quot;chars&quot;\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_session_history_empty_command() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "t1".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<input></input>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_project_root_with_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/path/<project>&\"name\"".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("root=\"/path/&lt;project&gt;&amp;&quot;name&quot;\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_large_session_history() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = (0..50)
+            .map(|i| CommandWithSummary {
+                command: format!("cmd_{i}"),
+                cwd: Some("/tmp".into()),
+                exit_code: Some(i % 3),
+                started_at: format!("2025-01-01T{i:02}:00:00Z"),
+                duration_ms: Some(i as i64 * 100),
+                summary: if i % 2 == 0 {
+                    Some(format!("summary_{i}"))
+                } else {
+                    None
+                },
+            })
+            .collect();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("count=\"50\""));
+        assert!(xml.contains("cmd_0"));
+        assert!(xml.contains("cmd_49"));
+    }
+
+    #[test]
+    fn test_build_xml_context_large_other_sessions() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = (0..20)
+            .map(|i| OtherSessionSummary {
+                command: format!("other_cmd_{i}"),
+                cwd: Some("/tmp".into()),
+                exit_code: Some(0),
+                started_at: format!("t{i}"),
+                summary: None,
+                tty: format!("/dev/ttys{i:03}"),
+                shell: "bash".into(),
+                session_id: format!("s{i}"),
+            })
+            .collect();
+        let xml = build_xml_context(&ctx, &Config::default());
+        let session_count = xml.matches("<session tty=").count();
+        assert_eq!(session_count, 20);
+        assert!(xml.contains("other_cmd_0"));
+        assert!(xml.contains("other_cmd_19"));
+    }
+
+    #[test]
+    fn test_detect_container_no_dockerenv() {
+        if !std::path::Path::new("/.dockerenv").exists() {
+            let result = detect_container();
+            #[cfg(not(target_os = "linux"))]
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_list_project_files_with_ignore_returns_none_on_errors_only() {
+        let entries = list_project_files_with_ignore(std::path::Path::new("/nonexistent_abc_xyz"), 100);
+        match entries {
+            Some(e) => assert!(e.is_empty()),
+            None => {}
+        }
+    }
+
+    #[test]
+    fn test_list_project_files_dispatches_to_fallback() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("test.txt"), "hello").unwrap();
+        let entries = list_project_files(tmp.path().to_str().unwrap(), 100);
+        assert!(!entries.is_empty());
+        let f = entries.iter().find(|e| e.path == "test.txt").unwrap();
+        assert_eq!(f.kind, "file");
+    }
+
+    #[test]
+    fn test_build_xml_context_project_type_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "C/C++ (CMake)".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("type=\"C/C++ (CMake)\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_all_optional_none() {
+        let ctx = QueryContext {
+            os_info: "Linux".into(),
+            shell: "sh".into(),
+            cwd: "/".into(),
+            username: "root".into(),
+            conversation_history: vec![],
+            hostname: "localhost".into(),
+            machine_info: "x86_64".into(),
+            datetime_info: "2025-01-01".into(),
+            timezone_info: "UTC".into(),
+            locale_info: "C".into(),
+            session_history: vec![],
+            other_sessions: vec![],
+            scrollback_text: String::new(),
+            custom_instructions: None,
+            project_info: ProjectInfo {
+                root: None,
+                project_type: "unknown".into(),
+                git_branch: None,
+                git_status: None,
+                git_commits: vec![],
+                files: vec![],
+            },
+            ssh_context: None,
+            container_context: None,
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.starts_with("<context>\n  <environment"));
+        assert!(xml.ends_with("</context>"));
+        assert_eq!(xml.matches('\n').count(), 2);
+    }
+
+    #[test]
+    fn test_build_xml_context_conversation_history_not_rendered_in_xml() {
+        let mut ctx = make_minimal_ctx();
+        ctx.conversation_history = vec![
+            ConversationExchange {
+                query: "unique_query_marker_12345".into(),
+                response_type: "command".into(),
+                response: "unique_response_marker_67890".into(),
+                explanation: Some("unique_explanation_marker".into()),
+                result_exit_code: Some(0),
+                result_output_snippet: Some("unique_snippet".into()),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(
+            !xml.contains("unique_query_marker_12345"),
+            "conversation history should not be rendered directly in XML context"
+        );
+    }
+
+    #[test]
+    fn test_build_xml_context_tty_env_in_session_history() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "whoami".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "t1".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<session_history tty="));
+    }
+
+    #[test]
+    fn test_detect_project_type_pom_xml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("pom.xml"), "<project/>").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Java"), "expected Java for pom.xml, got: {t}");
+    }
+
+    #[test]
+    fn test_find_project_root_with_git_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let subdir = tmp.path().join("src").join("lib");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let result = find_project_root(subdir.to_str().unwrap());
+        assert!(result.is_some());
+        assert_eq!(
+            result.unwrap().canonicalize().unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_list_project_files_fallback_subdir_recursion() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sub = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("deep.txt"), "deep").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            paths.iter().any(|p| p.contains("deep.txt")),
+            "should find files in subdirs: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_detect_git_info_status_format() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
+        std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(dir).output().unwrap();
+        std::process::Command::new("git").args(["config", "user.name", "T"]).current_dir(dir).output().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
+        std::process::Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
+        std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(dir).output().unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "b").unwrap();
+        let (_branch, status, _commits) = detect_git_info(dir, 5);
+        assert_eq!(status.as_deref(), Some("1 changed files"));
+    }
 }

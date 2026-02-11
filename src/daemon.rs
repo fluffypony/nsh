@@ -1763,4 +1763,307 @@ mod tests {
             panic!("expected Record with output");
         }
     }
+
+    #[test]
+    fn test_run_db_thread_insert_conversation_with_explanation() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Record {
+            session: "conv_explain_sess".into(),
+            command: "echo setup".into(),
+            cwd: "/tmp".into(),
+            exit_code: 0,
+            started_at: "2025-06-01T00:00:00Z".into(),
+            tty: "".into(),
+            pid: 0,
+            shell: "".into(),
+            duration_ms: None,
+            output: None,
+            reply: rec_tx,
+        });
+        let _ = rec_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::InsertConversation {
+            session_id: "conv_explain_sess".into(),
+            query: "how to list files".into(),
+            response_type: "command".into(),
+            response: "ls -la".into(),
+            explanation: Some("Lists all files with details".into()),
+            executed: true,
+            pending: false,
+            reply: reply_tx,
+        });
+        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_run_db_thread_insert_conversation_pending() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Record {
+            session: "conv_pending_sess".into(),
+            command: "echo setup".into(),
+            cwd: "/tmp".into(),
+            exit_code: 0,
+            started_at: "2025-06-01T00:00:00Z".into(),
+            tty: "".into(),
+            pid: 0,
+            shell: "".into(),
+            duration_ms: None,
+            output: None,
+            reply: rec_tx,
+        });
+        let _ = rec_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::InsertConversation {
+            session_id: "conv_pending_sess".into(),
+            query: "deploy to prod".into(),
+            response_type: "command".into(),
+            response: "kubectl apply -f deploy.yaml".into(),
+            explanation: None,
+            executed: false,
+            pending: true,
+            reply: reply_tx,
+        });
+        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_run_db_thread_search_history_with_results() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Record {
+            session: "search_hist_sess".into(),
+            command: "cargo test --all".into(),
+            cwd: "/tmp".into(),
+            exit_code: 0,
+            started_at: "2025-06-01T00:00:00Z".into(),
+            tty: "".into(),
+            pid: 0,
+            shell: "".into(),
+            duration_ms: Some(500),
+            output: Some("test result: ok".into()),
+            reply: rec_tx,
+        });
+        let _ = rec_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        let (search_tx, search_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::SearchHistory {
+            query: "cargo test".into(),
+            limit: 10,
+            reply: search_tx,
+        });
+        let result = search_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_run_db_thread_generate_summaries_with_commands() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_db_thread(rx));
+
+        for i in 0..3 {
+            let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+            let _ = tx.send(DbCommand::Record {
+                session: "summary_gen_sess".into(),
+                command: format!("echo line_{i}"),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: format!("2025-06-01T00:{i:02}:00Z"),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: Some(10),
+                output: Some(format!("line_{i}")),
+                reply: rec_tx,
+            });
+            let _ = rec_rx.recv_timeout(std::time::Duration::from_secs(2));
+        }
+
+        let _ = tx.send(DbCommand::GenerateSummaries);
+
+        let (search_tx, search_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::SearchHistory {
+            query: "echo".into(),
+            limit: 10,
+            reply: search_tx,
+        });
+        let _ = search_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        let _ = tx.send(DbCommand::Shutdown);
+    }
+
+    #[test]
+    fn test_run_db_thread_multiple_commands_sequence() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || run_db_thread(rx));
+
+        let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Record {
+            session: "seq_sess".into(),
+            command: "pwd".into(),
+            cwd: "/home".into(),
+            exit_code: 0,
+            started_at: "2025-06-01T00:00:00Z".into(),
+            tty: "/dev/pts/0".into(),
+            pid: 42,
+            shell: "zsh".into(),
+            duration_ms: Some(5),
+            output: Some("/home".into()),
+            reply: rec_tx,
+        });
+        let result = rec_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+        let id = result.unwrap();
+        assert!(id > 0);
+
+        let (hb_tx, hb_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Heartbeat {
+            session: "seq_sess".into(),
+            reply: hb_tx,
+        });
+        let hb_result = hb_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(hb_result.is_ok());
+
+        let _ = tx.send(DbCommand::GenerateSummaries);
+
+        let _ = tx.send(DbCommand::Shutdown);
+        handle.join().expect("db thread should exit cleanly");
+    }
+
+    #[test]
+    fn test_handle_record_timeout_when_db_sleeps() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(DbCommand::Record { reply, .. }) = rx.recv() {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = reply.send(Ok(1));
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "slow".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("timeout") || message.contains("DB"));
+            }
+            _ => panic!("expected Error due to timeout"),
+        }
+    }
+
+    #[test]
+    fn test_handle_heartbeat_timeout_when_db_sleeps() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(DbCommand::Heartbeat { reply, .. }) = rx.recv() {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = reply.send(Ok(()));
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "s1".into() },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("timeout") || message.contains("DB"));
+            }
+            _ => panic!("expected Error due to timeout"),
+        }
+    }
+
+    #[test]
+    fn test_run_db_thread_shutdown_after_heavy_use() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || run_db_thread(rx));
+
+        for i in 0..10 {
+            let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+            let _ = tx.send(DbCommand::Record {
+                session: "heavy_sess".into(),
+                command: format!("cmd_{i}"),
+                cwd: "/tmp".into(),
+                exit_code: i % 3,
+                started_at: format!("2025-06-01T00:{i:02}:00Z"),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+                reply: rec_tx,
+            });
+            let _ = rec_rx.recv_timeout(std::time::Duration::from_secs(2));
+        }
+
+        let _ = tx.send(DbCommand::GenerateSummaries);
+        let _ = tx.send(DbCommand::GenerateSummaries);
+
+        let _ = tx.send(DbCommand::Shutdown);
+        handle.join().expect("db thread should exit after heavy use");
+    }
+
+    #[test]
+    fn test_generate_summaries_sync_with_trivial_command() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.create_session("sum_sess", "/dev/pts/0", "zsh", 1).unwrap();
+        db.insert_command(
+            "sum_sess", "cd /tmp", "/home", Some(0),
+            "2025-01-01T00:00:00Z", Some(5), None,
+            "/dev/pts/0", "zsh", 1,
+        ).unwrap();
+        db.insert_command(
+            "sum_sess", "ls", "/tmp", Some(0),
+            "2025-01-01T00:01:00Z", Some(10), Some("file1\nfile2"),
+            "/dev/pts/0", "zsh", 1,
+        ).unwrap();
+        generate_summaries_sync(&db);
+    }
+
+    #[test]
+    fn test_generate_summaries_sync_with_failing_command() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.create_session("fail_sess", "/dev/pts/0", "bash", 1).unwrap();
+        db.insert_command(
+            "fail_sess", "nonexistent_command", "/tmp", Some(127),
+            "2025-01-01T00:00:00Z", Some(10), Some("command not found"),
+            "/dev/pts/0", "bash", 1,
+        ).unwrap();
+        generate_summaries_sync(&db);
+    }
 }
