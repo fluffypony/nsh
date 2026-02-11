@@ -1463,6 +1463,7 @@ pub struct Memory {
     pub id: i64,
     pub key: String,
     pub value: String,
+    #[allow(dead_code)]
     pub created_at: String,
     pub updated_at: String,
 }
