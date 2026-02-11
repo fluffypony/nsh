@@ -88,13 +88,7 @@ pub fn validate_read_path_with_access(raw_path: &str, sensitive_file_access: &st
                         );
                         eprint!("\x1b[1;33mAllow access? [y/N]\x1b[0m ");
                         let _ = std::io::Write::flush(&mut std::io::stderr());
-                        let mut answer = String::new();
-                        if std::io::stdin().read_line(&mut answer).is_ok()
-                            && matches!(
-                                answer.trim().to_lowercase().as_str(),
-                                "y" | "yes"
-                            )
-                        {
+                        if read_tty_confirmation() {
                             break;
                         }
                         return Err(format!(
@@ -110,6 +104,32 @@ pub fn validate_read_path_with_access(raw_path: &str, sensitive_file_access: &st
     }
 
     Ok(canonical)
+}
+
+pub fn read_tty_confirmation() -> bool {
+    use std::io::{BufRead, IsTerminal};
+    let line = if std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            line
+        } else {
+            return false;
+        }
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(tty) => {
+                let mut reader = std::io::BufReader::new(tty);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() {
+                    line
+                } else {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    };
+    matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
 #[derive(Debug, Clone, Serialize)]

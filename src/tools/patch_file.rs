@@ -79,13 +79,7 @@ fn validate_path_with_access(path: &Path, sensitive_file_access: &str) -> anyhow
                     );
                     eprint!("\x1b[1;33mAllow write? [y/N]\x1b[0m ");
                     let _ = std::io::Write::flush(&mut std::io::stderr());
-                    let mut answer = String::new();
-                    if std::io::stdin().read_line(&mut answer).is_ok()
-                        && matches!(
-                            answer.trim().to_lowercase().as_str(),
-                            "y" | "yes"
-                        )
-                    {
+                    if crate::tools::read_tty_confirmation() {
                         break;
                     }
                 }

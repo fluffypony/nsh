@@ -259,8 +259,18 @@ const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &[
 ];
 
 pub fn is_setting_protected(key: &str) -> bool {
-    TOOL_BLOCKED_KEYS.contains(&key)
-        || key.split('.').any(|segment| TOOL_BLOCKED_KEY_SEGMENTS.contains(&segment))
+    if TOOL_BLOCKED_KEYS.contains(&key) {
+        return true;
+    }
+    if key.split('.').any(|segment| TOOL_BLOCKED_KEY_SEGMENTS.contains(&segment)) {
+        return true;
+    }
+    for blocked in TOOL_BLOCKED_KEYS {
+        if blocked.starts_with(key) && blocked[key.len()..].starts_with('.') {
+            return true;
+        }
+    }
+    false
 }
 
 impl ToolsConfig {
@@ -2428,5 +2438,12 @@ sensitive_file_access = "allow"
         assert!(!is_setting_protected("context.history_limit"));
         assert!(!is_setting_protected("display.chat_color"));
         assert!(!is_setting_protected("execution.mode"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_blocks_parent_tables() {
+        assert!(is_setting_protected("execution"));
+        assert!(is_setting_protected("tools"));
+        assert!(is_setting_protected("redaction"));
     }
 }

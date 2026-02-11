@@ -53,7 +53,7 @@ fn split_on_shell_operators(cmd: &str) -> Vec<String> {
             continue;
         }
         match c {
-            ';' => {
+            ';' | '\n' => {
                 let trimmed = current.trim().to_string();
                 if !trimmed.is_empty() {
                     parts.push(trimmed);
