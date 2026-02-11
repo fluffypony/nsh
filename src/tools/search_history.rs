@@ -1,5 +1,7 @@
 use crate::config::Config;
 use crate::db::Db;
+use regex::Regex;
+use std::collections::HashSet;
 
 pub fn execute(
     db: &Db,
@@ -44,20 +46,41 @@ pub fn execute(
         return Ok("No search criteria provided. Use 'query', 'regex', 'since', 'exit_code', or 'failed_only'.".into());
     }
 
+    let ssh_intent = is_ssh_intent(query, regex);
+    let raw_limit = if ssh_intent {
+        limit.saturating_mul(20).max(200)
+    } else {
+        limit
+    };
+    let search_regex = if ssh_intent {
+        Some(SSH_COMMAND_REGEX)
+    } else {
+        regex
+    };
+    let search_query = if ssh_intent { None } else { query };
+
     let matches = db.search_history_advanced(
-        query,
-        regex,
+        search_query,
+        search_regex,
         resolved_since.as_deref(),
         resolved_until.as_deref(),
         exit_code,
         failed_only,
         session_filter.as_deref(),
         Some(session_id),
-        limit,
+        raw_limit,
     )?;
 
     if matches.is_empty() {
         return Ok("No matching commands found.".into());
+    }
+
+    if ssh_intent {
+        let summary = summarize_ssh_targets(&matches, query, limit);
+        if summary.is_empty() {
+            return Ok("No SSH commands found in history.".into());
+        }
+        return Ok(crate::redact::redact_secrets(&summary, &config.redaction));
     }
 
     let mut result = String::new();
@@ -90,14 +113,191 @@ pub fn execute(
     if !memory_matches.is_empty() {
         result.push_str("\n── Memories ──\n");
         for m in &memory_matches {
-            result.push_str(&format!(
-                "  [memory #{}] {} = {}\n",
-                m.id, m.key, m.value,
-            ));
+            result.push_str(&format!("  [memory #{}] {} = {}\n", m.id, m.key, m.value,));
         }
     }
 
     Ok(crate::redact::redact_secrets(&result, &config.redaction))
+}
+
+const SSH_COMMAND_REGEX: &str = r"(?i)(^|\s)(ssh)(\s|$)";
+
+fn is_ssh_intent(query: Option<&str>, regex: Option<&str>) -> bool {
+    query
+        .or(regex)
+        .map(|s| s.to_ascii_lowercase().contains("ssh"))
+        .unwrap_or(false)
+}
+
+fn summarize_ssh_targets(
+    matches: &[crate::db::HistoryMatch],
+    query: Option<&str>,
+    limit: usize,
+) -> String {
+    let host_filters = query.map(extract_host_filters).unwrap_or_default();
+    let host_filter_set: HashSet<String> = host_filters.into_iter().collect();
+
+    let mut result = String::new();
+    if host_filter_set.is_empty() {
+        result.push_str("Recent SSH targets (most recent first):\n");
+    } else {
+        result.push_str("Recent SSH targets matching your query (most recent first):\n");
+    }
+
+    let mut seen_targets = HashSet::new();
+    let mut rows = 0usize;
+
+    for m in matches {
+        let Some(target) = extract_ssh_target(&m.command) else {
+            continue;
+        };
+
+        if !host_filter_set.is_empty() {
+            let target_lc = target.to_ascii_lowercase();
+            let cmd_lc = m.command.to_ascii_lowercase();
+            let matched = host_filter_set
+                .iter()
+                .all(|f| target_lc.contains(f) || cmd_lc.contains(f));
+            if !matched {
+                continue;
+            }
+        }
+
+        let key = target.to_ascii_lowercase();
+        if !seen_targets.insert(key) {
+            continue;
+        }
+
+        result.push_str(&format!("- [{}] {}\n", m.started_at, target));
+        rows += 1;
+        if rows >= limit {
+            break;
+        }
+    }
+
+    if rows == 0 { String::new() } else { result }
+}
+
+fn extract_host_filters(query: &str) -> Vec<String> {
+    let user_host_re = Regex::new(r"\b[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\b").unwrap();
+    let ipv4_re = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
+    let host_re = Regex::new(r"\b[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}\b").unwrap();
+
+    let mut out = Vec::new();
+    for re in [&user_host_re, &ipv4_re, &host_re] {
+        for m in re.find_iter(query) {
+            out.push(m.as_str().to_ascii_lowercase());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn extract_ssh_target(command: &str) -> Option<String> {
+    let tokens = shell_words::split(command).ok()?;
+    let mut i = 0usize;
+
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+
+        if tok == "sudo" || tok == "env" || is_env_assignment(tok) {
+            i += 1;
+            continue;
+        }
+
+        if tok == "ssh" || tok.ends_with("/ssh") {
+            return parse_ssh_target_after(&tokens, i + 1);
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+fn parse_ssh_target_after(tokens: &[String], mut i: usize) -> Option<String> {
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        if tok == "--" {
+            i += 1;
+            continue;
+        }
+        if tok.starts_with('-') {
+            if ssh_option_takes_value(tok) && i + 1 < tokens.len() {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        let cleaned = tok.trim_end_matches([',', ';', ':']).to_string();
+        if cleaned.is_empty() {
+            return None;
+        }
+        return Some(cleaned);
+    }
+    None
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    !token.starts_with('-') && token.contains('=') && !token.starts_with("ssh")
+}
+
+fn ssh_option_takes_value(tok: &str) -> bool {
+    if tok.starts_with("--") {
+        return !tok.contains('=');
+    }
+    if tok.len() > 2 {
+        let short = &tok[..2];
+        if matches!(
+            short,
+            "-b" | "-c"
+                | "-D"
+                | "-E"
+                | "-e"
+                | "-F"
+                | "-I"
+                | "-i"
+                | "-J"
+                | "-L"
+                | "-l"
+                | "-m"
+                | "-O"
+                | "-o"
+                | "-p"
+                | "-Q"
+                | "-R"
+                | "-S"
+                | "-W"
+                | "-w"
+        ) {
+            // Attached forms like -p22 or -luser do not consume next arg.
+            return false;
+        }
+    }
+    matches!(
+        tok,
+        "-b" | "-c"
+            | "-D"
+            | "-E"
+            | "-e"
+            | "-F"
+            | "-I"
+            | "-i"
+            | "-J"
+            | "-L"
+            | "-l"
+            | "-m"
+            | "-O"
+            | "-o"
+            | "-p"
+            | "-Q"
+            | "-R"
+            | "-S"
+            | "-W"
+            | "-w"
+    )
 }
 
 fn resolve_relative_time(input: &str) -> String {
@@ -209,17 +409,44 @@ mod tests {
 
     fn insert_test_commands(db: &crate::db::Db) {
         db.insert_command(
-            "test_sess", "cargo build", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("Compiling..."), "", "", 0,
-        ).unwrap();
+            "test_sess",
+            "cargo build",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("Compiling..."),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "test_sess", "git push origin main", "/project", Some(0),
-            "2025-06-01T00:01:00Z", None, Some("Everything up-to-date"), "", "", 0,
-        ).unwrap();
+            "test_sess",
+            "git push origin main",
+            "/project",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("Everything up-to-date"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "test_sess", "cargo test --release", "/project", Some(1),
-            "2025-06-01T00:02:00Z", None, Some("test result: FAILED"), "", "", 0,
-        ).unwrap();
+            "test_sess",
+            "cargo test --release",
+            "/project",
+            Some(1),
+            "2025-06-01T00:02:00Z",
+            None,
+            Some("test result: FAILED"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -348,7 +575,8 @@ mod tests {
     fn test_execute_no_memories_when_no_match() {
         let db = test_db();
         insert_test_commands(&db);
-        db.upsert_memory("unrelated_key", "unrelated_value").unwrap();
+        db.upsert_memory("unrelated_key", "unrelated_value")
+            .unwrap();
         let config = Config::default();
         let input = serde_json::json!({"query": "cargo"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
@@ -442,8 +670,146 @@ mod tests {
         let config = Config::default();
         let input = serde_json::json!({"query": "cargo", "since": "30d"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(
-            result.contains("cargo") || result.contains("No matching"),
+        assert!(result.contains("cargo") || result.contains("No matching"),);
+    }
+
+    #[test]
+    fn test_extract_ssh_target_basic() {
+        assert_eq!(
+            extract_ssh_target("ssh fluffypony@example.com"),
+            Some("fluffypony@example.com".to_string())
         );
+    }
+
+    #[test]
+    fn test_extract_ssh_target_with_options() {
+        assert_eq!(
+            extract_ssh_target("ssh -p 2222 -i ~/.ssh/id_ed25519 admin@10.0.0.10"),
+            Some("admin@10.0.0.10".to_string())
+        );
+        assert_eq!(
+            extract_ssh_target("ssh -p2222 root@192.0.2.7"),
+            Some("root@192.0.2.7".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_ssh_target_skips_non_ssh() {
+        assert_eq!(extract_ssh_target("systemctl restart sshd"), None);
+        assert_eq!(extract_ssh_target("echo ssh"), None);
+    }
+
+    #[test]
+    fn test_execute_ssh_query_returns_deduped_recent_targets() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "ssh fluffypony_cwiaf@ssh.phx.nearlyfreespeech.net",
+            "/project",
+            Some(0),
+            "2026-02-11T17:47:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "test_sess",
+            "ssh fluffypony_cwiaf@ssh.phx.nearlyfreespeech.net",
+            "/project",
+            Some(0),
+            "2026-02-11T17:48:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "test_sess",
+            "ssh admin@135.181.128.145",
+            "/project",
+            Some(0),
+            "2026-02-11T17:49:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "ssh"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("Recent SSH targets"));
+        assert_eq!(
+            result
+                .matches("fluffypony_cwiaf@ssh.phx.nearlyfreespeech.net")
+                .count(),
+            1,
+            "duplicate SSH targets should be collapsed to one line"
+        );
+        assert!(result.contains("admin@135.181.128.145"));
+    }
+
+    #[test]
+    fn test_execute_ssh_query_with_host_filter() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "ssh fluffypony_cwiaf@ssh.phx.nearlyfreespeech.net",
+            "/project",
+            Some(0),
+            "2026-02-11T17:47:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "test_sess",
+            "ssh admin@135.181.128.145",
+            "/project",
+            Some(0),
+            "2026-02-11T17:49:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "when did I last ssh into 135.181.128.145"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("135.181.128.145"));
+        assert!(!result.contains("ssh.phx.nearlyfreespeech.net"));
+    }
+
+    #[test]
+    fn test_execute_sshd_typo_still_searches_ssh_history() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "ssh admin@203.0.113.11",
+            "/project",
+            Some(0),
+            "2026-02-11T17:49:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "what servers have I sshd into recently"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("203.0.113.11"));
     }
 }
