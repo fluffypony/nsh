@@ -1265,4 +1265,33 @@ mod extra_tests {
             "should redact SG v3 token, got: {result}"
         );
     }
+
+    #[test]
+    fn test_strip_invisible_unicode_soft_hyphen() {
+        let input = "pass\u{00AD}word";
+        let result = strip_invisible_unicode(input);
+        assert_eq!(result, "password");
+    }
+
+    #[test]
+    fn test_strip_invisible_unicode_feff_bom() {
+        let input = "\u{FEFF}hello";
+        let result = strip_invisible_unicode(input);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_redact_url_unreachable_else_branch() {
+        let url = "notascheme_no_at_sign";
+        let result = redact_url(url);
+        assert_eq!(result, url);
+    }
+
+    #[test]
+    fn test_redact_url_scheme_with_at_sign() {
+        let url = "https://user:pass@host.com/path";
+        let result = redact_url(url);
+        assert!(result.contains("[REDACTED]@host.com"));
+        assert!(!result.contains("user:pass"));
+    }
 }

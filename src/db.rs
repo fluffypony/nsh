@@ -6133,4 +6133,453 @@ mod tests {
         assert!(hostname.is_some(), "hostname should be set");
         assert!(username.is_some(), "username should be set");
     }
+
+    #[test]
+    fn test_prune_zero_retention_days() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "recent_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "old_cmd", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let deleted = db.prune(0).unwrap();
+        assert_eq!(deleted, 2, "zero retention should delete all past commands");
+        assert_eq!(db.command_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_prune_very_large_retention_keeps_all() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cmd_a", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "cmd_b", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let deleted = db.prune(99999).unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(db.command_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_prune_if_due_no_old_data() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "future_cmd", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        db.prune_if_due(30).unwrap();
+        assert_eq!(db.command_count().unwrap(), 1);
+        assert!(db.get_meta("last_prune_at").unwrap().is_some());
+    }
+
+    #[test]
+    fn test_search_memories_multiple_matches() {
+        let db = test_db();
+        db.upsert_memory("rust_compiler", "rustc 1.85").unwrap();
+        db.upsert_memory("rust_edition", "2024").unwrap();
+        db.upsert_memory("python_version", "3.12").unwrap();
+
+        let results = db.search_memories("rust").unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_update_command_triggers_fts_update() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "run_script", "/tmp", None,
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        db.update_command(id, Some(0), Some("unique_fts_update_sentinel_xyz")).unwrap();
+
+        let results = db.search_history("unique_fts_update_sentinel_xyz", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "run_script");
+    }
+
+    #[test]
+    fn test_rebuild_fts_on_empty_db() {
+        let db = test_db();
+        db.rebuild_fts().unwrap();
+        db.check_fts_integrity().unwrap();
+    }
+
+    #[test]
+    fn test_optimize_fts_after_prune() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "old_opt_cmd", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, Some("old output"), "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "new_opt_cmd", "/tmp", Some(0),
+            "2099-01-01T00:00:00Z", None, Some("new output"), "", "", 0,
+        ).unwrap();
+
+        db.prune(30).unwrap();
+        db.optimize_fts().unwrap();
+        db.check_fts_integrity().unwrap();
+
+        let results = db.search_history("new_opt_cmd", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_check_fts_integrity_after_rebuild() {
+        let db = test_db();
+        for i in 0..20 {
+            db.insert_command(
+                "s1", &format!("integrity_cmd_{i}"), "/tmp", Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"), None,
+                Some(&format!("output_{i}")), "", "", 0,
+            ).unwrap();
+        }
+        db.prune(0).unwrap();
+        db.rebuild_fts().unwrap();
+        db.check_fts_integrity().unwrap();
+    }
+
+    #[test]
+    fn test_command_count_after_manual_delete() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "to_delete", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "to_keep", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+        assert_eq!(db.command_count().unwrap(), 2);
+
+        db.conn.execute("DELETE FROM commands WHERE id = ?", params![id]).unwrap();
+        assert_eq!(db.command_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_delete_memory_after_upsert_and_search() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("ephemeral", "temp data").unwrap();
+
+        let found = db.search_memories("ephemeral").unwrap();
+        assert_eq!(found.len(), 1);
+
+        assert!(db.delete_memory(id).unwrap());
+
+        let found_after = db.search_memories("ephemeral").unwrap();
+        assert!(found_after.is_empty());
+    }
+
+    #[test]
+    fn test_update_memory_then_search() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("lang", "python").unwrap();
+
+        let before = db.search_memories("golang").unwrap();
+        assert!(before.is_empty());
+
+        db.update_memory(id, Some("lang"), Some("golang")).unwrap();
+
+        let after = db.search_memories("golang").unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].value, "golang");
+    }
+
+    #[test]
+    fn test_get_memory_by_id_after_update() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("original_key", "original_val").unwrap();
+
+        db.update_memory(id, Some("updated_key"), Some("updated_val")).unwrap();
+
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "updated_key");
+        assert_eq!(mem.value, "updated_val");
+        assert_eq!(mem.id, id);
+    }
+
+    #[test]
+    fn test_insert_usage_minimal_fields() {
+        let db = test_db();
+        let id = db.insert_usage(
+            "s1", None, "local", "ollama",
+            None, None, None, None,
+        ).unwrap();
+        assert!(id > 0);
+
+        let (model, cost): (String, Option<f64>) = db.conn.query_row(
+            "SELECT model, cost_usd FROM usage WHERE id = ?",
+            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(model, "local");
+        assert!(cost.is_none());
+    }
+
+    #[test]
+    fn test_update_usage_cost_multiple_records_same_gen_id() {
+        let db = test_db();
+        db.insert_usage("s1", None, "m1", "p1", None, None, None, Some("dup_gen")).unwrap();
+        db.insert_usage("s1", None, "m1", "p1", None, None, None, Some("dup_gen")).unwrap();
+
+        let updated = db.update_usage_cost("dup_gen", 0.99).unwrap();
+        assert!(updated);
+
+        let costs: Vec<Option<f64>> = {
+            let mut stmt = db.conn.prepare(
+                "SELECT cost_usd FROM usage WHERE generation_id = 'dup_gen'",
+            ).unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert!(costs.iter().all(|c| c.is_some()));
+    }
+
+    #[test]
+    fn test_get_pending_generation_ids_multiple() {
+        let db = test_db();
+        db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_a")).unwrap();
+        db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_b")).unwrap();
+        db.insert_usage("s1", None, "m", "p", None, None, Some(0.01), Some("done_c")).unwrap();
+
+        let pending = db.get_pending_generation_ids().unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending.contains(&"pend_a".to_string()));
+        assert!(pending.contains(&"pend_b".to_string()));
+        assert!(!pending.contains(&"done_c".to_string()));
+    }
+
+    #[test]
+    fn test_commands_needing_summary_returns_fields() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "detailed_cmd", "/home/user", Some(2),
+            "2025-06-01T00:00:00Z", None,
+            Some("detailed output text"), "", "", 0,
+        ).unwrap();
+
+        let needing = db.commands_needing_summary(10).unwrap();
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].id, id);
+        assert_eq!(needing[0].command, "detailed_cmd");
+        assert_eq!(needing[0].cwd.as_deref(), Some("/home/user"));
+        assert_eq!(needing[0].exit_code, Some(2));
+        assert_eq!(needing[0].output.as_deref(), Some("detailed output text"));
+    }
+
+    #[test]
+    fn test_update_summary_updates_status_to_done() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "status_cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
+        ).unwrap();
+
+        db.update_summary(id, "a summary").unwrap();
+
+        let status: Option<String> = db.conn.query_row(
+            "SELECT summary_status FROM commands WHERE id = ?",
+            params![id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn test_commands_needing_llm_summary_excludes_errored() {
+        let db = test_db();
+        let id1 = db.insert_command(
+            "s1", "cmd_needs_llm", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("output1"), "", "", 0,
+        ).unwrap();
+        let id2 = db.insert_command(
+            "s1", "cmd_errored", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, Some("output2"), "", "", 0,
+        ).unwrap();
+
+        db.mark_unsummarized_for_llm().unwrap();
+        db.mark_summary_error(id2, "failed").unwrap();
+
+        let needing = db.commands_needing_llm_summary(10).unwrap();
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].id, id1);
+    }
+
+    #[test]
+    fn test_mark_unsummarized_for_llm_idempotent() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cmd", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
+        ).unwrap();
+
+        let first = db.mark_unsummarized_for_llm().unwrap();
+        assert_eq!(first, 1);
+
+        let second = db.mark_unsummarized_for_llm().unwrap();
+        assert_eq!(second, 0, "should not re-mark already marked commands");
+    }
+
+    #[test]
+    fn test_mark_summary_error_sets_status_and_summary() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "err_cmd", "/tmp", Some(1),
+            "2025-06-01T00:00:00Z", None, Some("crash"), "", "", 0,
+        ).unwrap();
+
+        db.mark_summary_error(id, "connection refused").unwrap();
+
+        let (summary, status): (Option<String>, Option<String>) = db.conn.query_row(
+            "SELECT summary, summary_status FROM commands WHERE id = ?",
+            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(status.as_deref(), Some("error"));
+        assert_eq!(summary.as_deref(), Some("[error: connection refused]"));
+    }
+
+    #[test]
+    fn test_recent_commands_with_summaries_includes_all_fields() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let id = db.insert_command(
+            "s1", "make build", "/project", Some(0),
+            "2025-06-01T12:30:00Z", Some(15000),
+            Some("Compiled"), "", "", 0,
+        ).unwrap();
+        db.update_summary(id, "built successfully").unwrap();
+
+        let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
+        assert_eq!(cmds.len(), 1);
+        let cmd = &cmds[0];
+        assert_eq!(cmd.command, "make build");
+        assert_eq!(cmd.cwd.as_deref(), Some("/project"));
+        assert_eq!(cmd.exit_code, Some(0));
+        assert_eq!(cmd.started_at, "2025-06-01T12:30:00Z");
+        assert_eq!(cmd.duration_ms, Some(15000));
+        assert_eq!(cmd.summary.as_deref(), Some("built successfully"));
+    }
+
+    #[test]
+    fn test_other_sessions_with_summaries_includes_summary_field() {
+        let db = test_db();
+        db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("them", "/dev/pts/1", "bash", 5678).unwrap();
+
+        let id = db.insert_command(
+            "them", "cargo build", "/proj", Some(0),
+            "2025-06-01T00:00:00Z", None,
+            Some("Compiled"), "/dev/pts/1", "bash", 5678,
+        ).unwrap();
+        db.update_summary(id, "compiled the project").unwrap();
+
+        let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].summary.as_deref(), Some("compiled the project"));
+        assert_eq!(others[0].command, "cargo build");
+    }
+
+    #[test]
+    fn test_prune_one_day_retention() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "yesterday_cmd", "/tmp", Some(0),
+            "2020-01-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        let now_str = chrono::Utc::now().to_rfc3339();
+        db.insert_command(
+            "s1", "now_cmd", "/tmp", Some(0),
+            &now_str, None, None, "", "", 0,
+        ).unwrap();
+
+        let deleted = db.prune(1).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(db.command_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_user_message_preserves_content() {
+        let exchange = ConversationExchange {
+            query: "multi line\nquery\ntext".to_string(),
+            response_type: "chat".to_string(),
+            response: "resp".to_string(),
+            explanation: None,
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_user_message();
+        match &msg.content[0] {
+            crate::provider::ContentBlock::Text { text } => {
+                assert_eq!(text, "multi line\nquery\ntext");
+            }
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_conversation_exchange_to_assistant_message_command_empty_explanation() {
+        let exchange = ConversationExchange {
+            query: "do it".to_string(),
+            response_type: "command".to_string(),
+            response: "rm -rf /tmp/junk".to_string(),
+            explanation: Some("".to_string()),
+            result_exit_code: None,
+            result_output_snippet: None,
+        };
+        let msg = exchange.to_assistant_message("tid");
+        match &msg.content[0] {
+            crate::provider::ContentBlock::ToolUse { input, .. } => {
+                assert_eq!(input["command"], "rm -rf /tmp/junk");
+                assert_eq!(input["explanation"], "");
+            }
+            _ => panic!("expected ToolUse"),
+        }
+    }
+
+    #[test]
+    fn test_update_command_fts_reflects_new_output() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "fts_update_test_cmd", "/tmp", None,
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let before = db.search_history("fts_unique_output_sentinel_abc", 10).unwrap();
+        assert!(before.is_empty());
+
+        db.update_command(id, Some(0), Some("fts_unique_output_sentinel_abc")).unwrap();
+
+        let after = db.search_history("fts_unique_output_sentinel_abc", 10).unwrap();
+        assert_eq!(after.len(), 1);
+    }
+
+    #[test]
+    fn test_get_usage_stats_groups_by_model() {
+        let db = test_db();
+        db.insert_usage("s1", None, "gpt-4o", "openai", Some(100), Some(50), Some(0.01), None).unwrap();
+        db.insert_usage("s1", None, "claude-3", "anthropic", Some(200), Some(100), Some(0.05), None).unwrap();
+        db.insert_usage("s1", None, "gpt-4o", "openai", Some(300), Some(150), Some(0.03), None).unwrap();
+
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
+        assert_eq!(stats.len(), 2);
+
+        let gpt4o = stats.iter().find(|(m, _, _, _, _)| m == "gpt-4o").unwrap();
+        assert_eq!(gpt4o.1, 2);
+        assert_eq!(gpt4o.2, 400);
+        assert_eq!(gpt4o.3, 200);
+
+        let claude = stats.iter().find(|(m, _, _, _, _)| m == "claude-3").unwrap();
+        assert_eq!(claude.1, 1);
+    }
 }

@@ -191,4 +191,35 @@ mod tests {
         assert_eq!(human_size(1099511627776), "1TB");
         assert_eq!(human_size(1125899906842624), "1PB");
     }
+
+    #[test]
+    fn test_list_directory_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let inner = dir.path().join("noperm");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let path = inner.to_str().unwrap();
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("Error reading directory"));
+        std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn test_list_directory_metadata_error_on_vanished_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let path = dir.path().to_str().unwrap();
+        let input = json!({"path": path});
+        let result = execute(&input).unwrap();
+        assert!(result.contains("a.txt"));
+    }
+
+    #[test]
+    fn test_human_size_large_pb() {
+        let val = 2 * 1125899906842624;
+        let result = human_size(val);
+        assert!(result.contains("PB"));
+    }
 }

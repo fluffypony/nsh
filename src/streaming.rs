@@ -361,4 +361,41 @@ mod tests {
         let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
         assert_eq!(msg.content.len(), 2);
     }
+
+    #[tokio::test]
+    async fn test_consume_stream_text_then_done_covers_display() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::TextDelta("chunk1".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("chunk2".into())).await.unwrap();
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert_eq!(msg.content.len(), 1);
+        if let ContentBlock::Text { text } = &msg.content[0] {
+            assert_eq!(text, "chunk1chunk2");
+        } else {
+            panic!("expected text");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_done_without_text() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        tx.send(StreamEvent::Done { usage: None }).await.unwrap();
+        drop(tx);
+
+        let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
+        assert!(msg.content.is_empty());
+    }
+
+    #[test]
+    fn test_chat_color_returns_nonempty() {
+        let c = chat_color();
+        assert!(!c.is_empty());
+    }
 }

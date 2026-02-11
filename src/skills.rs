@@ -880,4 +880,61 @@ timeout_seconds = 10
         let result: Result<SkillFile, _> = toml::from_str(toml_str);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_execute_skill_stderr_only_no_stdout() {
+        let skill = Skill {
+            name: "stderr_only".to_string(),
+            description: "test".to_string(),
+            command: "echo only_stderr >&2".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("only_stderr"));
+        assert!(!result.starts_with('\n'));
+    }
+
+    #[test]
+    fn test_execute_skill_nonzero_exit() {
+        let skill = Skill {
+            name: "fail_cmd".to_string(),
+            description: "test".to_string(),
+            command: "exit 42".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({}));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_unreadable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("secret.toml");
+        std::fs::write(&path, "name = \"x\"\ndescription = \"x\"\ncommand = \"x\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert!(skills.is_empty());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    #[test]
+    fn test_skill_file_deserialization_terminal_true() {
+        let toml_str = r#"
+name = "term"
+description = "terminal skill"
+command = "vim"
+terminal = true
+"#;
+        let sf: SkillFile = toml::from_str(toml_str).unwrap();
+        assert!(sf.terminal);
+        assert_eq!(sf.timeout_seconds, 30);
+    }
 }
