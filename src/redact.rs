@@ -985,6 +985,13 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_invisible_unicode_zero_width() {
+        let input = "sk-ant\u{200B}-api\u{200D}03\u{200C}-key\u{FEFF}val\u{00AD}ue";
+        let result = strip_invisible_unicode(input);
+        assert_eq!(result, "sk-ant-api03-keyvalue");
+    }
+
+    #[test]
     fn test_redact_url_query_params() {
         let url = "https://api.example.com/v1?token=secret123&format=json";
         let result = redact_url(url);

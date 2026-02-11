@@ -638,16 +638,17 @@ fn handle_daemon_connection(
         let active = Arc::clone(active_conns);
         active.fetch_add(1, Ordering::Relaxed);
 
-        if std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("nsh-daemon-conn".into())
             .spawn(move || {
                 handle_daemon_connection_inner(stream, &capture, &db_tx, max_output_bytes);
                 active.fetch_sub(1, Ordering::Relaxed);
-            })
-            .is_err()
-        {
-            tracing::warn!("daemon: failed to spawn connection handler thread");
-            active_conns.fetch_sub(1, Ordering::Relaxed);
+            }) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("daemon: failed to spawn connection handler thread: {e}");
+                active_conns.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 }
