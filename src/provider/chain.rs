@@ -730,4 +730,135 @@ mod tests {
             .unwrap();
         assert_eq!(model, "google/gemini-3-pro");
     }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_retries_on_retryable_then_succeeds() {
+        let stream_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sc = stream_count.clone();
+        let complete_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc2 = complete_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(move || {
+                cc2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(anyhow::anyhow!("429 Too Many Requests"))
+            }),
+            stream_result: Arc::new(move || {
+                let n = sc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Err(anyhow::anyhow!("429 Too Many Requests"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("recovered".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string()];
+        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-a");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "recovered"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_retryable_exhausts_then_falls_back() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("complete also fails"))),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 1 {
+                    Err(anyhow::anyhow!("non-retryable model error"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("from-b".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-b");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "from-b"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_no_extra_body() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["model-x".to_string()];
+        let mut req = dummy_request();
+        req.extra_body = None;
+        let (_, model) = call_chain_with_fallback_think(&provider, req, &chain, false)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-x");
+    }
+
+    #[test]
+    fn is_retryable_error_timed_out() {
+        let e = anyhow::anyhow!("request timed out after 30s");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn is_retryable_error_non_retryable() {
+        let e = anyhow::anyhow!("invalid API key");
+        assert!(!is_retryable_error(&e));
+    }
+
+    #[test]
+    fn is_retryable_error_bad_gateway() {
+        let e = anyhow::anyhow!("502 Bad Gateway");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn is_retryable_error_gateway_timeout() {
+        let e = anyhow::anyhow!("504 Gateway Timeout");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn is_retryable_error_internal_server_error() {
+        let e = anyhow::anyhow!("500 Internal Server Error");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn is_retryable_error_service_unavailable() {
+        let e = anyhow::anyhow!("Service Unavailable");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_complete_also_fails() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("complete broken"))),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("stream broken"))),
+        };
+        let result = stream_with_complete_fallback(&provider, dummy_request()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("complete broken"));
+    }
 }

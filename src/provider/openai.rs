@@ -35,3 +35,17 @@ impl LlmProvider for OpenAIProvider {
         self.0.stream(request).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_fails_when_openai_not_configured() {
+        let mut config = crate::config::Config::default();
+        config.provider.openai = None;
+        let result = OpenAIProvider::new(&config);
+        let err = result.err().expect("should fail when openai is None");
+        assert!(err.to_string().contains("OpenAI not configured"));
+    }
+}

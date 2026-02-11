@@ -635,4 +635,59 @@ mod tests {
         let f = write_temp("\n\n\n: 1700000100:0;ls\n");
         assert_eq!(detect_shell_from_content(f.path()), Shell::Zsh);
     }
+
+    #[test]
+    fn parse_zsh_plain_skips_empty_lines() {
+        let results = parse_zsh_plain("ls\n\n\npwd\n\n", fixed_mtime());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[1].0, "pwd");
+    }
+
+    #[test]
+    fn parse_fish_out_of_range_when_value() {
+        let f = write_temp("- cmd: echo test\n  when: -9999999999\n");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "echo test");
+    }
+
+    #[test]
+    fn parse_zsh_extended_zero_timestamp_uses_epoch() {
+        let results = parse_zsh_extended(": 0:0;echo epoch\n");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "echo epoch");
+    }
+
+    #[test]
+    fn parse_bash_trailing_timestamp_no_command() {
+        let f = write_temp("ls\n#1700000100\n");
+        let results = parse_bash(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "ls");
+    }
+
+    #[test]
+    fn parse_fish_only_non_cmd_lines() {
+        let f = write_temp("  when: 12345\n  paths:\n    - /tmp\n");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_zsh_extended_multiline_at_end_of_input() {
+        let content = ": 1700000100:0;echo hello\\\nworld";
+        let results = parse_zsh_extended(content);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "echo hello\nworld");
+    }
+
+    #[test]
+    fn parse_bash_consecutive_timestamps() {
+        let f = write_temp("#1700000100\n#1700000200\nls\n");
+        let results = parse_bash(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[0].1.timestamp(), 1_700_000_200);
+    }
 }

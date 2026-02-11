@@ -502,4 +502,100 @@ mod tests {
         let perms = std::fs::metadata(&log_path).unwrap().permissions();
         assert_eq!(perms.mode() & 0o777, 0o600, "audit.log should be owner-only");
     }
+
+    #[test]
+    fn test_rotate_audit_log_in_dir_cannot_open_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        std::fs::write(&log_path, "x".repeat(16_000_000)).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        rotate_audit_log_in_dir(tmp.path());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_cleanup_old_archives_in_dir_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        cleanup_old_archives_in_dir(tmp.path());
+        let count = std::fs::read_dir(tmp.path()).unwrap().count();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_rotate_audit_log_in_dir_cannot_create_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        std::fs::write(&log_path, "y".repeat(16_000_000)).unwrap();
+
+        let archive_dir = tmp.path();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let original_perms = std::fs::metadata(archive_dir).unwrap().permissions();
+            std::fs::set_permissions(archive_dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+            rotate_audit_log_in_dir(tmp.path());
+            std::fs::set_permissions(archive_dir, original_perms).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_audit_log_to_dir_multiple_fields_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        audit_log_to_dir(
+            tmp.path(),
+            "session-with-dashes",
+            "query with spaces and \"quotes\"",
+            "chat",
+            "response\nwith\nnewlines",
+            "medium",
+        );
+
+        let contents = std::fs::read_to_string(tmp.path().join("audit.log")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(v["session"], "session-with-dashes");
+        assert_eq!(v["risk"], "medium");
+        assert!(v["response"].as_str().unwrap().contains("newlines"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_rotate_archive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        {
+            let mut f = std::fs::File::create(&log_path).unwrap();
+            let chunk = "z".repeat(1_000_000);
+            for _ in 0..16 {
+                writeln!(f, "{chunk}").unwrap();
+            }
+        }
+
+        rotate_audit_log_in_dir(tmp.path());
+
+        let archives: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.starts_with("audit_") && n.ends_with(".log.gz")
+            })
+            .collect();
+        assert_eq!(archives.len(), 1);
+
+        let perms = std::fs::metadata(archives[0].path()).unwrap().permissions();
+        assert_eq!(perms.mode() & 0o777, 0o600, "archive should be owner-only");
+    }
 }

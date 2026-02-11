@@ -5918,4 +5918,219 @@ mod tests {
             _ => panic!("expected ToolResult"),
         }
     }
+
+    #[test]
+    fn test_search_history_advanced_fts_session_filter_passes_literal() {
+        let db = test_db();
+        db.insert_command(
+            "active_sess", "cargo fts_sess_lit alpha", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "other_sess", "cargo fts_sess_lit beta", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("fts_sess_lit"), None, None, None, None, false,
+            Some("current"), Some("active_sess"), 100,
+        ).unwrap();
+        assert!(results.is_empty(), "FTS path passes 'current' literally, not resolved");
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_current_session_alias() {
+        let db = test_db();
+        db.insert_command(
+            "my_active", "wget regex_curr_test_aaa", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "someone_else", "wget regex_curr_test_bbb", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("regex_curr_test"), None, None, None, false,
+            Some("current"), Some("my_active"), 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("aaa"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_matches_summary_field() {
+        let db = test_db();
+        let id = db.insert_command(
+            "s1", "run_deploy_xyz", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, Some("deploying..."), "", "", 0,
+        ).unwrap();
+        db.update_summary(id, "deployed to unique_regex_cluster_abc").unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("unique_regex_cluster_abc"), None, None,
+            None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "run_deploy_xyz");
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_with_all_filters() {
+        let db = test_db();
+        db.insert_command(
+            "sess_r", "curl http://api.test.com/v1", "/app", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "sess_r", "curl http://api.test.com/v2", "/app", Some(1),
+            "2025-06-01T12:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "sess_other", "curl http://api.test.com/v3", "/app", Some(1),
+            "2025-06-01T12:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some(r"curl.*api\.test"),
+            Some("2025-06-01T06:00:00Z"),
+            Some("2025-06-01T18:00:00Z"),
+            Some(1), false, Some("sess_r"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("v2"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_regex_filters_output_match() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "run job_a", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None,
+            Some("unique_sentinel_fts_regex_out_val"), "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "run job_b", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None,
+            Some("nothing special here"), "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("run"), Some("unique_sentinel_fts_regex_out_val"),
+            None, None, None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("job_a"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_regex_no_match_filters_all() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo fts_nomatch_test", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("fts_nomatch_test"), Some("^zzz_impossible_pattern$"),
+            None, None, None, false, None, None, 100,
+        ).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_invalid_regex_ignored() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cargo fts_badregex_test", "/project", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            Some("fts_badregex_test"), Some("[invalid regex"),
+            None, None, None, false, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1, "invalid regex should be ignored, returning unfiltered results");
+    }
+
+    #[test]
+    fn test_insert_usage_null_tokens_and_cost() {
+        let db = test_db();
+        let id = db.insert_usage(
+            "s1", None, "local-model", "ollama",
+            None, None, None, None,
+        ).unwrap();
+        assert!(id > 0);
+
+        let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
+        assert_eq!(stats.len(), 1);
+        let (model, calls, input_tok, output_tok, cost) = &stats[0];
+        assert_eq!(model, "local-model");
+        assert_eq!(*calls, 1);
+        assert_eq!(*input_tok, 0);
+        assert_eq!(*output_tok, 0);
+        assert!(*cost < 1e-9);
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_failed_only_combined() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "apt install good", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "apt install bad", "/tmp", Some(100),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "pip install other", "/tmp", Some(1),
+            "2025-06-01T00:02:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("apt"), None, None, None, true, None, None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("bad"));
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex_with_session_filter_literal() {
+        let db = test_db();
+        db.insert_command(
+            "sess_alpha", "find regex_sess_lit_test /data", "/tmp", Some(0),
+            "2025-06-01T00:00:00Z", None, None, "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "sess_beta", "find regex_sess_lit_test /other", "/tmp", Some(0),
+            "2025-06-01T00:01:00Z", None, None, "", "", 0,
+        ).unwrap();
+
+        let results = db.search_history_advanced(
+            None, Some("regex_sess_lit_test"), None, None, None, false,
+            Some("sess_alpha"), None, 100,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].command.contains("/data"));
+    }
+
+    #[test]
+    fn test_gethostname_returns_string() {
+        let hostname = gethostname();
+        assert!(!hostname.is_empty());
+    }
+
+    #[test]
+    fn test_insert_command_sets_session_hostname_username() {
+        let db = test_db();
+        db.create_session("host_test_s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let (hostname, username): (Option<String>, Option<String>) = db.conn.query_row(
+            "SELECT hostname, username FROM sessions WHERE id = 'host_test_s1'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert!(hostname.is_some(), "hostname should be set");
+        assert!(username.is_some(), "username should be set");
+    }
 }

@@ -3236,4 +3236,198 @@ timeout_seconds = "fast"
         assert!(x.contains("key=\"model\""));
         assert!(x.contains("value=\"gpt-4\""));
     }
+
+    #[test]
+    fn test_build_config_xml_custom_instructions_present() {
+        let mut config = Config::default();
+        config.context.custom_instructions = Some("Always be concise".into());
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("custom_instructions"));
+        assert!(xml.contains("Always be concise"));
+    }
+
+    #[test]
+    fn test_build_config_xml_custom_instructions_none() {
+        let mut config = Config::default();
+        config.context.custom_instructions = None;
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("custom_instructions"));
+        assert!(xml.contains("(none)"));
+    }
+
+    #[test]
+    fn test_build_config_xml_fallback_model_none() {
+        let mut config = Config::default();
+        config.provider.fallback_model = None;
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("fallback_model"));
+        assert!(xml.contains("(none)"));
+    }
+
+    #[test]
+    fn test_build_config_xml_configured_providers_has_key_check() {
+        let mut config = Config::default();
+        config.provider.anthropic = Some(ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("name=\"anthropic\" has_api_key=\"true\""));
+    }
+
+    #[test]
+    fn test_build_config_xml_configured_providers_no_key() {
+        let mut config = Config::default();
+        config.provider.openai = None;
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("name=\"openai\" has_api_key=\"false\""));
+    }
+
+    #[test]
+    fn test_build_config_xml_display_escapes_ansi() {
+        let mut config = Config::default();
+        config.display.chat_color = "\x1b[31m".into();
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("\\x1b[31m"));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_scalar_to_table() {
+        let mut base: toml::Value = toml::from_str(r#"
+            key = "scalar"
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            [key]
+            nested = true
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        assert!(base.get("key").unwrap().is_table());
+        assert_eq!(base.get("key").unwrap().get("nested").unwrap().as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_table_to_scalar() {
+        let mut base: toml::Value = toml::from_str(r#"
+            [key]
+            nested = true
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            key = "scalar"
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.get("key").unwrap().as_str(), Some("scalar"));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_deeply_nested() {
+        let mut base: toml::Value = toml::from_str(r#"
+            [a.b.c]
+            x = 1
+            y = 2
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            [a.b.c]
+            y = 99
+            z = 3
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        let c = base.get("a").unwrap().get("b").unwrap().get("c").unwrap();
+        assert_eq!(c.get("x").unwrap().as_integer(), Some(1));
+        assert_eq!(c.get("y").unwrap().as_integer(), Some(99));
+        assert_eq!(c.get("z").unwrap().as_integer(), Some(3));
+    }
+
+    #[test]
+    fn test_sanitize_project_config_only_context_passes() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [context]
+            history_limit = 5
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert_eq!(t.len(), 1);
+        assert!(t.contains_key("context"));
+    }
+
+    #[test]
+    fn test_sanitize_project_config_execution_blocked() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [execution]
+            allow_unsafe_autorun = true
+            [redaction]
+            enabled = false
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert!(!t.contains_key("execution"));
+        assert!(!t.contains_key("redaction"));
+    }
+
+    #[test]
+    fn test_config_web_search_model_override_from_provider() {
+        let toml_str = r#"
+[provider]
+web_search_model = "custom/search-model"
+"#;
+        let mut base_value: toml::Value = toml::from_str(toml_str).unwrap();
+        deep_merge_toml(&mut base_value, &toml::Value::Table(toml::map::Map::new()));
+        let mut config: Config = base_value.try_into().unwrap();
+        if config.web_search.model == WebSearchConfig::default().model
+            && config.provider.web_search_model != ProviderConfig::default().web_search_model
+        {
+            config.web_search.model = config.provider.web_search_model.clone();
+        }
+        assert_eq!(config.web_search.model, "custom/search-model");
+    }
+
+    #[test]
+    fn test_config_web_search_model_no_override_when_explicitly_set() {
+        let toml_str = r#"
+[provider]
+web_search_model = "custom/search-model"
+
+[web_search]
+model = "explicit/model"
+"#;
+        let mut base_value: toml::Value = toml::from_str(toml_str).unwrap();
+        deep_merge_toml(&mut base_value, &toml::Value::Table(toml::map::Map::new()));
+        let mut config: Config = base_value.try_into().unwrap();
+        if config.web_search.model == WebSearchConfig::default().model
+            && config.provider.web_search_model != ProviderConfig::default().web_search_model
+        {
+            config.web_search.model = config.provider.web_search_model.clone();
+        }
+        assert_eq!(config.web_search.model, "explicit/model");
+    }
+
+    #[test]
+    fn test_mcp_server_effective_transport_explicit_http() {
+        let cfg = McpServerConfig {
+            transport: Some("http".into()),
+            command: Some("cmd".into()),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "http");
+    }
+
+    #[test]
+    fn test_build_config_xml_mcp_all_started() {
+        let toml_str = r#"
+[mcp.servers.s1]
+command = "cmd1"
+[mcp.servers.s2]
+command = "cmd2"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let started = vec![("s1".to_string(), 3), ("s2".to_string(), 5)];
+        let xml = build_config_xml(&config, &[], &started);
+        assert!(xml.contains("tools=\"3\""));
+        assert!(xml.contains("tools=\"5\""));
+        assert!(!xml.contains("status=\"not_started\""));
+    }
 }

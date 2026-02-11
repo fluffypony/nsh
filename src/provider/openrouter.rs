@@ -41,3 +41,17 @@ impl LlmProvider for OpenRouterProvider {
         self.0.stream(request).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_fails_when_openrouter_not_configured() {
+        let mut config = crate::config::Config::default();
+        config.provider.openrouter = None;
+        let result = OpenRouterProvider::new(&config);
+        let err = result.err().expect("should fail when openrouter is None");
+        assert!(err.to_string().contains("OpenRouter not configured"));
+    }
+}
