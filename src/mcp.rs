@@ -521,3 +521,63 @@ impl Drop for McpClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_event_boundary_crlf() {
+        let buf = b"data: hello\r\n\r\ndata: world";
+        assert_eq!(find_event_boundary(buf), Some((11, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_lf() {
+        let buf = b"data: hello\n\ndata: world";
+        assert_eq!(find_event_boundary(buf), Some((11, 2)));
+    }
+
+    #[test]
+    fn find_event_boundary_none() {
+        let buf = b"data: hello\ndata: world";
+        assert_eq!(find_event_boundary(buf), None);
+    }
+
+    #[test]
+    fn find_event_boundary_at_start() {
+        let buf = b"\r\n\r\ndata: hello";
+        assert_eq!(find_event_boundary(buf), Some((0, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_prefers_crlf() {
+        let buf = b"data: hello\r\n\r\nmore\n\nend";
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((11, 4)));
+    }
+
+    #[test]
+    fn mcp_client_new_creates_empty() {
+        let client = McpClient::new();
+        assert!(client.servers.is_empty());
+    }
+
+    #[test]
+    fn mcp_client_tool_definitions_empty() {
+        let client = McpClient::new();
+        assert!(client.tool_definitions().is_empty());
+    }
+
+    #[test]
+    fn mcp_client_has_tool_returns_false() {
+        let client = McpClient::new();
+        assert!(!client.has_tool("mcp_server_tool"));
+    }
+
+    #[test]
+    fn mcp_client_server_info_empty() {
+        let client = McpClient::new();
+        assert!(client.server_info().is_empty());
+    }
+}

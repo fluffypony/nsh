@@ -369,4 +369,71 @@ mod tests {
         assert!(!re.is_match("normal text"));
         assert!(!re.is_match("[NOTREDACTED:foo]"));
     }
+
+    #[test]
+    fn test_validate_path_blocked_aws() {
+        let home = dirs::home_dir().unwrap();
+        let aws = home.join(".aws/credentials");
+        let err = validate_path(&aws).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_etc_blocked_non_root() {
+        let etc = PathBuf::from("/etc/passwd");
+        let err = validate_path(&etc).unwrap_err();
+        assert!(err.to_string().contains("/etc"));
+    }
+
+    #[test]
+    fn test_validate_path_relative_ok() {
+        let rel = PathBuf::from("test_file.txt");
+        assert!(validate_path(&rel).is_ok());
+    }
+
+    #[test]
+    fn test_expand_tilde_relative() {
+        let result = expand_tilde("relative/path");
+        assert_eq!(result, PathBuf::from("relative/path"));
+    }
+
+    #[test]
+    fn test_write_nofollow_creates_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        write_nofollow(&path, "hello world").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_validate_path_blocked_gnupg() {
+        let home = dirs::home_dir().unwrap();
+        let gnupg = home.join(".gnupg/pubring.kbx");
+        let err = validate_path(&gnupg).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_gpg() {
+        let home = dirs::home_dir().unwrap();
+        let gpg = home.join(".gpg/keyring");
+        let err = validate_path(&gpg).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_gcloud() {
+        let home = dirs::home_dir().unwrap();
+        let gcloud = home.join(".config/gcloud/credentials");
+        let err = validate_path(&gcloud).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn test_validate_path_blocked_azure() {
+        let home = dirs::home_dir().unwrap();
+        let azure = home.join(".azure/config");
+        let err = validate_path(&azure).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
 }

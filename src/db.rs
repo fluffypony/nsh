@@ -3862,4 +3862,122 @@ mod tests {
             _ => panic!("expected ToolUse"),
         }
     }
+
+    #[test]
+    fn test_meta_get_set() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.get_meta("foo").unwrap().is_none());
+        db.set_meta("foo", "bar").unwrap();
+        assert_eq!(db.get_meta("foo").unwrap(), Some("bar".to_string()));
+    }
+
+    #[test]
+    fn test_meta_overwrite() {
+        let db = Db::open_in_memory().unwrap();
+        db.set_meta("k", "v1").unwrap();
+        db.set_meta("k", "v2").unwrap();
+        assert_eq!(db.get_meta("k").unwrap(), Some("v2".to_string()));
+    }
+
+    #[test]
+    fn test_command_count_empty() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.command_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_command_count_after_insert() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.insert_command("s1", "ls", "/tmp", Some(0), "2025-01-01T00:00:00Z", None, None, "", "zsh", 1234).unwrap();
+        assert_eq!(db.command_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_upsert_memory_insert() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, was_update) = db.upsert_memory("editor", "vim").unwrap();
+        assert!(id > 0);
+        assert!(!was_update);
+    }
+
+    #[test]
+    fn test_upsert_memory_update() {
+        let db = Db::open_in_memory().unwrap();
+        let (id1, was_update1) = db.upsert_memory("editor", "vim").unwrap();
+        assert!(!was_update1);
+        let (id2, was_update2) = db.upsert_memory("editor", "nvim").unwrap();
+        assert!(was_update2);
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_delete_memory() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("temp", "data").unwrap();
+        assert!(db.delete_memory(id).unwrap());
+        assert!(!db.delete_memory(id).unwrap());
+    }
+
+    #[test]
+    fn test_update_memory() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("key1", "val1").unwrap();
+        assert!(db.update_memory(id, Some("key2"), Some("val2")).unwrap());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "key2");
+        assert_eq!(mem.value, "val2");
+    }
+
+    #[test]
+    fn test_update_memory_nonexistent() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(!db.update_memory(99999, Some("k"), None).unwrap());
+    }
+
+    #[test]
+    fn test_get_memories() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert_memory("a", "1").unwrap();
+        db.upsert_memory("b", "2").unwrap();
+        db.upsert_memory("c", "3").unwrap();
+        let mems = db.get_memories(10).unwrap();
+        assert_eq!(mems.len(), 3);
+    }
+
+    #[test]
+    fn test_get_memories_limit() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 0..5 {
+            db.upsert_memory(&format!("k{i}"), &format!("v{i}")).unwrap();
+        }
+        let mems = db.get_memories(3).unwrap();
+        assert_eq!(mems.len(), 3);
+    }
+
+    #[test]
+    fn test_search_memories() {
+        let db = Db::open_in_memory().unwrap();
+        db.upsert_memory("editor", "vim is the best editor").unwrap();
+        db.upsert_memory("shell", "zsh with oh-my-zsh").unwrap();
+        let results = db.search_memories("editor").unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_get_memory_by_id() {
+        let db = Db::open_in_memory().unwrap();
+        let (id, _) = db.upsert_memory("test_key", "test_val").unwrap();
+        let mem = db.get_memory_by_id(id).unwrap();
+        assert!(mem.is_some());
+        let mem = mem.unwrap();
+        assert_eq!(mem.key, "test_key");
+        assert_eq!(mem.value, "test_val");
+    }
+
+    #[test]
+    fn test_get_memory_by_id_nonexistent() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.get_memory_by_id(99999).unwrap().is_none());
+    }
 }

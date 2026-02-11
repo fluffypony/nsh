@@ -60,3 +60,98 @@ pub fn execute_update(input: &serde_json::Value, db: &crate::db::Db) -> anyhow::
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn test_db() -> crate::db::Db {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db
+    }
+
+    #[test]
+    fn test_remember_happy_path() {
+        let db = test_db();
+        let input = json!({"key": "editor", "value": "vim"});
+        let result = execute_remember(&input, "remember editor", &db, "s1");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_remember_empty_key() {
+        let db = test_db();
+        let input = json!({"key": "", "value": "vim"});
+        let result = execute_remember(&input, "remember", &db, "s1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required"));
+    }
+
+    #[test]
+    fn test_remember_empty_value() {
+        let db = test_db();
+        let input = json!({"key": "editor", "value": ""});
+        let result = execute_remember(&input, "remember", &db, "s1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("required"));
+    }
+
+    #[test]
+    fn test_forget_happy_path() {
+        let db = test_db();
+        let input = json!({"key": "editor", "value": "vim"});
+        execute_remember(&input, "remember editor", &db, "s1").unwrap();
+
+        let forget_input = json!({"id": 1});
+        let result = execute_forget(&forget_input, &db);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_forget_missing_id() {
+        let db = test_db();
+        let input = json!({});
+        let result = execute_forget(&input, &db);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("'id' is required"));
+    }
+
+    #[test]
+    fn test_forget_nonexistent_id() {
+        let db = test_db();
+        let input = json!({"id": 9999});
+        let result = execute_forget(&input, &db);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_update_happy_path() {
+        let db = test_db();
+        let input = json!({"key": "editor", "value": "vim"});
+        execute_remember(&input, "remember editor", &db, "s1").unwrap();
+
+        let update_input = json!({"id": 1, "value": "emacs"});
+        let result = execute_update(&update_input, &db);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_update_missing_id() {
+        let db = test_db();
+        let input = json!({"key": "editor"});
+        let result = execute_update(&input, &db);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("'id' is required"));
+    }
+
+    #[test]
+    fn test_update_no_key_or_value() {
+        let db = test_db();
+        let input = json!({"id": 1});
+        let result = execute_update(&input, &db);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("at least"));
+    }
+}
