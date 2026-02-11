@@ -33,12 +33,14 @@ pub struct Config {
 #[serde(default)]
 pub struct ExecutionConfig {
     pub mode: String, // "prefill" | "confirm" | "autorun"
+    pub allow_unsafe_autorun: bool,
 }
 
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
             mode: "prefill".into(),
+            allow_unsafe_autorun: false,
         }
     }
 }
@@ -206,6 +208,7 @@ impl Default for ContextConfig {
 #[serde(default)]
 pub struct ToolsConfig {
     pub run_command_allowlist: Vec<String>,
+    pub sensitive_file_access: String,
 }
 
 impl Default for ToolsConfig {
@@ -236,8 +239,28 @@ impl Default for ToolsConfig {
                 "pip list".into(),
                 "cargo --version".into(),
             ],
+            sensitive_file_access: "block".into(),
         }
     }
+}
+
+pub const TOOL_BLOCKED_KEYS: &[&str] = &[
+    "execution.allow_unsafe_autorun",
+    "tools.sensitive_file_access",
+    "tools.run_command_allowlist",
+    "redaction.enabled",
+    "redaction.disable_builtin",
+];
+
+const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &[
+    "api_key",
+    "api_key_cmd",
+    "base_url",
+];
+
+pub fn is_setting_protected(key: &str) -> bool {
+    TOOL_BLOCKED_KEYS.contains(&key)
+        || key.split('.').any(|segment| TOOL_BLOCKED_KEY_SEGMENTS.contains(&segment))
 }
 
 impl ToolsConfig {
@@ -442,6 +465,9 @@ fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
 }
 
 fn sanitize_project_config(value: &mut toml::Value) {
+    // Security: only context and display are allowed in project configs.
+    // execution, tools, redaction, and provider sections are blocked to prevent
+    // project-level configs from weakening security settings.
     const ALLOWED_SECTIONS: &[&str] = &["context", "display"];
 
     if let toml::Value::Table(table) = value {
@@ -618,8 +644,12 @@ pub fn build_config_xml(
     // ── Tools ───────────────────────────────────────────
     x.push_str("  <section name=\"tools\">\n");
     x.push_str(&format!(
-        "    <option key=\"run_command_allowlist\" value=\"{}\" description=\"Commands the AI can run without user approval\" />\n",
+        "    <option key=\"run_command_allowlist\" value=\"{}\" description=\"Commands the AI can run without user approval\" protected=\"true\" />\n",
         xml_escape(&config.tools.run_command_allowlist.join(", "))
+    ));
+    x.push_str(&format!(
+        "    <option key=\"sensitive_file_access\" value=\"{}\" description=\"Controls access to sensitive directories: block | ask | allow (MANUAL EDIT ONLY)\" protected=\"true\" />\n",
+        xml_escape(&config.tools.sensitive_file_access)
     ));
     x.push_str("  </section>\n");
 
@@ -639,12 +669,16 @@ pub fn build_config_xml(
 
     // ── Redaction ───────────────────────────────────────
     x.push_str("  <section name=\"redaction\">\n");
-    opt(&mut x, "enabled", &config.redaction.enabled.to_string(),
-        "Auto-redact secrets before sending to LLM", None);
+    x.push_str(&format!(
+        "    <option key=\"enabled\" value=\"{}\" description=\"Auto-redact secrets before sending to LLM\" protected=\"true\" />\n",
+        config.redaction.enabled
+    ));
     opt(&mut x, "replacement", &config.redaction.replacement,
         "Replacement text for redacted secrets", None);
-    opt(&mut x, "disable_builtin", &config.redaction.disable_builtin.to_string(),
-        "Disable built-in secret patterns", None);
+    x.push_str(&format!(
+        "    <option key=\"disable_builtin\" value=\"{}\" description=\"Disable built-in secret patterns\" protected=\"true\" />\n",
+        config.redaction.disable_builtin
+    ));
     x.push_str(&format!(
         "    <option key=\"patterns\" value=\"({} custom patterns)\" description=\"User-defined regex patterns\" />\n",
         config.redaction.patterns.len()
@@ -663,6 +697,10 @@ pub fn build_config_xml(
     x.push_str("  <section name=\"execution\">\n");
     opt(&mut x, "mode", &config.execution.mode,
         "How suggested commands are delivered", Some("prefill,confirm,autorun"));
+    x.push_str(&format!(
+        "    <option key=\"allow_unsafe_autorun\" value=\"{}\" description=\"Allow !! and autorun mode to auto-run elevated-risk commands (MANUAL EDIT ONLY)\" protected=\"true\" />\n",
+        config.execution.allow_unsafe_autorun
+    ));
     x.push_str("  </section>\n");
 
     // ── DB ──────────────────────────────────────────────
@@ -805,6 +843,7 @@ model = "some-model"
     fn test_is_command_allowed_exact_match() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["git status".into()],
+            ..Default::default()
         };
         assert!(tools.is_command_allowed("git status"));
     }
@@ -813,6 +852,7 @@ model = "some-model"
     fn test_is_command_allowed_prefix_match() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["git log".into()],
+            ..Default::default()
         };
         assert!(tools.is_command_allowed("git log --oneline"));
     }
@@ -821,6 +861,7 @@ model = "some-model"
     fn test_is_command_allowed_first_word_match() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["echo".into()],
+            ..Default::default()
         };
         assert!(tools.is_command_allowed("echo hello world"));
     }
@@ -829,6 +870,7 @@ model = "some-model"
     fn test_is_command_allowed_wildcard() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["*".into()],
+            ..Default::default()
         };
         assert!(tools.is_command_allowed("rm -rf /"));
     }
@@ -837,6 +879,7 @@ model = "some-model"
     fn test_is_command_allowed_injection() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["git status".into()],
+            ..Default::default()
         };
         assert!(
             !tools.is_command_allowed("git status; rm -rf /"),
@@ -917,6 +960,7 @@ chat_color = "red"
     fn test_is_command_allowed_rejects_injection_patterns() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["echo".into(), "git status".into(), "*".into()],
+            ..Default::default()
         };
         // Even with wildcard, dangerous characters should be rejected
         let injection_cases = [
@@ -1027,6 +1071,7 @@ base_url = "https://custom.api.example.com"
     fn test_is_command_allowed_empty_allowlist() {
         let tools = ToolsConfig {
             run_command_allowlist: vec![],
+            ..Default::default()
         };
         assert!(!tools.is_command_allowed("ls"));
         assert!(!tools.is_command_allowed("echo hello"));
@@ -1561,6 +1606,7 @@ command = "gamma-cmd"
     fn test_is_command_allowed_wildcard_blocks_dangerous() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["*".into()],
+            ..Default::default()
         };
         assert!(tools.is_command_allowed("anything"));
         assert!(!tools.is_command_allowed("echo; rm"));
@@ -1799,6 +1845,7 @@ model = "search-model"
     fn test_is_command_allowed_empty_allowlist_entry() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["".into(), "ls".into()],
+            ..Default::default()
         };
         assert!(tools.is_command_allowed("ls"));
         assert!(!tools.is_command_allowed("rm foo"));
@@ -1808,6 +1855,7 @@ model = "search-model"
     fn test_is_command_allowed_empty_command() {
         let tools = ToolsConfig {
             run_command_allowlist: vec!["ls".into()],
+            ..Default::default()
         };
         assert!(!tools.is_command_allowed(""));
         assert!(!tools.is_command_allowed("   "));
@@ -2319,5 +2367,66 @@ timeout_seconds = 45
     #[test]
     fn test_default_mcp_timeout_value() {
         assert_eq!(default_mcp_timeout(), 30);
+    }
+
+    // ── new config fields ───────────────────────────────
+
+    #[test]
+    fn test_default_allow_unsafe_autorun() {
+        let config = Config::default();
+        assert!(!config.execution.allow_unsafe_autorun);
+    }
+
+    #[test]
+    fn test_default_sensitive_file_access() {
+        let config = Config::default();
+        assert_eq!(config.tools.sensitive_file_access, "block");
+    }
+
+    #[test]
+    fn test_parse_allow_unsafe_autorun() {
+        let toml_str = r#"
+[execution]
+allow_unsafe_autorun = true
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.execution.allow_unsafe_autorun);
+    }
+
+    #[test]
+    fn test_parse_sensitive_file_access() {
+        let toml_str = r#"
+[tools]
+sensitive_file_access = "allow"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.tools.sensitive_file_access, "allow");
+    }
+
+    // ── is_setting_protected ────────────────────────────
+
+    #[test]
+    fn test_is_setting_protected_blocked_keys() {
+        assert!(is_setting_protected("execution.allow_unsafe_autorun"));
+        assert!(is_setting_protected("tools.sensitive_file_access"));
+        assert!(is_setting_protected("tools.run_command_allowlist"));
+        assert!(is_setting_protected("redaction.enabled"));
+        assert!(is_setting_protected("redaction.disable_builtin"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_blocked_segments() {
+        assert!(is_setting_protected("provider.openrouter.api_key"));
+        assert!(is_setting_protected("provider.openai.api_key"));
+        assert!(is_setting_protected("provider.anthropic.api_key_cmd"));
+        assert!(is_setting_protected("provider.custom.base_url"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_allows_safe_keys() {
+        assert!(!is_setting_protected("provider.model"));
+        assert!(!is_setting_protected("context.history_limit"));
+        assert!(!is_setting_protected("display.chat_color"));
+        assert!(!is_setting_protected("execution.mode"));
     }
 }
