@@ -21,9 +21,15 @@ use serde::Serialize;
 use serde_json::json;
 
 pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
-    let path = std::path::Path::new(raw_path);
+    let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
+        dirs::home_dir().unwrap_or_default().join(rest)
+    } else if raw_path == "~" {
+        dirs::home_dir().unwrap_or_default()
+    } else {
+        PathBuf::from(raw_path)
+    };
 
-    if path
+    if expanded
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
     {
@@ -32,15 +38,25 @@ pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
         ));
     }
 
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
+    let abs = if expanded.is_absolute() {
+        expanded
     } else {
         std::env::current_dir()
             .unwrap_or_default()
-            .join(path)
+            .join(expanded)
     };
 
-    let canonical = std::fs::canonicalize(&abs).unwrap_or(abs);
+    let canonical = match std::fs::canonicalize(&abs) {
+        Ok(p) => p,
+        Err(_) => {
+            if abs.exists() {
+                return Err(format!(
+                    "Access denied: cannot resolve '{raw_path}'"
+                ));
+            }
+            abs
+        }
+    };
 
     if let Some(home) = dirs::home_dir() {
         let ssh_dir = home.join(".ssh");

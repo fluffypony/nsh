@@ -1,23 +1,11 @@
 use std::fs;
-use std::path::PathBuf;
-
-fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        dirs::home_dir().unwrap().join(rest)
-    } else if p == "~" {
-        dirs::home_dir().unwrap()
-    } else {
-        PathBuf::from(p)
-    }
-}
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
-    let expanded = expand_tilde(raw_path);
-    let path = match crate::tools::validate_read_path(&expanded.to_string_lossy()) {
+    let path = match crate::tools::validate_read_path(raw_path) {
         Ok(p) => p,
         Err(msg) => return Ok(msg),
     };
