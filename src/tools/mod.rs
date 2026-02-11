@@ -15,8 +15,45 @@ pub mod manage_config;
 pub mod install_skill;
 pub mod install_mcp;
 
+use std::path::PathBuf;
+
 use serde::Serialize;
 use serde_json::json;
+
+pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
+    let path = std::path::Path::new(raw_path);
+
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "Access denied: path '{raw_path}' contains '..' components"
+        ));
+    }
+
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+    };
+
+    let canonical = std::fs::canonicalize(&abs).unwrap_or(abs);
+
+    if let Some(home) = dirs::home_dir() {
+        let ssh_dir = home.join(".ssh");
+        let ssh_canonical = ssh_dir.canonicalize().unwrap_or(ssh_dir);
+        if canonical.starts_with(&ssh_canonical) {
+            return Err(format!(
+                "Access denied: '{raw_path}' is in a sensitive directory"
+            ));
+        }
+    }
+
+    Ok(canonical)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {

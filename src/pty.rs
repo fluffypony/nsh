@@ -100,48 +100,41 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
         config.capture.alt_screen.clone(),
     )));
 
+    let basename = shell.rsplit('/').next().unwrap_or(shell);
+    let argv0_cstr =
+        std::ffi::CString::new(format!("-{basename}")).expect("valid shell name");
+    let shell_cstr = std::ffi::CString::new(shell.to_owned()).expect("valid shell path");
+    let env_key = std::ffi::CString::new("NSH_PTY_ACTIVE").unwrap();
+    let env_val = std::ffi::CString::new("1").unwrap();
+
     // Fork
     match unsafe { libc::fork() } {
         -1 => anyhow::bail!("fork() failed"),
         0 => {
-            // ── Child: exec the shell ──────────────────────────
+            // ── Child: only async-signal-safe operations ──────
             drop(pty.master);
 
             if unsafe { libc::setsid() } == -1 {
-                eprintln!("nsh: setsid failed");
                 unsafe { libc::_exit(127) };
             }
 
             let slave_raw = std::os::fd::AsRawFd::as_raw_fd(&pty.slave);
 
-            if unsafe { libc::ioctl(slave_raw, libc::TIOCSCTTY as libc::c_ulong, 0) } == -1 {
-                eprintln!("nsh: TIOCSCTTY failed");
-            }
+            unsafe { libc::ioctl(slave_raw, libc::TIOCSCTTY as libc::c_ulong, 0) };
 
             for fd in 0..=2 {
                 if unsafe { libc::dup2(slave_raw, fd) } == -1 {
-                    eprintln!("nsh: dup2({fd}) failed");
                     unsafe { libc::_exit(127) };
                 }
             }
             drop(pty.slave);
 
             unsafe {
-                let key = b"NSH_PTY_ACTIVE\0";
-                let val = b"1\0";
-                libc::setenv(
-                    key.as_ptr() as *const libc::c_char,
-                    val.as_ptr() as *const libc::c_char,
-                    1,
-                );
+                libc::setenv(env_key.as_ptr(), env_val.as_ptr(), 1);
+                let argv = [argv0_cstr.as_ptr(), std::ptr::null()];
+                libc::execvp(shell_cstr.as_ptr(), argv.as_ptr());
+                libc::_exit(127);
             }
-
-            // Login shell convention: prepend '-' to basename in argv[0]
-            let basename = shell.rsplit('/').next().unwrap_or(shell);
-            let argv0 = format!("-{basename}");
-            let err = exec::execvp(shell, &[&argv0]);
-            eprintln!("nsh: exec failed: {err}");
-            unsafe { libc::_exit(127) };
         }
         child_pid => {
             // ── Parent: run the pump ───────────────────────────

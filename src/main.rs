@@ -35,8 +35,7 @@ use cli::{
 };
 use sha2::{Digest, Sha256};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -46,34 +45,41 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if let Commands::Wrap { ref shell } = cli.command {
+        apply_pending_update();
+
+        if let Ok(db) = db::Db::open() {
+            let _ = db.cleanup_orphaned_sessions();
+            if should_check_for_updates(&db) {
+                let _ = background_update_check();
+            }
+        }
+
+        if config::Config::nsh_dir().join("update_pending").exists() {
+            eprintln!("\x1b[2mnsh: update ready, will apply on next shell start\x1b[0m");
+        }
+
+        let shell = if shell.is_empty() {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
+        } else {
+            shell.clone()
+        };
+        return pty::run_wrapped_shell(&shell);
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main(cli))
+}
+
+async fn async_main(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
+        Commands::Wrap { .. } => unreachable!(),
+
         Commands::Init { shell } => {
             let script = init::generate_init_script(&shell);
             print!("{script}");
-        }
-
-        Commands::Wrap { shell } => {
-            apply_pending_update();
-
-            if let Ok(db) = db::Db::open() {
-                let _ = db.cleanup_orphaned_sessions();
-                if should_check_for_updates(&db) {
-                    std::thread::spawn(|| {
-                        let _ = background_update_check();
-                    });
-                }
-            }
-
-            if config::Config::nsh_dir().join("update_pending").exists() {
-                eprintln!("\x1b[2mnsh: update ready, will apply on next shell start\x1b[0m");
-            }
-
-            let shell = if shell.is_empty() {
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-            } else {
-                shell
-            };
-            pty::run_wrapped_shell(&shell)?;
         }
 
         Commands::Query {

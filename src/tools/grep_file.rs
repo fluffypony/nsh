@@ -2,16 +2,23 @@ use regex::Regex;
 use std::fs;
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    let path = input["path"]
+    let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+
+    let path = match crate::tools::validate_read_path(raw_path) {
+        Ok(p) => p,
+        Err(msg) => return Ok(msg),
+    };
+
     let pattern = input["pattern"].as_str();
     let context_lines = input["context_lines"].as_u64().unwrap_or(3) as usize;
     let max_lines = input["max_lines"].as_u64().unwrap_or(100) as usize;
 
-    let content = match fs::read_to_string(path) {
+    let path_display = path.display().to_string();
+    let content = match fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(e) => return Ok(format!("Error reading '{path}': {e}")),
+        Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
     };
 
     let lines: Vec<&str> = content.lines().collect();
@@ -44,7 +51,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             }
 
             if result.is_empty() {
-                Ok(format!("No matches for '{pat}' in {path}"))
+                Ok(format!("No matches for '{pat}' in {path_display}"))
             } else {
                 Ok(result)
             }

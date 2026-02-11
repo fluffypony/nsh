@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn expand_tilde(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
@@ -11,35 +11,16 @@ fn expand_tilde(p: &str) -> PathBuf {
     }
 }
 
-fn is_sensitive_path(path: &Path) -> bool {
-    let resolved = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(path)
-    };
-
-    if let Some(home) = dirs::home_dir() {
-        let ssh_dir = home.join(".ssh");
-        if resolved.starts_with(&ssh_dir) {
-            return true;
-        }
-    }
-
-    false
-}
-
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
-    let path = expand_tilde(raw_path);
-
-    if is_sensitive_path(&path) {
-        return Ok(format!(
-            "Access denied: '{raw_path}' is in a sensitive directory"
-        ));
-    }
+    let expanded = expand_tilde(raw_path);
+    let path = match crate::tools::validate_read_path(&expanded.to_string_lossy()) {
+        Ok(p) => p,
+        Err(msg) => return Ok(msg),
+    };
 
     let start_line = (input["start_line"].as_u64().unwrap_or(1) as usize).max(1);
     let end_line = input["end_line"].as_u64().unwrap_or(200) as usize;

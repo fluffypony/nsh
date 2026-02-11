@@ -260,7 +260,7 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             ));
             xml.push_str(&format!(
                 "      <input>{}</input>\n",
-                xml_escape(&cmd.command),
+                xml_escape(&crate::redact::redact_secrets(&cmd.command, &config.redaction)),
             ));
             if let Some(ref summary) = cmd.summary {
                 let redacted = crate::redact::redact_secrets(summary, &config.redaction);
@@ -299,7 +299,7 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             ));
             xml.push_str(&format!(
                 "        <input>{}</input>\n",
-                xml_escape(&cmd.command),
+                xml_escape(&crate::redact::redact_secrets(&cmd.command, &config.redaction)),
             ));
             if let Some(ref summary) = cmd.summary {
                 let redacted = crate::redact::redact_secrets(summary, &config.redaction);
@@ -482,7 +482,7 @@ fn check_project_markers(dir: &std::path::Path, types: &mut Vec<&'static str>) {
 }
 
 fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
-    let child = std::process::Command::new("git")
+    let mut child = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
@@ -492,22 +492,28 @@ fn run_git_with_timeout(args: &[&str], cwd: &str) -> Option<String> {
 
     let timeout = Duration::from_secs(2);
     let args_display = args.join(" ");
-    let handle = std::thread::spawn(move || child.wait_with_output());
-
     let start = Instant::now();
+
     loop {
-        if handle.is_finished() {
-            let output = handle.join().ok()?.ok()?;
-            if !output.status.success() {
-                return None;
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                let output = child.wait_with_output().ok()?;
+                if !output.status.success() {
+                    return None;
+                }
+                return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
             }
-            return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    tracing::warn!("git command timed out: git {args_display}");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
         }
-        if start.elapsed() >= timeout {
-            tracing::warn!("git command timed out: git {args_display}");
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

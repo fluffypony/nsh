@@ -1,11 +1,14 @@
 use std::fs;
-use std::path::Path;
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let path_str = input["path"].as_str().unwrap_or(".");
     let show_hidden = input["show_hidden"].as_bool().unwrap_or(false);
 
-    let path = Path::new(path_str);
+    let path = match crate::tools::validate_read_path(path_str) {
+        Ok(p) => p,
+        Err(msg) => return Ok(msg),
+    };
+
     if !path.exists() {
         return Ok(format!("Path does not exist: {path_str}"));
     }
