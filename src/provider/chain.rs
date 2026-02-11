@@ -608,4 +608,126 @@ mod tests {
         let done = rx.recv().await.unwrap();
         assert!(matches!(done, StreamEvent::Done { .. }));
     }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_tool_result_block_ignored() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| {
+                Ok(Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentBlock::ToolResult {
+                            tool_use_id: "tr1".into(),
+                            content: "ignored".into(),
+                            is_error: false,
+                        },
+                        ContentBlock::Text { text: "after".into() },
+                    ],
+                })
+            }),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("no stream"))),
+        };
+        let mut rx = stream_with_complete_fallback(&provider, dummy_request())
+            .await
+            .unwrap();
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "after"));
+        let done = rx.recv().await.unwrap();
+        assert!(matches!(done, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_delegates_correctly() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::TextDelta("ok".into())).await;
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["model-x".to_string()];
+        let (mut rx, model) = call_chain_with_fallback(&provider, dummy_request(), &chain)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-x");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_falls_back() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("complete fails"))),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 1 {
+                    Err(anyhow::anyhow!("model broken"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("fallback".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_chain_with_fallback(&provider, dummy_request(), &chain)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-b");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "fallback"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_with_thinking_enabled() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::TextDelta("thought".into())).await;
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["google/gemini-2.5-pro".to_string()];
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, true)
+                .await
+                .unwrap();
+        assert_eq!(model, "google/gemini-2.5-pro");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "thought"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_extra_body_preserved() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["google/gemini-3-pro".to_string()];
+        let mut req = dummy_request();
+        req.extra_body = Some(serde_json::json!({"temperature": 0.5}));
+        let (_, model) = call_chain_with_fallback_think(&provider, req, &chain, true)
+            .await
+            .unwrap();
+        assert_eq!(model, "google/gemini-3-pro");
+    }
 }

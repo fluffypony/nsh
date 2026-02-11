@@ -1769,6 +1769,145 @@ mod tests {
         let body = provider.build_request_body(&req);
         assert_eq!(body["model"], "gpt-4");
     }
+
+    async fn start_sse_server(body: &str) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+        let response_body = body.to_string();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let http = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{}",
+                response_body
+            );
+            let _ = socket.write_all(http.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        });
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_text_delta() {
+        let sse = "data: {\"id\":\"gen-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"id\":\"gen-1\",\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n";
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::GenerationId(id) if id == "gen-1"));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::TextDelta(t) if t == "hello"));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_tool_use() {
+        let sse = concat!(
+            "data: {\"id\":\"gen-2\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc1\",\"function\":{\"name\":\"search\",\"arguments\":\"\"}}]}}]}\n\n",
+            "data: {\"id\":\"gen-2\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"q\\\"\"}}]}}]}\n\n",
+            "data: {\"id\":\"gen-2\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"test\\\"}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseStart { name, .. } if name == "search"));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseDelta(s) if s == "{\"q\""));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseDelta(s) if s == ":\"test\"}"));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseEnd));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_multiple_tool_calls() {
+        let sse = concat!(
+            "data: {\"id\":\"gen-3\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc1\",\"function\":{\"name\":\"foo\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"id\":\"gen-3\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"tc2\",\"function\":{\"name\":\"bar\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"id\":\"gen-3\",\"choices\":[{\"finish_reason\":\"tool_calls\",\"delta\":{}}]}\n\n",
+        );
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseStart { ref name, .. } if name == "foo"));
+        let _ = rx.recv().await.unwrap(); // ToolUseDelta("{}")
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseEnd)); // end of first tool
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseStart { ref name, .. } if name == "bar"));
+        let _ = rx.recv().await.unwrap(); // ToolUseDelta("{}")
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseEnd)); // end of second tool (from finish_reason)
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_done_marker() {
+        let sse = "data: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n";
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let _ = rx.recv().await.unwrap(); // TextDelta
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_empty_content_skipped() {
+        let sse = concat!(
+            "data: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n",
+            "data: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"real\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::TextDelta(t) if t == "real"));
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_invalid_json_skipped() {
+        let sse = "data: not-json\n\ndata: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::TextDelta(t) if t == "ok"));
+    }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_tool_with_done_closes_tool() {
+        let sse = concat!(
+            "data: {\"id\":\"g\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"t1\",\"function\":{\"name\":\"fn1\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (url, _handle) = start_sse_server(sse).await;
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let _ = rx.recv().await.unwrap(); // ToolUseStart
+        let _ = rx.recv().await.unwrap(); // ToolUseDelta
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::ToolUseEnd));
+        let ev = rx.recv().await.unwrap();
+        assert!(matches!(ev, StreamEvent::Done { .. }));
+    }
 }
 
 pub fn spawn_openai_stream(

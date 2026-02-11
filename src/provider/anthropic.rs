@@ -967,6 +967,180 @@ mod tests {
     }
 
     #[test]
+    fn test_build_body_user_non_text_blocks_filtered_out() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tr1".into(),
+                        content: "should be ignored".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::Text { text: "kept".into() },
+                    ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "x".into(),
+                        input: json!({}),
+                    },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["content"], "kept");
+    }
+
+    #[test]
+    fn test_build_body_tool_result_is_error_field_values() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Tool,
+                content: vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t1".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "t2".into(),
+                        content: "fail".into(),
+                        is_error: true,
+                    },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["is_error"], false);
+        assert_eq!(content[1]["is_error"], true);
+    }
+
+    #[test]
+    fn test_build_body_assistant_mixed_tool_use_and_tool_result_filters_result() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "tu1".into(),
+                        name: "cmd".into(),
+                        input: json!({"a": 1}),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tr1".into(),
+                        content: "filtered out".into(),
+                        is_error: false,
+                    },
+                    ContentBlock::Text { text: "ok".into() },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "tool_use");
+        assert_eq!(content[1]["type"], "text");
+    }
+
+    #[test]
+    fn test_build_body_tool_choice_required_with_tools() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![],
+            vec![ToolDefinition {
+                name: "a".into(),
+                description: "b".into(),
+                parameters: json!({}),
+            }],
+            ToolChoice::Required,
+        );
+        let body = provider.build_body(&req);
+        assert_eq!(body["tool_choice"]["type"], "any");
+    }
+
+    #[test]
+    fn test_build_body_tool_choice_none_with_tools_no_tool_choice_field() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![],
+            vec![ToolDefinition {
+                name: "t".into(),
+                description: "d".into(),
+                parameters: json!({}),
+            }],
+            ToolChoice::None,
+        );
+        let body = provider.build_body(&req);
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn test_build_body_extra_body_not_applied() {
+        let provider = make_provider();
+        let mut req = make_request(vec![], vec![], ToolChoice::Auto);
+        req.extra_body = Some(json!({"response_format": {"type": "json_object"}}));
+        let body = provider.build_body(&req);
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn test_build_body_user_multiple_non_text_returns_empty_string() {
+        let provider = make_provider();
+        let req = make_request(
+            vec![Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::ToolUse {
+                        id: "x".into(),
+                        name: "y".into(),
+                        input: json!({}),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "z".into(),
+                        content: "c".into(),
+                        is_error: false,
+                    },
+                ],
+            }],
+            vec![],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["content"], "");
+    }
+
+    #[test]
+    fn test_build_body_tool_description_and_input_schema() {
+        let provider = make_provider();
+        let params = json!({"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]});
+        let req = make_request(
+            vec![],
+            vec![ToolDefinition {
+                name: "search".into(),
+                description: "Search things".into(),
+                parameters: params.clone(),
+            }],
+            ToolChoice::Auto,
+        );
+        let body = provider.build_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["name"], "search");
+        assert_eq!(tools[0]["description"], "Search things");
+        assert_eq!(tools[0]["input_schema"], params);
+    }
+
+    #[test]
     fn test_build_body_assistant_tool_use_id_preserved() {
         let provider = make_provider();
         let req = make_request(

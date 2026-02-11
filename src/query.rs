@@ -1747,6 +1747,146 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_tool_input_install_mcp_server_extra_fields_ok() {
+        let input = json!({"name": "fs", "command": "npx", "args": ["-y", "@mcp/server-fs"]});
+        assert!(validate_tool_input("install_mcp_server", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_run_command_missing_command() {
+        let input = json!({"reason": "check"});
+        let err = validate_tool_input("run_command", &input).unwrap_err();
+        assert!(err.contains("command"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_web_search_extra_fields_ok() {
+        let input = json!({"query": "rust async", "max_results": 5});
+        assert!(validate_tool_input("web_search", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_all_required_present_for_patch_file() {
+        let input = json!({"path": "/f", "search": "a", "replace": "b", "reason": "fix"});
+        assert!(validate_tool_input("patch_file", &input).is_ok());
+    }
+
+    #[test]
+    fn test_describe_tool_action_search_history_missing_query() {
+        let input = json!({});
+        let desc = describe_tool_action("search_history", &input);
+        assert_eq!(desc, "searching history for \"...\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_read_file_missing_path() {
+        let input = json!({});
+        let desc = describe_tool_action("read_file", &input);
+        assert_eq!(desc, "reading file");
+    }
+
+    #[test]
+    fn test_describe_tool_action_list_directory_missing_path() {
+        let input = json!({});
+        let desc = describe_tool_action("list_directory", &input);
+        assert_eq!(desc, "listing .");
+    }
+
+    #[test]
+    fn test_describe_tool_action_run_command_missing_command() {
+        let input = json!({});
+        let desc = describe_tool_action("run_command", &input);
+        assert_eq!(desc, "running `...`");
+    }
+
+    #[test]
+    fn test_describe_tool_action_web_search_missing_query() {
+        let input = json!({});
+        let desc = describe_tool_action("web_search", &input);
+        assert_eq!(desc, "searching \"...\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_man_page_missing_command() {
+        let input = json!({});
+        let desc = describe_tool_action("man_page", &input);
+        assert_eq!(desc, "reading man page: ?");
+    }
+
+    #[test]
+    fn test_describe_tool_action_returns_name_for_unknown_tool() {
+        let input = json!({"a": 1, "b": 2});
+        let desc = describe_tool_action("my_custom_tool", &input);
+        assert_eq!(desc, "my_custom_tool");
+    }
+
+    #[test]
+    fn test_build_memories_xml_multiple_memories_ordering() {
+        let mems = vec![
+            crate::db::Memory { id: 10, key: "first".into(), value: "v1".into(), created_at: "2025-01-01".into(), updated_at: "2025-01-01".into() },
+            crate::db::Memory { id: 20, key: "second".into(), value: "v2".into(), created_at: "2025-01-02".into(), updated_at: "2025-01-02".into() },
+            crate::db::Memory { id: 30, key: "third".into(), value: "v3".into(), created_at: "2025-01-03".into(), updated_at: "2025-01-03".into() },
+        ];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("count=\"3\""));
+        let pos_first = result.find("id=\"10\"").unwrap();
+        let pos_second = result.find("id=\"20\"").unwrap();
+        let pos_third = result.find("id=\"30\"").unwrap();
+        assert!(pos_first < pos_second);
+        assert!(pos_second < pos_third);
+    }
+
+    #[test]
+    fn test_build_memories_xml_updated_at_escaped() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "k".into(),
+            value: "v".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025 & <now>".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("&amp;"));
+        assert!(result.contains("&lt;now&gt;"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_boundary_note() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "UNIQUE_BOUNDARY_42", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("UNIQUE_BOUNDARY_42"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_response_rules() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Response Rules"));
+        assert!(result.contains("tool call"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_error_recovery() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Error Recovery"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_man_page_with_section() {
+        let input = json!({"command": "ls", "section": 1});
+        let result = execute_sync_tool("man_page", &input, &Config::default()).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command_simple_echo() {
+        let input = json!({"command": "echo nsh_test_value_xyz"});
+        let result = execute_sync_tool("run_command", &input, &Config::default()).unwrap();
+        assert!(result.contains("nsh_test_value_xyz"));
+    }
+
+    #[test]
     fn test_execute_sync_tool_grep_file_empty_file() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("empty.txt");

@@ -1615,6 +1615,132 @@ mod tests {
     }
 
     #[test]
+    fn test_daemon_request_record_with_output_provided_takes_priority() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.mark();
+            eng.process(b"captured text\r\n");
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(DbCommand::Record { output, reply, .. }) = rx.recv() {
+                assert_eq!(output.as_deref(), Some("explicit output"));
+                let _ = reply.send(Ok(1));
+            }
+        });
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "test".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: Some("explicit output".into()),
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { .. }));
+    }
+
+    #[test]
+    fn test_daemon_request_record_captures_when_output_none() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.mark();
+            eng.process(b"captured line\r\n");
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(DbCommand::Record { output, reply, .. }) = rx.recv() {
+                assert!(output.is_some(), "should have captured output from engine");
+                let _ = reply.send(Ok(1));
+            }
+        });
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "test".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { .. }));
+    }
+
+    #[test]
+    fn test_daemon_pid_path_empty_session() {
+        let path = daemon_pid_path("");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "daemon_.pid");
+    }
+
+    #[test]
+    fn test_handle_capture_read_zero_max_lines() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.mark();
+            for i in 0..10 {
+                eng.process(format!("line {i}\r\n").as_bytes());
+            }
+        }
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 0 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                let output = d["output"].as_str().unwrap();
+                assert!(output.is_empty(), "max_lines=0 should yield empty output");
+            }
+            _ => panic!("expected Ok with output data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_scrollback_with_data() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.process(b"scroll content\r\n");
+        }
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::Scrollback { max_lines: 1 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                let text = d["scrollback"].as_str().unwrap();
+                assert!(text.contains("scroll content"));
+            }
+            _ => panic!("expected Ok with scrollback data"),
+        }
+    }
+
+    #[test]
     fn test_daemon_request_record_with_large_output() {
         let big_output = "x".repeat(100_000);
         let req = DaemonRequest::Record {
