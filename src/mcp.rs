@@ -66,6 +66,16 @@ struct McpServer {
     timeout: Duration,
 }
 
+fn find_event_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some((pos, 4));
+    }
+    if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+        return Some((pos, 2));
+    }
+    None
+}
+
 impl McpServer {
     async fn send_request(
         &mut self,
@@ -152,13 +162,13 @@ impl McpServer {
                             let chunk = chunk?;
                             raw_buffer.extend_from_slice(&chunk);
 
-                            while let Some(pos) = raw_buffer.windows(2).position(|w| w == b"\n\n") {
+                            while let Some((pos, delim_len)) = find_event_boundary(&raw_buffer) {
                                 let event_bytes = raw_buffer[..pos].to_vec();
-                                raw_buffer = raw_buffer[pos + 2..].to_vec();
+                                raw_buffer = raw_buffer[pos + delim_len..].to_vec();
 
                                 let event_block = String::from_utf8_lossy(&event_bytes);
                                 for line in event_block.lines() {
-                                    if let Some(data) = line.strip_prefix("data: ") {
+                                    if let Some(data) = line.strip_prefix("data:").map(|d| d.strip_prefix(' ').unwrap_or(d)) {
                                         let data = data.trim();
                                         if data.is_empty() {
                                             continue;

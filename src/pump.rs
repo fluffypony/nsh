@@ -160,7 +160,8 @@ impl CaptureEngine {
         let visible = self.parser.screen().contents();
         let cur_visible: Vec<&str> = visible.lines().collect();
 
-        let new_history: Vec<&str> = self.history_lines[mark_hist_len..]
+        let clamped_mark = mark_hist_len.min(self.history_lines.len());
+        let new_history: Vec<&str> = self.history_lines[clamped_mark..]
             .iter()
             .map(|s| s.as_str())
             .collect();
