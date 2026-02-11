@@ -328,4 +328,96 @@ mod tests {
         let result = execute(&db, &input, &config, "test_sess").unwrap();
         assert!(result.contains("cargo"));
     }
+
+    #[test]
+    fn test_execute_includes_matching_memories() {
+        let db = test_db();
+        insert_test_commands(&db);
+        db.upsert_memory("cargo_tip", "use cargo check for fast feedback")
+            .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("── Memories ──"));
+        assert!(result.contains("[memory #"));
+        assert!(result.contains("cargo_tip"));
+        assert!(result.contains("use cargo check for fast feedback"));
+    }
+
+    #[test]
+    fn test_execute_no_memories_when_no_match() {
+        let db = test_db();
+        insert_test_commands(&db);
+        db.upsert_memory("unrelated_key", "unrelated_value").unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(!result.contains("── Memories ──"));
+    }
+
+    #[test]
+    fn test_execute_memories_via_regex_fallback() {
+        let db = test_db();
+        insert_test_commands(&db);
+        db.upsert_memory("git_workflow", "always rebase before push")
+            .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"regex": "git"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("── Memories ──"));
+        assert!(result.contains("git_workflow"));
+    }
+
+    #[test]
+    fn test_execute_no_memories_section_when_query_empty_via_failed_only() {
+        let db = test_db();
+        insert_test_commands(&db);
+        db.upsert_memory("some_key", "some_value").unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"failed_only": true});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(!result.contains("── Memories ──"));
+    }
+
+    #[test]
+    fn test_result_formatting_with_cwd_and_output() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo build"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cwd: /project"));
+        assert!(result.contains("output: "));
+    }
+
+    #[test]
+    fn test_result_formatting_exit_code() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"exit_code": 1});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("(exit 1)"));
+    }
+
+    #[test]
+    fn test_result_formatting_exit_code_zero() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"exit_code": 0});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("(exit 0)"));
+        assert!(!result.contains("(exit 1)"));
+    }
+
+    #[test]
+    fn test_execute_session_empty_string_treated_as_all() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo", "session": ""});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
 }

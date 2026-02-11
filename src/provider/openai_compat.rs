@@ -1272,6 +1272,503 @@ mod tests {
         apply_thinking_mode(&mut body, "claude-3-haiku", true);
         assert!(body.get("reasoning").is_none());
     }
+
+    #[test]
+    fn provider_new_constructs_successfully() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("key".into()),
+            "https://api.example.com".into(),
+            Some("fallback-model".into()),
+            vec![("X-Custom".into(), "val".into())],
+            60,
+        );
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn provider_new_zero_timeout() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("key".into()),
+            "http://localhost".into(),
+            None,
+            vec![],
+            0,
+        );
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn build_request_body_anthropic_no_system_message_in_messages_array() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "claude-3.5-sonnet",
+            "sys prompt",
+            vec![
+                Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text { text: "q".into() }],
+                },
+            ],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs.iter().all(|m| m["role"] != "system"));
+    }
+
+    #[test]
+    fn build_request_body_non_anthropic_empty_system_no_system_message() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs.iter().all(|m| m["role"] != "system"));
+    }
+
+    #[test]
+    fn build_request_body_anthropic_tools_cache_control_only_last() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "claude-3.5-sonnet",
+            "sys",
+            vec![],
+            vec![
+                ToolDefinition { name: "a".into(), description: "".into(), parameters: json!({}) },
+                ToolDefinition { name: "b".into(), description: "".into(), parameters: json!({}) },
+                ToolDefinition { name: "c".into(), description: "".into(), parameters: json!({}) },
+            ],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        assert!(tools[0].get("cache_control").is_none());
+        assert!(tools[1].get("cache_control").is_none());
+        assert_eq!(tools[2]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn build_request_body_non_anthropic_tools_no_cache_control() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![
+                ToolDefinition { name: "a".into(), description: "".into(), parameters: json!({}) },
+                ToolDefinition { name: "b".into(), description: "".into(), parameters: json!({}) },
+            ],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        for tool in tools {
+            assert!(tool.get("cache_control").is_none());
+        }
+    }
+
+    #[test]
+    fn build_request_body_extra_body_non_object_ignored() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(json!("not an object")),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["model"], "gpt-4");
+    }
+
+    #[test]
+    fn build_request_body_stream_field_set() {
+        let provider = make_provider();
+        let mut req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::Auto, None);
+        req.stream = true;
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["stream"], true);
+
+        req.stream = false;
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn build_openai_messages_multiple_users_in_sequence() {
+        let msgs = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "first".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "second".into() }],
+            },
+        ];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["content"], "first");
+        assert_eq!(result[1]["content"], "second");
+    }
+
+    #[test]
+    fn build_openai_messages_tool_result_with_non_tool_result_blocks() {
+        let msgs = vec![Message {
+            role: Role::Tool,
+            content: vec![
+                ContentBlock::Text { text: "ignored".into() },
+                ContentBlock::ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: "result".into(),
+                    is_error: false,
+                },
+                ContentBlock::Text { text: "also ignored".into() },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn is_retryable_201_not() {
+        assert!(!is_retryable(reqwest::StatusCode::CREATED));
+    }
+
+    #[test]
+    fn is_retryable_301_not() {
+        assert!(!is_retryable(reqwest::StatusCode::MOVED_PERMANENTLY));
+    }
+
+    #[test]
+    fn thinking_model_name_gemini_20_not_affected() {
+        assert_eq!(thinking_model_name("google/gemini-2.0-pro", true), "google/gemini-2.0-pro");
+    }
+
+    #[test]
+    fn apply_thinking_mode_gemini3_with_existing_body_fields() {
+        let mut body = json!({"temperature": 0.5});
+        apply_thinking_mode(&mut body, "google/gemini-3-pro", true);
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["temperature"], 0.5);
+    }
+
+    #[test]
+    fn apply_thinking_mode_claude_sonnet_think_does_not_remove_other_fields() {
+        let mut body = json!({"some_field": 42});
+        apply_thinking_mode(&mut body, "claude-3.5-sonnet", true);
+        assert_eq!(body["reasoning"]["enabled"], true);
+        assert_eq!(body["some_field"], 42);
+    }
+
+    #[test]
+    fn build_request_body_model_field_matches_request() {
+        let provider = make_provider();
+        for model in &["gpt-4", "claude-3.5-sonnet", "anthropic/claude-3-haiku", "google/gemini-3-pro"] {
+            let req = make_chat_request(model, "", vec![], vec![], ToolChoice::Auto, None);
+            let body = provider.build_request_body(&req);
+            assert_eq!(body["model"], *model);
+        }
+    }
+
+    #[test]
+    fn build_request_body_max_tokens_from_request() {
+        let provider = make_provider();
+        let mut req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::Auto, None);
+        req.max_tokens = 4096;
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["max_tokens"], 4096);
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_ignores_tool_result_block() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text { text: "thinking".into() },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tr1".into(),
+                    content: "should be ignored".into(),
+                    is_error: false,
+                },
+                ContentBlock::ToolUse {
+                    id: "tu1".into(),
+                    name: "search".into(),
+                    input: json!({"q": "test"}),
+                },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["content"], "thinking");
+        let tc = result[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0]["id"], "tu1");
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_only_tool_result_ignored() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tr1".into(),
+                content: "ignored".into(),
+                is_error: false,
+            }],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+        assert!(result[0].get("content").is_none());
+        assert!(result[0].get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn provider_new_with_fallback_and_extra_headers() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("sk-test".into()),
+            "https://openrouter.ai/api/v1".into(),
+            Some("gpt-3.5-turbo".into()),
+            vec![
+                ("X-Title".into(), "MyApp".into()),
+                ("HTTP-Referer".into(), "https://example.com".into()),
+            ],
+            120,
+        );
+        assert!(provider.is_ok());
+        let p = provider.unwrap();
+        assert_eq!(p.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(p.fallback_model.as_deref(), Some("gpt-3.5-turbo"));
+        assert_eq!(p.extra_headers.len(), 2);
+        assert_eq!(p.extra_headers[0].0, "X-Title");
+    }
+
+    #[test]
+    fn build_request_body_anthropic_with_empty_system() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "claude-3.5-sonnet",
+            "",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "hi".into() }],
+            }],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert!(body["system"].is_array());
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["text"], "");
+    }
+
+    #[test]
+    fn build_request_body_anthropic_with_tools_and_extra_body() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "anthropic/claude-3-sonnet",
+            "system text",
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "hello".into() }],
+            }],
+            vec![ToolDefinition {
+                name: "my_tool".into(),
+                description: "desc".into(),
+                parameters: json!({"type": "object"}),
+            }],
+            ToolChoice::Required,
+            Some(json!({"temperature": 0.3})),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["tool_choice"], "required");
+        assert_eq!(body["temperature"], 0.3);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
+        let sys = body["system"].as_array().unwrap();
+        assert_eq!(sys[0]["text"], "system text");
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs.iter().all(|m| m["role"] != "system"));
+    }
+
+    #[test]
+    fn build_request_body_single_anthropic_tool_gets_cache_control() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "claude-3.5-sonnet",
+            "sys",
+            vec![],
+            vec![ToolDefinition {
+                name: "only_tool".into(),
+                description: "d".into(),
+                parameters: json!({}),
+            }],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn build_http_request_sets_authorization_and_extra_headers() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("test-api-key".into()),
+            "https://api.example.com".into(),
+            None,
+            vec![("X-Custom".into(), "custom-val".into())],
+            30,
+        )
+        .unwrap();
+        let body = json!({"model": "gpt-4"});
+        let req = provider.build_http_request(&body, "gpt-4");
+        let built = req.build().unwrap();
+        assert_eq!(
+            built.url().as_str(),
+            "https://api.example.com/chat/completions"
+        );
+        assert!(built.headers().get("Authorization").is_some());
+        assert!(built.headers()["Authorization"].is_sensitive());
+        assert_eq!(built.headers().get("X-Custom").unwrap(), "custom-val");
+    }
+
+    #[test]
+    fn build_http_request_anthropic_openrouter_adds_beta_header() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("key".into()),
+            "https://openrouter.ai/api/v1".into(),
+            None,
+            vec![],
+            30,
+        )
+        .unwrap();
+        let body = json!({"model": "claude-3.5-sonnet"});
+        let req = provider.build_http_request(&body, "claude-3.5-sonnet");
+        let built = req.build().unwrap();
+        assert_eq!(
+            built.headers().get("anthropic-beta").unwrap(),
+            "prompt-caching-2024-07-31"
+        );
+    }
+
+    #[test]
+    fn build_http_request_anthropic_non_openrouter_no_beta_header() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("key".into()),
+            "https://api.anthropic.com".into(),
+            None,
+            vec![],
+            30,
+        )
+        .unwrap();
+        let body = json!({"model": "claude-3.5-sonnet"});
+        let req = provider.build_http_request(&body, "claude-3.5-sonnet");
+        let built = req.build().unwrap();
+        assert!(built.headers().get("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn build_http_request_non_anthropic_openrouter_no_beta_header() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("key".into()),
+            "https://openrouter.ai/api/v1".into(),
+            None,
+            vec![],
+            30,
+        )
+        .unwrap();
+        let body = json!({"model": "gpt-4"});
+        let req = provider.build_http_request(&body, "gpt-4");
+        let built = req.build().unwrap();
+        assert!(built.headers().get("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn build_http_request_multiple_extra_headers() {
+        let provider = OpenAICompatProvider::new(
+            Zeroizing::new("key".into()),
+            "https://api.example.com".into(),
+            None,
+            vec![
+                ("X-First".into(), "one".into()),
+                ("X-Second".into(), "two".into()),
+                ("X-Third".into(), "three".into()),
+            ],
+            30,
+        )
+        .unwrap();
+        let body = json!({"model": "gpt-4"});
+        let req = provider.build_http_request(&body, "gpt-4");
+        let built = req.build().unwrap();
+        assert_eq!(built.headers().get("X-First").unwrap(), "one");
+        assert_eq!(built.headers().get("X-Second").unwrap(), "two");
+        assert_eq!(built.headers().get("X-Third").unwrap(), "three");
+    }
+
+    #[test]
+    fn build_request_body_extra_body_empty_object() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(json!({})),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["model"], "gpt-4");
+    }
+
+    #[test]
+    fn build_request_body_extra_body_array_ignored() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(json!([1, 2, 3])),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["model"], "gpt-4");
+        assert!(body.get("0").is_none());
+    }
+
+    #[test]
+    fn build_request_body_extra_body_null_ignored() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(serde_json::Value::Null),
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["model"], "gpt-4");
+    }
 }
 
 pub fn spawn_openai_stream(

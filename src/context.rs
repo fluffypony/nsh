@@ -3123,4 +3123,484 @@ mod tests {
         assert_eq!(dir.kind, "dir");
         assert!(dir.size.is_empty());
     }
+
+    // --- xml_escape with unicode ---
+
+    #[test]
+    fn test_xml_escape_unicode() {
+        assert_eq!(xml_escape("café & naïve"), "café &amp; naïve");
+        assert_eq!(xml_escape("日本語 <テスト>"), "日本語 &lt;テスト&gt;");
+        assert_eq!(xml_escape("emoji 🦀"), "emoji 🦀");
+    }
+
+    #[test]
+    fn test_xml_escape_only_special_chars() {
+        assert_eq!(xml_escape("<"), "&lt;");
+        assert_eq!(xml_escape(">"), "&gt;");
+        assert_eq!(xml_escape("&"), "&amp;");
+        assert_eq!(xml_escape("\""), "&quot;");
+    }
+
+    #[test]
+    fn test_xml_escape_repeated_specials() {
+        assert_eq!(xml_escape("&&&&"), "&amp;&amp;&amp;&amp;");
+        assert_eq!(xml_escape("<<<"), "&lt;&lt;&lt;");
+    }
+
+    // --- format_size extremes ---
+
+    #[test]
+    fn test_format_size_u64_max() {
+        let result = format_size(u64::MAX);
+        assert!(result.ends_with("MB"), "got: {result}");
+    }
+
+    #[test]
+    fn test_format_size_just_over_kb() {
+        assert_eq!(format_size(1025), "1.0KB");
+    }
+
+    #[test]
+    fn test_format_size_just_under_kb() {
+        assert_eq!(format_size(1023), "1023B");
+    }
+
+    // --- detect_project_type: setup.py alone ---
+
+    #[test]
+    fn test_detect_project_type_setup_py() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("setup.py"), "from setuptools import setup").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Python"), "expected Python, got: {t}");
+    }
+
+    // --- detect_project_type: docker-compose.yml ---
+
+    #[test]
+    fn test_detect_project_type_docker_compose_yml() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("docker-compose.yml"), "version: '3'").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        assert!(t.contains("Docker"), "expected Docker, got: {t}");
+    }
+
+    // --- detect_git_info with max_commits=0 ---
+
+    #[test]
+    fn test_detect_git_info_zero_max_commits() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::fs::write(tmp.path().join("f.txt"), "x").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let (branch, status, commits) = detect_git_info(dir, 0);
+        assert!(branch.is_some());
+        assert!(status.is_some());
+        assert!(commits.is_empty());
+    }
+
+    // --- build_xml_context: file entries with dir and symlink kinds ---
+
+    #[test]
+    fn test_build_xml_context_file_entries_various_kinds() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![
+                FileEntry {
+                    path: "src".into(),
+                    kind: "dir".into(),
+                    size: "".into(),
+                },
+                FileEntry {
+                    path: "link.rs".into(),
+                    kind: "symlink".into(),
+                    size: "".into(),
+                },
+                FileEntry {
+                    path: "main.rs".into(),
+                    kind: "file".into(),
+                    size: "2.0KB".into(),
+                },
+            ],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("count=\"3\""));
+        assert!(xml.contains("type=\"dir\""));
+        assert!(xml.contains("type=\"symlink\""));
+        assert!(xml.contains("type=\"file\""));
+        assert!(xml.contains("size=\"2.0KB\""));
+        assert!(xml.contains("size=\"\""));
+    }
+
+    // --- build_xml_context: unicode in environment fields ---
+
+    #[test]
+    fn test_build_xml_context_unicode_env_fields() {
+        let mut ctx = make_minimal_ctx();
+        ctx.username = "用户".into();
+        ctx.hostname = "サーバー".into();
+        ctx.cwd = "/home/données".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("user=\"用户\""));
+        assert!(xml.contains("hostname=\"サーバー\""));
+        assert!(xml.contains("cwd=\"/home/données\""));
+    }
+
+    // --- build_xml_context: XML structure ordering ---
+
+    #[test]
+    fn test_build_xml_context_ordering() {
+        let mut ctx = make_minimal_ctx();
+        ctx.ssh_context = Some("<ssh remote_ip=\"1.1.1.1\" />".into());
+        ctx.container_context = Some("<container type=\"docker\" />".into());
+        ctx.custom_instructions = Some("Be concise".into());
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Go".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![],
+        };
+        ctx.scrollback_text = "$ ls".into();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "ls".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        let env_pos = xml.find("<environment").unwrap();
+        let ssh_pos = xml.find("<ssh").unwrap();
+        let container_pos = xml.find("<container").unwrap();
+        let instructions_pos = xml.find("<custom_instructions").unwrap();
+        let project_pos = xml.find("<project").unwrap();
+        let terminal_pos = xml.find("<recent_terminal").unwrap();
+        let history_pos = xml.find("<session_history").unwrap();
+
+        assert!(env_pos < ssh_pos);
+        assert!(ssh_pos < container_pos);
+        assert!(container_pos < instructions_pos);
+        assert!(instructions_pos < project_pos);
+        assert!(project_pos < terminal_pos);
+        assert!(terminal_pos < history_pos);
+    }
+
+    // --- list_project_files_fallback with only skip dirs ---
+
+    #[test]
+    fn test_list_project_files_fallback_only_skip_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for skip in &[".git", "node_modules", "target"] {
+            let d = tmp.path().join(skip);
+            std::fs::create_dir(&d).unwrap();
+            std::fs::write(d.join("inner.txt"), "").unwrap();
+        }
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        assert!(entries.is_empty());
+    }
+
+    // --- gather_custom_instructions with whitespace-only global ---
+
+    #[test]
+    fn test_gather_custom_instructions_whitespace_global() {
+        let mut config = Config::default();
+        config.context.custom_instructions = Some("   \n\t  ".into());
+        let result = gather_custom_instructions(&config, "/nonexistent_path_xyz");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "   \n\t  ");
+    }
+
+    // --- find_git_root returns None for isolated temp dir ---
+
+    #[test]
+    fn test_find_git_root_isolated_temp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let deep = tmp.path().join("a").join("b");
+        std::fs::create_dir_all(&deep).unwrap();
+        let result = find_git_root(deep.to_str().unwrap());
+        if result.is_some() {
+            assert!(result.unwrap().join(".git").exists());
+        }
+    }
+
+    // --- build_xml_context: git branch with special characters ---
+
+    #[test]
+    fn test_build_xml_context_git_branch_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("feature/add-<thing>&more".into()),
+            git_status: Some("clean".into()),
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("branch=\"feature/add-&lt;thing&gt;&amp;more\""));
+    }
+
+    // --- build_xml_context: commit message with special chars ---
+
+    #[test]
+    fn test_build_xml_context_commit_message_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("main".into()),
+            git_status: None,
+            git_commits: vec![GitCommit {
+                hash: "abc".into(),
+                message: "fix: handle <input> & \"output\"".into(),
+                relative_time: "now".into(),
+            }],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("fix: handle &lt;input&gt; &amp; &quot;output&quot;"));
+    }
+
+    // --- build_xml_context: session_history command with special chars ---
+
+    #[test]
+    fn test_build_xml_context_session_history_special_chars_in_command() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "echo '<hello>' & \"world\"".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;hello&gt;"));
+        assert!(xml.contains("&amp;"));
+    }
+
+    // --- build_xml_context: other_sessions single entry produces correct structure ---
+
+    #[test]
+    fn test_build_xml_other_sessions_single_entry_structure() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![OtherSessionSummary {
+            command: "pwd".into(),
+            cwd: Some("/home".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            summary: None,
+            tty: "/dev/ttys005".into(),
+            shell: "fish".into(),
+            session_id: "s1".into(),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<other_sessions>"));
+        assert!(xml.contains("<session tty=\"/dev/ttys005\" shell=\"fish\">"));
+        assert!(xml.contains("</session>"));
+        assert!(xml.contains("</other_sessions>"));
+        let session_open_count = xml.matches("<session tty=").count();
+        let session_close_count = xml.matches("</session>").count();
+        assert_eq!(session_open_count, session_close_count);
+    }
+
+    // --- list_project_files dispatches to ignore walker for empty dir ---
+
+    #[test]
+    fn test_list_project_files_empty_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entries = list_project_files(tmp.path().to_str().unwrap(), 100);
+        assert!(entries.is_empty());
+    }
+
+    // --- list_project_files_with_ignore max_depth ---
+
+    #[test]
+    fn test_list_project_files_with_ignore_max_depth() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut deep = tmp.path().to_path_buf();
+        for i in 0..8 {
+            deep = deep.join(format!("d{i}"));
+            std::fs::create_dir_all(&deep).unwrap();
+        }
+        std::fs::write(deep.join("deep.txt"), "deep").unwrap();
+        let entries = list_project_files_with_ignore(tmp.path(), 1000).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            !paths.iter().any(|p| p.contains("deep.txt")),
+            "should respect max_depth of 5: {paths:?}"
+        );
+    }
+
+    // --- check_project_markers shell.nix alone ---
+
+    #[test]
+    fn test_check_project_markers_shell_nix() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("shell.nix"), "").unwrap();
+        let mut types = Vec::new();
+        check_project_markers(tmp.path(), &mut types);
+        assert!(types.contains(&"Nix"));
+    }
+
+    // --- check_project_markers both Python markers ---
+
+    #[test]
+    fn test_check_project_markers_both_python() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("pyproject.toml"), "").unwrap();
+        std::fs::write(tmp.path().join("setup.py"), "").unwrap();
+        let mut types = Vec::new();
+        check_project_markers(tmp.path(), &mut types);
+        let python_count = types.iter().filter(|&&t| t == "Python").count();
+        assert_eq!(python_count, 1, "Python should only appear once even with both markers");
+    }
+
+    // --- detect_project_info with files ---
+
+    #[test]
+    fn test_detect_project_info_includes_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "pub fn hello() {}").unwrap();
+        let config = Config::default();
+        let info = detect_project_info(tmp.path().to_str().unwrap(), &config);
+        assert!(info.root.is_some());
+        assert!(!info.files.is_empty());
+        let paths: Vec<&str> = info.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"main.rs"), "should include main.rs: {paths:?}");
+    }
+
+    // --- build_xml_context: large number of files ---
+
+    #[test]
+    fn test_build_xml_context_many_files() {
+        let mut ctx = make_minimal_ctx();
+        let files: Vec<FileEntry> = (0..50)
+            .map(|i| FileEntry {
+                path: format!("file{i:03}.txt"),
+                kind: "file".into(),
+                size: format!("{i}B"),
+            })
+            .collect();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "unknown".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files,
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("count=\"50\""));
+        assert!(xml.contains("file000.txt"));
+        assert!(xml.contains("file049.txt"));
+    }
+
+    // --- build_xml_context: no project root skips entire project section ---
+
+    #[test]
+    fn test_build_xml_context_no_root_skips_git_and_files() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: None,
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("main".into()),
+            git_status: Some("clean".into()),
+            git_commits: vec![GitCommit {
+                hash: "abc".into(),
+                message: "msg".into(),
+                relative_time: "now".into(),
+            }],
+            files: vec![FileEntry {
+                path: "f.rs".into(),
+                kind: "file".into(),
+                size: "1B".into(),
+            }],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<project"));
+        assert!(!xml.contains("<git"));
+        assert!(!xml.contains("<files"));
+        assert!(!xml.contains("<commit"));
+    }
+
+    // --- run_git_with_timeout with empty args ---
+
+    #[test]
+    fn test_run_git_with_timeout_empty_args() {
+        let result = run_git_with_timeout(&[], "/tmp");
+        let _ = result;
+    }
+
+    // --- detect_project_type dedup with parent markers ---
+
+    #[test]
+    fn test_detect_project_type_parent_and_child_same_marker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let subdir = tmp.path().join("subproj");
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(subdir.join("Cargo.toml"), "").unwrap();
+        let t = detect_project_type(subdir.to_str().unwrap());
+        let count = t.matches("Rust/Cargo").count();
+        assert!(count <= 1, "should dedup Rust/Cargo: {t}");
+    }
+
+    // --- gather_custom_instructions: no .nsh dir ---
+
+    #[test]
+    fn test_gather_custom_instructions_no_nsh_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
+        assert!(result.is_none());
+    }
+
+    // --- gather_custom_instructions: .nsh dir exists but no instructions.md ---
+
+    #[test]
+    fn test_gather_custom_instructions_nsh_dir_no_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::create_dir_all(tmp.path().join(".nsh")).unwrap();
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
+        assert!(result.is_none());
+    }
 }

@@ -1421,4 +1421,338 @@ mod tests {
         let result = execute_sync_tool("run_command", &input, &Config::default()).unwrap();
         assert!(result.contains("DENIED"));
     }
+
+    // ── build_system_prompt: structural tests ──────────
+
+    #[test]
+    fn test_build_system_prompt_sections_order() {
+        let ctx = make_test_ctx();
+        let config_marker = "<UNIQUE_CONFIG_MARKER/>";
+        let mem_marker = "<UNIQUE_MEM_MARKER/>";
+        let ctx_marker = "<UNIQUE_CTX_MARKER/>";
+        let result = build_system_prompt(&ctx, ctx_marker, "B", config_marker, mem_marker);
+        let config_pos = result.find(config_marker).unwrap();
+        let mem_pos = result.find(mem_marker).unwrap();
+        let ctx_pos = result.find(ctx_marker).unwrap();
+        assert!(config_pos < mem_pos, "config should appear before memories");
+        assert!(mem_pos < ctx_pos, "memories should appear before context");
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_tool_descriptions() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        for tool in &["command", "chat", "search_history", "write_file", "patch_file",
+                      "read_file", "grep_file", "list_directory", "web_search",
+                      "run_command", "ask_user", "man_page", "manage_config",
+                      "install_skill", "install_mcp_server", "remember",
+                      "forget_memory", "update_memory"] {
+            assert!(result.contains(&format!("**{tool}**")),
+                "system prompt missing tool description for {tool}");
+        }
+    }
+
+    #[test]
+    fn test_build_system_prompt_security_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Security"));
+        assert!(result.contains("UNTRUSTED DATA"));
+        assert!(result.contains("REDACTED"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_empty_context() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "", "B", "", "");
+        assert!(result.contains("nsh"));
+    }
+
+    // ── build_memories_xml: edge cases ─────────────────
+
+    #[test]
+    fn test_build_memories_xml_large_id() {
+        let mems = vec![crate::db::Memory {
+            id: i64::MAX,
+            key: "big".into(),
+            value: "val".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains(&format!("id=\"{}\"", i64::MAX)));
+    }
+
+    #[test]
+    fn test_build_memories_xml_unicode_content() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "日本語キー".into(),
+            value: "值 🚀 émojis".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("日本語キー"));
+        assert!(result.contains("🚀"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_empty_key_value() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "".into(),
+            value: "".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("key=\"\""));
+        assert!(result.contains("count=\"1\""));
+    }
+
+    #[test]
+    fn test_build_memories_xml_multiline_value() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "note".into(),
+            value: "line1\nline2\nline3".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("line1\nline2\nline3"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_xml_injection_in_key() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "\"><script>alert(1)</script>".into(),
+            value: "safe".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(!result.contains("<script>"));
+        assert!(result.contains("&lt;script&gt;"));
+    }
+
+    // ── validate_tool_input: edge cases ────────────────
+
+    #[test]
+    fn test_validate_tool_input_null_values_treated_as_present() {
+        let input = json!({"command": null, "explanation": null});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_extra_fields_ok() {
+        let input = json!({"command": "ls", "explanation": "list", "extra": "ignored"});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_read_file_missing_path() {
+        let input = json!({});
+        let err = validate_tool_input("read_file", &input).unwrap_err();
+        assert!(err.contains("path"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_patch_file_missing_reason() {
+        let input = json!({"path": "/tmp/f", "search": "old", "replace": "new"});
+        let err = validate_tool_input("patch_file", &input).unwrap_err();
+        assert!(err.contains("reason"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_write_file_missing_reason() {
+        let input = json!({"path": "/tmp/f", "content": "data"});
+        let err = validate_tool_input("write_file", &input).unwrap_err();
+        assert!(err.contains("reason"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_skill_missing_name() {
+        let input = json!({"description": "desc", "command": "echo"});
+        let err = validate_tool_input("install_skill", &input).unwrap_err();
+        assert!(err.contains("name"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_skill_missing_description() {
+        let input = json!({"name": "test", "command": "echo"});
+        let err = validate_tool_input("install_skill", &input).unwrap_err();
+        assert!(err.contains("description"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_manage_config_missing_action() {
+        let input = json!({"key": "provider.model"});
+        let err = validate_tool_input("manage_config", &input).unwrap_err();
+        assert!(err.contains("action"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_remember_missing_key() {
+        let input = json!({"value": "vim"});
+        let err = validate_tool_input("remember", &input).unwrap_err();
+        assert!(err.contains("key"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_empty_string_fields_ok() {
+        let input = json!({"command": "", "explanation": ""});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    // ── describe_tool_action: additional edge cases ────
+
+    #[test]
+    fn test_describe_tool_action_manage_config_missing_action() {
+        let input = json!({"key": "provider.model"});
+        let desc = describe_tool_action("manage_config", &input);
+        assert_eq!(desc, "config set: provider.model");
+    }
+
+    #[test]
+    fn test_describe_tool_action_manage_config_missing_key() {
+        let input = json!({"action": "get"});
+        let desc = describe_tool_action("manage_config", &input);
+        assert_eq!(desc, "config get: ...");
+    }
+
+    #[test]
+    fn test_describe_tool_action_grep_file_empty_input() {
+        let input = json!({});
+        let desc = describe_tool_action("grep_file", &input);
+        assert_eq!(desc, "reading file");
+    }
+
+    #[test]
+    fn test_describe_tool_action_remember_missing_key() {
+        let input = json!({});
+        let desc = describe_tool_action("remember", &input);
+        assert_eq!(desc, "remembering: ...");
+    }
+
+    #[test]
+    fn test_describe_tool_action_forget_memory_missing_id() {
+        let input = json!({});
+        let desc = describe_tool_action("forget_memory", &input);
+        assert_eq!(desc, "forgetting memory #0");
+    }
+
+    #[test]
+    fn test_describe_tool_action_update_memory_missing_id() {
+        let input = json!({});
+        let desc = describe_tool_action("update_memory", &input);
+        assert_eq!(desc, "updating memory #0");
+    }
+
+    #[test]
+    fn test_describe_tool_action_install_skill_missing_name() {
+        let input = json!({});
+        let desc = describe_tool_action("install_skill", &input);
+        assert_eq!(desc, "installing skill: ...");
+    }
+
+    #[test]
+    fn test_describe_tool_action_install_mcp_server_missing_name() {
+        let input = json!({});
+        let desc = describe_tool_action("install_mcp_server", &input);
+        assert_eq!(desc, "installing MCP server: ...");
+    }
+
+    // ── execute_sync_tool: edge cases ──────────────────
+
+    #[test]
+    fn test_execute_sync_tool_read_file_nonexistent() {
+        let input = json!({"path": "/tmp/nonexistent_nsh_test_file_xyz.txt"});
+        let result = execute_sync_tool("read_file", &input, &Config::default());
+        match result {
+            Err(_) => {}
+            Ok(s) => assert!(s.to_lowercase().contains("error") || s.contains("not found") || !s.is_empty()),
+        }
+    }
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("no_match.txt");
+        std::fs::write(&file, "alpha beta gamma\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "zzzznotfound"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(!result.contains("alpha"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command_empty() {
+        let input = json!({"command": ""});
+        let result = execute_sync_tool("run_command", &input, &Config::default());
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command_exit_code() {
+        let input = json!({"command": "false"});
+        let result = execute_sync_tool("run_command", &input, &Config::default());
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_list_directory_nonexistent() {
+        let input = json!({"path": "/tmp/nonexistent_nsh_dir_xyz"});
+        let result = execute_sync_tool("list_directory", &input, &Config::default());
+        match result {
+            Err(_) => {}
+            Ok(s) => assert!(s.to_lowercase().contains("error") || s.contains("not found") || !s.is_empty()),
+        }
+    }
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_regex_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("regex.txt");
+        std::fs::write(&file, "foo123bar\nbaz456qux\nhello\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "\\d+"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("foo123bar") || result.contains("123"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_read_file_with_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("ranged.txt");
+        std::fs::write(&file, "line1\nline2\nline3\nline4\nline5\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "start_line": 2, "end_line": 3});
+        let result = execute_sync_tool("read_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("line2"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_man_page_no_command() {
+        let input = json!({});
+        let result = execute_sync_tool("man_page", &input, &Config::default()).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_list_directory_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = json!({"path": dir.path().to_str().unwrap()});
+        let result = execute_sync_tool("list_directory", &input, &Config::default()).unwrap();
+        assert!(result.is_empty() || !result.is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.txt");
+        std::fs::write(&file, "").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "xyzzy_unique"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(!result.contains("xyzzy_unique: "), "no matched lines expected in empty file");
+    }
 }

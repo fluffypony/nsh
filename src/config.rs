@@ -2446,4 +2446,578 @@ sensitive_file_access = "allow"
         assert!(is_setting_protected("tools"));
         assert!(is_setting_protected("redaction"));
     }
+
+    // ── is_setting_protected edge cases ─────────────────
+
+    #[test]
+    fn test_is_setting_protected_empty_string() {
+        assert!(!is_setting_protected(""));
+    }
+
+    #[test]
+    fn test_is_setting_protected_single_segment_no_match() {
+        assert!(!is_setting_protected("provider"));
+        assert!(!is_setting_protected("context"));
+        assert!(!is_setting_protected("display"));
+        assert!(!is_setting_protected("models"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_deeply_nested_api_key() {
+        assert!(is_setting_protected("some.deeply.nested.api_key"));
+        assert!(is_setting_protected("a.b.c.api_key_cmd"));
+        assert!(is_setting_protected("x.y.base_url"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_partial_segment_no_false_positive() {
+        assert!(!is_setting_protected("provider.api_keyboard"));
+        assert!(!is_setting_protected("tools.api_keychain"));
+        assert!(!is_setting_protected("provider.base_url_extra"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_exact_segment_match_only() {
+        assert!(is_setting_protected("api_key"));
+        assert!(is_setting_protected("api_key_cmd"));
+        assert!(is_setting_protected("base_url"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_prefix_blocks_children() {
+        assert!(is_setting_protected("tools.run_command_allowlist"));
+        assert!(is_setting_protected("execution.allow_unsafe_autorun"));
+        assert!(!is_setting_protected("execution.mode"));
+    }
+
+    // ── Config::path() and Config::nsh_dir() ────────────
+
+    #[test]
+    fn test_config_path_is_inside_nsh_dir() {
+        let path = Config::path();
+        let dir = Config::nsh_dir();
+        assert!(path.starts_with(&dir));
+    }
+
+    #[test]
+    fn test_nsh_dir_is_under_home() {
+        let dir = Config::nsh_dir();
+        let home = dirs::home_dir().unwrap();
+        assert!(dir.starts_with(&home));
+    }
+
+    #[test]
+    fn test_config_path_file_name() {
+        let path = Config::path();
+        assert_eq!(path.file_name().unwrap().to_str().unwrap(), "config.toml");
+    }
+
+    #[test]
+    fn test_nsh_dir_last_component() {
+        let dir = Config::nsh_dir();
+        assert_eq!(dir.file_name().unwrap().to_str().unwrap(), ".nsh");
+    }
+
+    // ── Partial TOML deserialization ─────────────────────
+
+    #[test]
+    fn test_config_only_context_section() {
+        let toml_str = r#"
+[context]
+history_limit = 42
+git_commits = 3
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.context.history_limit, 42);
+        assert_eq!(config.context.git_commits, 3);
+        assert_eq!(config.provider.default, "openrouter");
+        assert_eq!(config.execution.mode, "prefill");
+    }
+
+    #[test]
+    fn test_config_only_display_section() {
+        let toml_str = r#"
+[display]
+chat_color = "magenta"
+thinking_indicator = "..."
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.display.chat_color, "magenta");
+        assert_eq!(config.display.thinking_indicator, "...");
+        assert_eq!(config.context.history_limit, 20);
+    }
+
+    #[test]
+    fn test_config_only_execution_section() {
+        let toml_str = r#"
+[execution]
+mode = "confirm"
+allow_unsafe_autorun = true
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.execution.mode, "confirm");
+        assert!(config.execution.allow_unsafe_autorun);
+    }
+
+    #[test]
+    fn test_config_only_web_search_section() {
+        let toml_str = r#"
+[web_search]
+provider = "custom_search"
+model = "custom/model"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.web_search.provider, "custom_search");
+        assert_eq!(config.web_search.model, "custom/model");
+    }
+
+    #[test]
+    fn test_config_only_models_section() {
+        let toml_str = r#"
+[models]
+main = ["single-model"]
+fast = []
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.models.main, vec!["single-model"]);
+        assert!(config.models.fast.is_empty());
+    }
+
+    #[test]
+    fn test_config_only_redaction_section() {
+        let toml_str = r#"
+[redaction]
+enabled = false
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.redaction.enabled);
+        assert!(!config.redaction.patterns.is_empty());
+        assert_eq!(config.redaction.replacement, "[REDACTED]");
+    }
+
+    #[test]
+    fn test_config_only_mcp_section() {
+        let toml_str = r#"
+[mcp.servers.solo]
+command = "solo-cmd"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mcp.servers.len(), 1);
+        assert_eq!(config.provider.default, "openrouter");
+    }
+
+    #[test]
+    fn test_config_unknown_keys_ignored() {
+        let toml_str = r#"
+[provider]
+default = "openrouter"
+unknown_field = "ignored"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err() || result.unwrap().provider.default == "openrouter");
+    }
+
+    #[test]
+    fn test_config_unknown_top_level_section_accepted() {
+        let toml_str = r#"
+[nonexistent_section]
+key = "value"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.default, "openrouter");
+    }
+
+    // ── api_key_cmd resolution edge cases ───────────────
+
+    #[test]
+    fn test_resolve_api_key_cmd_trims_whitespace() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("printf '  trimmed-key  '".into()),
+            base_url: None,
+        };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "trimmed-key");
+    }
+
+    #[test]
+    fn test_resolve_api_key_cmd_trims_trailing_newlines() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("printf 'mykey\\n\\n'".into()),
+            base_url: None,
+        };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "mykey");
+    }
+
+    #[test]
+    fn test_resolve_api_key_cmd_whitespace_only_output() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("printf '   '".into()),
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("openrouter");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty string"));
+    }
+
+    #[test]
+    fn test_resolve_api_key_empty_key_no_cmd_no_env() {
+        let auth = ProviderAuth {
+            api_key: Some("".into()),
+            api_key_cmd: None,
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("ollama");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_api_key_cmd_nonexistent_command() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("nonexistent_command_xyz_12345".into()),
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("openrouter");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_api_key_openrouter_env_var() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: None,
+            base_url: None,
+        };
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-env-key") };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "or-env-key");
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_resolve_api_key_empty_env_var_ignored() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: None,
+            base_url: None,
+        };
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "") };
+        let result = auth.resolve_api_key("openrouter");
+        assert!(result.is_err());
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+    }
+
+    #[test]
+    fn test_resolve_api_key_ollama_no_env_mapping() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: None,
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("ollama");
+        assert!(result.is_err());
+    }
+
+    // ── McpServerConfig effective_transport ──────────────
+
+    #[test]
+    fn test_effective_transport_both_url_and_command_defaults_stdio() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: Some("cmd".into()),
+            args: vec![],
+            env: HashMap::new(),
+            url: Some("http://example.com".into()),
+            headers: HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "stdio");
+    }
+
+    #[test]
+    fn test_effective_transport_neither_url_nor_command() {
+        let cfg = McpServerConfig {
+            transport: None,
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            headers: HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "stdio");
+    }
+
+    #[test]
+    fn test_effective_transport_explicit_overrides_inference() {
+        let cfg = McpServerConfig {
+            transport: Some("stdio".into()),
+            command: None,
+            args: vec![],
+            env: HashMap::new(),
+            url: Some("http://example.com".into()),
+            headers: HashMap::new(),
+            timeout_seconds: 30,
+        };
+        assert_eq!(cfg.effective_transport(), "stdio");
+    }
+
+    // ── is_command_allowed edge cases ───────────────────
+
+    #[test]
+    fn test_is_command_allowed_multiword_prefix_no_partial() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["git log".into()],
+            ..Default::default()
+        };
+        assert!(tools.is_command_allowed("git log --oneline"));
+        assert!(!tools.is_command_allowed("git logx"));
+        assert!(!tools.is_command_allowed("git"));
+    }
+
+    #[test]
+    fn test_is_command_allowed_backslash_rejected() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["echo".into()],
+            ..Default::default()
+        };
+        assert!(!tools.is_command_allowed("echo hello\\nworld"));
+    }
+
+    #[test]
+    fn test_is_command_allowed_curly_braces_rejected() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["echo".into()],
+            ..Default::default()
+        };
+        assert!(!tools.is_command_allowed("echo {a,b}"));
+    }
+
+    #[test]
+    fn test_is_command_allowed_quotes_rejected() {
+        let tools = ToolsConfig {
+            run_command_allowlist: vec!["echo".into()],
+            ..Default::default()
+        };
+        assert!(!tools.is_command_allowed("echo 'hello'"));
+        assert!(!tools.is_command_allowed("echo \"hello\""));
+    }
+
+    // ── ProviderConfig defaults ─────────────────────────
+
+    #[test]
+    fn test_provider_config_defaults() {
+        let p = ProviderConfig::default();
+        assert_eq!(p.default, "openrouter");
+        assert_eq!(p.model, "google/gemini-2.5-flash");
+        assert_eq!(p.fallback_model.as_deref(), Some("anthropic/claude-sonnet-4.5"));
+        assert_eq!(p.web_search_model, "perplexity/sonar");
+        assert!(p.openrouter.is_some());
+        assert!(p.anthropic.is_none());
+        assert!(p.openai.is_none());
+        assert!(p.ollama.is_none());
+        assert!(p.gemini.is_none());
+        assert_eq!(p.timeout_seconds, 120);
+    }
+
+    // ── deep_merge_toml edge cases ──────────────────────
+
+    #[test]
+    fn test_deep_merge_toml_array_replaced_not_merged() {
+        let mut base: toml::Value = toml::from_str(r#"
+            arr = [1, 2, 3]
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            arr = [4, 5]
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        let arr = base.get("arr").unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0].as_integer(), Some(4));
+        assert_eq!(arr[1].as_integer(), Some(5));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_type_change() {
+        let mut base: toml::Value = toml::from_str(r#"
+            key = "string"
+        "#).unwrap();
+        let overlay: toml::Value = toml::from_str(r#"
+            key = 42
+        "#).unwrap();
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.get("key").unwrap().as_integer(), Some(42));
+    }
+
+    #[test]
+    fn test_deep_merge_toml_bool_values() {
+        let mut base = toml::Value::Boolean(false);
+        let overlay = toml::Value::Boolean(true);
+        deep_merge_toml(&mut base, &overlay);
+        assert_eq!(base.as_bool(), Some(true));
+    }
+
+    // ── sanitize_project_config edge cases ──────────────
+
+    #[test]
+    fn test_sanitize_project_config_blocks_capture_db_mcp() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [capture]
+            mode = "raw"
+            [db]
+            busy_timeout_ms = 1000
+            [mcp.servers.evil]
+            command = "evil-cmd"
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert!(!t.contains_key("capture"));
+        assert!(!t.contains_key("db"));
+        assert!(!t.contains_key("mcp"));
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_project_config_blocks_web_search() {
+        let mut value: toml::Value = toml::from_str(r#"
+            [web_search]
+            provider = "evil_search"
+            [models]
+            main = ["evil-model"]
+        "#).unwrap();
+        sanitize_project_config(&mut value);
+        let t = value.as_table().unwrap();
+        assert!(!t.contains_key("web_search"));
+        assert!(!t.contains_key("models"));
+    }
+
+    // ── Config deserialization with type mismatches ──────
+
+    #[test]
+    fn test_config_wrong_type_for_history_limit() {
+        let toml_str = r#"
+[context]
+history_limit = "not_a_number"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_wrong_type_for_enabled() {
+        let toml_str = r#"
+[redaction]
+enabled = "yes"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_wrong_type_for_timeout() {
+        let toml_str = r#"
+[provider]
+timeout_seconds = "fast"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    // ── opt helper XML escaping ─────────────────────────
+
+    #[test]
+    fn test_opt_escapes_special_characters() {
+        let mut x = String::new();
+        opt(&mut x, "key", "value with <angle> & \"quotes\"", "desc with <html>", None);
+        assert!(!x.contains("<angle>"));
+        assert!(!x.contains("& \""));
+        assert!(x.contains("&amp;") || x.contains("&lt;") || x.contains("&quot;"));
+    }
+
+    // ── ToolsConfig default allowlist content ───────────
+
+    #[test]
+    fn test_tools_default_allowlist_contains_expected_commands() {
+        let tools = ToolsConfig::default();
+        let list = &tools.run_command_allowlist;
+        assert!(list.contains(&"uname".to_string()));
+        assert!(list.contains(&"whoami".to_string()));
+        assert!(list.contains(&"git status".to_string()));
+        assert!(list.contains(&"git branch".to_string()));
+        assert!(list.contains(&"git diff".to_string()));
+        assert!(list.contains(&"cargo --version".to_string()));
+        assert!(list.contains(&"python3 --version".to_string()));
+        assert!(list.contains(&"node --version".to_string()));
+    }
+
+    // ── Config::default() comprehensive ─────────────────
+
+    #[test]
+    fn test_config_default_all_subsections_populated() {
+        let config = Config::default();
+        assert!(!config.models.main.is_empty());
+        assert!(!config.models.fast.is_empty());
+        assert_eq!(config.web_search.provider, "openrouter");
+        assert_eq!(config.web_search.model, "perplexity/sonar");
+        assert_eq!(config.execution.mode, "prefill");
+        assert!(!config.execution.allow_unsafe_autorun);
+        assert_eq!(config.display.chat_color, "\x1b[3;36m");
+        assert!(config.redaction.enabled);
+        assert_eq!(config.capture.mode, "vt100");
+        assert_eq!(config.db.busy_timeout_ms, 10000);
+        assert!(config.mcp.servers.is_empty());
+        assert_eq!(config.tools.sensitive_file_access, "block");
+    }
+
+    // ── RedactionConfig patterns are valid regex ────────
+
+    #[test]
+    fn test_redaction_default_patterns_are_valid_regex() {
+        let rc = RedactionConfig::default();
+        for pattern in &rc.patterns {
+            assert!(
+                regex::Regex::new(pattern).is_ok(),
+                "invalid regex pattern: {pattern}"
+            );
+        }
+    }
+
+    // ── TOOL_BLOCKED_KEYS completeness ──────────────────
+
+    #[test]
+    fn test_tool_blocked_keys_non_empty() {
+        assert!(!TOOL_BLOCKED_KEYS.is_empty());
+        assert!(!TOOL_BLOCKED_KEY_SEGMENTS.is_empty());
+    }
+
+    #[test]
+    fn test_all_tool_blocked_keys_are_protected() {
+        for key in TOOL_BLOCKED_KEYS {
+            assert!(
+                is_setting_protected(key),
+                "{key} should be protected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_tool_blocked_segments_are_protected() {
+        for segment in TOOL_BLOCKED_KEY_SEGMENTS {
+            assert!(
+                is_setting_protected(segment),
+                "bare segment {segment} should be protected"
+            );
+            let dotted = format!("some.prefix.{segment}");
+            assert!(
+                is_setting_protected(&dotted),
+                "dotted path {dotted} should be protected"
+            );
+        }
+    }
 }

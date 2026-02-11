@@ -1225,4 +1225,416 @@ mod tests {
         let _ = tx.send(DbCommand::Shutdown);
         handle.join().expect("db thread should exit cleanly");
     }
+
+    #[test]
+    fn test_protocol_version_exact_value() {
+        assert_eq!(DAEMON_PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn test_daemon_response_error_with_string_owned() {
+        let msg = String::from("owned error message");
+        let resp = DaemonResponse::error(msg);
+        if let DaemonResponse::Error { message } = resp {
+            assert_eq!(message, "owned error message");
+        } else {
+            panic!("expected Error");
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_ok_serialization_omits_data() {
+        let resp = DaemonResponse::ok();
+        let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val.get("status").unwrap(), "ok");
+        assert!(val.get("data").is_none());
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_data_serialization_includes_data() {
+        let resp = DaemonResponse::ok_with_data(serde_json::json!(42));
+        let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["status"], "ok");
+        assert_eq!(val["data"], 42);
+    }
+
+    #[test]
+    fn test_daemon_response_error_serialization_shape() {
+        let resp = DaemonResponse::error("boom");
+        let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["status"], "error");
+        assert_eq!(val["message"], "boom");
+        assert!(val.get("data").is_none());
+    }
+
+    #[test]
+    fn test_daemon_response_deserialize_ok_without_data() {
+        let json = r#"{"status":"ok"}"#;
+        let resp: DaemonResponse = serde_json::from_str(json).unwrap();
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+    }
+
+    #[test]
+    fn test_daemon_response_deserialize_ok_with_data() {
+        let json = r#"{"status":"ok","data":{"key":"val"}}"#;
+        let resp: DaemonResponse = serde_json::from_str(json).unwrap();
+        if let DaemonResponse::Ok { data: Some(d) } = resp {
+            assert_eq!(d["key"], "val");
+        } else {
+            panic!("expected Ok with data");
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_deserialize_error() {
+        let json = r#"{"status":"error","message":"something broke"}"#;
+        let resp: DaemonResponse = serde_json::from_str(json).unwrap();
+        if let DaemonResponse::Error { message } = resp {
+            assert_eq!(message, "something broke");
+        } else {
+            panic!("expected Error");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_invalid_type_tag() {
+        let json = r#"{"type":"nonexistent_variant","session":"s"}"#;
+        let result = serde_json::from_str::<DaemonRequest>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_daemon_response_invalid_status_tag() {
+        let json = r#"{"status":"unknown","message":"x"}"#;
+        let result = serde_json::from_str::<DaemonResponse>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_daemon_request_missing_required_field() {
+        let json = r#"{"type":"record","session":"s1"}"#;
+        let result = serde_json::from_str::<DaemonRequest>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_null_data() {
+        let resp = DaemonResponse::ok_with_data(serde_json::Value::Null);
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"data\":null"));
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        assert!(matches!(parsed, DaemonResponse::Ok { data: None }));
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_empty_object() {
+        let resp = DaemonResponse::ok_with_data(serde_json::json!({}));
+        let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
+        assert_eq!(val["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_array_data() {
+        let resp = DaemonResponse::ok_with_data(serde_json::json!([1, "two", 3]));
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        if let DaemonResponse::Ok { data: Some(d) } = parsed {
+            assert_eq!(d[0], 1);
+            assert_eq!(d[1], "two");
+            assert_eq!(d[2], 3);
+        } else {
+            panic!("expected Ok with array data");
+        }
+    }
+
+    #[test]
+    fn test_daemon_socket_path_special_characters() {
+        let path = daemon_socket_path("sess-with.dots_and-dashes");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "daemon_sess-with.dots_and-dashes.sock");
+    }
+
+    #[test]
+    fn test_daemon_pid_path_special_characters() {
+        let path = daemon_pid_path("sess-with.dots_and-dashes");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "daemon_sess-with.dots_and-dashes.pid");
+    }
+
+    #[test]
+    fn test_daemon_socket_path_empty_session() {
+        let path = daemon_socket_path("");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "daemon_.sock");
+    }
+
+    #[test]
+    fn test_daemon_request_debug_trait() {
+        let req = DaemonRequest::Status;
+        let dbg = format!("{:?}", req);
+        assert!(dbg.contains("Status"));
+    }
+
+    #[test]
+    fn test_daemon_response_debug_trait() {
+        let resp = DaemonResponse::ok();
+        let dbg = format!("{:?}", resp);
+        assert!(dbg.contains("Ok"));
+
+        let resp_err = DaemonResponse::error("fail");
+        let dbg_err = format!("{:?}", resp_err);
+        assert!(dbg_err.contains("Error"));
+        assert!(dbg_err.contains("fail"));
+    }
+
+    #[test]
+    fn test_daemon_response_error_empty_message() {
+        let resp = DaemonResponse::error("");
+        if let DaemonResponse::Error { message } = resp {
+            assert_eq!(message, "");
+        } else {
+            panic!("expected Error");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_record_negative_exit_code() {
+        let req = DaemonRequest::Record {
+            session: "s".into(),
+            command: "false".into(),
+            cwd: "/".into(),
+            exit_code: -1,
+            started_at: "2025-01-01T00:00:00Z".into(),
+            tty: String::new(),
+            pid: 0,
+            shell: String::new(),
+            duration_ms: None,
+            output: None,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        if let DaemonRequest::Record { exit_code, .. } = parsed {
+            assert_eq!(exit_code, -1);
+        } else {
+            panic!("expected Record");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_scrollback_custom_max_lines() {
+        let json_str = r#"{"type":"scrollback","max_lines":5}"#;
+        let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
+        if let DaemonRequest::Scrollback { max_lines } = req {
+            assert_eq!(max_lines, 5);
+        } else {
+            panic!("expected Scrollback");
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_error_with_format_string() {
+        let code = 42;
+        let resp = DaemonResponse::error(format!("exit code {code}"));
+        if let DaemonResponse::Error { message } = resp {
+            assert_eq!(message, "exit code 42");
+        } else {
+            panic!("expected Error");
+        }
+    }
+
+    #[test]
+    fn test_daemon_socket_and_pid_paths_share_parent() {
+        let sock = daemon_socket_path("s1");
+        let pid = daemon_pid_path("s1");
+        assert_eq!(sock.parent(), pid.parent());
+    }
+
+    #[test]
+    fn test_handle_heartbeat_db_thread_hung_up() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(cmd) = rx.recv() {
+                match cmd {
+                    DbCommand::Heartbeat { reply, .. } => {
+                        drop(reply);
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "s1".into() },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("hung up") || message.contains("timeout"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_handle_capture_read_truncates_to_max_lines() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.mark();
+            for i in 0..20 {
+                eng.process(format!("line {i}\r\n").as_bytes());
+            }
+        }
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 5 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                let output = d["output"].as_str().unwrap();
+                let line_count = output.lines().count();
+                assert!(line_count <= 5, "expected at most 5 lines, got {line_count}");
+            }
+            _ => panic!("expected Ok with output data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_scrollback_empty_capture() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::Scrollback { max_lines: 10 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert!(d["scrollback"].is_string());
+            }
+            _ => panic!("expected Ok with scrollback data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_capture_read_no_mark_returns_empty() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 100 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                let output = d["output"].as_str().unwrap();
+                assert!(output.is_empty());
+            }
+            _ => panic!("expected Ok with output data"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_error_unicode() {
+        let resp = DaemonResponse::error("错误: сбой 💥");
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        if let DaemonResponse::Error { message } = parsed {
+            assert_eq!(message, "错误: сбой 💥");
+        } else {
+            panic!("expected Error");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_mcp_tool_call_empty_tool_name() {
+        let req = DaemonRequest::McpToolCall {
+            tool: "".into(),
+            input: serde_json::json!(null),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        if let DaemonRequest::McpToolCall { tool, input } = parsed {
+            assert_eq!(tool, "");
+            assert!(input.is_null());
+        } else {
+            panic!("expected McpToolCall");
+        }
+    }
+
+    #[test]
+    fn test_handle_status_contains_version_and_pid() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(DaemonRequest::Status, &capture, &db_tx, 65536);
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert_eq!(d["version"].as_str().unwrap(), env!("CARGO_PKG_VERSION"));
+                assert_eq!(d["pid"].as_u64().unwrap(), u64::from(std::process::id()));
+            }
+            _ => panic!("expected Ok with data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_summarize_check_sends_generate_summaries() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::SummarizeCheck { session: "s1".into() },
+            &capture,
+            &tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+        let cmd = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        assert!(matches!(cmd, DbCommand::GenerateSummaries));
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_deeply_nested_data() {
+        let data = serde_json::json!({
+            "a": {"b": {"c": {"d": [1, 2, {"e": true}]}}}
+        });
+        let resp = DaemonResponse::ok_with_data(data.clone());
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        if let DaemonResponse::Ok { data: Some(d) } = parsed {
+            assert_eq!(d["a"]["b"]["c"]["d"][2]["e"], true);
+        } else {
+            panic!("expected Ok with data");
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_record_with_large_output() {
+        let big_output = "x".repeat(100_000);
+        let req = DaemonRequest::Record {
+            session: "s".into(),
+            command: "gen".into(),
+            cwd: "/".into(),
+            exit_code: 0,
+            started_at: "2025-01-01T00:00:00Z".into(),
+            tty: String::new(),
+            pid: 0,
+            shell: String::new(),
+            duration_ms: None,
+            output: Some(big_output.clone()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        if let DaemonRequest::Record { output: Some(o), .. } = parsed {
+            assert_eq!(o.len(), 100_000);
+        } else {
+            panic!("expected Record with output");
+        }
+    }
 }

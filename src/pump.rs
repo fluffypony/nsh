@@ -1981,4 +1981,326 @@ mod tests {
         let scrolled = detect_scrolled_lines(&prev, &cur);
         assert_eq!(scrolled, vec!["a"]);
     }
+
+    // --- set_size edge cases ---
+
+    #[test]
+    fn test_set_size_to_same_dimensions() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"data\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.set_size(24, 80);
+        assert!(eng.prev_visible.is_empty());
+    }
+
+    #[test]
+    fn test_set_size_to_extreme_dimensions_no_panic() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"hello world\r\n");
+        eng.set_size(1, 1);
+        eng.process(b"x\r\n");
+        eng.set_size(200, 300);
+        eng.process(b"after resize\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("after resize"));
+    }
+
+    #[test]
+    fn test_set_size_preserves_history() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..20 {
+            eng.process(format!("line{i}\r\n").as_bytes());
+        }
+        let hist_before = eng.total_line_count();
+        eng.set_size(10, 120);
+        assert_eq!(eng.total_line_count(), hist_before);
+    }
+
+    // --- capture_since_mark with empty captures ---
+
+    #[test]
+    fn test_capture_since_mark_no_mark_returns_none() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"data\r\n");
+        assert!(eng.capture_since_mark(65536).is_none());
+    }
+
+    #[test]
+    fn test_capture_since_mark_immediate_returns_empty() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.is_empty());
+    }
+
+    #[test]
+    fn test_capture_since_mark_consumes_mark() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        eng.process(b"data\r\n");
+        let first = eng.capture_since_mark(65536);
+        assert!(first.is_some());
+        let second = eng.capture_since_mark(65536);
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn test_capture_since_mark_only_whitespace_output() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        eng.process(b"\r\n\r\n\r\n");
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.trim().is_empty() || captured.is_empty());
+    }
+
+    // --- truncate_for_storage edge cases ---
+
+    #[test]
+    fn test_truncate_for_storage_exactly_150_lines_no_omission() {
+        let lines: Vec<String> = (0..150).map(|i| format!("line {i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert!(!result.contains("omitted"));
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_max_bytes_zero() {
+        let input = "hello world";
+        let result = truncate_for_storage(input, 0);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_max_bytes_exact_content_length() {
+        let input = "exact";
+        let result = truncate_for_storage(input, input.len());
+        assert_eq!(result, "exact");
+    }
+
+    #[test]
+    fn test_truncate_for_storage_max_bytes_one_less_than_content() {
+        let input = "abcdef";
+        let result = truncate_for_storage(input, input.len() - 1);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_single_line_passthrough() {
+        let input = "just one line";
+        let result = truncate_for_storage(input, 65536);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_truncate_for_storage_empty_input() {
+        let result = truncate_for_storage("", 65536);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_truncate_for_storage_max_bytes_1() {
+        let result = truncate_for_storage("hello\nworld", 1);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_line_omission_then_byte_truncation() {
+        let lines: Vec<String> = (0..200).map(|i| format!("long line with data {i:05}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 50);
+        assert!(result.contains("[... truncated by nsh]"));
+    }
+
+    // --- sanitize_input with more byte sequences ---
+
+    #[test]
+    fn test_sanitize_input_empty_slice() {
+        assert!(sanitize_input(&[]).is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_input_all_printable_ascii() {
+        let input: Vec<u8> = (0x20..=0x7E).collect();
+        let result = sanitize_input(&input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_input_preserves_tab_lf_cr_esc_bs() {
+        let input = vec![0x09, 0x0A, 0x0D, 0x1B, 0x08];
+        let result = sanitize_input(&input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_input_filters_null_and_bell() {
+        let input = vec![0x00, 0x07, b'A', 0x02, b'B'];
+        let result = sanitize_input(&input);
+        assert_eq!(result, vec![b'A', b'B']);
+    }
+
+    #[test]
+    fn test_sanitize_input_full_high_byte_range() {
+        let input: Vec<u8> = (0x80..=0xFF).collect();
+        let result = sanitize_input(&input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_sanitize_input_typical_ansi_escape_sequence() {
+        let input = b"\x1b[31mhello\x1b[0m";
+        let result = sanitize_input(input);
+        assert_eq!(result, input.to_vec());
+    }
+
+    #[test]
+    fn test_sanitize_input_mixed_valid_invalid_control_chars() {
+        let input = vec![
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
+            0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13,
+            0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+        ];
+        let result = sanitize_input(&input);
+        assert_eq!(result, vec![0x08, 0x09, 0x0A, 0x0D, 0x1B]);
+    }
+
+    // --- detect_scrolled_lines with various overlapping patterns ---
+
+    #[test]
+    fn test_detect_scrolled_lines_identical_full_overlap() {
+        let lines: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&lines, &lines);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_one_line_scrolled() {
+        let prev: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["b", "c", "d"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a"]);
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_two_lines_scrolled() {
+        let prev: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["c", "d", "e"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_prev_empty() {
+        let prev: Vec<String> = vec![];
+        let cur: Vec<String> = vec!["a".into(), "b".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_cur_empty() {
+        let prev: Vec<String> = vec!["a".into(), "b".into()];
+        let cur: Vec<String> = vec![];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_partial_content_change() {
+        let prev: Vec<String> = vec!["a", "b", "c", "d"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["c", "d", "e", "f"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_single_element_lists() {
+        let prev: Vec<String> = vec!["x".into()];
+        let cur: Vec<String> = vec!["x".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_single_element_disjoint() {
+        let prev: Vec<String> = vec!["x".into()];
+        let cur: Vec<String> = vec!["y".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["x"]);
+    }
+
+    // --- longest_suffix_prefix_overlap with more patterns ---
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_full_match() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["a", "b", "c"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 3);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_no_match() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["d", "e", "f"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 0);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_single_element_match_at_end() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["c", "d", "e"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 1);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_longer_a_than_b() {
+        let a = vec!["w", "x", "y", "z"];
+        let b = vec!["y", "z"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_longer_b_than_a() {
+        let a = vec!["y", "z"];
+        let b = vec!["y", "z", "a", "b"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_repeated_elements() {
+        let a = vec!["a", "a", "a"];
+        let b = vec!["a", "a", "b"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_repeated_all_same() {
+        let a = vec!["a", "a", "a"];
+        let b = vec!["a", "a", "a"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 3);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_only_last_matches_first() {
+        let a = vec!["x", "y", "z"];
+        let b = vec!["z"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 1);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_large_overlap() {
+        let a: Vec<&str> = (0..100).map(|_| "line").collect();
+        let b: Vec<&str> = (0..100).map(|_| "line").collect();
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 100);
+    }
+
+    #[test]
+    fn test_longest_suffix_prefix_overlap_mismatch_in_middle() {
+        let a = vec!["a", "b", "X", "d", "e"];
+        let b = vec!["d", "e", "f"];
+        assert_eq!(longest_suffix_prefix_overlap(&a, &b), 2);
+    }
 }

@@ -499,4 +499,103 @@ mod tests {
             Some("1")
         );
     }
+
+    #[test]
+    fn parse_zsh_nonexistent_file() {
+        let results = parse_zsh(Path::new("/nonexistent/path/zsh_history"), fixed_mtime());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_fish_multiple_commands_without_when() {
+        let f = write_temp("- cmd: ls\n- cmd: pwd\n- cmd: whoami\n");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[1].0, "pwd");
+        assert_eq!(results[2].0, "whoami");
+    }
+
+    #[test]
+    fn parse_fish_ignores_non_entry_lines() {
+        let f = write_temp("- cmd: git status\n  when: 1700000100\n  paths:\n    - /tmp\n- cmd: ls\n  when: 1700000200\n");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "git status");
+        assert_eq!(results[1].0, "ls");
+    }
+
+    #[test]
+    fn parse_fish_invalid_when_value() {
+        let f = write_temp("- cmd: echo hi\n  when: not_a_number\n");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "echo hi");
+    }
+
+    #[test]
+    fn parse_bash_mixed_timestamps_and_plain() {
+        let f = write_temp("#1700000100\nls\npwd\n#1700000300\nwhoami\n");
+        let results = parse_bash(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[0].1.timestamp(), 1_700_000_100);
+        assert_eq!(results[1].0, "pwd");
+        assert!(results[1].1 < fixed_mtime());
+        assert_eq!(results[2].0, "whoami");
+        assert_eq!(results[2].1.timestamp(), 1_700_000_300);
+    }
+
+    #[test]
+    fn parse_bash_empty_lines_skipped() {
+        let f = write_temp("ls\n\n\npwd\n");
+        let results = parse_bash(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[1].0, "pwd");
+    }
+
+    #[test]
+    fn parse_zsh_extended_invalid_timestamp() {
+        let results = parse_zsh_extended(": 0:0;echo zero\n");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "echo zero");
+    }
+
+    #[test]
+    fn parse_zsh_plain_timestamps_increase() {
+        let results = parse_zsh_plain("a\nb\nc\n", fixed_mtime());
+        assert_eq!(results.len(), 3);
+        assert!(results[0].1 < results[1].1);
+        assert!(results[1].1 < results[2].1);
+        assert!(results[2].1 <= fixed_mtime());
+    }
+
+    #[test]
+    fn detect_shell_nonexistent_file_defaults_bash() {
+        assert_eq!(
+            detect_shell_from_content(Path::new("/nonexistent/file")),
+            Shell::Bash
+        );
+    }
+
+    #[test]
+    fn detect_shell_whitespace_only_defaults_bash() {
+        let f = write_temp("   \n\n   \n");
+        assert_eq!(detect_shell_from_content(f.path()), Shell::Bash);
+    }
+
+    #[test]
+    fn parse_zsh_empty_file() {
+        let f = write_temp("");
+        let results = parse_zsh(f.path(), fixed_mtime());
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn parse_fish_empty_file() {
+        let f = write_temp("");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert!(results.is_empty());
+    }
 }

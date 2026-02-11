@@ -680,6 +680,174 @@ mod tests {
     }
 
     #[test]
+    fn jsonrpc_request_serializes_with_params() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize".to_string(),
+            params: Some(serde_json::json!({"key": "value"})),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert_eq!(json["id"], 1);
+        assert_eq!(json["method"], "initialize");
+        assert_eq!(json["params"]["key"], "value");
+    }
+
+    #[test]
+    fn jsonrpc_request_serializes_without_params() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 42,
+            method: "shutdown".to_string(),
+            params: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("params").is_none());
+        assert_eq!(json["id"], 42);
+        assert_eq!(json["method"], "shutdown");
+    }
+
+    #[test]
+    fn jsonrpc_notification_serializes_without_id() {
+        let notif = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "notifications/initialized".to_string(),
+            params: None,
+        };
+        let json = serde_json::to_value(&notif).unwrap();
+        assert!(json.get("id").is_none());
+        assert!(json.get("params").is_none());
+        assert_eq!(json["method"], "notifications/initialized");
+    }
+
+    #[test]
+    fn jsonrpc_notification_serializes_with_params() {
+        let notif = JsonRpcNotification {
+            jsonrpc: "2.0",
+            method: "progress".to_string(),
+            params: Some(serde_json::json!({"token": 1, "value": 50})),
+        };
+        let json = serde_json::to_value(&notif).unwrap();
+        assert!(json.get("id").is_none());
+        assert_eq!(json["params"]["token"], 1);
+    }
+
+    #[test]
+    fn jsonrpc_response_deserializes_success() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(1));
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn jsonrpc_response_deserializes_error() {
+        let json = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(2));
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert_eq!(err.message, "Method not found");
+    }
+
+    #[test]
+    fn jsonrpc_response_deserializes_notification_no_id() {
+        let json = r#"{"jsonrpc":"2.0","method":"log","params":{}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.id.is_none());
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn jsonrpc_response_deserializes_null_result() {
+        let json = r#"{"jsonrpc":"2.0","id":5,"result":null}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(5));
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn jsonrpc_request_roundtrip() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0",
+            id: 7,
+            method: "tools/call".to_string(),
+            params: Some(serde_json::json!({"name": "search", "arguments": {"q": "test"}})),
+        };
+        let serialized = serde_json::to_string(&req).unwrap();
+        let resp: JsonRpcResponse = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(resp.id, Some(7));
+    }
+
+    #[test]
+    fn find_event_boundary_only_crlf_available() {
+        let buf = b"event: message\r\n\r\n";
+        assert_eq!(find_event_boundary(buf), Some((14, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_multiple_lf_events() {
+        let buf = b"data: first\n\ndata: second\n\n";
+        let (pos, len) = find_event_boundary(buf).unwrap();
+        assert_eq!(pos, 11);
+        assert_eq!(len, 2);
+        let rest = &buf[pos + len..];
+        let (pos2, len2) = find_event_boundary(rest).unwrap();
+        assert_eq!(pos2, 12);
+        assert_eq!(len2, 2);
+    }
+
+    #[test]
+    fn find_event_boundary_at_end() {
+        let buf = b"data: hello\n\n";
+        assert_eq!(find_event_boundary(buf), Some((11, 2)));
+    }
+
+    #[test]
+    fn mcp_protocol_version_is_set() {
+        assert!(!MCP_PROTOCOL_VERSION.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_name_empty_string() {
+        let client = McpClient::new();
+        assert!(client.parse_tool_name("").is_none());
+    }
+
+    #[test]
+    fn parse_tool_name_just_prefix() {
+        let client = make_populated_client();
+        assert!(client.parse_tool_name("mcp_").is_none());
+    }
+
+    #[test]
+    fn parse_tool_name_server_no_tool() {
+        let client = make_populated_client();
+        assert!(client.parse_tool_name("mcp_myserver").is_none());
+    }
+
+    #[test]
+    fn parse_tool_name_server_trailing_underscore() {
+        let client = make_populated_client();
+        let result = client.parse_tool_name("mcp_myserver_");
+        assert_eq!(result, Some(("myserver", "")));
+    }
+
+    #[test]
+    fn tool_definitions_have_correct_schema() {
+        let client = make_populated_client();
+        let defs = client.tool_definitions();
+        let search_def = defs.iter().find(|d| d.name == "mcp_myserver_search").unwrap();
+        assert_eq!(search_def.parameters["type"], "object");
+        assert!(search_def.parameters["properties"]["q"].is_object());
+    }
+
+    #[test]
     fn parse_tool_name_longest_server_match() {
         let mut client = McpClient::new();
         let make_server = |tools: Vec<&str>| McpServer {

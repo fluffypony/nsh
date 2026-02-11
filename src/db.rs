@@ -4955,4 +4955,206 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "npm run build");
     }
+
+    #[test]
+    fn test_memory_upsert_insert() {
+        let db = test_db();
+        let (id, was_update) = db.upsert_memory("test_key", "test_value").unwrap();
+        assert!(id > 0);
+        assert!(!was_update);
+    }
+
+    #[test]
+    fn test_memory_upsert_update() {
+        let db = test_db();
+        db.upsert_memory("key1", "old_value").unwrap();
+        let (_, was_update) = db.upsert_memory("key1", "new_value").unwrap();
+        assert!(was_update);
+        let mem = db.get_memory_by_id(1).unwrap().unwrap();
+        assert_eq!(mem.value, "new_value");
+    }
+
+    #[test]
+    fn test_memory_delete() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("del_key", "del_val").unwrap();
+        assert!(db.delete_memory(id).unwrap());
+        assert!(db.get_memory_by_id(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_memory_delete_nonexistent() {
+        let db = test_db();
+        assert!(!db.delete_memory(99999).unwrap());
+    }
+
+    #[test]
+    fn test_memory_update_key_only() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("orig_key", "orig_val").unwrap();
+        assert!(db.update_memory(id, Some("new_key"), None).unwrap());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "new_key");
+        assert_eq!(mem.value, "orig_val");
+    }
+
+    #[test]
+    fn test_memory_update_value_only() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("k", "v1").unwrap();
+        assert!(db.update_memory(id, None, Some("v2")).unwrap());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "k");
+        assert_eq!(mem.value, "v2");
+    }
+
+    #[test]
+    fn test_memory_update_both() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("k1", "v1").unwrap();
+        assert!(db.update_memory(id, Some("k2"), Some("v2")).unwrap());
+        let mem = db.get_memory_by_id(id).unwrap().unwrap();
+        assert_eq!(mem.key, "k2");
+        assert_eq!(mem.value, "v2");
+    }
+
+    #[test]
+    fn test_memory_update_neither() {
+        let db = test_db();
+        let (id, _) = db.upsert_memory("k", "v").unwrap();
+        assert!(!db.update_memory(id, None, None).unwrap());
+    }
+
+    #[test]
+    fn test_search_memories_by_key() {
+        let db = test_db();
+        db.upsert_memory("rust_version", "1.85").unwrap();
+        db.upsert_memory("python_version", "3.12").unwrap();
+        let results = db.search_memories("rust").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].key, "rust_version");
+    }
+
+    #[test]
+    fn test_search_memories_by_value() {
+        let db = test_db();
+        db.upsert_memory("editor", "neovim").unwrap();
+        db.upsert_memory("shell", "zsh").unwrap();
+        let results = db.search_memories("neovim").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, "neovim");
+    }
+
+    #[test]
+    fn test_session_labels() {
+        let db = test_db();
+        db.create_session("sl1", "/dev/pts/0", "zsh", 1).unwrap();
+        assert!(db.get_session_label("sl1").unwrap().is_none());
+        assert!(db.set_session_label("sl1", "my project").unwrap());
+        assert_eq!(db.get_session_label("sl1").unwrap().unwrap(), "my project");
+    }
+
+    #[test]
+    fn test_session_label_nonexistent() {
+        let db = test_db();
+        assert!(!db.set_session_label("nope", "label").unwrap());
+        assert!(db.get_session_label("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_commands_needing_summary() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cmd1", "/tmp", Some(0), "2025-01-01T00:00:00Z",
+            None, Some("output here"), "", "", 0,
+        ).unwrap();
+        db.insert_command(
+            "s1", "cmd2", "/tmp", Some(0), "2025-01-01T00:01:00Z",
+            None, None, "", "", 0,
+        ).unwrap();
+        let needing = db.commands_needing_summary(10).unwrap();
+        assert_eq!(needing.len(), 1);
+        assert_eq!(needing[0].command, "cmd1");
+    }
+
+    #[test]
+    fn test_mark_unsummarized_for_llm() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "cmd1", "/tmp", Some(0), "2025-01-01T00:00:00Z",
+            None, Some("output"), "", "", 0,
+        ).unwrap();
+        let marked = db.mark_unsummarized_for_llm().unwrap();
+        assert_eq!(marked, 1);
+        let needing_llm = db.commands_needing_llm_summary(10).unwrap();
+        assert_eq!(needing_llm.len(), 1);
+    }
+
+    #[test]
+    fn test_fts_maintenance() {
+        let db = test_db();
+        db.insert_command("s1", "test cmd", "/", Some(0), "2025-01-01T00:00:00Z", None, None, "", "", 0).unwrap();
+        assert!(db.rebuild_fts().is_ok());
+        assert!(db.optimize_fts().is_ok());
+        assert!(db.check_fts_integrity().is_ok());
+    }
+
+    #[test]
+    fn test_search_history_advanced_regex() {
+        let db = test_db();
+        db.insert_command("s1", "cargo build", "/proj", Some(0), "2025-01-01T00:00:00Z", None, None, "", "", 0).unwrap();
+        db.insert_command("s1", "cargo test", "/proj", Some(0), "2025-01-01T00:01:00Z", None, None, "", "", 0).unwrap();
+        db.insert_command("s1", "npm install", "/proj", Some(0), "2025-01-01T00:02:00Z", None, None, "", "", 0).unwrap();
+        let results = db.search_history_advanced(
+            None, Some("cargo.*"), None, None, None, false, None, None, 10,
+        ).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_history_advanced_date_range() {
+        let db = test_db();
+        db.insert_command("s1", "old", "/", Some(0), "2020-01-01T00:00:00Z", None, None, "", "", 0).unwrap();
+        db.insert_command("s1", "new", "/", Some(0), "2025-06-01T00:00:00Z", None, None, "", "", 0).unwrap();
+        let results = db.search_history_advanced(
+            None, None, Some("2025-01-01T00:00:00Z"), None, None, false, None, None, 10,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "new");
+    }
+
+    #[test]
+    fn test_search_history_advanced_fts_with_filters() {
+        let db = test_db();
+        db.insert_command("s1", "cargo build", "/proj", Some(0), "2025-01-01T00:00:00Z", None, Some("success"), "", "", 0).unwrap();
+        db.insert_command("s1", "cargo test", "/proj", Some(1), "2025-01-01T00:01:00Z", None, Some("failed"), "", "", 0).unwrap();
+        let results = db.search_history_advanced(
+            Some("cargo"), None, None, None, None, true, None, None, 10,
+        ).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].command, "cargo test");
+    }
+
+    #[test]
+    fn test_conversation_insert_and_fetch() {
+        let db = test_db();
+        db.create_session("cv1", "/dev/pts/0", "zsh", 1).unwrap();
+        db.insert_conversation("cv1", "how do I X", "command", "ls -la", Some("list files"), false, false).unwrap();
+        db.insert_conversation("cv1", "and Y?", "chat", "try this", None, false, false).unwrap();
+        let convos = db.get_conversations("cv1", 10).unwrap();
+        assert_eq!(convos.len(), 2);
+        assert_eq!(convos[0].query, "how do I X");
+        assert_eq!(convos[1].query, "and Y?");
+    }
+
+    #[test]
+    fn test_unicode_in_commands() {
+        let db = test_db();
+        db.insert_command(
+            "s1", "echo 'こんにちは 🌍'", "/tmp", Some(0),
+            "2025-01-01T00:00:00Z", None, Some("こんにちは 🌍"), "", "", 0,
+        ).unwrap();
+        let results = db.search_history("こんにちは", 10).unwrap();
+        assert!(!results.is_empty());
+    }
 }

@@ -819,4 +819,450 @@ mod tests {
         let result = validate_read_path(file_path.to_str().unwrap());
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_validate_read_path_with_access_allow_bypasses_sensitive() {
+        let result = validate_read_path_with_access("~/.ssh/id_rsa", "allow");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => {
+                assert!(
+                    !e.contains("sensitive"),
+                    "allow mode should not block sensitive dirs, got: {e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_with_access_block_rejects_sensitive() {
+        let result = validate_read_path_with_access("~/.ssh/id_rsa", "block");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_gpg() {
+        let result = validate_read_path("~/.gpg/keys");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_kube() {
+        let result = validate_read_path("~/.kube/config");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_docker() {
+        let result = validate_read_path("~/.docker/config.json");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_azure() {
+        let result = validate_read_path("~/.azure/credentials");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_sensitive_gcloud() {
+        let result = validate_read_path("~/.config/gcloud/credentials.json");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("sensitive"));
+    }
+
+    #[test]
+    fn test_validate_read_path_parent_dir_in_middle() {
+        let result = validate_read_path("/usr/local/../bin/ls");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".."));
+    }
+
+    #[test]
+    fn test_validate_read_path_parent_dir_at_end() {
+        let result = validate_read_path("/tmp/foo/..");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".."));
+    }
+
+    #[test]
+    fn test_tool_definition_serializes_to_json() {
+        let tool = ToolDefinition {
+            name: "test_tool".into(),
+            description: "A test tool".into(),
+            parameters: json!({"type": "object", "properties": {}, "required": []}),
+        };
+        let serialized = serde_json::to_value(&tool).unwrap();
+        assert_eq!(serialized["name"], "test_tool");
+        assert_eq!(serialized["description"], "A test tool");
+        assert!(serialized["parameters"].is_object());
+    }
+
+    #[test]
+    fn test_tool_definition_clone() {
+        let tool = ToolDefinition {
+            name: "clone_test".into(),
+            description: "desc".into(),
+            parameters: json!({"type": "object"}),
+        };
+        let cloned = tool.clone();
+        assert_eq!(cloned.name, tool.name);
+        assert_eq!(cloned.description, tool.description);
+        assert_eq!(cloned.parameters, tool.parameters);
+    }
+
+    #[test]
+    fn test_tool_definition_debug() {
+        let tool = ToolDefinition {
+            name: "debug_test".into(),
+            description: "desc".into(),
+            parameters: json!({}),
+        };
+        let debug_str = format!("{:?}", tool);
+        assert!(debug_str.contains("debug_test"));
+    }
+
+    #[test]
+    fn test_command_tool_schema_properties() {
+        let tools = all_tool_definitions();
+        let command = tools.iter().find(|t| t.name == "command").unwrap();
+        let props = command.parameters["properties"].as_object().unwrap();
+        assert!(props.contains_key("command"));
+        assert!(props.contains_key("explanation"));
+        assert!(props.contains_key("pending"));
+        assert_eq!(props["pending"]["type"], "boolean");
+        assert_eq!(props["pending"]["default"], false);
+        let required = command.parameters["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req_strs.contains(&"command"));
+        assert!(req_strs.contains(&"explanation"));
+        assert!(!req_strs.contains(&"pending"));
+    }
+
+    #[test]
+    fn test_chat_tool_schema() {
+        let tools = all_tool_definitions();
+        let chat = tools.iter().find(|t| t.name == "chat").unwrap();
+        let props = chat.parameters["properties"].as_object().unwrap();
+        assert!(props.contains_key("response"));
+        assert_eq!(props["response"]["type"], "string");
+        let required = chat.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "response");
+    }
+
+    #[test]
+    fn test_search_history_tool_schema() {
+        let tools = all_tool_definitions();
+        let sh = tools.iter().find(|t| t.name == "search_history").unwrap();
+        let props = sh.parameters["properties"].as_object().unwrap();
+        let expected_props = ["query", "regex", "since", "until", "exit_code", "failed_only", "session", "limit"];
+        for p in &expected_props {
+            assert!(props.contains_key(*p), "search_history missing property: {p}");
+        }
+        assert_eq!(props["exit_code"]["type"], "integer");
+        assert_eq!(props["failed_only"]["type"], "boolean");
+        assert_eq!(props["limit"]["default"], 20);
+    }
+
+    #[test]
+    fn test_write_file_tool_requires_path_content_reason() {
+        let tools = all_tool_definitions();
+        let wf = tools.iter().find(|t| t.name == "write_file").unwrap();
+        let required = wf.parameters["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req_strs.contains(&"path"));
+        assert!(req_strs.contains(&"content"));
+        assert!(req_strs.contains(&"reason"));
+    }
+
+    #[test]
+    fn test_patch_file_tool_requires_all_fields() {
+        let tools = all_tool_definitions();
+        let pf = tools.iter().find(|t| t.name == "patch_file").unwrap();
+        let required = pf.parameters["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(req_strs.len(), 4);
+        assert!(req_strs.contains(&"path"));
+        assert!(req_strs.contains(&"search"));
+        assert!(req_strs.contains(&"replace"));
+        assert!(req_strs.contains(&"reason"));
+    }
+
+    #[test]
+    fn test_manage_config_tool_action_enum() {
+        let tools = all_tool_definitions();
+        let mc = tools.iter().find(|t| t.name == "manage_config").unwrap();
+        let action = &mc.parameters["properties"]["action"];
+        let enum_vals = action["enum"].as_array().unwrap();
+        let vals: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(vals.contains(&"set"));
+        assert!(vals.contains(&"remove"));
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn test_install_mcp_server_transport_enum() {
+        let tools = all_tool_definitions();
+        let mcp = tools.iter().find(|t| t.name == "install_mcp_server").unwrap();
+        let transport = &mcp.parameters["properties"]["transport"];
+        let enum_vals = transport["enum"].as_array().unwrap();
+        let vals: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(vals.contains(&"stdio"));
+        assert!(vals.contains(&"http"));
+    }
+
+    #[test]
+    fn test_remember_tool_requires_key_value() {
+        let tools = all_tool_definitions();
+        let rem = tools.iter().find(|t| t.name == "remember").unwrap();
+        let required = rem.parameters["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(req_strs, vec!["key", "value"]);
+    }
+
+    #[test]
+    fn test_forget_memory_requires_id() {
+        let tools = all_tool_definitions();
+        let fm = tools.iter().find(|t| t.name == "forget_memory").unwrap();
+        let required = fm.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "id");
+        assert_eq!(fm.parameters["properties"]["id"]["type"], "integer");
+    }
+
+    #[test]
+    fn test_update_memory_requires_only_id() {
+        let tools = all_tool_definitions();
+        let um = tools.iter().find(|t| t.name == "update_memory").unwrap();
+        let required = um.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "id");
+        let props = um.parameters["properties"].as_object().unwrap();
+        assert!(props.contains_key("key"));
+        assert!(props.contains_key("value"));
+    }
+
+    #[test]
+    fn test_all_tools_have_properties_object() {
+        let tools = all_tool_definitions();
+        for tool in &tools {
+            let props = tool.parameters.get("properties");
+            assert!(
+                props.is_some() && props.unwrap().is_object(),
+                "tool '{}' missing properties object",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_required_fields_exist_in_properties() {
+        let tools = all_tool_definitions();
+        for tool in &tools {
+            let props = tool.parameters["properties"].as_object().unwrap();
+            let required = tool.parameters["required"].as_array().unwrap();
+            for req in required {
+                let key = req.as_str().unwrap();
+                assert!(
+                    props.contains_key(key),
+                    "tool '{}' requires '{}' but it's not in properties",
+                    tool.name,
+                    key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_property_types_are_valid_json_schema_types() {
+        let valid_types = ["string", "integer", "boolean", "array", "object", "number"];
+        let tools = all_tool_definitions();
+        for tool in &tools {
+            let props = tool.parameters["properties"].as_object().unwrap();
+            for (key, prop) in props {
+                if let Some(ty) = prop.get("type").and_then(|v| v.as_str()) {
+                    assert!(
+                        valid_types.contains(&ty),
+                        "tool '{}' property '{}' has invalid type '{}'",
+                        tool.name,
+                        key,
+                        ty
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_grep_file_tool_properties() {
+        let tools = all_tool_definitions();
+        let gf = tools.iter().find(|t| t.name == "grep_file").unwrap();
+        let props = gf.parameters["properties"].as_object().unwrap();
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("pattern"));
+        assert!(props.contains_key("context_lines"));
+        assert!(props.contains_key("max_lines"));
+        assert_eq!(props["context_lines"]["default"], 3);
+        assert_eq!(props["max_lines"]["default"], 100);
+    }
+
+    #[test]
+    fn test_read_file_tool_defaults() {
+        let tools = all_tool_definitions();
+        let rf = tools.iter().find(|t| t.name == "read_file").unwrap();
+        let props = rf.parameters["properties"].as_object().unwrap();
+        assert_eq!(props["start_line"]["default"], 1);
+        assert_eq!(props["end_line"]["default"], 200);
+    }
+
+    #[test]
+    fn test_list_directory_tool_defaults() {
+        let tools = all_tool_definitions();
+        let ld = tools.iter().find(|t| t.name == "list_directory").unwrap();
+        let props = ld.parameters["properties"].as_object().unwrap();
+        assert_eq!(props["path"]["default"], ".");
+        assert_eq!(props["show_hidden"]["default"], false);
+        let required = ld.parameters["required"].as_array().unwrap();
+        assert!(required.is_empty());
+    }
+
+    #[test]
+    fn test_run_command_tool_requires_command_and_reason() {
+        let tools = all_tool_definitions();
+        let rc = tools.iter().find(|t| t.name == "run_command").unwrap();
+        let required = rc.parameters["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(req_strs.contains(&"command"));
+        assert!(req_strs.contains(&"reason"));
+    }
+
+    #[test]
+    fn test_ask_user_tool_options_is_array() {
+        let tools = all_tool_definitions();
+        let au = tools.iter().find(|t| t.name == "ask_user").unwrap();
+        let props = au.parameters["properties"].as_object().unwrap();
+        assert_eq!(props["options"]["type"], "array");
+        assert_eq!(props["options"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn test_install_skill_tool_parameters_additionalproperties() {
+        let tools = all_tool_definitions();
+        let is = tools.iter().find(|t| t.name == "install_skill").unwrap();
+        let params_prop = &is.parameters["properties"]["parameters"];
+        assert_eq!(params_prop["type"], "object");
+        assert!(params_prop.get("additionalProperties").is_some());
+    }
+
+    #[test]
+    fn test_install_mcp_server_args_is_string_array() {
+        let tools = all_tool_definitions();
+        let mcp = tools.iter().find(|t| t.name == "install_mcp_server").unwrap();
+        let args = &mcp.parameters["properties"]["args"];
+        assert_eq!(args["type"], "array");
+        assert_eq!(args["items"]["type"], "string");
+    }
+
+    #[test]
+    fn test_tool_count_matches_expected_names() {
+        let tools = all_tool_definitions();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names.len(), 18);
+        assert_eq!(
+            names,
+            vec![
+                "command", "chat", "search_history", "grep_file", "read_file",
+                "list_directory", "web_search", "run_command", "ask_user",
+                "write_file", "patch_file", "man_page", "manage_config",
+                "install_skill", "install_mcp_server", "remember",
+                "forget_memory", "update_memory",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_no_tool_has_empty_parameters() {
+        let tools = all_tool_definitions();
+        for tool in &tools {
+            assert!(
+                !tool.parameters.is_null(),
+                "tool '{}' has null parameters",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_man_page_section_is_integer() {
+        let tools = all_tool_definitions();
+        let mp = tools.iter().find(|t| t.name == "man_page").unwrap();
+        let section = &mp.parameters["properties"]["section"];
+        assert_eq!(section["type"], "integer");
+    }
+
+    #[test]
+    fn test_install_mcp_server_timeout_default() {
+        let tools = all_tool_definitions();
+        let mcp = tools.iter().find(|t| t.name == "install_mcp_server").unwrap();
+        let timeout = &mcp.parameters["properties"]["timeout_seconds"];
+        assert_eq!(timeout["type"], "integer");
+        assert_eq!(timeout["default"], 30);
+    }
+
+    #[test]
+    fn test_install_skill_timeout_default() {
+        let tools = all_tool_definitions();
+        let is = tools.iter().find(|t| t.name == "install_skill").unwrap();
+        let timeout = &is.parameters["properties"]["timeout_seconds"];
+        assert_eq!(timeout["default"], 30);
+    }
+
+    #[test]
+    fn test_install_skill_terminal_default() {
+        let tools = all_tool_definitions();
+        let is = tools.iter().find(|t| t.name == "install_skill").unwrap();
+        let terminal = &is.parameters["properties"]["terminal"];
+        assert_eq!(terminal["type"], "boolean");
+        assert_eq!(terminal["default"], false);
+    }
+
+    #[test]
+    fn test_validate_read_path_nonexistent_under_tmp() {
+        let result = validate_read_path("/tmp/nsh_nonexistent_subdir/foo/bar.txt");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_empty_string() {
+        let result = validate_read_path("");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_dot() {
+        let result = validate_read_path(".");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_web_search_tool_requires_query() {
+        let tools = all_tool_definitions();
+        let ws = tools.iter().find(|t| t.name == "web_search").unwrap();
+        let required = ws.parameters["required"].as_array().unwrap();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0], "query");
+    }
 }

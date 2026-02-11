@@ -450,4 +450,162 @@ mod tests {
         let e = anyhow::anyhow!("Gateway Timeout");
         assert!(is_retryable_error(&e));
     }
+
+    #[test]
+    fn retryable_too_many_requests_phrase() {
+        let e = anyhow::anyhow!("Too Many Requests");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[tokio::test]
+    async fn call_with_chain_first_model_succeeds() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::TextDelta("ok".into())).await;
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_with_chain(&provider, dummy_request(), &chain)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-a");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
+    }
+
+    #[tokio::test]
+    async fn call_with_chain_falls_back_on_failure() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 1 {
+                    Err(anyhow::anyhow!("model not available"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("from-b".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_with_chain(&provider, dummy_request(), &chain)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-b");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "from-b"));
+    }
+
+    #[tokio::test]
+    async fn call_with_chain_empty_chain() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| unreachable!()),
+        };
+        let chain: Vec<String> = vec![];
+        let result = call_with_chain(&provider, dummy_request(), &chain).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exhausted"));
+    }
+
+    #[tokio::test]
+    async fn call_with_chain_all_fail() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("nope"))),
+        };
+        let chain = vec!["a".to_string()];
+        let result = call_with_chain(&provider, dummy_request(), &chain).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn call_with_chain_retries_on_retryable_then_succeeds() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Err(anyhow::anyhow!("429 Too Many Requests"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("ok".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string()];
+        let (_, model) = call_with_chain(&provider, dummy_request(), &chain)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-a");
+    }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_mixed_content() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| {
+                Ok(Message {
+                    role: Role::Assistant,
+                    content: vec![
+                        ContentBlock::Text { text: "thinking".into() },
+                        ContentBlock::ToolUse {
+                            id: "t1".into(),
+                            name: "search".into(),
+                            input: serde_json::json!({"q": "test"}),
+                        },
+                    ],
+                })
+            }),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("stream fail"))),
+        };
+        let mut rx = stream_with_complete_fallback(&provider, dummy_request())
+            .await
+            .unwrap();
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "thinking"));
+        let tool_start = rx.recv().await.unwrap();
+        assert!(matches!(tool_start, StreamEvent::ToolUseStart { name, .. } if name == "search"));
+        let tool_delta = rx.recv().await.unwrap();
+        assert!(matches!(tool_delta, StreamEvent::ToolUseDelta(_)));
+        let tool_end = rx.recv().await.unwrap();
+        assert!(matches!(tool_end, StreamEvent::ToolUseEnd));
+        let done = rx.recv().await.unwrap();
+        assert!(matches!(done, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_empty_content() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| {
+                Ok(Message {
+                    role: Role::Assistant,
+                    content: vec![],
+                })
+            }),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("no stream"))),
+        };
+        let mut rx = stream_with_complete_fallback(&provider, dummy_request())
+            .await
+            .unwrap();
+        let done = rx.recv().await.unwrap();
+        assert!(matches!(done, StreamEvent::Done { .. }));
+    }
 }

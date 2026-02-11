@@ -241,4 +241,180 @@ mod tests {
         let id = format!("test_no_daemon_{}", std::process::id());
         assert!(!is_daemon_running(&id));
     }
+
+    #[test]
+    fn is_daemon_running_true_when_socket_accepts() {
+        let session_id = format!("test_running_{}", std::process::id());
+        let sock_path = crate::daemon::daemon_socket_path(&session_id);
+        if let Some(parent) = sock_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let _ = std::fs::remove_file(&sock_path);
+        let _listener = UnixListener::bind(&sock_path).unwrap();
+        let result = is_daemon_running(&session_id);
+        let _ = std::fs::remove_file(&sock_path);
+        assert!(result);
+    }
+
+    #[test]
+    fn send_request_with_mock_server() {
+        let session_id = format!("test_send_{}", std::process::id());
+        let sock_path = crate::daemon::daemon_socket_path(&session_id);
+        if let Some(parent) = sock_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(parsed["type"], "status");
+            assert_eq!(parsed["v"], DAEMON_PROTOCOL_VERSION);
+
+            let resp = DaemonResponse::ok_with_data(serde_json::json!({"mock": true}));
+            let mut resp_json = serde_json::to_string(&resp).unwrap();
+            resp_json.push('\n');
+            use std::io::Write;
+            let mut w = &stream;
+            w.write_all(resp_json.as_bytes()).unwrap();
+            w.flush().unwrap();
+        });
+
+        let result = send_request(&session_id, &DaemonRequest::Status);
+        let _ = std::fs::remove_file(&sock_path);
+        handler.join().unwrap();
+
+        let resp = result.unwrap();
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert_eq!(d["mock"], true);
+            }
+            _ => panic!("expected Ok with data"),
+        }
+    }
+
+    #[test]
+    fn try_send_request_returns_some_on_success() {
+        let session_id = format!("test_try_{}", std::process::id());
+        let sock_path = crate::daemon::daemon_socket_path(&session_id);
+        if let Some(parent) = sock_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+
+            let resp = DaemonResponse::ok();
+            let mut resp_json = serde_json::to_string(&resp).unwrap();
+            resp_json.push('\n');
+            use std::io::Write;
+            let mut w = &stream;
+            w.write_all(resp_json.as_bytes()).unwrap();
+            w.flush().unwrap();
+        });
+
+        let result = try_send_request(&session_id, &DaemonRequest::Status);
+        let _ = std::fs::remove_file(&sock_path);
+        handler.join().unwrap();
+
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap(), DaemonResponse::Ok { data: None }));
+    }
+
+    #[test]
+    fn send_request_fails_on_invalid_json_response() {
+        let session_id = format!("test_bad_json_{}", std::process::id());
+        let sock_path = crate::daemon::daemon_socket_path(&session_id);
+        if let Some(parent) = sock_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+
+            use std::io::Write;
+            let mut w = &stream;
+            w.write_all(b"not valid json\n").unwrap();
+            w.flush().unwrap();
+        });
+
+        let result = send_request(&session_id, &DaemonRequest::Status);
+        let _ = std::fs::remove_file(&sock_path);
+        handler.join().unwrap();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn send_request_fails_when_server_closes_immediately() {
+        let session_id = format!("test_close_{}", std::process::id());
+        let sock_path = crate::daemon::daemon_socket_path(&session_id);
+        if let Some(parent) = sock_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            drop(stream);
+        });
+
+        let result = send_request(&session_id, &DaemonRequest::Status);
+        let _ = std::fs::remove_file(&sock_path);
+        handler.join().unwrap();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn send_request_heartbeat_roundtrip_through_mock() {
+        let session_id = format!("test_hb_rt_{}", std::process::id());
+        let sock_path = crate::daemon::daemon_socket_path(&session_id);
+        if let Some(parent) = sock_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+
+        let handler = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(parsed["type"], "heartbeat");
+            assert_eq!(parsed["session"], "mysess");
+
+            let resp = DaemonResponse::ok();
+            let mut resp_json = serde_json::to_string(&resp).unwrap();
+            resp_json.push('\n');
+            use std::io::Write;
+            let mut w = &stream;
+            w.write_all(resp_json.as_bytes()).unwrap();
+            w.flush().unwrap();
+        });
+
+        let req = DaemonRequest::Heartbeat { session: "mysess".into() };
+        let result = send_request(&session_id, &req);
+        let _ = std::fs::remove_file(&sock_path);
+        handler.join().unwrap();
+
+        let resp = result.unwrap();
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+    }
 }

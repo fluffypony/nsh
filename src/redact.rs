@@ -1192,4 +1192,77 @@ mod extra_tests {
         let result = redact_secrets(input, &config);
         assert!(result.contains("REDACTED"), "should redact Twilio key, got: {result}");
     }
+
+    #[test]
+    fn test_redact_url_scheme_no_credentials() {
+        let url = "ftp://files.example.com/data";
+        let result = redact_url(url);
+        assert_eq!(result, url);
+    }
+
+    #[test]
+    fn test_redact_url_credentials_with_port_and_path() {
+        let url = "mysql://root:s3cret@localhost:3306/mydb";
+        let result = redact_url(url);
+        assert!(
+            result.contains("[REDACTED]@localhost"),
+            "should redact credentials, got: {result}"
+        );
+        assert!(!result.contains("s3cret"));
+    }
+
+    #[test]
+    fn test_redact_user_pattern_invalid_regex_ignored() {
+        let config = RedactionConfig {
+            enabled: true,
+            patterns: vec![r"[invalid".into()],
+            replacement: "[GONE]".into(),
+            disable_builtin: true,
+        };
+        let input = "some text";
+        let result = redact_secrets(input, &config);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_strip_invisible_unicode_tag_characters() {
+        let input = "abc\u{E0001}\u{E0041}\u{E007F}def";
+        let result = strip_invisible_unicode(input);
+        assert_eq!(result, "abcdef");
+    }
+
+    #[test]
+    fn test_redact_no_keyword_match_skips_regex() {
+        let config = RedactionConfig {
+            enabled: true,
+            patterns: vec![],
+            replacement: "[REDACTED]".into(),
+            disable_builtin: false,
+        };
+        let input = "no keywords here at all, just plain text";
+        let result = redact_secrets(input, &config);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_redact_case_insensitive_keyword_match() {
+        let config = test_config();
+        let input = "SK_TEST_abc123def456ghi789jklmnopqrst";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:"),
+            "case-insensitive keyword should trigger pattern, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_redact_sourcegraph_v3_token() {
+        let config = test_config();
+        let input = "sgp_1234567890abcdef_1234567890abcdef1234567890abcdef12345678";
+        let result = redact_secrets(input, &config);
+        assert!(
+            result.contains("[REDACTED:sourcegraph-access-token-v3]"),
+            "should redact SG v3 token, got: {result}"
+        );
+    }
 }
