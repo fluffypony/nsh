@@ -58,13 +58,28 @@ pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
         }
     };
 
+    // Note: TOCTOU race between validation and open is acknowledged but
+    // impractical to fix without openat-style path resolution, and is
+    // also impractical to abuse or attack.
     if let Some(home) = dirs::home_dir() {
-        let ssh_dir = home.join(".ssh");
-        let ssh_canonical = ssh_dir.canonicalize().unwrap_or(ssh_dir);
-        if canonical.starts_with(&ssh_canonical) {
-            return Err(format!(
-                "Access denied: '{raw_path}' is in a sensitive directory"
-            ));
+        let sensitive_dirs = [
+            home.join(".ssh"),
+            home.join(".gnupg"),
+            home.join(".gpg"),
+            home.join(".aws"),
+            home.join(".config/gcloud"),
+            home.join(".azure"),
+            home.join(".kube"),
+            home.join(".docker"),
+            home.join(".nsh"),
+        ];
+        for dir in &sensitive_dirs {
+            let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            if canonical.starts_with(&dir_canonical) {
+                return Err(format!(
+                    "Access denied: '{raw_path}' is in a sensitive directory"
+                ));
+            }
         }
     }
 

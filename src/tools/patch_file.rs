@@ -44,20 +44,30 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
     }
 
     let home = dirs::home_dir().unwrap();
+    // Note: TOCTOU race between validation and open is acknowledged but
+    // impractical to fix without openat-style path resolution, and is
+    // also impractical to abuse or attack.
     let canonical_target = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()?.join(path)
     };
 
-    let ssh_dir = home.join(".ssh");
-    let nsh_dir = home.join(".nsh");
-
-    if canonical_target.starts_with(&ssh_dir) {
-        anyhow::bail!("writes to ~/.ssh/ are blocked");
-    }
-    if canonical_target.starts_with(&nsh_dir) {
-        anyhow::bail!("writes to ~/.nsh/ are blocked");
+    let sensitive_dirs = [
+        home.join(".ssh"),
+        home.join(".gnupg"),
+        home.join(".gpg"),
+        home.join(".aws"),
+        home.join(".config/gcloud"),
+        home.join(".azure"),
+        home.join(".kube"),
+        home.join(".docker"),
+        home.join(".nsh"),
+    ];
+    for dir in &sensitive_dirs {
+        if canonical_target.starts_with(dir) {
+            anyhow::bail!("writes to {} are blocked", dir.display());
+        }
     }
     if canonical_target.starts_with("/etc") && !is_root() {
         anyhow::bail!("writes to /etc/ require root");
@@ -73,7 +83,7 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = canonical_target.parent() {
         if parent.exists() {
             let real_parent = parent.canonicalize()?;
-            if real_parent.starts_with(&ssh_dir) || real_parent.starts_with(&nsh_dir) {
+            if sensitive_dirs.iter().any(|d| real_parent.starts_with(d)) {
                 anyhow::bail!("symlink resolves to a blocked directory");
             }
             if real_parent.starts_with("/etc") && !is_root() {

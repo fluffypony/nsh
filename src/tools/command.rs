@@ -10,6 +10,7 @@ pub fn execute(
     session_id: &str,
     private: bool,
     config: &crate::config::Config,
+    force_autorun: bool,
 ) -> anyhow::Result<()> {
     let command = input["command"].as_str().unwrap_or("");
     let explanation = input["explanation"].as_str().unwrap_or("");
@@ -60,6 +61,43 @@ pub fn execute(
 
     // Display rich command preview
     display_command_preview(command, explanation, &risk);
+
+    if force_autorun && matches!(risk, RiskLevel::Safe) {
+        eprintln!("\x1b[2m(auto-running)\x1b[0m");
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status();
+        let exit_code = status.as_ref().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        if !private {
+            let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
+            let redacted_response = crate::redact::redact_secrets(command, &config.redaction);
+            let redacted_explanation = Some(crate::redact::redact_secrets(
+                explanation,
+                &config.redaction,
+            ));
+            db.insert_conversation(
+                session_id,
+                &redacted_query,
+                "command",
+                &redacted_response,
+                redacted_explanation.as_deref(),
+                true,
+                false,
+            )?;
+            crate::audit::audit_log(
+                session_id,
+                original_query,
+                "command",
+                command,
+                &risk.to_string(),
+            );
+        }
+        if !status.map(|s| s.success()).unwrap_or(false) {
+            eprintln!("\x1b[33mcommand exited with code {exit_code}\x1b[0m");
+        }
+        return Ok(());
+    }
 
     // Write command to pending file for shell hook to pick up
     let nsh_dir = crate::config::Config::nsh_dir();

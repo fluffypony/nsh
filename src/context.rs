@@ -1207,6 +1207,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_detect_ssh_context_without_env() {
         unsafe {
             std::env::remove_var("SSH_CLIENT");

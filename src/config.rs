@@ -1760,6 +1760,7 @@ model = "search-model"
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_resolve_api_key_via_env_and_fallback() {
         let auth = ProviderAuth {
             api_key: None,

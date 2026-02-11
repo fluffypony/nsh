@@ -21,7 +21,6 @@ mod redact;
 mod security;
 mod shell_hooks;
 mod skills;
-#[allow(dead_code)]
 mod stream_consumer;
 mod streaming;
 mod summary;
@@ -111,19 +110,18 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
 
             // Auto-run suffix: strip trailing !!
-            let (_query_text, _force_autorun) = if query_text.ends_with("!!") {
+            let (query_text, force_autorun) = if query_text.ends_with("!!") {
                 (query_text[..query_text.len() - 2].trim().to_string(), true)
             } else {
                 (query_text, false)
             };
-            let query_text = _query_text;
             let config = config::Config::load()?;
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             if private {
                 eprintln!("\x1b[2m🔒 private mode\x1b[0m");
             }
-            let result = query::handle_query(&query_text, &config, &db, &session_id, think, private).await;
+            let result = query::handle_query(&query_text, &config, &db, &session_id, think, private, force_autorun).await;
             if let Err(ref e) = result {
                 if e.to_string().contains("interrupted") {
                     std::process::exit(130);
@@ -636,7 +634,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
                 if let Err(e) =
-                    query::handle_query(line, &config, &db, &session_id, false, false).await
+                    query::handle_query(line, &config, &db, &session_id, false, false, false).await
                 {
                     eprintln!("\x1b[33mnsh: {e}\x1b[0m");
                 }

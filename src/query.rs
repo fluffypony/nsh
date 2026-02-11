@@ -10,6 +10,7 @@ pub async fn handle_query(
     session_id: &str,
     think: bool,
     private: bool,
+    force_autorun: bool,
 ) -> anyhow::Result<()> {
     crate::streaming::configure_display(&config.display);
 
@@ -238,7 +239,7 @@ pub async fn handle_query(
                     "command" => {
                         has_terminal_tool = true;
                         tools::command::execute(
-                            input, query, db, session_id, private, config,
+                            input, query, db, session_id, private, config, force_autorun,
                         )?;
                     }
                     "chat" => {
