@@ -47,54 +47,49 @@ pub fn execute(
         String::new()
     };
 
-    let mut doc: toml::Value = if content.is_empty() {
-        toml::Value::Table(Default::default())
+    let mut doc: toml_edit::DocumentMut = if content.is_empty() {
+        toml_edit::DocumentMut::new()
     } else {
-        toml::from_str(&content)?
+        content.parse::<toml_edit::DocumentMut>()?
     };
 
     // Build server config table
-    let mut server = toml::map::Map::new();
+    let mut server = toml_edit::Table::new();
     if transport != "stdio" {
-        server.insert("transport".into(), toml::Value::String(transport.into()));
+        server.insert("transport", toml_edit::value(transport));
     }
     if let Some(cmd) = command {
-        server.insert("command".into(), toml::Value::String(cmd.into()));
+        server.insert("command", toml_edit::value(cmd));
     }
     if !args.is_empty() {
-        server.insert(
-            "args".into(),
-            toml::Value::Array(args.iter().map(|a| toml::Value::String(a.clone())).collect()),
-        );
+        let mut arr = toml_edit::Array::new();
+        for a in &args {
+            arr.push(a.as_str());
+        }
+        server.insert("args", toml_edit::value(arr));
     }
     if let Some(u) = url {
-        server.insert("url".into(), toml::Value::String(u.into()));
+        server.insert("url", toml_edit::value(u));
     }
     if !env.is_empty() {
-        let mut env_table = toml::map::Map::new();
+        let mut env_table = toml_edit::Table::new();
         for (k, v) in &env {
-            env_table.insert(k.clone(), toml::Value::String(v.clone()));
+            env_table.insert(k, toml_edit::value(v.as_str()));
         }
-        server.insert("env".into(), toml::Value::Table(env_table));
+        server.insert("env", toml_edit::Item::Table(env_table));
     }
-    server.insert("timeout_seconds".into(), toml::Value::Integer(timeout as i64));
+    server.insert("timeout_seconds", toml_edit::value(timeout as i64));
 
-    // Insert into config TOML tree
-    if let toml::Value::Table(root) = &mut doc {
-        let mcp = root
-            .entry("mcp")
-            .or_insert(toml::Value::Table(Default::default()));
-        if let toml::Value::Table(mcp_table) = mcp {
-            let servers = mcp_table
-                .entry("servers")
-                .or_insert(toml::Value::Table(Default::default()));
-            if let toml::Value::Table(servers_table) = servers {
-                servers_table.insert(name.into(), toml::Value::Table(server));
-            }
-        }
+    // Ensure mcp.servers table exists
+    if doc.get("mcp").is_none() {
+        doc["mcp"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
+    if doc["mcp"].get("servers").is_none() {
+        doc["mcp"]["servers"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["mcp"]["servers"][name] = toml_edit::Item::Table(server);
 
-    let new_content = toml::to_string_pretty(&doc)?;
+    let new_content = doc.to_string();
 
     if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
         eprintln!("Error: resulting config would be invalid: {e}");

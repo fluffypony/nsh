@@ -16,10 +16,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
         String::new()
     };
 
-    let mut doc: toml::Value = if content.is_empty() {
-        toml::Value::Table(Default::default())
+    let mut doc: toml_edit::DocumentMut = if content.is_empty() {
+        toml_edit::DocumentMut::new()
     } else {
-        toml::from_str(&content)?
+        content.parse::<toml_edit::DocumentMut>()?
     };
 
     let dim = "\x1b[2m";
@@ -32,11 +32,11 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
         "set" => {
             let value = value
                 .ok_or_else(|| anyhow::anyhow!("manage_config: 'value' is required for set"))?;
-            let toml_value = json_to_toml(value);
+            let toml_value = json_to_toml_edit(value);
             let old_value = get_toml_value(&doc, key);
 
             set_toml_value(&mut doc, key, toml_value.clone())?;
-            let new_content = toml::to_string_pretty(&doc)?;
+            let new_content = doc.to_string();
 
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
                 eprintln!("{red}✗ Invalid configuration: {e}{reset}");
@@ -73,7 +73,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            let new_content = toml::to_string_pretty(&doc)?;
+            let new_content = doc.to_string();
 
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
                 eprintln!("{red}✗ Invalid configuration: {e}{reset}");
@@ -127,95 +127,95 @@ fn write_config(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn json_to_toml(v: &serde_json::Value) -> toml::Value {
+fn json_to_toml_edit(v: &serde_json::Value) -> toml_edit::Item {
     match v {
-        serde_json::Value::String(s) => toml::Value::String(s.clone()),
+        serde_json::Value::String(s) => toml_edit::value(s.as_str()),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                toml::Value::Integer(i)
+                toml_edit::value(i)
             } else if let Some(f) = n.as_f64() {
-                toml::Value::Float(f)
+                toml_edit::value(f)
             } else {
-                toml::Value::String(n.to_string())
+                toml_edit::value(n.to_string())
             }
         }
-        serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
+        serde_json::Value::Bool(b) => toml_edit::value(*b),
         serde_json::Value::Array(arr) => {
-            toml::Value::Array(arr.iter().map(json_to_toml).collect())
+            let mut a = toml_edit::Array::new();
+            for item in arr {
+                match item {
+                    serde_json::Value::String(s) => a.push(s.as_str()),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            a.push(i);
+                        } else if let Some(f) = n.as_f64() {
+                            a.push(f);
+                        }
+                    }
+                    serde_json::Value::Bool(b) => a.push(*b),
+                    _ => a.push(item.to_string()),
+                }
+            }
+            toml_edit::value(a)
         }
         serde_json::Value::Object(map) => {
-            let mut table = toml::map::Map::new();
-            for (k, v) in map {
-                table.insert(k.clone(), json_to_toml(v));
+            let mut table = toml_edit::Table::new();
+            for (k, val) in map {
+                table.insert(k, json_to_toml_edit(val));
             }
-            toml::Value::Table(table)
+            toml_edit::Item::Table(table)
         }
-        serde_json::Value::Null => toml::Value::String(String::new()),
+        serde_json::Value::Null => toml_edit::value(""),
     }
 }
 
-fn get_toml_value(root: &toml::Value, key_path: &str) -> Option<String> {
+fn get_toml_value(doc: &toml_edit::DocumentMut, key_path: &str) -> Option<String> {
     let parts: Vec<&str> = key_path.split('.').collect();
-    let mut current = root;
+    let mut current: &toml_edit::Item = doc.as_item();
     for part in &parts {
-        match current {
-            toml::Value::Table(table) => {
-                current = table.get(*part)?;
-            }
-            _ => return None,
-        }
+        current = current.get(part)?;
     }
-    Some(format!("{current}"))
+    Some(current.to_string().trim().to_string())
 }
 
 fn set_toml_value(
-    root: &mut toml::Value,
+    doc: &mut toml_edit::DocumentMut,
     key_path: &str,
-    value: toml::Value,
+    value: toml_edit::Item,
 ) -> anyhow::Result<()> {
     let parts: Vec<&str> = key_path.split('.').collect();
     if parts.is_empty() {
         anyhow::bail!("empty key path");
     }
-    let mut current = root;
+    let mut current: &mut toml_edit::Item = doc.as_item_mut();
     for (i, part) in parts.iter().enumerate() {
         if i == parts.len() - 1 {
-            if let toml::Value::Table(table) = current {
-                table.insert(part.to_string(), value);
-                return Ok(());
-            }
-            anyhow::bail!("parent of '{key_path}' is not a table");
+            current[part] = value;
+            return Ok(());
         }
-        if let toml::Value::Table(table) = current {
-            current = table
-                .entry(part.to_string())
-                .or_insert(toml::Value::Table(Default::default()));
-        } else {
-            anyhow::bail!("'{part}' is not a table");
+        if current.get(part).is_none() {
+            current[part] = toml_edit::Item::Table(toml_edit::Table::new());
         }
+        current = &mut current[part];
     }
     Ok(())
 }
 
-fn remove_toml_value(root: &mut toml::Value, key_path: &str) -> anyhow::Result<bool> {
+fn remove_toml_value(doc: &mut toml_edit::DocumentMut, key_path: &str) -> anyhow::Result<bool> {
     let parts: Vec<&str> = key_path.split('.').collect();
     if parts.is_empty() {
         return Ok(false);
     }
-    let mut current = root;
+    let mut current: &mut toml_edit::Item = doc.as_item_mut();
     for (i, part) in parts.iter().enumerate() {
         if i == parts.len() - 1 {
-            if let toml::Value::Table(table) = current {
-                return Ok(table.remove(*part).is_some());
+            if let Some(table) = current.as_table_like_mut() {
+                return Ok(table.remove(part).is_some());
             }
             return Ok(false);
         }
-        if let toml::Value::Table(table) = current {
-            if let Some(next) = table.get_mut(*part) {
-                current = next;
-            } else {
-                return Ok(false);
-            }
+        if let Some(next) = current.get_mut(part) {
+            current = next;
         } else {
             return Ok(false);
         }
@@ -229,24 +229,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_json_to_toml_string() {
+    fn test_json_to_toml_edit_string() {
         let v = json!("hello");
-        let t = json_to_toml(&v);
-        assert_eq!(t, toml::Value::String("hello".into()));
+        let t = json_to_toml_edit(&v);
+        assert!(t.is_value());
+        assert_eq!(t.as_str(), Some("hello"));
     }
 
     #[test]
-    fn test_json_to_toml_integer() {
+    fn test_json_to_toml_edit_integer() {
         let v = json!(42);
-        let t = json_to_toml(&v);
-        assert_eq!(t, toml::Value::Integer(42));
+        let t = json_to_toml_edit(&v);
+        assert!(t.is_value());
+        assert_eq!(t.as_integer(), Some(42));
     }
 
     #[test]
-    fn test_json_to_toml_float() {
+    fn test_json_to_toml_edit_float() {
         let v = json!(3.14);
-        let t = json_to_toml(&v);
-        if let toml::Value::Float(f) = t {
+        let t = json_to_toml_edit(&v);
+        assert!(t.is_value());
+        if let Some(f) = t.as_float() {
             assert!((f - 3.14).abs() < 0.001);
         } else {
             panic!("expected float");
@@ -254,114 +257,122 @@ mod tests {
     }
 
     #[test]
-    fn test_json_to_toml_bool() {
-        assert_eq!(json_to_toml(&json!(true)), toml::Value::Boolean(true));
-        assert_eq!(json_to_toml(&json!(false)), toml::Value::Boolean(false));
+    fn test_json_to_toml_edit_bool() {
+        let t = json_to_toml_edit(&json!(true));
+        assert_eq!(t.as_bool(), Some(true));
+        let f = json_to_toml_edit(&json!(false));
+        assert_eq!(f.as_bool(), Some(false));
     }
 
     #[test]
-    fn test_json_to_toml_array() {
+    fn test_json_to_toml_edit_array() {
         let v = json!(["a", "b"]);
-        let t = json_to_toml(&v);
-        if let toml::Value::Array(arr) = t {
-            assert_eq!(arr.len(), 2);
-        } else {
-            panic!("expected array");
-        }
+        let t = json_to_toml_edit(&v);
+        assert!(t.is_value());
+        let arr = t.as_value().unwrap().as_array().unwrap();
+        assert_eq!(arr.len(), 2);
     }
 
     #[test]
-    fn test_json_to_toml_object() {
+    fn test_json_to_toml_edit_object() {
         let v = json!({"key": "value"});
-        let t = json_to_toml(&v);
-        if let toml::Value::Table(table) = t {
-            assert_eq!(table.get("key").unwrap(), &toml::Value::String("value".into()));
-        } else {
-            panic!("expected table");
-        }
+        let t = json_to_toml_edit(&v);
+        assert!(t.is_table());
+        let table = t.as_table().unwrap();
+        assert_eq!(table.get("key").unwrap().as_str(), Some("value"));
     }
 
     #[test]
-    fn test_json_to_toml_null() {
+    fn test_json_to_toml_edit_null() {
         let v = json!(null);
-        let t = json_to_toml(&v);
-        assert_eq!(t, toml::Value::String(String::new()));
+        let t = json_to_toml_edit(&v);
+        assert_eq!(t.as_str(), Some(""));
     }
 
     #[test]
     fn test_get_toml_value_simple() {
-        let doc: toml::Value = toml::from_str(r#"
+        let doc: toml_edit::DocumentMut = r#"
 [provider]
 model = "test"
-"#).unwrap();
-        assert_eq!(get_toml_value(&doc, "provider.model"), Some("\"test\"".into()));
+"#.parse().unwrap();
+        let val = get_toml_value(&doc, "provider.model");
+        assert!(val.is_some());
+        assert!(val.unwrap().contains("test"));
     }
 
     #[test]
     fn test_get_toml_value_missing() {
-        let doc: toml::Value = toml::from_str("[provider]\n").unwrap();
+        let doc: toml_edit::DocumentMut = "[provider]\n".parse().unwrap();
         assert!(get_toml_value(&doc, "provider.nonexistent").is_none());
     }
 
     #[test]
     fn test_get_toml_value_nested() {
-        let doc: toml::Value = toml::from_str(r#"
+        let doc: toml_edit::DocumentMut = r#"
 [a.b]
 c = 42
-"#).unwrap();
-        assert_eq!(get_toml_value(&doc, "a.b.c"), Some("42".into()));
+"#.parse().unwrap();
+        let val = get_toml_value(&doc, "a.b.c");
+        assert!(val.is_some());
+        assert!(val.unwrap().contains("42"));
     }
 
     #[test]
     fn test_set_toml_value_new_key() {
-        let mut doc = toml::Value::Table(Default::default());
-        set_toml_value(&mut doc, "provider.model", toml::Value::String("test".into())).unwrap();
-        assert_eq!(get_toml_value(&doc, "provider.model"), Some("\"test\"".into()));
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_value(&mut doc, "provider.model", toml_edit::value("test")).unwrap();
+        let val = get_toml_value(&doc, "provider.model");
+        assert!(val.is_some());
+        assert!(val.unwrap().contains("test"));
     }
 
     #[test]
     fn test_set_toml_value_overwrite() {
-        let mut doc: toml::Value = toml::from_str("[provider]\nmodel = \"old\"\n").unwrap();
-        set_toml_value(&mut doc, "provider.model", toml::Value::String("new".into())).unwrap();
-        assert_eq!(get_toml_value(&doc, "provider.model"), Some("\"new\"".into()));
+        let mut doc: toml_edit::DocumentMut = "[provider]\nmodel = \"old\"\n".parse().unwrap();
+        set_toml_value(&mut doc, "provider.model", toml_edit::value("new")).unwrap();
+        let val = get_toml_value(&doc, "provider.model");
+        assert!(val.is_some());
+        assert!(val.unwrap().contains("new"));
     }
 
     #[test]
     fn test_set_toml_value_deep_new() {
-        let mut doc = toml::Value::Table(Default::default());
-        set_toml_value(&mut doc, "a.b.c", toml::Value::Integer(99)).unwrap();
-        assert_eq!(get_toml_value(&doc, "a.b.c"), Some("99".into()));
+        let mut doc = toml_edit::DocumentMut::new();
+        set_toml_value(&mut doc, "a.b.c", toml_edit::value(99)).unwrap();
+        let val = get_toml_value(&doc, "a.b.c");
+        assert!(val.is_some());
+        assert!(val.unwrap().contains("99"));
     }
 
     #[test]
     fn test_set_toml_value_empty_path_error() {
-        let mut doc = toml::Value::Table(Default::default());
-        let result = set_toml_value(&mut doc, "", toml::Value::String("x".into()));
+        let mut doc = toml_edit::DocumentMut::new();
+        let result = set_toml_value(&mut doc, "", toml_edit::value("x"));
         assert!(result.is_ok() || result.is_err());
     }
 
     #[test]
     fn test_remove_toml_value_existing() {
-        let mut doc: toml::Value = toml::from_str("[provider]\nmodel = \"test\"\n").unwrap();
+        let mut doc: toml_edit::DocumentMut = "[provider]\nmodel = \"test\"\n".parse().unwrap();
         assert!(remove_toml_value(&mut doc, "provider.model").unwrap());
         assert!(get_toml_value(&doc, "provider.model").is_none());
     }
 
     #[test]
     fn test_remove_toml_value_missing() {
-        let mut doc: toml::Value = toml::from_str("[provider]\n").unwrap();
+        let mut doc: toml_edit::DocumentMut = "[provider]\n".parse().unwrap();
         assert!(!remove_toml_value(&mut doc, "provider.nonexistent").unwrap());
     }
 
     #[test]
     fn test_remove_toml_value_missing_parent() {
-        let mut doc = toml::Value::Table(Default::default());
+        let mut doc = toml_edit::DocumentMut::new();
         assert!(!remove_toml_value(&mut doc, "a.b.c").unwrap());
     }
 
     #[test]
     fn test_remove_toml_value_empty_path() {
-        let mut doc = toml::Value::Table(Default::default());
+        let mut doc = toml_edit::DocumentMut::new();
         assert!(!remove_toml_value(&mut doc, "").unwrap());
     }
 
@@ -387,5 +398,17 @@ c = 42
         let path = dir.path().join("test_config.toml");
         write_config(&path, "test = true\n").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "test = true\n");
+    }
+
+    #[test]
+    fn test_comments_preserved() {
+        let original = "# This is a comment\n[provider]\n# Model comment\nmodel = \"old\"\n";
+        let mut doc: toml_edit::DocumentMut = original.parse().unwrap();
+        set_toml_value(&mut doc, "provider.model", toml_edit::value("new")).unwrap();
+        let result = doc.to_string();
+        assert!(result.contains("# This is a comment"));
+        assert!(result.contains("# Model comment"));
+        assert!(result.contains("new"));
+        assert!(!result.contains("old"));
     }
 }
