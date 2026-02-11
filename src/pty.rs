@@ -258,4 +258,126 @@ mod tests {
         assert_eq!(got.ws_row, 42);
         assert_eq!(got.ws_col, 132);
     }
+
+    #[test]
+    fn test_make_raw_on_pty() {
+        let pair = create_pty().unwrap();
+        let original = make_raw(pair.slave.as_fd()).expect("make_raw should succeed on PTY slave");
+        let current = termios::tcgetattr(pair.slave.as_fd()).unwrap();
+        assert_ne!(
+            format!("{:?}", original.local_modes),
+            format!("{:?}", current.local_modes),
+            "raw mode should change local_modes"
+        );
+    }
+
+    #[test]
+    fn test_make_raw_returns_restorable_termios() {
+        let pair = create_pty().unwrap();
+        let before = termios::tcgetattr(pair.slave.as_fd()).unwrap();
+        let original = make_raw(pair.slave.as_fd()).unwrap();
+        let raw = termios::tcgetattr(pair.slave.as_fd()).unwrap();
+        assert_ne!(
+            format!("{:?}", before.local_modes),
+            format!("{:?}", raw.local_modes),
+            "raw mode should differ from original"
+        );
+        termios::tcsetattr(
+            pair.slave.as_fd(),
+            termios::OptionalActions::Now,
+            &original,
+        )
+        .expect("restoring original termios should succeed");
+        let restored = termios::tcgetattr(pair.slave.as_fd()).unwrap();
+        assert!(
+            restored.local_modes.contains(before.local_modes & !raw.local_modes),
+            "restored modes should re-enable flags that raw mode cleared"
+        );
+    }
+
+    #[test]
+    fn test_pty_master_slave_communication() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+
+        let pair = create_pty().unwrap();
+        let master_raw = pair.master.as_raw_fd();
+        let slave_raw = pair.slave.as_raw_fd();
+
+        let mut master_file = unsafe { std::fs::File::from_raw_fd(libc::dup(master_raw)) };
+        let mut slave_file = unsafe { std::fs::File::from_raw_fd(libc::dup(slave_raw)) };
+
+        let msg = b"hello pty\r";
+        slave_file.write_all(msg).unwrap();
+        slave_file.flush().unwrap();
+
+        let mut buf = [0u8; 64];
+        let n = master_file.read(&mut buf).unwrap();
+        assert!(n > 0, "should read data back from master");
+        assert!(
+            std::str::from_utf8(&buf[..n]).unwrap().contains("hello pty"),
+            "master should echo data written to slave"
+        );
+    }
+
+    #[test]
+    fn test_create_pty_master_slave_distinct() {
+        let p1 = create_pty().unwrap();
+        let p2 = create_pty().unwrap();
+        assert_ne!(p1.master.as_raw_fd(), p2.master.as_raw_fd());
+        assert_ne!(p1.slave.as_raw_fd(), p2.slave.as_raw_fd());
+    }
+
+    #[test]
+    fn test_copy_winsize_preserves_all_fields() {
+        let p1 = create_pty().unwrap();
+        let p2 = create_pty().unwrap();
+        let ws = libc::winsize {
+            ws_row: 50,
+            ws_col: 200,
+            ws_xpixel: 800,
+            ws_ypixel: 600,
+        };
+        unsafe { libc::ioctl(p1.master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+        copy_winsize(p1.master.as_fd(), p2.master.as_fd()).unwrap();
+        let got = termios::tcgetwinsize(p2.master.as_fd()).unwrap();
+        assert_eq!(got.ws_row, 50);
+        assert_eq!(got.ws_col, 200);
+    }
+
+    #[test]
+    fn test_shell_basename_extraction() {
+        let cases = [
+            ("/bin/zsh", "zsh"),
+            ("/usr/local/bin/bash", "bash"),
+            ("fish", "fish"),
+            ("/a/b/c/d/sh", "sh"),
+            ("", ""),
+        ];
+        for (input, expected) in cases {
+            let basename = input.rsplit('/').next().unwrap_or(input);
+            assert_eq!(basename, expected, "basename of {input:?}");
+        }
+    }
+
+    #[test]
+    fn test_winsize_default_fallback() {
+        let ws: Option<rustix::termios::Winsize> = None;
+        let (rows, cols) = ws.map(|w| (w.ws_row, w.ws_col)).unwrap_or((24, 80));
+        assert_eq!(rows, 24);
+        assert_eq!(cols, 80);
+    }
+
+    #[test]
+    fn test_execvp_empty_command() {
+        let err = exec::execvp("", &[""]);
+        assert!(err.kind() != std::io::ErrorKind::InvalidInput,
+            "empty string is valid CString, should fail with OS error not null-byte error");
+    }
+
+    #[test]
+    fn test_execvp_nonexistent_command() {
+        let err = exec::execvp("/nonexistent/binary/path", &["/nonexistent/binary/path"]);
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 }

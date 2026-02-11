@@ -815,6 +815,98 @@ mod tests {
         assert_eq!(model, "model-x");
     }
 
+    #[tokio::test]
+    async fn call_with_chain_retryable_exhausts_then_falls_back() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 2 {
+                    Err(anyhow::anyhow!("429 Too Many Requests"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("ok".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) = call_with_chain(&provider, dummy_request(), &chain)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-b");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_retryable_exhausts_both_attempts_then_falls_back() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("429 Too Many Requests"))),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 2 {
+                    Err(anyhow::anyhow!("429 Too Many Requests"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("from-b".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string(), "model-b".to_string()];
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+                .await
+                .unwrap();
+        assert_eq!(model, "model-b");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "from-b"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_with_think_and_no_extra_body() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| {
+                let (tx, rx) = mpsc::channel(8);
+                tokio::spawn(async move {
+                    let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                });
+                Ok(rx)
+            }),
+        };
+        let chain = vec!["google/gemini-2.5-pro".to_string()];
+        let mut req = dummy_request();
+        req.extra_body = None;
+        let (_, model) = call_chain_with_fallback_think(&provider, req, &chain, true)
+            .await
+            .unwrap();
+        assert_eq!(model, "google/gemini-2.5-pro");
+    }
+
+    #[tokio::test]
+    async fn call_with_chain_retryable_both_attempts_fail_last_model_errors() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("429 Too Many Requests"))),
+        };
+        let chain = vec!["model-only".to_string()];
+        let result = call_with_chain(&provider, dummy_request(), &chain).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("429"));
+    }
+
     #[test]
     fn is_retryable_error_timed_out() {
         let e = anyhow::anyhow!("request timed out after 30s");

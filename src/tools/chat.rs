@@ -31,3 +31,85 @@ pub fn execute(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    fn test_db() -> Db {
+        Db::open_in_memory().expect("in-memory db")
+    }
+
+    #[test]
+    fn test_execute_private_does_not_insert_conversation() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let input = serde_json::json!({"response": "hello world"});
+        let config = Config::default();
+        execute(&input, "test query", &db, "s1", true, &config).unwrap();
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert!(convos.is_empty(), "private=true should not insert conversations");
+    }
+
+    #[test]
+    fn test_execute_non_private_inserts_conversation() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let input = serde_json::json!({"response": "some response"});
+        let config = Config::default();
+        execute(&input, "my query", &db, "s1", false, &config).unwrap();
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].query, "my query");
+        assert_eq!(convos[0].response, "some response");
+        assert_eq!(convos[0].response_type, "chat");
+    }
+
+    #[test]
+    fn test_execute_empty_response() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let input = serde_json::json!({"response": ""});
+        let config = Config::default();
+        execute(&input, "query", &db, "s1", false, &config).unwrap();
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].response, "");
+    }
+
+    #[test]
+    fn test_execute_missing_response_field() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let input = serde_json::json!({});
+        let config = Config::default();
+        execute(&input, "query", &db, "s1", false, &config).unwrap();
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].response, "");
+    }
+
+    #[test]
+    fn test_execute_response_with_markdown() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
+
+        let md = "# Title\n\n**bold** and *italic*\n\n```rust\nfn main() {}\n```\n";
+        let input = serde_json::json!({"response": md});
+        let config = Config::default();
+        execute(&input, "explain code", &db, "s1", false, &config).unwrap();
+
+        let convos = db.get_conversations("s1", 10).unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].response, md);
+    }
+}

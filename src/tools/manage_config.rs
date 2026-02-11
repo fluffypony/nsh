@@ -510,4 +510,49 @@ c = 42
         assert!(!crate::config::is_setting_protected("provider.model"));
         assert!(!crate::config::is_setting_protected("context.history_limit"));
     }
+
+    #[test]
+    fn test_execute_empty_key_bails() {
+        let input = json!({"action": "set", "value": "foo"});
+        let err = execute(&input).unwrap_err();
+        assert!(err.to_string().contains("'key' is required"));
+    }
+
+    #[test]
+    fn test_execute_missing_key_field_bails() {
+        let input = json!({"action": "set", "value": 123});
+        let err = execute(&input).unwrap_err();
+        assert!(err.to_string().contains("'key' is required"));
+    }
+
+    #[test]
+    fn test_execute_protected_setting_returns_ok() {
+        let input = json!({
+            "action": "set",
+            "key": "execution.allow_unsafe_autorun",
+            "value": true
+        });
+        let result = execute(&input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_unknown_action_bails() {
+        let input = json!({
+            "action": "delete",
+            "key": "provider.model"
+        });
+        let err = execute(&input).unwrap_err();
+        assert!(err.to_string().contains("unknown action"));
+    }
+
+    #[test]
+    fn test_execute_set_missing_value_bails() {
+        let input = json!({
+            "action": "set",
+            "key": "provider.model"
+        });
+        let err = execute(&input).unwrap_err();
+        assert!(err.to_string().contains("'value' is required"));
+    }
 }

@@ -420,4 +420,30 @@ mod tests {
         let result = execute(&db, &input, &config, "test_sess").unwrap();
         assert!(result.contains("cargo"));
     }
+
+    #[test]
+    fn test_execute_with_since_and_until() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({
+            "query": "cargo",
+            "since": "2025-01-01T00:00:00Z",
+            "until": "2025-12-31T23:59:59Z"
+        });
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("cargo"));
+    }
+
+    #[test]
+    fn test_execute_with_relative_since() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo", "since": "30d"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(
+            result.contains("cargo") || result.contains("No matching"),
+        );
+    }
 }

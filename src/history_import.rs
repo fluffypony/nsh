@@ -690,4 +690,41 @@ mod tests {
         assert_eq!(results[0].0, "ls");
         assert_eq!(results[0].1.timestamp(), 1_700_000_200);
     }
+
+    #[test]
+    fn parse_fish_out_of_range_when_returns_none_uses_now() {
+        let huge_ts = i64::MAX.to_string();
+        let content = format!("- cmd: echo test\n  when: {huge_ts}\n");
+        let f = write_temp(&content);
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "echo test");
+        let now = Utc::now().timestamp();
+        assert!((results[0].1.timestamp() - now).abs() < 5);
+    }
+
+    #[test]
+    fn parse_zsh_whitespace_only_treated_as_plain() {
+        let f = write_temp("   \n  \n");
+        let results = parse_zsh(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "   ");
+        assert_eq!(results[1].0, "  ");
+    }
+
+    #[test]
+    fn import_filters_empty_and_comment_commands() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.create_session("check", "test", "test", 0).unwrap();
+        db.insert_command("check", "   ", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
+        db.insert_command("check", "#comment", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
+        db.insert_command("check", "real_cmd", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
+        assert!(db.command_count().unwrap() > 0);
+        import_if_needed(&db);
+        assert_eq!(
+            db.get_meta("shell_history_imported").unwrap().as_deref(),
+            Some("1"),
+            "import should still set flag even when db already has commands"
+        );
+    }
 }

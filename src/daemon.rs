@@ -2066,4 +2066,261 @@ mod tests {
         ).unwrap();
         generate_summaries_sync(&db);
     }
+
+    #[test]
+    fn test_daemon_request_all_variants_roundtrip() {
+        let variants = vec![
+            r#"{"type":"heartbeat","session":"s1"}"#,
+            r#"{"type":"status"}"#,
+            r#"{"type":"capture_mark","session":"s1"}"#,
+            r#"{"type":"capture_read","session":"s1"}"#,
+            r#"{"type":"scrollback"}"#,
+            r#"{"type":"context","session":"s1"}"#,
+            r#"{"type":"summarize_check","session":"s1"}"#,
+            r#"{"type":"mcp_tool_call","tool":"test","input":{}}"#,
+        ];
+        for json_str in &variants {
+            let parsed: DaemonRequest = serde_json::from_str(json_str).unwrap();
+            let reserialized = serde_json::to_string(&parsed).unwrap();
+            let _reparsed: DaemonRequest = serde_json::from_str(&reserialized).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_ok_skips_null_data() {
+        let resp = DaemonResponse::ok();
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(!json.contains("data"), "Ok without data should skip data field: {json}");
+    }
+
+    #[test]
+    fn test_daemon_response_ok_with_data_includes_data() {
+        let resp = DaemonResponse::ok_with_data(serde_json::json!({"key": "value"}));
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"key\""));
+        assert!(json.contains("\"value\""));
+    }
+
+    #[test]
+    fn test_daemon_response_error_roundtrip_serde() {
+        let resp = DaemonResponse::error("something went wrong");
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonResponse::Error { message } => {
+                assert_eq!(message, "something went wrong");
+            }
+            _ => panic!("expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_record_defaults_for_optional_fields() {
+        let json_str = r#"{"type":"record","session":"s1","command":"ls","cwd":"/","exit_code":0,"started_at":"2025-01-01T00:00:00Z"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json_str).unwrap();
+        match parsed {
+            DaemonRequest::Record { tty, pid, shell, duration_ms, output, .. } => {
+                assert_eq!(tty, "");
+                assert_eq!(pid, 0);
+                assert_eq!(shell, "");
+                assert!(duration_ms.is_none());
+                assert!(output.is_none());
+            }
+            _ => panic!("expected Record"),
+        }
+    }
+
+    #[test]
+    fn test_handle_context_and_mcp_not_implemented() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp1 = handle_daemon_request(
+            DaemonRequest::Context { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp1 {
+            DaemonResponse::Error { message } => assert!(message.contains("not yet")),
+            _ => panic!("expected Error for Context"),
+        }
+        let resp2 = handle_daemon_request(
+            DaemonRequest::McpToolCall { tool: "test".into(), input: serde_json::json!({}) },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp2 {
+            DaemonResponse::Error { message } => assert!(message.contains("not yet")),
+            _ => panic!("expected Error for McpToolCall"),
+        }
+    }
+
+    #[test]
+    fn test_handle_summarize_check() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, db_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(cmd) = db_rx.recv() {
+                match cmd {
+                    DbCommand::GenerateSummaries => break,
+                    _ => {}
+                }
+            }
+        });
+        let resp = handle_daemon_request(
+            DaemonRequest::SummarizeCheck { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+    }
+
+    #[test]
+    fn test_handle_record_db_tx_dropped() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
+        drop(db_rx);
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "ls".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("unavailable"), "got: {message}");
+            }
+            _ => panic!("expected Error when db_tx receiver is dropped"),
+        }
+    }
+
+    #[test]
+    fn test_handle_heartbeat_db_tx_dropped() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
+        drop(db_rx);
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("unavailable"), "got: {message}");
+            }
+            _ => panic!("expected Error when db_tx receiver is dropped"),
+        }
+    }
+
+    #[test]
+    fn test_run_db_thread_record_with_conversation_feedback() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || run_db_thread(rx));
+
+        let (conv_tx, conv_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::InsertConversation {
+            session_id: "feedback_sess".into(),
+            query: "run tests".into(),
+            response_type: "command".into(),
+            response: "cargo test".into(),
+            explanation: Some("run the test suite".into()),
+            executed: false,
+            pending: true,
+            reply: conv_tx,
+        });
+        let _ = conv_rx.recv_timeout(std::time::Duration::from_secs(2));
+
+        let (rec_tx, rec_rx) = std::sync::mpsc::channel();
+        let _ = tx.send(DbCommand::Record {
+            session: "feedback_sess".into(),
+            command: "cargo test".into(),
+            cwd: "/project".into(),
+            exit_code: 0,
+            started_at: "2025-06-01T00:00:00Z".into(),
+            tty: "/dev/pts/0".into(),
+            pid: 42,
+            shell: "zsh".into(),
+            duration_ms: Some(1500),
+            output: Some("test result: ok. 10 passed".into()),
+            reply: rec_tx,
+        });
+        let result = rec_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert!(result.is_ok());
+
+        let _ = tx.send(DbCommand::Shutdown);
+        handle.join().expect("db thread should exit cleanly");
+    }
+
+    #[test]
+    fn test_handle_record_db_error_response() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(DbCommand::Record { reply, .. }) = rx.recv() {
+                let _ = reply.send(Err(anyhow::anyhow!("simulated DB error")));
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "test".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("simulated DB error"));
+            }
+            _ => panic!("expected Error response for DB error"),
+        }
+    }
+
+    #[test]
+    fn test_handle_heartbeat_db_error_response() {
+        let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
+        std::thread::spawn(move || {
+            if let Ok(DbCommand::Heartbeat { reply, .. }) = rx.recv() {
+                let _ = reply.send(Err(anyhow::anyhow!("heartbeat DB error")));
+            }
+        });
+
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "s1".into() },
+            &capture,
+            &tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("heartbeat DB error"));
+            }
+            _ => panic!("expected Error response for heartbeat DB error"),
+        }
+    }
 }

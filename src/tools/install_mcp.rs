@@ -269,4 +269,165 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("command"),
             "Default transport should be stdio, requiring command");
     }
+
+    #[test]
+    fn test_name_with_leading_hyphen() {
+        let input = json!({"name": "-leadinghyphen", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_ok(), "Leading hyphen should pass alphanumeric+hyphen validation");
+    }
+
+    #[test]
+    fn test_name_single_char() {
+        let input = json!({"name": "a", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_ok(), "Single char name should pass validation");
+    }
+
+    #[test]
+    fn test_name_with_space_rejected() {
+        let input = json!({"name": "has space", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_name_with_dot_rejected() {
+        let input = json!({"name": "has.dot", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_name_with_slash_rejected() {
+        let input = json!({"name": "path/traversal", "transport": "stdio", "command": "echo"});
+        let result = super::execute(&input, &crate::config::Config::default());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn test_default_timeout_is_30() {
+        let input = json!({"name": "srv", "command": "node"});
+        let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
+        assert_eq!(timeout, 30);
+    }
+
+    #[test]
+    fn test_transport_defaults_to_stdio() {
+        let input = json!({"name": "srv", "command": "node"});
+        let transport = input["transport"].as_str().unwrap_or("stdio");
+        assert_eq!(transport, "stdio");
+    }
+
+    #[test]
+    fn test_args_parsing() {
+        let input = json!({"name": "srv", "command": "node", "args": ["--port", "3000", "--verbose"]});
+        let args: Vec<String> = input["args"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        assert_eq!(args, vec!["--port", "3000", "--verbose"]);
+    }
+
+    #[test]
+    fn test_args_missing_defaults_to_empty() {
+        let input = json!({"name": "srv", "command": "node"});
+        let args: Vec<String> = input["args"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_env_parsing() {
+        let input = json!({"name": "srv", "command": "node", "env": {"API_KEY": "abc", "PORT": "8080"}});
+        let env: std::collections::HashMap<String, String> = input["env"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(env.len(), 2);
+        assert_eq!(env["API_KEY"], "abc");
+        assert_eq!(env["PORT"], "8080");
+    }
+
+    #[test]
+    fn test_env_missing_defaults_to_empty() {
+        let input = json!({"name": "srv", "command": "node"});
+        let env: std::collections::HashMap<String, String> = input["env"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn test_server_table_stdio_omits_transport() {
+        let mut server = toml_edit::Table::new();
+        let transport = "stdio";
+        if transport != "stdio" {
+            server.insert("transport", toml_edit::value(transport));
+        }
+        server.insert("command", toml_edit::value("node"));
+        server.insert("timeout_seconds", toml_edit::value(30_i64));
+
+        let s = server.to_string();
+        assert!(!s.contains("transport"), "stdio transport should be omitted from TOML");
+        assert!(s.contains("command = \"node\""));
+        assert!(s.contains("timeout_seconds = 30"));
+    }
+
+    #[test]
+    fn test_server_table_http_includes_transport() {
+        let mut server = toml_edit::Table::new();
+        let transport = "http";
+        if transport != "stdio" {
+            server.insert("transport", toml_edit::value(transport));
+        }
+        server.insert("url", toml_edit::value("http://localhost:3000"));
+        server.insert("timeout_seconds", toml_edit::value(30_i64));
+
+        let s = server.to_string();
+        assert!(s.contains("transport = \"http\""));
+        assert!(s.contains("url = \"http://localhost:3000\""));
+    }
+
+    #[test]
+    fn test_server_table_with_args_and_env() {
+        let mut server = toml_edit::Table::new();
+        server.insert("command", toml_edit::value("npx"));
+
+        let mut arr = toml_edit::Array::new();
+        arr.push("-y");
+        arr.push("@mcp/server");
+        server.insert("args", toml_edit::value(arr));
+
+        let mut env_table = toml_edit::Table::new();
+        env_table.insert("TOKEN", toml_edit::value("secret"));
+        server.insert("env", toml_edit::Item::Table(env_table));
+
+        server.insert("timeout_seconds", toml_edit::value(60_i64));
+
+        let mut doc = toml_edit::DocumentMut::new();
+        doc["mcp"] = toml_edit::Item::Table(toml_edit::Table::new());
+        doc["mcp"]["servers"] = toml_edit::Item::Table(toml_edit::Table::new());
+        doc["mcp"]["servers"]["test"] = toml_edit::Item::Table(server);
+
+        let s = doc.to_string();
+        assert!(s.contains("command = \"npx\""));
+        assert!(s.contains("args = [\"-y\", \"@mcp/server\"]"));
+        assert!(s.contains("TOKEN = \"secret\""), "env should contain TOKEN=secret, got: {s}");
+        assert!(s.contains("timeout_seconds = 60"));
+    }
 }

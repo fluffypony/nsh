@@ -3430,4 +3430,204 @@ command = "cmd2"
         assert!(xml.contains("tools=\"5\""));
         assert!(!xml.contains("status=\"not_started\""));
     }
+
+    // ── Additional coverage tests ───────────────────────
+
+    #[test]
+    fn test_config_from_empty_toml() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.provider.default, "openrouter");
+        assert_eq!(config.context.retention_days, 1095);
+        assert!(config.redaction.enabled);
+        assert!(config.mcp.servers.is_empty());
+    }
+
+    #[test]
+    fn test_config_malformed_toml_errors() {
+        let bad_toml = "[provider\ndefault = oops";
+        let result: Result<Config, _> = toml::from_str(bad_toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_setting_protected_parent_prefix_with_dot() {
+        assert!(is_setting_protected("tools.sensitive_file_access"));
+        assert!(is_setting_protected("tools.run_command_allowlist"));
+        assert!(!is_setting_protected("toolshed.something"));
+    }
+
+    #[test]
+    fn test_is_setting_protected_segment_in_middle() {
+        assert!(is_setting_protected("foo.api_key.bar"));
+        assert!(is_setting_protected("some.api_key_cmd.nested"));
+        assert!(is_setting_protected("deeply.nested.base_url.more"));
+    }
+
+    #[test]
+    fn test_build_config_xml_redaction_section_details() {
+        let mut config = Config::default();
+        config.redaction.enabled = false;
+        config.redaction.disable_builtin = true;
+        config.redaction.replacement = "[HIDDEN]".into();
+        config.redaction.patterns = vec!["a".into(), "b".into(), "c".into()];
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("\"false\""));
+        assert!(xml.contains("[HIDDEN]"));
+        assert!(xml.contains("(3 custom patterns)"));
+    }
+
+    #[test]
+    fn test_build_config_xml_tools_section_contents() {
+        let mut config = Config::default();
+        config.tools.run_command_allowlist = vec!["echo".into(), "ls".into()];
+        config.tools.sensitive_file_access = "allow".into();
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("echo, ls"));
+        assert!(xml.contains("allow"));
+        assert!(xml.contains("protected=\"true\""));
+    }
+
+    #[test]
+    fn test_build_config_xml_models_section_lists() {
+        let mut config = Config::default();
+        config.models.main = vec!["model-a".into(), "model-b".into()];
+        config.models.fast = vec!["model-fast".into()];
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("model-a, model-b"));
+        assert!(xml.contains("model-fast"));
+    }
+
+    #[test]
+    fn test_provider_auth_api_key_takes_precedence_over_env() {
+        let auth = ProviderAuth {
+            api_key: Some("config-key".into()),
+            api_key_cmd: Some("echo cmd-key".into()),
+            base_url: None,
+        };
+        let key = auth.resolve_api_key("openrouter").unwrap();
+        assert_eq!(*key, "config-key");
+    }
+
+    #[test]
+    fn test_resolve_api_key_cmd_returns_empty() {
+        let auth = ProviderAuth {
+            api_key: None,
+            api_key_cmd: Some("printf ''".into()),
+            base_url: None,
+        };
+        let result = auth.resolve_api_key("openrouter");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_config_load_uses_defaults_when_no_file() {
+        let config = Config::load().unwrap_or_default();
+        assert_eq!(config.provider.default, "openrouter");
+        assert!(config.context.retention_days > 0);
+        assert!(config.db.busy_timeout_ms > 0);
+    }
+
+    #[test]
+    fn test_build_config_xml_custom_instructions() {
+        let mut config = Config::default();
+        config.context.custom_instructions = Some("Always use verbose output".into());
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("Always use verbose output"));
+        assert!(xml.contains("custom_instructions"));
+    }
+
+    #[test]
+    fn test_build_config_xml_execution_section() {
+        let mut config = Config::default();
+        config.execution.mode = "autorun".into();
+        config.execution.allow_unsafe_autorun = true;
+        let xml = build_config_xml(&config, &[], &[]);
+        assert!(xml.contains("autorun"));
+        assert!(xml.contains("allow_unsafe_autorun"));
+        assert!(xml.contains("true"));
+    }
+
+    #[test]
+    fn test_toml_parse_all_sections() {
+        let toml_str = r#"
+[provider]
+default = "anthropic"
+model = "claude-3"
+timeout_seconds = 30
+
+[context]
+history_limit = 10
+retention_days = 90
+custom_instructions = "Be concise"
+
+[display]
+chat_color = "green"
+
+[redaction]
+enabled = false
+replacement = "[HIDDEN]"
+disable_builtin = true
+patterns = ["custom_pattern"]
+
+[capture]
+mode = "vt100"
+alt_screen = "snapshot"
+
+[db]
+busy_timeout_ms = 5000
+
+[execution]
+mode = "confirm"
+allow_unsafe_autorun = true
+
+[web_search]
+provider = "custom"
+model = "custom/model"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.default, "anthropic");
+        assert_eq!(config.context.history_limit, 10);
+        assert_eq!(config.context.custom_instructions.as_deref(), Some("Be concise"));
+        assert!(!config.redaction.enabled);
+        assert_eq!(config.redaction.replacement, "[HIDDEN]");
+        assert!(config.redaction.disable_builtin);
+        assert_eq!(config.capture.alt_screen, "snapshot");
+        assert_eq!(config.db.busy_timeout_ms, 5000);
+        assert_eq!(config.execution.mode, "confirm");
+        assert!(config.execution.allow_unsafe_autorun);
+        assert_eq!(config.web_search.provider, "custom");
+    }
+
+    #[test]
+    fn test_build_config_xml_with_global_and_project_skills() {
+        let config = Config::default();
+        let skills = vec![
+            crate::skills::Skill {
+                name: "test-skill".into(),
+                description: "A test skill".into(),
+                command: String::new(),
+                timeout_seconds: 30,
+                terminal: false,
+                parameters: std::collections::HashMap::new(),
+                is_project: false,
+            },
+            crate::skills::Skill {
+                name: "project-skill".into(),
+                description: "A project skill".into(),
+                command: String::new(),
+                timeout_seconds: 30,
+                terminal: true,
+                parameters: std::collections::HashMap::new(),
+                is_project: true,
+            },
+        ];
+        let xml = build_config_xml(&config, &skills, &[]);
+        assert!(xml.contains("test-skill"));
+        assert!(xml.contains("source=\"global\""));
+        assert!(xml.contains("project-skill"));
+        assert!(xml.contains("source=\"project\""));
+        assert!(xml.contains("terminal=\"true\""));
+        assert!(xml.contains("count=\"2\""));
+    }
 }

@@ -1299,4 +1299,144 @@ mod tests {
         let result = client.parse_tool_name("mcp_ab_cd_x");
         assert_eq!(result, Some(("ab_cd", "x")));
     }
+
+    #[test]
+    fn find_event_boundary_data_then_boundary_then_more_data() {
+        let buf = b"id: 1\ndata: {\"result\":42}\n\nid: 2\ndata: next";
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((25, 2)));
+    }
+
+    #[test]
+    fn find_event_boundary_multiple_crlf_boundaries_finds_first() {
+        let buf = b"a\r\n\r\nb\r\n\r\nc";
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((1, 4)));
+    }
+
+    #[test]
+    fn find_event_boundary_mixed_cr_and_lf_no_valid_boundary() {
+        let buf = b"data: hello\r\ndata: world\r\n";
+        assert_eq!(find_event_boundary(buf), None);
+    }
+
+    #[test]
+    fn find_event_boundary_binary_data_with_embedded_newlines() {
+        let buf: &[u8] = &[0xFF, 0x00, b'\n', b'\n', 0xAB];
+        let result = find_event_boundary(buf);
+        assert_eq!(result, Some((2, 2)));
+    }
+
+    #[test]
+    fn mcp_client_new_servers_map_is_empty() {
+        let client = McpClient::new();
+        assert!(client.servers.is_empty());
+        assert_eq!(client.servers.len(), 0);
+    }
+
+    #[test]
+    fn tool_definitions_prefix_format_across_servers() {
+        let client = make_multi_server_client();
+        let defs = client.tool_definitions();
+        for def in &defs {
+            assert!(def.name.starts_with("mcp_"), "tool '{}' missing mcp_ prefix", def.name);
+            let rest = def.name.strip_prefix("mcp_").unwrap();
+            assert!(rest.contains('_'), "tool '{}' has no underscore after server prefix", def.name);
+        }
+    }
+
+    #[test]
+    fn server_info_different_tool_counts() {
+        let mut client = McpClient::new();
+        let make_server = |count: usize| McpServer {
+            transport: McpTransport::Http {
+                client: reqwest::Client::new(),
+                url: "http://localhost".into(),
+                session_id: None,
+                headers: vec![],
+            },
+            tools: (0..count)
+                .map(|i| McpToolInfo {
+                    name: format!("tool_{i}"),
+                    description: String::new(),
+                    input_schema: json!({}),
+                })
+                .collect(),
+            next_id: 1,
+            timeout: Duration::from_secs(30),
+        };
+        client.servers.insert("small".into(), make_server(1));
+        client.servers.insert("medium".into(), make_server(5));
+        client.servers.insert("large".into(), make_server(10));
+        let info = client.server_info();
+        assert_eq!(info.len(), 3);
+        let mut sorted = info.clone();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(sorted[0], ("large".into(), 10));
+        assert_eq!(sorted[1], ("medium".into(), 5));
+        assert_eq!(sorted[2], ("small".into(), 1));
+    }
+
+    #[test]
+    fn jsonrpc_response_null_id() {
+        let json = r#"{"jsonrpc":"2.0","id":null,"result":{"ok":true}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.id.is_none());
+        assert!(resp.result.is_some());
+    }
+
+    #[test]
+    fn jsonrpc_response_id_zero() {
+        let json = r#"{"jsonrpc":"2.0","id":0,"result":{}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, Some(0));
+    }
+
+    #[test]
+    fn jsonrpc_response_string_result() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":"just a string"}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.result.unwrap(), serde_json::json!("just a string"));
+    }
+
+    #[test]
+    fn has_tool_partial_server_name_does_not_match() {
+        let client = make_populated_client();
+        assert!(!client.has_tool("mcp_myserve_search"));
+        assert!(!client.has_tool("mcp_my_search"));
+        assert!(!client.has_tool("mcp_myserverx_search"));
+    }
+
+    #[test]
+    fn has_tool_case_sensitive() {
+        let client = make_populated_client();
+        assert!(!client.has_tool("mcp_Myserver_search"));
+        assert!(!client.has_tool("MCP_myserver_search"));
+    }
+
+    #[test]
+    fn parse_tool_name_no_underscore_after_server() {
+        let mut client = McpClient::new();
+        client.servers.insert(
+            "srv".into(),
+            McpServer {
+                transport: McpTransport::Http {
+                    client: reqwest::Client::new(),
+                    url: "http://localhost".into(),
+                    session_id: None,
+                    headers: vec![],
+                },
+                tools: vec![McpToolInfo {
+                    name: "tool".into(),
+                    description: String::new(),
+                    input_schema: json!({}),
+                }],
+                next_id: 1,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        assert!(client.parse_tool_name("mcp_srvtool").is_none());
+        assert!(client.parse_tool_name("mcp_srv").is_none());
+        assert_eq!(client.parse_tool_name("mcp_srv_tool"), Some(("srv", "tool")));
+    }
 }

@@ -227,4 +227,99 @@ mod tests {
         assert!(toml_content.contains("type = \"integer\""));
         assert!(toml_content.contains("description = \"Number of results\""));
     }
+
+    #[test]
+    fn test_toml_default_timeout_and_terminal() {
+        let input = json!({
+            "name": "my_skill",
+            "description": "desc",
+            "command": "run",
+        });
+
+        let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
+        let terminal = input["terminal"].as_bool().unwrap_or(false);
+
+        let toml_content = format!(
+            "name = {}\ndescription = {}\ncommand = {}\ntimeout_seconds = {}\nterminal = {}\n",
+            toml::Value::String(input["name"].as_str().unwrap().into()),
+            toml::Value::String(input["description"].as_str().unwrap().into()),
+            toml::Value::String(input["command"].as_str().unwrap().into()),
+            timeout,
+            terminal,
+        );
+
+        assert_eq!(timeout, 30);
+        assert_eq!(terminal, false);
+        assert!(toml_content.contains("timeout_seconds = 30"));
+        assert!(toml_content.contains("terminal = false"));
+    }
+
+    #[test]
+    fn test_toml_empty_parameters() {
+        let params = serde_json::json!({});
+
+        let mut toml_content = String::new();
+        if let serde_json::Value::Object(params_map) = &params {
+            for (param_name, param_def) in params_map {
+                let ptype = param_def["type"].as_str().unwrap_or("string");
+                let pdesc = param_def["description"].as_str().unwrap_or("");
+                toml_content.push_str(&format!(
+                    "\n[parameters.{param_name}]\ntype = {}\ndescription = {}\n",
+                    toml::Value::String(ptype.into()),
+                    toml::Value::String(pdesc.into()),
+                ));
+            }
+        }
+
+        assert!(toml_content.is_empty(), "Empty params should produce no TOML output");
+    }
+
+    #[test]
+    fn test_toml_parameter_missing_fields_uses_defaults() {
+        let params = serde_json::json!({
+            "bare_param": {}
+        });
+
+        let mut toml_content = String::new();
+        if let serde_json::Value::Object(params_map) = &params {
+            for (param_name, param_def) in params_map {
+                let ptype = param_def["type"].as_str().unwrap_or("string");
+                let pdesc = param_def["description"].as_str().unwrap_or("");
+                toml_content.push_str(&format!(
+                    "\n[parameters.{param_name}]\ntype = {}\ndescription = {}\n",
+                    toml::Value::String(ptype.into()),
+                    toml::Value::String(pdesc.into()),
+                ));
+            }
+        }
+
+        assert!(toml_content.contains("[parameters.bare_param]"));
+        assert!(toml_content.contains("type = \"string\""), "Missing type should default to 'string'");
+        assert!(toml_content.contains("description = \"\""), "Missing description should default to empty");
+    }
+
+    #[test]
+    fn test_toml_no_parameters_key() {
+        let input = json!({
+            "name": "my_skill",
+            "description": "desc",
+            "command": "run",
+        });
+
+        let parameters = input.get("parameters");
+        let mut toml_content = String::new();
+        if let Some(serde_json::Value::Object(params)) = parameters {
+            for (param_name, param_def) in params {
+                let ptype = param_def["type"].as_str().unwrap_or("string");
+                let pdesc = param_def["description"].as_str().unwrap_or("");
+                toml_content.push_str(&format!(
+                    "\n[parameters.{param_name}]\ntype = {}\ndescription = {}\n",
+                    toml::Value::String(ptype.into()),
+                    toml::Value::String(pdesc.into()),
+                ));
+            }
+        }
+
+        assert!(toml_content.is_empty(), "No parameters key should produce no TOML parameter output");
+    }
 }

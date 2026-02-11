@@ -1908,6 +1908,49 @@ mod tests {
         let ev = rx.recv().await.unwrap();
         assert!(matches!(ev, StreamEvent::Done { .. }));
     }
+
+    #[tokio::test]
+    async fn spawn_openai_stream_error_event() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}");
+        let _handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            let http = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+            let _ = socket.write_all(http.as_bytes()).await;
+            socket.shutdown().await.unwrap();
+        });
+        let resp = reqwest::get(&url).await.unwrap();
+        let mut rx = spawn_openai_stream(resp).unwrap();
+        let _ = rx.recv().await.unwrap(); // GenerationId
+        let _ = rx.recv().await.unwrap(); // TextDelta "hi"
+        let ev = rx.recv().await;
+        assert!(ev.is_none() || matches!(ev, Some(StreamEvent::Error(_)) | Some(StreamEvent::Done { .. })));
+    }
+
+    #[test]
+    fn build_openai_messages_assistant_with_tool_result_block_ignored() {
+        let msgs = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "response".into(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tr1".into(),
+                    content: "should be ignored".into(),
+                    is_error: false,
+                },
+            ],
+        }];
+        let result = build_openai_messages(&msgs, "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["content"], "response");
+        assert!(result[0].get("tool_calls").is_none());
+    }
 }
 
 pub fn spawn_openai_stream(

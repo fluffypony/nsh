@@ -693,4 +693,124 @@ mod tests {
 
         let _ = std::fs::remove_file(&backup_path);
     }
+
+    fn test_db() -> Db {
+        crate::db::Db::open_in_memory().unwrap()
+    }
+
+    fn test_config() -> crate::config::Config {
+        crate::config::Config::default()
+    }
+
+    #[test]
+    fn test_execute_rejects_redaction_markers() {
+        let db = test_db();
+        let config = test_config();
+        let input = serde_json::json!({
+            "path": "/tmp/nsh_test_redact.txt",
+            "content": "secret = [REDACTED:api-key]",
+        });
+        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("redaction markers"),
+            "expected redaction markers error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_execute_rejects_redaction_marker_variants() {
+        let db = test_db();
+        let config = test_config();
+        for marker in &[
+            "[REDACTED:token]",
+            "[REDACTED:github-pat]",
+            "[REDACTED:my_secret_123]",
+        ] {
+            let input = serde_json::json!({
+                "path": "/tmp/nsh_test_redact2.txt",
+                "content": format!("value = {marker}"),
+            });
+            let err = execute(&input, "q", &db, "s", false, &config).unwrap_err();
+            assert!(
+                err.to_string().contains("redaction markers"),
+                "marker {marker} should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_execute_rejects_empty_path() {
+        let db = test_db();
+        let config = test_config();
+        let input = serde_json::json!({
+            "path": "",
+            "content": "hello",
+        });
+        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("path is required"),
+            "expected 'path is required' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_execute_rejects_missing_path() {
+        let db = test_db();
+        let config = test_config();
+        let input = serde_json::json!({
+            "content": "hello",
+        });
+        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("path is required"),
+            "expected 'path is required' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_execute_rejects_sensitive_path() {
+        let db = test_db();
+        let config = test_config();
+        let home = dirs::home_dir().unwrap();
+        let ssh_path = home.join(".ssh/test_key_file");
+        let input = serde_json::json!({
+            "path": ssh_path.to_string_lossy(),
+            "content": "key data",
+        });
+        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("blocked"),
+            "expected blocked error for sensitive path, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_execute_rejects_path_traversal() {
+        let db = test_db();
+        let config = test_config();
+        let input = serde_json::json!({
+            "path": "/tmp/foo/../bar",
+            "content": "data",
+        });
+        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        assert!(
+            err.to_string().contains("path traversal"),
+            "expected path traversal error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_print_diff_both_empty() {
+        print_diff("", "");
+    }
+
+    #[test]
+    fn test_print_preview_empty_content() {
+        print_preview("");
+    }
+
+    #[test]
+    fn test_print_preview_single_line() {
+        print_preview("only one line");
+    }
 }

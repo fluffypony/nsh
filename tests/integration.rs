@@ -246,3 +246,229 @@ fn test_completions_fish() {
         "Expected non-empty completions output"
     );
 }
+
+#[test]
+fn test_doctor_succeeds() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "doctor", "--no-prune", "--no-vacuum"])
+        .output()
+        .expect("failed to run nsh doctor");
+
+    assert!(
+        output.status.success(),
+        "nsh doctor should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_record_inserts_command() {
+    let tmp = std::env::temp_dir().join("nsh_test_record");
+    let output = std::process::Command::new("cargo")
+        .args([
+            "run", "--", "record",
+            "--session", "test-integration-rec",
+            "--command", "echo hello",
+            "--cwd", "/tmp",
+            "--exit-code", "0",
+            "--started-at", "2025-01-01T00:00:00Z",
+            "--duration-ms", "10",
+            "--tty", "/dev/ttys000",
+            "--pid", "1234",
+            "--shell", "zsh",
+        ])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh record");
+
+    assert!(
+        output.status.success(),
+        "nsh record should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_session_start_and_end() {
+    let tmp = std::env::temp_dir().join("nsh_test_session");
+    let session_id = "integration-test-session";
+
+    let start = std::process::Command::new("cargo")
+        .args([
+            "run", "--", "session", "start",
+            "--session", session_id,
+            "--tty", "/dev/ttys000",
+            "--shell", "zsh",
+            "--pid", "9999",
+        ])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh session start");
+    assert!(
+        start.status.success(),
+        "nsh session start should succeed, stderr: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let end = std::process::Command::new("cargo")
+        .args([
+            "run", "--", "session", "end",
+            "--session", session_id,
+        ])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh session end");
+    assert!(
+        end.status.success(),
+        "nsh session end should succeed, stderr: {}",
+        String::from_utf8_lossy(&end.stderr)
+    );
+}
+
+#[test]
+fn test_heartbeat_succeeds() {
+    let tmp = std::env::temp_dir().join("nsh_test_heartbeat");
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "heartbeat", "--session", "hb-test-session"])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh heartbeat");
+
+    assert!(
+        output.status.success(),
+        "nsh heartbeat should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_redact_next_succeeds() {
+    let tmp = std::env::temp_dir().join("nsh_test_redact");
+    let _ = std::fs::create_dir_all(tmp.join(".nsh"));
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "redact-next"])
+        .env("HOME", &tmp)
+        .env("NSH_SESSION_ID", "redact-test")
+        .output()
+        .expect("failed to run nsh redact-next");
+
+    assert!(
+        output.status.success(),
+        "nsh redact-next should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("next command output will not be captured"),
+        "Expected confirmation message, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_init_zsh_contains_hooks() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "init", "zsh"])
+        .output()
+        .expect("failed to run nsh init zsh");
+
+    let script = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        script.contains("precmd") || script.contains("preexec"),
+        "zsh init should contain shell hooks, got: {script}"
+    );
+    assert!(
+        script.contains("nsh record") || script.contains("nsh session") || script.contains("nsh heartbeat"),
+        "zsh init should reference nsh subcommands, got: {script}"
+    );
+}
+
+#[test]
+fn test_init_bash_contains_hooks() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "init", "bash"])
+        .output()
+        .expect("failed to run nsh init bash");
+
+    let script = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        script.contains("PROMPT_COMMAND") || script.contains("trap") || script.contains("DEBUG"),
+        "bash init should contain shell hooks, got: {script}"
+    );
+    assert!(
+        script.contains("nsh record") || script.contains("nsh session") || script.contains("nsh heartbeat"),
+        "bash init should reference nsh subcommands, got: {script}"
+    );
+}
+
+#[test]
+fn test_config_show_raw() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "config", "show", "--raw"])
+        .output()
+        .expect("failed to run nsh config show --raw");
+
+    assert!(
+        output.status.success(),
+        "nsh config show --raw should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_config_show_no_config_file() {
+    let tmp = std::env::temp_dir().join("nsh_test_config_show_nofile");
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "config", "show"])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh config show");
+
+    assert!(
+        output.status.success(),
+        "nsh config show should succeed even with no config, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No config file") || stderr.contains("defaults"),
+        "Expected missing config message, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_cost_today() {
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "cost", "today"])
+        .output()
+        .expect("failed to run nsh cost today");
+
+    assert!(
+        output.status.success(),
+        "nsh cost today should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_session_label_missing_session() {
+    let tmp = std::env::temp_dir().join("nsh_test_session_label");
+    let output = std::process::Command::new("cargo")
+        .args([
+            "run", "--", "session", "label", "test-label",
+            "--session", "nonexistent-session-id",
+        ])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh session label");
+
+    assert!(
+        output.status.success(),
+        "nsh session label should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found"),
+        "Expected 'not found' for missing session, got: {stderr}"
+    );
+}

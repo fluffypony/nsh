@@ -4650,4 +4650,140 @@ mod tests {
         let (_branch, status, _commits) = detect_git_info(dir, 5);
         assert_eq!(status.as_deref(), Some("1 changed files"));
     }
+
+    #[test]
+    fn test_xml_escape_multiple_ampersands() {
+        assert_eq!(xml_escape("a&b&c&d"), "a&amp;b&amp;c&amp;d");
+    }
+
+    #[test]
+    fn test_xml_escape_nested_xml_tags() {
+        assert_eq!(
+            xml_escape("<div attr=\"val\">text & more</div>"),
+            "&lt;div attr=&quot;val&quot;&gt;text &amp; more&lt;/div&gt;"
+        );
+    }
+
+    #[test]
+    fn test_build_xml_context_no_optional_sections() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.starts_with("<context>"));
+        assert!(xml.ends_with("</context>"));
+        assert!(!xml.contains("<ssh"));
+        assert!(!xml.contains("<container"));
+        assert!(!xml.contains("<custom_instructions>"));
+        assert!(!xml.contains("<recent_terminal"));
+        assert!(!xml.contains("<session_history"));
+        assert!(!xml.contains("<other_sessions>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_conversation_history_not_in_xml() {
+        let mut ctx = make_minimal_ctx();
+        ctx.conversation_history = vec![
+            ConversationExchange {
+                query: "list files".into(),
+                response_type: "command".into(),
+                response: "ls -la".into(),
+                explanation: Some("list all files".into()),
+                result_exit_code: Some(0),
+                result_output_snippet: Some("total 42".into()),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("list files"), "conversation history is replayed as messages, not in XML context");
+        assert_eq!(ctx.conversation_history.len(), 1);
+        assert_eq!(ctx.conversation_history[0].query, "list files");
+        assert_eq!(ctx.conversation_history[0].response, "ls -la");
+        assert_eq!(ctx.conversation_history[0].explanation.as_deref(), Some("list all files"));
+        assert_eq!(ctx.conversation_history[0].result_exit_code, Some(0));
+    }
+
+    #[test]
+    fn test_read_scrollback_file_nonexistent_session() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = read_scrollback_file("nonexistent_session_xyz", tmp.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_find_git_root_nested_subdirectory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let deep = tmp.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&deep).unwrap();
+        let root = find_git_root(deep.to_str().unwrap());
+        assert_eq!(root, Some(tmp.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_xml_escape_consecutive_special_chars() {
+        assert_eq!(xml_escape("&&&"), "&amp;&amp;&amp;");
+        assert_eq!(xml_escape("<<<>>>"), "&lt;&lt;&lt;&gt;&gt;&gt;");
+        assert_eq!(xml_escape("\"\"\""), "&quot;&quot;&quot;");
+        assert_eq!(
+            xml_escape("<script>alert(\"xss\")&</script>"),
+            "&lt;script&gt;alert(&quot;xss&quot;)&amp;&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn test_detect_project_type_stops_at_git_boundary() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        let child = tmp.path().join("subproject");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(child.join("Cargo.toml"), "").unwrap();
+        let t = detect_project_type(child.to_str().unwrap());
+        assert!(t.contains("Rust"), "child should detect Rust, got: {t}");
+        assert!(t.contains("Node"), "should walk up to git root and detect Node, got: {t}");
+    }
+
+    #[test]
+    fn test_find_project_root_returns_cwd_when_no_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = find_project_root(tmp.path().to_str().unwrap());
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_build_xml_context_git_commit_with_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/repo".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("feature/add-<thing>".into()),
+            git_status: Some("1 changed files".into()),
+            git_commits: vec![GitCommit {
+                hash: "abc123".into(),
+                message: "fix: handle \"edge\" & <corner> cases".into(),
+                relative_time: "5 min ago".into(),
+            }],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("branch=\"feature/add-&lt;thing&gt;\""));
+        assert!(xml.contains("&quot;edge&quot;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&lt;corner&gt;"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_list_project_files_with_ignore_symlinks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("real.txt"), "content").unwrap();
+        std::os::unix::fs::symlink(
+            tmp.path().join("real.txt"),
+            tmp.path().join("link.txt"),
+        )
+        .unwrap();
+        let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
+        let link_entry = entries.iter().find(|e| e.path == "link.txt");
+        assert!(link_entry.is_some(), "should list symlink: {:?}", entries.iter().map(|e| &e.path).collect::<Vec<_>>());
+        assert_eq!(link_entry.unwrap().kind, "symlink");
+        assert!(link_entry.unwrap().size.is_empty(), "symlinks should have empty size");
+    }
 }

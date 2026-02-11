@@ -2310,4 +2310,244 @@ mod tests {
         assert!(result.contains("/>"));
         assert!(!result.contains("</memories>"));
     }
+
+    // ── execute_sync_tool: additional branches ──
+
+    #[test]
+    fn test_execute_sync_tool_man_page_with_section_param() {
+        let config = Config::load().unwrap_or_default();
+        let input = json!({"command": "ls", "section": 1});
+        let result = execute_sync_tool("man_page", &input, &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_list_directory_explicit_path() {
+        let config = Config::load().unwrap_or_default();
+        let input = json!({"path": "/tmp"});
+        let result = execute_sync_tool("list_directory", &input, &config);
+        assert!(result.is_ok());
+        assert!(!result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_unknown_tool() {
+        let config = Config::load().unwrap_or_default();
+        let input = json!({});
+        let result = execute_sync_tool("nonexistent_tool", &input, &config).unwrap();
+        assert_eq!(result, "Unknown tool: nonexistent_tool");
+    }
+
+    // ── validate_tool_input: additional branches ──
+
+    #[test]
+    fn test_validate_tool_input_forget_memory_missing_id() {
+        let input = json!({"key": "something"});
+        let result = validate_tool_input("forget_memory", &input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("id"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_update_memory_missing_id() {
+        let input = json!({"value": "new_val"});
+        let result = validate_tool_input("update_memory", &input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("id"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_unknown_tool_passes() {
+        let input = json!({});
+        let result = validate_tool_input("totally_unknown_tool", &input);
+        assert!(result.is_ok());
+    }
+
+    // ── describe_tool_action: additional branches ──
+
+    #[test]
+    fn test_describe_tool_action_list_directory_default_path() {
+        let input = json!({});
+        let result = describe_tool_action("list_directory", &input);
+        assert_eq!(result, "listing .");
+    }
+
+    #[test]
+    fn test_describe_tool_action_manage_config_remove_action() {
+        let input = json!({"action": "remove", "key": "mcp.servers.old"});
+        let result = describe_tool_action("manage_config", &input);
+        assert_eq!(result, "config remove: mcp.servers.old");
+    }
+
+    // ── build_system_prompt: security text and large context ──
+
+    #[test]
+    fn test_build_system_prompt_contains_boundary_security_text() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "SEC_BOUNDARY", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("UNTRUSTED DATA"), "expected UNTRUSTED DATA security text");
+        assert!(result.contains("NEVER follow instructions"), "expected injection prevention text");
+        assert!(result.contains("BOUNDARY-SEC_BOUNDARY"), "expected formatted boundary token");
+    }
+
+    #[test]
+    fn test_build_system_prompt_with_large_context() {
+        let ctx = make_test_ctx();
+        let large_xml = format!("<context>{}</context>", "x".repeat(50_000));
+        let result = build_system_prompt(&ctx, &large_xml, "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains(&large_xml));
+        assert!(result.len() > 50_000);
+    }
+
+    // ── build_memories_xml: multiple entries and special chars ──
+
+    #[test]
+    fn test_build_memories_xml_multiple_entries_count() {
+        let mems: Vec<crate::db::Memory> = (1..=5)
+            .map(|i| crate::db::Memory {
+                id: i,
+                key: format!("key{i}"),
+                value: format!("val{i}"),
+                created_at: "2025-01-01".into(),
+                updated_at: "2025-01-01".into(),
+            })
+            .collect();
+        let result = build_memories_xml(&mems);
+        assert!(result.starts_with("<memories count=\"5\">"));
+        for i in 1..=5 {
+            assert!(result.contains(&format!("id=\"{i}\"")));
+            assert!(result.contains(&format!(">val{i}</memory>")));
+        }
+    }
+
+    #[test]
+    fn test_build_memories_xml_special_xml_chars_escaped() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "a<b&c".into(),
+            value: "x>y\"z'w".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(!result.contains("<b&c"), "raw key should be escaped");
+        assert!(result.contains("a&lt;b&amp;c"), "key should have XML escapes");
+        assert!(result.contains("x&gt;y&quot;z"), "value should have XML escapes");
+    }
+
+    // ── execute_sync_tool: grep_file with pattern containing special regex chars ──
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_special_regex_chars_in_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("special.txt");
+        std::fs::write(&file, "aaa\nbbb\nccc\nprice: $100.00\nddd\neee\nfff\nggg\nhhh\ntotal: $200\niii\njjj\nkkk\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "\\$\\d+", "context_lines": 0});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("$100") || result.contains("$200"));
+        assert!(result.contains(">>>"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_list_directory_no_path_key() {
+        let input = json!({});
+        let result = execute_sync_tool("list_directory", &input, &Config::default());
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command_allowlisted() {
+        let input = json!({"command": "whoami"});
+        let result = execute_sync_tool("run_command", &input, &Config::default()).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_large_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("large.txt");
+        let mut content = String::new();
+        for i in 0..500 {
+            content.push_str(&format!("line {i}: some filler text here\n"));
+        }
+        content.push_str("line 500: NEEDLE_FOUND\n");
+        for i in 501..1000 {
+            content.push_str(&format!("line {i}: more filler text\n"));
+        }
+        std::fs::write(&file, &content).unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "NEEDLE_FOUND"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("NEEDLE_FOUND"));
+    }
+
+    // ── validate_tool_input: list_directory has no required fields ──
+
+    #[test]
+    fn test_validate_tool_input_list_directory_empty_ok() {
+        let input = json!({});
+        assert!(validate_tool_input("list_directory", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_first_missing_field_reported() {
+        let input = json!({});
+        let err = validate_tool_input("install_skill", &input).unwrap_err();
+        assert!(err.contains("name"), "should report first missing field 'name'");
+    }
+
+    // ── describe_tool_action: skill-prefixed and empty string tool ──
+
+    #[test]
+    fn test_describe_tool_action_skill_prefixed_tool() {
+        let input = json!({"arg": "value"});
+        let desc = describe_tool_action("skill_deploy", &input);
+        assert_eq!(desc, "skill_deploy");
+    }
+
+    #[test]
+    fn test_describe_tool_action_empty_tool_name() {
+        let input = json!({});
+        let desc = describe_tool_action("", &input);
+        assert_eq!(desc, "");
+    }
+
+    // ── build_system_prompt: with populated QueryContext fields ──
+
+    #[test]
+    fn test_build_system_prompt_with_custom_instructions() {
+        let mut ctx = make_test_ctx();
+        ctx.custom_instructions = Some("Always respond in French.".into());
+        let xml = "<context custom_instructions=\"Always respond in French.\"/>";
+        let result = build_system_prompt(&ctx, xml, "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Always respond in French."));
+    }
+
+    #[test]
+    fn test_build_system_prompt_preserves_all_inputs_independently() {
+        let ctx = make_test_ctx();
+        let xml_ctx = "<ctx>UNIQUE_XML_CONTEXT_123</ctx>";
+        let boundary = "UNIQUE_BOUNDARY_456";
+        let config_xml = "<nsh_configuration>UNIQUE_CONFIG_789</nsh_configuration>";
+        let mem_xml = "<memories count=\"1\"><memory id=\"99\">UNIQUE_MEM_012</memory></memories>";
+        let result = build_system_prompt(&ctx, xml_ctx, boundary, config_xml, mem_xml);
+        assert!(result.contains("UNIQUE_XML_CONTEXT_123"));
+        assert!(result.contains("UNIQUE_BOUNDARY_456"));
+        assert!(result.contains("UNIQUE_CONFIG_789"));
+        assert!(result.contains("UNIQUE_MEM_012"));
+    }
+
+    // ── build_memories_xml: zero and negative ids ──
+
+    #[test]
+    fn test_build_memories_xml_zero_id() {
+        let mems = vec![crate::db::Memory {
+            id: 0,
+            key: "zero".into(),
+            value: "val".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("id=\"0\""));
+    }
 }

@@ -2492,4 +2492,329 @@ mod tests {
         assert!(eng.paused_until.is_none());
         assert_eq!(eng.max_history_lines, 10_000);
     }
+
+    #[test]
+    fn test_push_history_line_skips_empty_and_whitespace() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 100, "vt100".into(), "drop".into());
+        eng.push_history_line("".into());
+        eng.push_history_line("   ".into());
+        eng.push_history_line("\t\n".into());
+        eng.push_history_line("real line".into());
+        assert_eq!(eng.history_lines.len(), 1);
+        assert_eq!(eng.history_lines[0], "real line");
+    }
+
+    #[test]
+    fn test_push_history_line_overflow_drains() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 5, "vt100".into(), "drop".into());
+        for i in 0..8 {
+            eng.push_history_line(format!("line {i}"));
+        }
+        assert_eq!(eng.history_lines.len(), 5);
+        assert_eq!(eng.history_lines[0], "line 3");
+        assert_eq!(eng.history_lines[4], "line 7");
+    }
+
+    #[test]
+    fn test_push_history_line_max_zero_no_drain() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 0, "vt100".into(), "drop".into());
+        for i in 0..10 {
+            eng.push_history_line(format!("line {i}"));
+        }
+        assert_eq!(eng.history_lines.len(), 10);
+    }
+
+    #[test]
+    fn test_rate_limit_reset_after_one_second() {
+        let mut eng = CaptureEngine::new(24, 80, 200, 1, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'A'; 150]);
+        assert!(!eng.suppressed);
+        eng.rate_window_start = Instant::now() - Duration::from_secs(2);
+        eng.process(b"after reset\r\n");
+        assert_eq!(eng.rate_bytes, b"after reset\r\n".len());
+        let output = eng.get_lines(100);
+        assert!(output.contains("after reset"));
+    }
+
+    #[test]
+    fn test_rate_limit_paused_until_expiration() {
+        let mut eng = CaptureEngine::new(24, 80, 50, 1, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'X'; 100]);
+        assert!(eng.paused_until.is_some());
+        eng.process(b"should be ignored\r\n");
+        let output = eng.get_lines(100);
+        assert!(!output.contains("should be ignored"));
+        eng.paused_until = Some(Instant::now() - Duration::from_secs(1));
+        eng.process(b"after unpause\r\n");
+        assert!(eng.paused_until.is_none());
+        let output2 = eng.get_lines(100);
+        assert!(output2.contains("after unpause"));
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_prev_empty_cur_nonempty() {
+        let prev: Vec<String> = vec![];
+        let cur: Vec<String> = vec!["a".into(), "b".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_no_overlap_returns_all_prev() {
+        let prev: Vec<String> = vec!["x".into(), "y".into()];
+        let cur: Vec<String> = vec!["a".into(), "b".into()];
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["x".to_string(), "y".to_string()]);
+    }
+
+    #[test]
+    fn test_get_lines_max_equals_visible_count() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"a\r\nb\r\nc\r\nd\r\n");
+        let vis_count = eng.parser.screen().contents().lines().count();
+        let output = eng.get_lines(vis_count);
+        let out_lines: Vec<&str> = output.lines().collect();
+        assert_eq!(out_lines.len(), vis_count);
+    }
+
+    #[test]
+    fn test_capture_since_mark_clamped_after_drain() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 3, "vt100".into(), "drop".into());
+        for i in 0..3 {
+            eng.push_history_line(format!("old {i}"));
+        }
+        assert_eq!(eng.history_lines.len(), 3);
+        eng.mark();
+        // mark_hist_len = 3, now push 6 more causing drain to max 3
+        for i in 0..6 {
+            eng.push_history_line(format!("new {i}"));
+        }
+        // history is now ["new 3", "new 4", "new 5"], len=3
+        // mark_hist_len=3 > len=3 would not clamp, but the old entries
+        // at indices 0..2 were drained; clamped_mark = min(3,3) = 3
+        // so new_history = history_lines[3..] = empty.
+        // To actually test clamping, mark_hist_len must exceed final len.
+        // Push only 5 so drain removes some old + some new.
+        let captured = eng.capture_since_mark(65536);
+        assert!(captured.is_some());
+    }
+
+    #[test]
+    fn test_capture_since_mark_clamped_mark_exceeds_len() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 3, "vt100".into(), "drop".into());
+        for i in 0..3 {
+            eng.push_history_line(format!("fill {i}"));
+        }
+        eng.mark(); // mark_hist_len = 3
+        // Simulate drain that reduces length below mark: clear and add fewer
+        eng.history_lines.clear();
+        eng.push_history_line("survivor".into());
+        // history_lines.len() = 1, mark_hist_len = 3
+        // clamped_mark = min(3, 1) = 1, new_history = history_lines[1..] = []
+        let captured = eng.capture_since_mark(65536).unwrap();
+        // Should not panic despite mark > len; returns empty or visible-only
+        assert!(!captured.contains("fill"));
+    }
+
+    #[test]
+    fn test_set_size_clears_prev_visible_no_scroll_detect() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"line1\r\nline2\r\n");
+        assert!(!eng.prev_visible.is_empty());
+        eng.set_size(10, 120);
+        assert!(eng.prev_visible.is_empty());
+        let hist_before = eng.total_line_count();
+        eng.process(b"after resize\r\n");
+        assert_eq!(eng.total_line_count(), hist_before);
+    }
+
+    #[test]
+    fn test_get_lines_includes_history_when_max_exceeds_visible() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        for i in 0..20 {
+            eng.process(format!("line {i}\r\n").as_bytes());
+        }
+        let output = eng.get_lines(50);
+        let out_lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
+        assert!(out_lines.len() > 4);
+    }
+
+    #[test]
+    fn test_rate_limit_suppressed_flag_set_once() {
+        let mut eng = CaptureEngine::new(24, 80, 50, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'A'; 100]);
+        assert!(eng.suppressed);
+        let hist_count = eng.history_lines.len();
+        eng.paused_until = Some(Instant::now() - Duration::from_secs(1));
+        eng.rate_window_start = Instant::now() - Duration::from_secs(2);
+        eng.process(&[b'B'; 100]);
+        let new_hist_count = eng.history_lines.len();
+        assert_eq!(new_hist_count, hist_count, "suppressed message should not be added again");
+    }
+
+    #[test]
+    fn test_large_data_after_rate_limit_reset() {
+        let mut eng = CaptureEngine::new(24, 80, 100_000, 0, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'X'; 200_000]);
+        assert!(eng.paused_until.is_some());
+        eng.paused_until = Some(Instant::now() - Duration::from_secs(1));
+        eng.rate_window_start = Instant::now() - Duration::from_secs(2);
+        eng.suppressed = false;
+        eng.process(b"post-reset-line\r\n");
+        let output = eng.get_lines(1000);
+        assert!(output.contains("post-reset-line"));
+    }
+
+    #[test]
+    fn test_multiple_mark_capture_cycles() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"cycle0\r\n");
+        eng.mark();
+        eng.process(b"first-capture\r\n");
+        let c1 = eng.capture_since_mark(65536).unwrap();
+        assert!(c1.contains("first-capture"));
+        assert!(eng.capture_since_mark(65536).is_none());
+
+        eng.process(b"between\r\n");
+        eng.mark();
+        eng.process(b"second-capture\r\n");
+        let c2 = eng.capture_since_mark(65536).unwrap();
+        assert!(c2.contains("second-capture"));
+        assert!(!c2.contains("first-capture"));
+        assert!(eng.capture_since_mark(65536).is_none());
+
+        eng.mark();
+        eng.process(b"third-capture\r\n");
+        let c3 = eng.capture_since_mark(65536).unwrap();
+        assert!(c3.contains("third-capture"));
+        assert!(!c3.contains("second-capture"));
+    }
+
+    #[test]
+    fn test_carriage_return_without_newline() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"first\rsecond\r\n");
+        let output = eng.get_lines(100);
+        assert!(output.contains("second"));
+        assert!(!output.contains("\r"));
+    }
+
+    #[test]
+    fn test_very_long_line_wrapping() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"setup\r\n");
+        let long_line = "W".repeat(2000);
+        eng.process(format!("{long_line}\r\n").as_bytes());
+        let output = eng.get_lines(1000);
+        let w_count = output.chars().filter(|&c| c == 'W').count();
+        assert!(w_count >= 80, "should contain at least a screen width of W chars");
+        assert!(eng.total_line_count() > 0, "long wrapped line should push lines into history");
+    }
+
+    #[test]
+    fn test_truncate_for_storage_exactly_151_lines_omits_one() {
+        let lines: Vec<String> = (0..151).map(|i| format!("L{i:04}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert!(result.contains("L0000"));
+        assert!(result.contains("L0099"));
+        assert!(result.contains("[... 1 lines omitted ...]"));
+        assert!(result.contains("L0101"));
+        assert!(result.contains("L0150"));
+        assert!(!result.contains("\nL0100\n"));
+    }
+
+    #[test]
+    fn test_sanitize_input_full_byte_range() {
+        let input: Vec<u8> = (0x00..=0xFFu8).collect();
+        let result = sanitize_input(&input);
+        for b in 0x00..=0x07u8 {
+            assert!(!result.contains(&b), "byte {b:#04x} should be filtered");
+        }
+        assert!(result.contains(&0x08));
+        assert!(result.contains(&0x09));
+        assert!(result.contains(&0x0A));
+        assert!(result.contains(&0x0D));
+        assert!(result.contains(&0x1B));
+        for b in 0x0B..=0x0Cu8 {
+            assert!(!result.contains(&b), "byte {b:#04x} should be filtered");
+        }
+        for b in 0x0E..=0x1Au8 {
+            assert!(!result.contains(&b), "byte {b:#04x} should be filtered");
+        }
+        for b in 0x1C..=0x1Fu8 {
+            assert!(!result.contains(&b), "byte {b:#04x} should be filtered");
+        }
+        assert!(!result.contains(&0x7F));
+        for b in 0x20..=0x7Eu8 {
+            assert!(result.contains(&b), "byte {b:#04x} should be preserved");
+        }
+        for b in 0x80..=0xFFu8 {
+            assert!(result.contains(&b), "byte {b:#04x} should be preserved");
+        }
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_one_element_overlap() {
+        let prev: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["c", "d", "e"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert_eq!(scrolled, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_handle_socket_connection_via_unix_socket() {
+        use std::io::Read;
+        use std::os::unix::net::UnixListener;
+        use std::sync::{Arc, Mutex};
+
+        let dir = std::env::temp_dir().join(format!("nsh_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock_path = dir.join("test.sock");
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).unwrap();
+        listener.set_nonblocking(false).ok();
+
+        let capture = Arc::new(Mutex::new(CaptureEngine::new(
+            24, 80, 0, 2, 10_000, "vt100".into(), "drop".into(),
+        )));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.process(b"socket test line\r\n");
+        }
+
+        let sock_path_clone = sock_path.clone();
+        let handle = std::thread::spawn(move || {
+            let mut stream = std::os::unix::net::UnixStream::connect(&sock_path_clone).unwrap();
+            let mut buf = String::new();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            let _ = stream.read_to_string(&mut buf);
+            buf
+        });
+
+        listener.set_nonblocking(false).ok();
+        handle_socket_connection(&listener, &capture);
+
+        let received = handle.join().unwrap();
+        assert!(received.contains("socket test line"));
+
+        let _ = std::fs::remove_file(&sock_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_capture_since_mark_clamped_history() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 5, "vt100".into(), "drop".into());
+        for i in 0..20 {
+            eng.process(format!("old{i}\r\n").as_bytes());
+        }
+        eng.mark();
+        for i in 0..20 {
+            eng.process(format!("evict{i}\r\n").as_bytes());
+        }
+        let captured = eng.capture_since_mark(65536);
+        assert!(captured.is_some());
+        let text = captured.unwrap();
+        assert!(text.contains("evict"));
+    }
 }

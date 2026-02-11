@@ -319,4 +319,126 @@ mod tests {
         assert_eq!(clamp(61), 60);
         assert_eq!(clamp(200), 60);
     }
+
+    #[test]
+    fn test_display_command_preview_long_explanation_short_command() {
+        let explanation = "b".repeat(80);
+        display_command_preview("ls", &explanation, &RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_display_command_preview_short_explanation_long_command() {
+        let cmd = "c".repeat(80);
+        display_command_preview(&cmd, "ok", &RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_display_command_preview_both_empty_elevated() {
+        display_command_preview("", "", &RiskLevel::Elevated);
+    }
+
+    fn test_db_with_session(session_id: &str) -> crate::db::Db {
+        let db = crate::db::Db::open_in_memory().expect("in-memory db");
+        db.create_session(session_id, "tty0", "zsh", 12345).unwrap();
+        db
+    }
+
+    #[test]
+    fn test_execute_autorun_safe_command() {
+        let session = "test_autorun_safe";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "true",
+            "explanation": "no-op command",
+            "pending": false,
+        });
+        execute(&input, "test query", &db, session, false, &config, true).unwrap();
+    }
+
+    #[test]
+    fn test_execute_autorun_safe_private_skips_db() {
+        let session = "test_autorun_priv";
+        let db = crate::db::Db::open_in_memory().expect("in-memory db");
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "true",
+            "explanation": "private command",
+            "pending": false,
+        });
+        execute(&input, "secret query", &db, session, true, &config, true).unwrap();
+    }
+
+    #[test]
+    fn test_execute_pending_writes_flag() {
+        let session = "test_pending_flag";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "echo hello",
+            "explanation": "greeting",
+            "pending": true,
+        });
+        execute(&input, "test query", &db, session, false, &config, false).unwrap();
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
+        let flag_file = nsh_dir.join(format!("pending_flag_{session}"));
+        assert!(cmd_file.exists());
+        assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "echo hello");
+        assert!(flag_file.exists());
+        assert_eq!(std::fs::read_to_string(&flag_file).unwrap(), "1");
+        let _ = std::fs::remove_file(&cmd_file);
+        let _ = std::fs::remove_file(&flag_file);
+    }
+
+    #[test]
+    fn test_execute_not_pending_clears_stale_flag() {
+        let session = "test_clear_stale";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let flag_file = nsh_dir.join(format!("pending_flag_{session}"));
+        std::fs::create_dir_all(&nsh_dir).unwrap();
+        std::fs::write(&flag_file, "1").unwrap();
+        assert!(flag_file.exists());
+        let input = serde_json::json!({
+            "command": "echo done",
+            "explanation": "final command",
+            "pending": false,
+        });
+        execute(&input, "test query", &db, session, false, &config, false).unwrap();
+        assert!(!flag_file.exists());
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
+        let _ = std::fs::remove_file(&cmd_file);
+    }
+
+    #[test]
+    fn test_execute_missing_fields_defaults() {
+        let session = "test_defaults";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({});
+        execute(&input, "", &db, session, false, &config, false).unwrap();
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
+        assert!(cmd_file.exists());
+        assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "");
+        let _ = std::fs::remove_file(&cmd_file);
+    }
+
+    #[test]
+    fn test_execute_autorun_records_to_db() {
+        let session = "test_autorun_db";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "true",
+            "explanation": "recorded command",
+            "pending": false,
+        });
+        execute(&input, "query for db", &db, session, false, &config, true).unwrap();
+        let convos = db.get_conversations(session, 10).unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].response, "true");
+    }
 }

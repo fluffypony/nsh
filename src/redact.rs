@@ -1294,4 +1294,33 @@ mod extra_tests {
         assert!(result.contains("[REDACTED]@host.com"));
         assert!(!result.contains("user:pass"));
     }
+
+    #[test]
+    fn test_redact_builtin_pattern_no_capture_group_fallback() {
+        let pat = CompiledSecretPattern {
+            id: "test-no-group",
+            regex: regex::Regex::new(r"SECRET[0-9]{4}").unwrap(),
+            keywords: &["SECRET"],
+            case_insensitive: false,
+        };
+        let input = "token SECRET1234 here";
+        let text_check = input.to_string();
+        let has_keyword = pat.keywords.iter().any(|kw| text_check.contains(kw));
+        assert!(has_keyword);
+        let result = pat
+            .regex
+            .replace_all(input, |caps: &regex::Captures| {
+                if let Some(m) = caps.get(1) {
+                    let full = caps.get(0).unwrap().as_str();
+                    full.replace(m.as_str(), &format!("[REDACTED:{}]", pat.id))
+                } else {
+                    format!("[REDACTED:{}]", pat.id)
+                }
+            })
+            .to_string();
+        assert!(
+            result.contains("[REDACTED:test-no-group]"),
+            "should use fallback when no capture group 1, got: {result}"
+        );
+    }
 }

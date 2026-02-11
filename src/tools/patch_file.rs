@@ -587,4 +587,161 @@ mod tests {
         let err = validate_path(&docker).unwrap_err();
         assert!(err.to_string().contains("blocked"));
     }
+
+    fn test_db() -> Db {
+        Db::open_in_memory().unwrap()
+    }
+
+    fn test_config() -> crate::config::Config {
+        crate::config::Config::default()
+    }
+
+    #[test]
+    fn test_execute_redaction_marker_in_search() {
+        let input = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "search": "before [REDACTED:api-key] after",
+            "replace": "new text",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("search text contains redaction markers"));
+    }
+
+    #[test]
+    fn test_execute_redaction_marker_in_replace() {
+        let input = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "search": "normal search",
+            "replace": "value [REDACTED:github_pat] here",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("replacement text contains redaction markers"));
+    }
+
+    #[test]
+    fn test_execute_empty_path() {
+        let input = serde_json::json!({
+            "path": "",
+            "search": "something",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert_eq!(result, Some("path is required".into()));
+    }
+
+    #[test]
+    fn test_execute_missing_path_field() {
+        let input = serde_json::json!({
+            "search": "something",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert_eq!(result, Some("path is required".into()));
+    }
+
+    #[test]
+    fn test_execute_empty_search() {
+        let input = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "search": "",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert_eq!(result, Some("search is required".into()));
+    }
+
+    #[test]
+    fn test_execute_path_validation_failure() {
+        let input = serde_json::json!({
+            "path": "/tmp/foo/../bar",
+            "search": "something",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("path traversal"));
+    }
+
+    #[test]
+    fn test_execute_file_not_found() {
+        let input = serde_json::json!({
+            "path": "/tmp/nsh_nonexistent_file_for_test_12345.txt",
+            "search": "something",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("cannot read"));
+    }
+
+    #[test]
+    fn test_execute_search_text_not_found() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.txt");
+        std::fs::write(&path, "hello world").unwrap();
+
+        let input = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "search": "nonexistent text",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("search text not found"));
+    }
+
+    #[test]
+    fn test_execute_redaction_marker_variations() {
+        let db = test_db();
+        let config = test_config();
+
+        let input = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "search": "[REDACTED:some_token-123]",
+            "replace": "x",
+        });
+        let result = execute(&input, "q", &db, "s", false, &config).unwrap();
+        assert!(result.unwrap().contains("search text contains redaction markers"));
+
+        let input = serde_json::json!({
+            "path": "/tmp/test.txt",
+            "search": "ok",
+            "replace": "[REDACTED:A]",
+        });
+        let result = execute(&input, "q", &db, "s", false, &config).unwrap();
+        assert!(result.unwrap().contains("replacement text contains redaction markers"));
+    }
+
+    #[test]
+    fn test_execute_sensitive_path_blocked() {
+        let home = dirs::home_dir().unwrap();
+        let input = serde_json::json!({
+            "path": home.join(".ssh/id_rsa").to_str().unwrap(),
+            "search": "something",
+            "replace": "other",
+        });
+        let db = test_db();
+        let config = test_config();
+        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("blocked"));
+    }
 }

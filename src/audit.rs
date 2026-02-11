@@ -568,6 +568,42 @@ mod tests {
         assert!(v["response"].as_str().unwrap().contains("newlines"));
     }
 
+    #[test]
+    fn test_audit_log_to_dir_invalid_dir() {
+        audit_log_to_dir(
+            Path::new("/nonexistent/dir/that/does/not/exist"),
+            "s1",
+            "q",
+            "t",
+            "r",
+            "safe",
+        );
+    }
+
+    #[test]
+    fn test_cleanup_old_archives_standalone() {
+        cleanup_old_archives();
+    }
+
+    #[test]
+    fn test_rotate_clears_log_after_compress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_path = tmp.path().join("audit.log");
+        {
+            let mut f = std::fs::File::create(&log_path).unwrap();
+            let chunk = "a]".repeat(500_000);
+            for _ in 0..16 {
+                writeln!(f, "{chunk}").unwrap();
+            }
+        }
+        assert!(std::fs::metadata(&log_path).unwrap().len() > 15_000_000);
+
+        rotate_audit_log_in_dir(tmp.path());
+
+        let truncated = std::fs::read_to_string(&log_path).unwrap();
+        assert!(truncated.is_empty(), "log should be emptied after rotation");
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_rotate_archive_permissions() {

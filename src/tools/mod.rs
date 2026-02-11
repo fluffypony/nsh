@@ -1265,4 +1265,46 @@ mod tests {
         assert_eq!(required.len(), 1);
         assert_eq!(required[0], "query");
     }
+
+    #[test]
+    fn test_validate_read_path_allow_mode_normal_path() {
+        let result = validate_read_path_with_access("/tmp", "allow");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_validate_read_path_allow_mode_rejects_dotdot() {
+        let result = validate_read_path_with_access("/tmp/../etc/passwd", "allow");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains(".."));
+    }
+
+    #[test]
+    fn test_validate_read_path_tilde_subpath_nonexistent() {
+        let result = validate_read_path("~/nonexistent_nsh_test_dir_999/file.txt");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => assert!(
+                e.contains("Access denied") || e.contains("sensitive"),
+                "unexpected error: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_relative_nonexistent() {
+        let result = validate_read_path("nsh_nonexistent_relative_test_file_xyz.txt");
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => assert!(e.contains("Access denied"), "unexpected error: {e}"),
+        }
+    }
+
+    #[test]
+    fn test_validate_read_path_block_mode_non_sensitive_path() {
+        let result = validate_read_path_with_access("/tmp", "block");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_absolute());
+    }
 }

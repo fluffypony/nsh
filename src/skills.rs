@@ -937,4 +937,154 @@ terminal = true
         assert!(sf.terminal);
         assert_eq!(sf.timeout_seconds, 30);
     }
+
+    #[test]
+    fn test_load_skills_from_dir_nonexistent_directory() {
+        let mut skills = HashMap::new();
+        load_skills_from_dir(std::path::Path::new("/nonexistent/path/xyz"), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_skips_non_toml_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("readme.md"), "# Skills").unwrap();
+        std::fs::write(tmp.path().join("data.json"), "{}").unwrap();
+        let valid = r#"
+name = "real_skill"
+description = "a skill"
+command = "echo hi"
+"#;
+        std::fs::write(tmp.path().join("skill.toml"), valid).unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert_eq!(skills.len(), 1);
+        assert!(skills.contains_key("real_skill"));
+    }
+
+    #[test]
+    fn test_load_skills_from_dir_malformed_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("bad.toml"), "this is not valid toml {{{{").unwrap();
+        let mut skills = HashMap::new();
+        load_skills_from_dir(tmp.path(), false, &mut skills);
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_empty_skills() {
+        let defs = skill_tool_definitions(&[]);
+        assert!(defs.is_empty());
+    }
+
+    #[test]
+    fn test_skill_tool_definitions_no_params() {
+        let skill = Skill {
+            name: "simple".to_string(),
+            description: "a simple skill".to_string(),
+            command: "echo hello".to_string(),
+            timeout_seconds: 10,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let defs = skill_tool_definitions(&[skill]);
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].name, "skill_simple");
+        let required = defs[0].parameters["required"].as_array().unwrap();
+        assert!(required.is_empty());
+        let props = defs[0].parameters["properties"].as_object().unwrap();
+        assert!(props.is_empty());
+    }
+
+    #[test]
+    fn test_execute_skill_output_truncation() {
+        let skill = Skill {
+            name: "big_output".to_string(),
+            description: "test".to_string(),
+            command: "python3 -c \"print('x' * 10000)\"".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.len() <= 8020);
+        if result.len() > 8000 {
+            assert!(result.contains("(truncated)"));
+        }
+    }
+
+    #[test]
+    fn test_execute_skill_multiple_params_substitution() {
+        let mut params = HashMap::new();
+        params.insert(
+            "greeting".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "greeting word".to_string(),
+            },
+        );
+        params.insert(
+            "target".to_string(),
+            SkillParam {
+                param_type: "string".to_string(),
+                description: "who to greet".to_string(),
+            },
+        );
+        let skill = Skill {
+            name: "multi_param".to_string(),
+            description: "test".to_string(),
+            command: "echo {greeting} {target}".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: params,
+            is_project: false,
+        };
+        let result = execute_skill(
+            &skill,
+            &serde_json::json!({"greeting": "hello", "target": "world"}),
+        )
+        .unwrap();
+        assert!(
+            result.contains("hello world"),
+            "expected 'hello world', got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_execute_skill_combined_stdout_and_stderr() {
+        let skill = Skill {
+            name: "both_streams".to_string(),
+            description: "test".to_string(),
+            command: "echo stdout_msg; echo stderr_msg >&2".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
+        assert!(result.contains("stdout_msg"), "missing stdout: {result}");
+        assert!(result.contains("stderr_msg"), "missing stderr: {result}");
+        assert!(
+            result.contains('\n'),
+            "stdout and stderr should be separated by newline"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_skill_async_success() {
+        let skill = Skill {
+            name: "async_test".to_string(),
+            description: "test".to_string(),
+            command: "echo async_output".to_string(),
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: false,
+        };
+        let result = execute_skill_async(skill, serde_json::json!({})).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("async_output"));
+    }
 }

@@ -1253,4 +1253,50 @@ mod tests {
         let parts = split_on_shell_operators("&& echo b");
         assert_eq!(parts, vec!["echo b"]);
     }
+
+    #[test]
+    fn test_sudo_unparseable_inner_returns_elevated() {
+        let (level, reason) = assess_single_command(&["sudo", "'unterminated"]);
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("elevated privileges"));
+    }
+
+    #[test]
+    fn test_doas_unparseable_inner_returns_elevated() {
+        let (level, reason) = assess_single_command(&["doas", "\"unclosed"]);
+        assert_eq!(level, RiskLevel::Elevated);
+        assert_eq!(reason, Some("elevated privileges"));
+    }
+
+    #[test]
+    fn test_time_unparseable_inner_returns_safe() {
+        let (level, reason) = assess_single_command(&["time", "'unterminated"]);
+        assert_eq!(level, RiskLevel::Safe);
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn test_env_unparseable_inner_returns_safe() {
+        let (level, reason) = assess_single_command(&["env", "\"unclosed"]);
+        assert_eq!(level, RiskLevel::Safe);
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn test_strace_wrapping_passthrough() {
+        let (level, _) = assess_command("strace rm file.txt");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_ltrace_wrapping_passthrough() {
+        let (level, _) = assess_command("ltrace rm file.txt");
+        assert_eq!(level, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_strace_alone_is_safe() {
+        let (level, _) = assess_command("strace");
+        assert_eq!(level, RiskLevel::Safe);
+    }
 }

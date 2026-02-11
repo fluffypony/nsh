@@ -54,4 +54,16 @@ mod tests {
         let err = result.err().expect("should fail when openrouter is None");
         assert!(err.to_string().contains("OpenRouter not configured"));
     }
+
+    #[test]
+    fn new_uses_custom_base_url_when_provided() {
+        let mut config = crate::config::Config::default();
+        config.provider.openrouter = Some(crate::config::ProviderAuth {
+            api_key: Some("test-key".into()),
+            api_key_cmd: None,
+            base_url: Some("https://custom.example.com/v1".into()),
+        });
+        let result = OpenRouterProvider::new(&config);
+        assert!(result.is_ok());
+    }
 }

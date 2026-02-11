@@ -398,4 +398,37 @@ mod tests {
         let c = chat_color();
         assert!(!c.is_empty());
     }
+
+    #[test]
+    fn test_configure_display_custom_values() {
+        let config = crate::config::DisplayConfig {
+            chat_color: "\x1b[1;32m".into(),
+            thinking_indicator: "/-\\|".into(),
+        };
+        configure_display(&config);
+    }
+
+    #[test]
+    fn test_show_spinner_then_immediate_hide() {
+        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        show_spinner();
+        assert!(SPINNER_ACTIVE.load(Ordering::SeqCst));
+        hide_spinner();
+        assert!(!SPINNER_ACTIVE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_spinner_guard_already_active_returns_did_start_false() {
+        SPINNER_ACTIVE.store(true, Ordering::SeqCst);
+        let guard = SpinnerGuard::new();
+        assert!(!guard.did_start);
+        drop(guard);
+        assert!(SPINNER_ACTIVE.load(Ordering::SeqCst));
+        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        if let Ok(mut h) = SPINNER_HANDLE.lock() {
+            if let Some(handle) = h.take() {
+                let _ = handle.join();
+            }
+        }
+    }
 }
