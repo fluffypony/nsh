@@ -62,7 +62,12 @@ pub fn execute(
     // Display rich command preview
     display_command_preview(command, explanation, &risk);
 
-    if force_autorun && matches!(risk, RiskLevel::Safe) {
+    let can_autorun = match risk {
+        RiskLevel::Safe => true,
+        RiskLevel::Elevated => config.execution.allow_unsafe_autorun,
+        RiskLevel::Dangerous => false,
+    };
+    if force_autorun && can_autorun {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
         let status = std::process::Command::new("sh")
             .arg("-c")
@@ -173,7 +178,7 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
     let color = match risk {
         RiskLevel::Dangerous => "\x1b[1;31m",
         RiskLevel::Elevated => "\x1b[1;33m",
-        RiskLevel::Safe => "\x1b[1;36m",
+        RiskLevel::Safe => "\x1b[2m",
     };
     let reset = "\x1b[0m";
     let dim = "\x1b[2m";

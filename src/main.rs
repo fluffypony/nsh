@@ -116,6 +116,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 (query_text, false)
             };
             let config = config::Config::load()?;
+            let force_autorun = force_autorun || config.execution.mode == "autorun";
             let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             if private {

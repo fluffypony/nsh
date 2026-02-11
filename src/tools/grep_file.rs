@@ -1,12 +1,17 @@
 use regex::Regex;
 use std::fs;
 
+#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
+    execute_with_access(input, "block")
+}
+
+pub fn execute_with_access(input: &serde_json::Value, sensitive_file_access: &str) -> anyhow::Result<String> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
-    let path = match crate::tools::validate_read_path(raw_path) {
+    let path = match crate::tools::validate_read_path_with_access(raw_path, sensitive_file_access) {
         Ok(p) => p,
         Err(msg) => return Ok(msg),
     };

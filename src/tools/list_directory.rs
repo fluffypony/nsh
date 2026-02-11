@@ -1,10 +1,15 @@
 use std::fs;
 
+#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
+    execute_with_access(input, "block")
+}
+
+pub fn execute_with_access(input: &serde_json::Value, sensitive_file_access: &str) -> anyhow::Result<String> {
     let path_str = input["path"].as_str().unwrap_or(".");
     let show_hidden = input["show_hidden"].as_bool().unwrap_or(false);
 
-    let path = match crate::tools::validate_read_path(path_str) {
+    let path = match crate::tools::validate_read_path_with_access(path_str, sensitive_file_access) {
         Ok(p) => p,
         Err(msg) => return Ok(msg),
     };

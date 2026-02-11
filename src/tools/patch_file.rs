@@ -29,7 +29,12 @@ fn expand_tilde(p: &str) -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn validate_path(path: &Path) -> anyhow::Result<()> {
+    validate_path_with_access(path, "block")
+}
+
+fn validate_path_with_access(path: &Path, sensitive_file_access: &str) -> anyhow::Result<()> {
     let s = path.to_string_lossy();
 
     if s.as_bytes().contains(&0) {
@@ -64,9 +69,28 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
         home.join(".docker"),
         home.join(".nsh"),
     ];
-    for dir in &sensitive_dirs {
-        if canonical_target.starts_with(dir) {
-            anyhow::bail!("writes to {} are blocked", dir.display());
+    if sensitive_file_access != "allow" {
+        for dir in &sensitive_dirs {
+            if canonical_target.starts_with(dir) {
+                if sensitive_file_access == "ask" {
+                    eprintln!(
+                        "\x1b[1;33m⚠ '{}' is in a sensitive directory\x1b[0m",
+                        path.display()
+                    );
+                    eprint!("\x1b[1;33mAllow write? [y/N]\x1b[0m ");
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    let mut answer = String::new();
+                    if std::io::stdin().read_line(&mut answer).is_ok()
+                        && matches!(
+                            answer.trim().to_lowercase().as_str(),
+                            "y" | "yes"
+                        )
+                    {
+                        break;
+                    }
+                }
+                anyhow::bail!("writes to {} are blocked", dir.display());
+            }
         }
     }
     if canonical_target.starts_with("/etc") && !is_root() {
@@ -83,7 +107,9 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
     if let Some(parent) = canonical_target.parent() {
         if parent.exists() {
             let real_parent = parent.canonicalize()?;
-            if sensitive_dirs.iter().any(|d| real_parent.starts_with(d)) {
+            if sensitive_file_access != "allow"
+                && sensitive_dirs.iter().any(|d| real_parent.starts_with(d))
+            {
                 anyhow::bail!("symlink resolves to a blocked directory");
             }
             if real_parent.starts_with("/etc") && !is_root() {
@@ -135,6 +161,7 @@ pub fn execute(
     db: &Db,
     session_id: &str,
     private: bool,
+    config: &crate::config::Config,
 ) -> anyhow::Result<Option<String>> {
     let raw_path = input["path"].as_str().unwrap_or("");
     let search = input["search"].as_str().unwrap_or("");
@@ -167,7 +194,7 @@ pub fn execute(
 
     let path = expand_tilde(raw_path);
 
-    if let Err(e) = validate_path(&path) {
+    if let Err(e) = validate_path_with_access(&path, &config.tools.sensitive_file_access) {
         return Ok(Some(format!("{e}")));
     }
 

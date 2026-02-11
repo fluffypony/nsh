@@ -251,12 +251,12 @@ pub async fn handle_query(
                     "write_file" => {
                         has_terminal_tool = true;
                         tools::write_file::execute(
-                            input, query, db, session_id, private,
+                            input, query, db, session_id, private, config,
                         )?;
                     }
                     "patch_file" => {
                         match tools::patch_file::execute(
-                            input, query, db, session_id, private,
+                            input, query, db, session_id, private, config,
                         )? {
                             None => {
                                 has_terminal_tool = true;
@@ -669,12 +669,24 @@ User: "update my NAS IP to 192.168.3.60"
   Redaction markers look like [REDACTED:pattern-id]. NEVER write redaction
   markers back to files — if you see [REDACTED:...] in file content, you
   must ask the user for the actual value or skip that portion.
+- Command risk assessment is heuristic-based. "No obvious risk" means no red flags
+  were detected by pattern analysis — it does NOT guarantee the command is safe.
+  Always explain what a command does so the user can make an informed decision.
+- Commands flagged as "dangerous" (recursive deletion of system paths, formatting
+  disks, fork bombs, piping remote scripts to shell interpreters) ALWAYS require
+  explicit user confirmation regardless of execution mode settings. This cannot
+  be overridden.
 
 ## Self-Configuration
 You can modify your own configuration when the user asks. The <nsh_configuration>
 block below shows every available setting with its current value and description.
 Use manage_config to change settings, install_skill to add custom tools, and
 install_mcp_server to connect to MCP servers. All changes require user confirmation.
+- Some settings are security-sensitive and cannot be changed via the manage_config
+  tool: execution.allow_unsafe_autorun, tools.sensitive_file_access,
+  tools.run_command_allowlist, redaction.enabled, redaction.disable_builtin,
+  and any provider API keys, key commands, or base URLs.
+  If the user asks to change these, direct them to `nsh config edit`.
 
 ## Memory
 You have a persistent memory system. The <memories> block in your context
@@ -750,10 +762,11 @@ fn execute_sync_tool(
     input: &serde_json::Value,
     config: &Config,
 ) -> anyhow::Result<String> {
+    let sfa = &config.tools.sensitive_file_access;
     match name {
-        "grep_file" => tools::grep_file::execute(input),
-        "read_file" => tools::read_file::execute(input),
-        "list_directory" => tools::list_directory::execute(input),
+        "grep_file" => tools::grep_file::execute_with_access(input, sfa),
+        "read_file" => tools::read_file::execute_with_access(input, sfa),
+        "list_directory" => tools::list_directory::execute_with_access(input, sfa),
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("");
             tools::run_command::execute(cmd, config)

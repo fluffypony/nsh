@@ -9,6 +9,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
         anyhow::bail!("manage_config: 'key' is required");
     }
 
+    if crate::config::is_setting_protected(key) {
+        eprintln!("\x1b[1;31m✗ Setting '{key}' is security-sensitive and cannot be changed via AI tool call.\x1b[0m");
+        eprintln!("\x1b[2m  Edit manually: nsh config edit\x1b[0m");
+        return Ok(());
+    }
+
     let config_path = crate::config::Config::path();
     let content = if config_path.exists() {
         std::fs::read_to_string(&config_path)?
@@ -481,5 +487,27 @@ c = 42
         let mut doc: toml_edit::DocumentMut = "val = 42\n".parse().unwrap();
         let result = remove_toml_value(&mut doc, "val.child").unwrap();
         assert!(!result);
+    }
+
+    #[test]
+    fn test_protected_setting_blocks_set() {
+        assert!(crate::config::is_setting_protected("execution.allow_unsafe_autorun"));
+        assert!(crate::config::is_setting_protected("tools.sensitive_file_access"));
+        assert!(crate::config::is_setting_protected("tools.run_command_allowlist"));
+        assert!(crate::config::is_setting_protected("redaction.enabled"));
+        assert!(crate::config::is_setting_protected("redaction.disable_builtin"));
+    }
+
+    #[test]
+    fn test_protected_setting_blocks_api_key_segment() {
+        assert!(crate::config::is_setting_protected("provider.openai.api_key"));
+        assert!(crate::config::is_setting_protected("provider.openrouter.api_key_cmd"));
+        assert!(crate::config::is_setting_protected("provider.custom.base_url"));
+    }
+
+    #[test]
+    fn test_non_protected_setting_allowed() {
+        assert!(!crate::config::is_setting_protected("provider.model"));
+        assert!(!crate::config::is_setting_protected("context.history_limit"));
     }
 }

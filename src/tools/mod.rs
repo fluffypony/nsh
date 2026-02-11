@@ -20,7 +20,12 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::json;
 
+#[cfg(test)]
 pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
+    validate_read_path_with_access(raw_path, "block")
+}
+
+pub fn validate_read_path_with_access(raw_path: &str, sensitive_file_access: &str) -> Result<PathBuf, String> {
     let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
         dirs::home_dir().unwrap_or_default().join(rest)
     } else if raw_path == "~" {
@@ -61,24 +66,45 @@ pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
     // Note: TOCTOU race between validation and open is acknowledged but
     // impractical to fix without openat-style path resolution, and is
     // also impractical to abuse or attack.
-    if let Some(home) = dirs::home_dir() {
-        let sensitive_dirs = [
-            home.join(".ssh"),
-            home.join(".gnupg"),
-            home.join(".gpg"),
-            home.join(".aws"),
-            home.join(".config/gcloud"),
-            home.join(".azure"),
-            home.join(".kube"),
-            home.join(".docker"),
-            home.join(".nsh"),
-        ];
-        for dir in &sensitive_dirs {
-            let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-            if canonical.starts_with(&dir_canonical) {
-                return Err(format!(
-                    "Access denied: '{raw_path}' is in a sensitive directory"
-                ));
+    if sensitive_file_access != "allow" {
+        if let Some(home) = dirs::home_dir() {
+            let sensitive_dirs = [
+                home.join(".ssh"),
+                home.join(".gnupg"),
+                home.join(".gpg"),
+                home.join(".aws"),
+                home.join(".config/gcloud"),
+                home.join(".azure"),
+                home.join(".kube"),
+                home.join(".docker"),
+                home.join(".nsh"),
+            ];
+            for dir in &sensitive_dirs {
+                let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                if canonical.starts_with(&dir_canonical) {
+                    if sensitive_file_access == "ask" {
+                        eprintln!(
+                            "\x1b[1;33m⚠ '{raw_path}' is in a sensitive directory\x1b[0m"
+                        );
+                        eprint!("\x1b[1;33mAllow access? [y/N]\x1b[0m ");
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                        let mut answer = String::new();
+                        if std::io::stdin().read_line(&mut answer).is_ok()
+                            && matches!(
+                                answer.trim().to_lowercase().as_str(),
+                                "y" | "yes"
+                            )
+                        {
+                            break;
+                        }
+                        return Err(format!(
+                            "Access denied: '{raw_path}' is in a sensitive directory"
+                        ));
+                    }
+                    return Err(format!(
+                        "Access denied: '{raw_path}' is in a sensitive directory"
+                    ));
+                }
             }
         }
     }
