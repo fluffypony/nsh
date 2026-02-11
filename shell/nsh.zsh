@@ -1,6 +1,62 @@
 # nsh — Natural Shell integration for zsh
 # Eval this: eval "$(nsh init zsh)"
 
+# ── Raw `?` query handler (before shell parsing) ────────
+# Captures lines like `? what's up` before zsh treats punctuation as syntax.
+__nsh_handle_nl_query_line() {
+    local line="$BUFFER"
+    local prompt=""
+
+    case "$line" in
+        '?? '*)
+            prompt="${line#\?\? }"
+            BUFFER=""
+            CURSOR=0
+            zle -I
+            nsh query --think -- "$prompt"
+            zle reset-prompt
+            return 0
+            ;;
+        '?! '*)
+            prompt="${line#\?! }"
+            BUFFER=""
+            CURSOR=0
+            zle -I
+            nsh query --private -- "$prompt"
+            zle reset-prompt
+            return 0
+            ;;
+        '? '*)
+            prompt="${line#\? }"
+            BUFFER=""
+            CURSOR=0
+            zle -I
+            nsh query -- "$prompt"
+            zle reset-prompt
+            return 0
+            ;;
+    esac
+
+    return 1
+}
+
+__nsh_accept_line() {
+    if __nsh_handle_nl_query_line; then
+        return 0
+    fi
+    zle __nsh_accept_line_orig
+}
+
+__nsh_install_accept_line_widget() {
+    # Non-interactive shells don't have ZLE widgets.
+    zle -l >/dev/null 2>&1 || return 0
+
+    if [[ "${widgets[accept-line]:-}" != "user:__nsh_accept_line" ]]; then
+        zle -A accept-line __nsh_accept_line_orig
+        zle -N accept-line __nsh_accept_line
+    fi
+}
+
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     # Already inside nsh — only reinstall hooks, skip session init
@@ -8,6 +64,7 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     alias '??'='noglob nsh query --think --'
     alias '?!'='noglob nsh query --private --'
     autoload -Uz add-zsh-hook
+    __nsh_install_accept_line_widget
     add-zsh-hook preexec __nsh_preexec
     add-zsh-hook precmd __nsh_precmd
     add-zsh-hook precmd __nsh_check_pending
@@ -141,6 +198,7 @@ __nsh_check_pending() {
 
 # Install hooks
 autoload -Uz add-zsh-hook
+__nsh_install_accept_line_widget
 add-zsh-hook preexec __nsh_preexec
 add-zsh-hook precmd __nsh_precmd
 add-zsh-hook precmd __nsh_check_pending

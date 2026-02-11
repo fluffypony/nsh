@@ -92,4 +92,34 @@ mod tests {
             "fish init should preserve original tty identity under nsh wrap"
         );
     }
+
+    #[test]
+    fn test_zsh_installs_accept_line_wrapper() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("__nsh_install_accept_line_widget"),
+            "zsh init should install an accept-line wrapper for natural-language queries"
+        );
+        assert!(
+            script.contains("zle -N accept-line __nsh_accept_line"),
+            "zsh init should register a custom accept-line widget"
+        );
+    }
+
+    #[test]
+    fn test_zsh_accept_line_wrapper_handles_question_prefixes() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("'? '*)"),
+            "zsh accept-line wrapper should handle '? ' prompts"
+        );
+        assert!(
+            script.contains("'?? '*)"),
+            "zsh accept-line wrapper should handle '?? ' prompts"
+        );
+        assert!(
+            script.contains("'?! '*)"),
+            "zsh accept-line wrapper should handle '?! ' prompts"
+        );
+    }
 }
