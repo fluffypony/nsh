@@ -1895,4 +1895,419 @@ mod tests {
         let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
         assert!(!result.contains("xyzzy_unique: "), "no matched lines expected in empty file");
     }
+
+    // ── validate_tool_input: comprehensive missing field coverage ──
+
+    #[test]
+    fn test_validate_tool_input_write_file_missing_all() {
+        let input = json!({});
+        let err = validate_tool_input("write_file", &input).unwrap_err();
+        assert!(err.contains("path"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_patch_file_missing_all() {
+        let input = json!({});
+        let err = validate_tool_input("patch_file", &input).unwrap_err();
+        assert!(err.contains("path"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_run_command_missing_all() {
+        let input = json!({});
+        let err = validate_tool_input("run_command", &input).unwrap_err();
+        assert!(err.contains("command"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_skill_complete() {
+        let input = json!({
+            "name": "deploy",
+            "description": "Deploy to production",
+            "command": "make deploy"
+        });
+        assert!(validate_tool_input("install_skill", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_install_skill_missing_command() {
+        let input = json!({"name": "test", "description": "desc"});
+        let err = validate_tool_input("install_skill", &input).unwrap_err();
+        assert!(err.contains("command"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_remember_complete() {
+        let input = json!({"key": "server_ip", "value": "192.168.1.1"});
+        assert!(validate_tool_input("remember", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_update_memory_with_value() {
+        let input = json!({"id": 5, "value": "new_val"});
+        assert!(validate_tool_input("update_memory", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_boolean_field_values() {
+        let input = json!({"command": true, "explanation": false});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_numeric_field_values() {
+        let input = json!({"command": 42, "explanation": 0});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_array_field_values() {
+        let input = json!({"command": [1, 2], "explanation": []});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_nested_object_field() {
+        let input = json!({"command": {"nested": true}, "explanation": "ok"});
+        assert!(validate_tool_input("command", &input).is_ok());
+    }
+
+    // ── describe_tool_action: unicode and special chars ──
+
+    #[test]
+    fn test_describe_tool_action_search_history_unicode() {
+        let input = json!({"query": "日本語"});
+        let desc = describe_tool_action("search_history", &input);
+        assert_eq!(desc, "searching history for \"日本語\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_grep_file_with_regex_pattern() {
+        let input = json!({"path": "/tmp/log.txt", "pattern": "ERROR|WARN"});
+        let desc = describe_tool_action("grep_file", &input);
+        assert_eq!(desc, "searching /tmp/log.txt for /ERROR|WARN/");
+    }
+
+    #[test]
+    fn test_describe_tool_action_run_command_long_command() {
+        let input = json!({"command": "find / -name '*.log' -mtime +30 -delete"});
+        let desc = describe_tool_action("run_command", &input);
+        assert!(desc.starts_with("running `"));
+        assert!(desc.contains("find /"));
+    }
+
+    #[test]
+    fn test_describe_tool_action_web_search_long_query() {
+        let input = json!({"query": "how to configure nginx reverse proxy with ssl termination"});
+        let desc = describe_tool_action("web_search", &input);
+        assert!(desc.starts_with("searching \""));
+        assert!(desc.contains("nginx"));
+    }
+
+    #[test]
+    fn test_describe_tool_action_remember_with_long_key() {
+        let input = json!({"key": "production database connection string for the main application server"});
+        let desc = describe_tool_action("remember", &input);
+        assert!(desc.starts_with("remembering: "));
+        assert!(desc.contains("production"));
+    }
+
+    #[test]
+    fn test_describe_tool_action_forget_memory_large_id() {
+        let input = json!({"id": 999999});
+        let desc = describe_tool_action("forget_memory", &input);
+        assert_eq!(desc, "forgetting memory #999999");
+    }
+
+    #[test]
+    fn test_describe_tool_action_update_memory_large_id() {
+        let input = json!({"id": 999999});
+        let desc = describe_tool_action("update_memory", &input);
+        assert_eq!(desc, "updating memory #999999");
+    }
+
+    #[test]
+    fn test_describe_tool_action_manage_config_get_action() {
+        let input = json!({"action": "get", "key": "provider.default"});
+        let desc = describe_tool_action("manage_config", &input);
+        assert_eq!(desc, "config get: provider.default");
+    }
+
+    #[test]
+    fn test_describe_tool_action_list_directory_root() {
+        let input = json!({"path": "/"});
+        let desc = describe_tool_action("list_directory", &input);
+        assert_eq!(desc, "listing /");
+    }
+
+    #[test]
+    fn test_describe_tool_action_man_page_with_section() {
+        let input = json!({"command": "socket", "section": 2});
+        let desc = describe_tool_action("man_page", &input);
+        assert_eq!(desc, "reading man page: socket");
+    }
+
+    // ── build_memories_xml: stress and structure ──
+
+    #[test]
+    fn test_build_memories_xml_many_memories() {
+        let mems: Vec<crate::db::Memory> = (0..100)
+            .map(|i| crate::db::Memory {
+                id: i,
+                key: format!("key_{i}"),
+                value: format!("value_{i}"),
+                created_at: "2025-01-01".into(),
+                updated_at: "2025-01-01".into(),
+            })
+            .collect();
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("count=\"100\""));
+        assert!(result.contains("key_0"));
+        assert!(result.contains("key_99"));
+        assert!(result.starts_with("<memories count="));
+        assert!(result.ends_with("</memories>"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_special_chars_in_all_fields() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "<key>&\"value\"".into(),
+            value: "<val>&\"data\"".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "<time>&\"now\"".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(!result.contains("<key>"));
+        assert!(!result.contains("<val>"));
+        assert!(!result.contains("<time>"));
+        assert!(result.contains("&lt;key&gt;&amp;&quot;value&quot;"));
+        assert!(result.contains("&lt;val&gt;&amp;&quot;data&quot;"));
+        assert!(result.contains("&lt;time&gt;&amp;&quot;now&quot;"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_newlines_in_key() {
+        let mems = vec![crate::db::Memory {
+            id: 1,
+            key: "multi\nline\nkey".into(),
+            value: "val".into(),
+            created_at: "2025-01-01".into(),
+            updated_at: "2025-01-01".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.contains("multi\nline\nkey"));
+    }
+
+    // ── build_system_prompt: content verification ──
+
+    #[test]
+    fn test_build_system_prompt_contains_multi_step_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Multi-step"));
+        assert!(result.contains("pending=true"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_style_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Style"));
+        assert!(result.contains("1-2 sentences"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_efficiency_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Efficiency"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_project_context_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Project Context"));
+        assert!(result.contains("Cargo.toml"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_memory_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Memory"));
+        assert!(result.contains("persistent memory system"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_self_config_section() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Self-Configuration"));
+        assert!(result.contains("manage_config"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_contains_examples() {
+        let ctx = make_test_ctx();
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains("Examples"));
+        assert!(result.contains("delete all .pyc files"));
+        assert!(result.contains("what does tee do"));
+    }
+
+    #[test]
+    fn test_build_system_prompt_long_boundary() {
+        let ctx = make_test_ctx();
+        let long_boundary = "B".repeat(200);
+        let result = build_system_prompt(&ctx, "<ctx/>", &long_boundary, "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains(&long_boundary));
+    }
+
+    #[test]
+    fn test_build_system_prompt_special_chars_in_config_xml() {
+        let ctx = make_test_ctx();
+        let config = "<config key=\"value\" special=\"<>&amp;\" />";
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", config, "<memories count=\"0\" />");
+        assert!(result.contains(config));
+    }
+
+    #[test]
+    fn test_build_system_prompt_special_chars_in_context() {
+        let ctx = make_test_ctx();
+        let xml_ctx = "<context os=\"macOS\" cwd=\"/tmp/dir with <special> & chars\" />";
+        let result = build_system_prompt(&ctx, xml_ctx, "B", "<config/>", "<memories count=\"0\" />");
+        assert!(result.contains(xml_ctx));
+    }
+
+    // ── execute_sync_tool: additional edge cases ──
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_multiline_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("multi.txt");
+        std::fs::write(&file, "line1 match\nline2 no\nline3 match\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "match"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("line1 match"));
+        assert!(result.contains("line3 match"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_read_file_single_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("single.txt");
+        std::fs::write(&file, "only one line").unwrap();
+        let input = json!({"path": file.to_str().unwrap()});
+        let result = execute_sync_tool("read_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("only one line"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_run_command_multi_word() {
+        let input = json!({"command": "echo hello world 123"});
+        let result = execute_sync_tool("run_command", &input, &Config::default()).unwrap();
+        assert!(result.contains("hello world 123"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_list_directory_with_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("file.txt"), "").unwrap();
+        let input = json!({"path": dir.path().to_str().unwrap()});
+        let result = execute_sync_tool("list_directory", &input, &Config::default()).unwrap();
+        assert!(result.contains("subdir"));
+        assert!(result.contains("file.txt"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_man_page_nonexistent_command() {
+        let input = json!({"command": "nonexistent_command_xyz_12345"});
+        let result = execute_sync_tool("man_page", &input, &Config::default()).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_man_page_with_large_section() {
+        let input = json!({"command": "ls", "section": 99});
+        let result = execute_sync_tool("man_page", &input, &Config::default()).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_execute_sync_tool_grep_file_case_sensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("case.txt");
+        std::fs::write(&file, "Hello World\nhello world\nHELLO WORLD\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap(), "pattern": "Hello"});
+        let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("Hello World"));
+    }
+
+    #[test]
+    fn test_execute_sync_tool_read_file_unicode_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("unicode.txt");
+        std::fs::write(&file, "日本語\n🦀 Rust\ncafé\n").unwrap();
+        let input = json!({"path": file.to_str().unwrap()});
+        let result = execute_sync_tool("read_file", &input, &Config::default()).unwrap();
+        assert!(result.contains("日本語"));
+        assert!(result.contains("🦀"));
+    }
+
+    // ── validate_tool_input: error message format ──
+
+    #[test]
+    fn test_validate_tool_input_error_includes_tool_name() {
+        let input = json!({});
+        let err = validate_tool_input("command", &input).unwrap_err();
+        assert!(err.contains("command"), "error should mention tool name");
+    }
+
+    #[test]
+    fn test_validate_tool_input_error_includes_field_name() {
+        let input = json!({"path": "/f", "search": "x"});
+        let err = validate_tool_input("patch_file", &input).unwrap_err();
+        assert!(err.contains("replace"), "error should mention missing field");
+    }
+
+    #[test]
+    fn test_validate_tool_input_ask_user_extra_fields_ok() {
+        let input = json!({"question": "which?", "options": ["a", "b"]});
+        assert!(validate_tool_input("ask_user", &input).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tool_input_man_page_extra_fields_ok() {
+        let input = json!({"command": "ls", "section": 1, "extra": true});
+        assert!(validate_tool_input("man_page", &input).is_ok());
+    }
+
+    // ── build_memories_xml: structure validation ──
+
+    #[test]
+    fn test_build_memories_xml_well_formed_xml_tags() {
+        let mems = vec![crate::db::Memory {
+            id: 42,
+            key: "test".into(),
+            value: "val".into(),
+            created_at: "2025-06-01".into(),
+            updated_at: "2025-06-15".into(),
+        }];
+        let result = build_memories_xml(&mems);
+        assert!(result.starts_with("<memories count=\"1\">"));
+        assert!(result.ends_with("</memories>"));
+        assert!(result.contains("<memory id=\"42\""));
+        assert!(result.contains("updated=\"2025-06-15\""));
+        assert!(result.contains(">val</memory>"));
+    }
+
+    #[test]
+    fn test_build_memories_xml_empty_returns_self_closing() {
+        let result = build_memories_xml(&[]);
+        assert!(result.contains("/>"));
+        assert!(!result.contains("</memories>"));
+    }
 }

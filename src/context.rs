@@ -3801,4 +3801,470 @@ mod tests {
         assert_eq!(xml_escape("héllo wörld"), "héllo wörld");
         assert_eq!(xml_escape("日本語 & test"), "日本語 &amp; test");
     }
+
+    // --- xml_escape: long strings and double-escaped ---
+
+    #[test]
+    fn test_xml_escape_already_escaped_ampersand() {
+        assert_eq!(xml_escape("&amp;"), "&amp;amp;");
+    }
+
+    #[test]
+    fn test_xml_escape_long_string_with_many_specials() {
+        let input = "<a>&\"b\"</a> & <c>".repeat(100);
+        let result = xml_escape(&input);
+        assert!(!result.contains('<'));
+        assert!(!result.contains('>'));
+        assert!(!result.contains('"'));
+        assert!(result.contains("&amp;"));
+        assert!(result.contains("&lt;"));
+        assert!(result.contains("&gt;"));
+        assert!(result.contains("&quot;"));
+    }
+
+    #[test]
+    fn test_xml_escape_only_whitespace() {
+        assert_eq!(xml_escape("   "), "   ");
+        assert_eq!(xml_escape("\n\n\n"), "\n\n\n");
+        assert_eq!(xml_escape("\t\t"), "\t\t");
+    }
+
+    // --- format_size: additional boundaries ---
+
+    #[test]
+    fn test_format_size_exactly_at_boundaries() {
+        assert_eq!(format_size(1023), "1023B");
+        assert_eq!(format_size(1024), "1.0KB");
+        assert_eq!(format_size(1024 * 1024 - 1), "1024.0KB");
+        assert_eq!(format_size(1024 * 1024), "1.0MB");
+    }
+
+    #[test]
+    fn test_format_size_fractional_kb() {
+        assert_eq!(format_size(1024 + 512), "1.5KB");
+        assert_eq!(format_size(1024 * 100 + 512), "100.5KB");
+    }
+
+    #[test]
+    fn test_format_size_fractional_mb() {
+        assert_eq!(format_size(1024 * 1024 + 1024 * 512), "1.5MB");
+    }
+
+    // --- detect_timezone: with TZ env var ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_timezone_with_tz_env() {
+        unsafe {
+            std::env::set_var("TZ", "America/New_York");
+        }
+        let tz = detect_timezone();
+        unsafe {
+            std::env::remove_var("TZ");
+        }
+        assert_eq!(tz, "America/New_York");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_timezone_without_tz_env() {
+        let original = std::env::var("TZ").ok();
+        unsafe {
+            std::env::remove_var("TZ");
+        }
+        let tz = detect_timezone();
+        if let Some(orig) = original {
+            unsafe {
+                std::env::set_var("TZ", orig);
+            }
+        }
+        assert!(!tz.is_empty());
+    }
+
+    // --- detect_locale: with env vars ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_locale_with_lc_all() {
+        let orig_lc = std::env::var("LC_ALL").ok();
+        let orig_lang = std::env::var("LANG").ok();
+        unsafe {
+            std::env::set_var("LC_ALL", "fr_FR.UTF-8");
+        }
+        let locale = detect_locale();
+        unsafe {
+            match orig_lc {
+                Some(v) => std::env::set_var("LC_ALL", v),
+                None => std::env::remove_var("LC_ALL"),
+            }
+            match orig_lang {
+                Some(v) => std::env::set_var("LANG", v),
+                None => std::env::remove_var("LANG"),
+            }
+        }
+        assert_eq!(locale, "fr_FR.UTF-8");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_locale_falls_back_to_lang() {
+        let orig_lc = std::env::var("LC_ALL").ok();
+        let orig_lang = std::env::var("LANG").ok();
+        unsafe {
+            std::env::remove_var("LC_ALL");
+            std::env::set_var("LANG", "de_DE.UTF-8");
+        }
+        let locale = detect_locale();
+        unsafe {
+            match orig_lc {
+                Some(v) => std::env::set_var("LC_ALL", v),
+                None => std::env::remove_var("LC_ALL"),
+            }
+            match orig_lang {
+                Some(v) => std::env::set_var("LANG", v),
+                None => std::env::remove_var("LANG"),
+            }
+        }
+        assert_eq!(locale, "de_DE.UTF-8");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_locale_default_when_no_env() {
+        let orig_lc = std::env::var("LC_ALL").ok();
+        let orig_lang = std::env::var("LANG").ok();
+        unsafe {
+            std::env::remove_var("LC_ALL");
+            std::env::remove_var("LANG");
+        }
+        let locale = detect_locale();
+        unsafe {
+            match orig_lc {
+                Some(v) => std::env::set_var("LC_ALL", v),
+                None => std::env::remove_var("LC_ALL"),
+            }
+            match orig_lang {
+                Some(v) => std::env::set_var("LANG", v),
+                None => std::env::remove_var("LANG"),
+            }
+        }
+        assert_eq!(locale, "en_US.UTF-8");
+    }
+
+    // --- detect_ssh_context: edge cases ---
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_ssh_context_single_field() {
+        unsafe {
+            std::env::remove_var("SSH_CONNECTION");
+            std::env::set_var("SSH_CLIENT", "8.8.8.8");
+        }
+        let result = detect_ssh_context();
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+        }
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("8.8.8.8"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_detect_ssh_context_special_chars_in_ip() {
+        unsafe {
+            std::env::remove_var("SSH_CONNECTION");
+            std::env::set_var("SSH_CLIENT", "fe80::1%eth0 12345 22");
+        }
+        let result = detect_ssh_context();
+        unsafe {
+            std::env::remove_var("SSH_CLIENT");
+        }
+        assert!(result.is_some());
+    }
+
+    // --- read_scrollback_file: various content types ---
+
+    #[test]
+    fn test_read_scrollback_file_with_unicode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "unicode_sess";
+        let content = "$ echo 日本語\n日本語\n$ echo 🦀\n🦀\n";
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), content).unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_read_scrollback_file_with_long_content() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "long_sess";
+        let content = "line\n".repeat(1000);
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), &content).unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result, content);
+    }
+
+    // --- build_xml_context: session history with special chars in summary ---
+
+    #[test]
+    fn test_build_xml_session_history_summary_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "make".into(),
+            cwd: Some("/proj".into()),
+            exit_code: Some(1),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: Some(100),
+            summary: Some("Error: <undefined> & \"missing\"".into()),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;undefined&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;missing&quot;"));
+    }
+
+    // --- build_xml_context: other sessions with special chars ---
+
+    #[test]
+    fn test_build_xml_other_sessions_special_chars_in_command() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![OtherSessionSummary {
+            command: "echo \"hello <world>\"".into(),
+            cwd: None,
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            summary: Some("Printed <world> & more".into()),
+            tty: "/dev/pts/0".into(),
+            shell: "bash".into(),
+            session_id: "s1".into(),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;world&gt;"));
+        assert!(xml.contains("&amp;"));
+    }
+
+    // --- build_xml_context: session_history exit_code edge values ---
+
+    #[test]
+    fn test_build_xml_session_history_various_exit_codes() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![
+            CommandWithSummary {
+                command: "true".into(),
+                cwd: Some("/tmp".into()),
+                exit_code: Some(0),
+                started_at: "t1".into(),
+                duration_ms: None,
+                summary: None,
+            },
+            CommandWithSummary {
+                command: "segfault".into(),
+                cwd: Some("/tmp".into()),
+                exit_code: Some(139),
+                started_at: "t2".into(),
+                duration_ms: None,
+                summary: None,
+            },
+            CommandWithSummary {
+                command: "killed".into(),
+                cwd: Some("/tmp".into()),
+                exit_code: Some(137),
+                started_at: "t3".into(),
+                duration_ms: None,
+                summary: None,
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("exit=\"0\""));
+        assert!(xml.contains("exit=\"139\""));
+        assert!(xml.contains("exit=\"137\""));
+    }
+
+    // --- build_xml_context: project with files but no root ---
+
+    #[test]
+    fn test_build_xml_context_files_ignored_without_root() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: None,
+            project_type: "unknown".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![FileEntry {
+                path: "orphan.txt".into(),
+                kind: "file".into(),
+                size: "100B".into(),
+            }],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("orphan.txt"));
+        assert!(!xml.contains("<files"));
+    }
+
+    // --- build_xml_context: large duration values ---
+
+    #[test]
+    fn test_build_xml_session_history_large_duration() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "long-running".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "t1".into(),
+            duration_ms: Some(3_600_000),
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("duration=\"3600000ms\""));
+    }
+
+    // --- build_xml_context: other_sessions with three different TTYs ---
+
+    #[test]
+    fn test_build_xml_other_sessions_three_ttys() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![
+            OtherSessionSummary {
+                command: "a".into(), cwd: None, exit_code: Some(0),
+                started_at: "t1".into(), summary: None,
+                tty: "/dev/ttys001".into(), shell: "bash".into(), session_id: "s1".into(),
+            },
+            OtherSessionSummary {
+                command: "b".into(), cwd: None, exit_code: Some(0),
+                started_at: "t2".into(), summary: None,
+                tty: "/dev/ttys002".into(), shell: "zsh".into(), session_id: "s2".into(),
+            },
+            OtherSessionSummary {
+                command: "c".into(), cwd: None, exit_code: Some(0),
+                started_at: "t3".into(), summary: None,
+                tty: "/dev/ttys003".into(), shell: "fish".into(), session_id: "s3".into(),
+            },
+        ];
+        let xml = build_xml_context(&ctx, &Config::default());
+        let session_count = xml.matches("<session tty=").count();
+        assert_eq!(session_count, 3);
+        let close_count = xml.matches("</session>").count();
+        assert_eq!(close_count, 3);
+    }
+
+    // --- check_project_markers: both Docker markers at once ---
+
+    #[test]
+    fn test_check_project_markers_both_docker_markers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), "").unwrap();
+        std::fs::write(tmp.path().join("docker-compose.yml"), "").unwrap();
+        std::fs::write(tmp.path().join("compose.yml"), "").unwrap();
+        let mut types = Vec::new();
+        check_project_markers(tmp.path(), &mut types);
+        let docker_count = types.iter().filter(|&&t| t == "Docker").count();
+        assert_eq!(docker_count, 1, "Docker should appear once: {types:?}");
+    }
+
+    // --- check_project_markers: both Java markers at once ---
+
+    #[test]
+    fn test_check_project_markers_both_java_markers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("pom.xml"), "").unwrap();
+        std::fs::write(tmp.path().join("build.gradle"), "").unwrap();
+        let mut types = Vec::new();
+        check_project_markers(tmp.path(), &mut types);
+        let java_count = types.iter().filter(|&&t| t == "Java").count();
+        assert_eq!(java_count, 1, "Java should appear once: {types:?}");
+    }
+
+    // --- list_project_files_fallback: sorts children alphabetically ---
+
+    #[test]
+    fn test_list_project_files_fallback_sorted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("zebra.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("apple.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("mango.txt"), "").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["apple.txt", "mango.txt", "zebra.txt"]);
+    }
+
+    // --- list_project_files_with_ignore: sorted output ---
+
+    #[test]
+    fn test_list_project_files_with_ignore_sorted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("z.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "").unwrap();
+        let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        let a_pos = paths.iter().position(|p| *p == "a.txt").unwrap();
+        let z_pos = paths.iter().position(|p| *p == "z.txt").unwrap();
+        assert!(a_pos < z_pos, "should be sorted: {paths:?}");
+    }
+
+    // --- detect_project_type: empty string path ---
+
+    #[test]
+    fn test_detect_project_type_empty_path() {
+        let t = detect_project_type("");
+        assert!(!t.is_empty());
+    }
+
+    // --- which_exists: common commands ---
+
+    #[test]
+    fn test_which_exists_cat() {
+        assert!(which_exists("cat"), "cat should exist");
+    }
+
+    #[test]
+    fn test_which_exists_empty_string() {
+        assert!(!which_exists(""));
+    }
+
+    // --- build_xml_context: git commits with empty hash/message ---
+
+    #[test]
+    fn test_build_xml_context_git_commit_empty_fields() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Go".into(),
+            git_branch: Some("main".into()),
+            git_status: None,
+            git_commits: vec![GitCommit {
+                hash: "".into(),
+                message: "".into(),
+                relative_time: "".into(),
+            }],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("hash=\"\""));
+        assert!(xml.contains("ts=\"\""));
+        assert!(xml.contains("<commit hash=\"\" ts=\"\"></commit>"));
+    }
+
+    // --- build_xml_context: file entries with special chars in path ---
+
+    #[test]
+    fn test_build_xml_context_file_path_special_chars() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/proj".into()),
+            project_type: "Node.js".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![FileEntry {
+                path: "dir/file with <name> & \"quotes\".txt".into(),
+                kind: "file".into(),
+                size: "10B".into(),
+            }],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;name&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;quotes&quot;"));
+    }
 }

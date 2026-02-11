@@ -598,4 +598,41 @@ mod tests {
         let results = parse_fish(f.path(), fixed_mtime());
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn parse_zsh_extended_multiline_three_continuations() {
+        let content = ": 1700000100:0;line1\\\nline2\\\nline3\n: 1700000200:0;ls\n";
+        let results = parse_zsh_extended(content);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "line1\nline2\nline3");
+        assert_eq!(results[0].1.timestamp(), 1_700_000_100);
+        assert_eq!(results[1].0, "ls");
+    }
+
+    #[test]
+    fn parse_bash_out_of_range_timestamp_fallback() {
+        let huge_ts = i64::MAX.to_string();
+        let content = format!("#{huge_ts}\nls\n");
+        let f = write_temp(&content);
+        let results = parse_bash(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "ls");
+        assert_eq!(results[0].1, fixed_mtime());
+    }
+
+    #[test]
+    fn parse_fish_flush_pending_without_when() {
+        let f = write_temp("- cmd: first\n- cmd: second\n  when: 1700000200\n");
+        let results = parse_fish(f.path(), fixed_mtime());
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "first");
+        assert_eq!(results[1].0, "second");
+        assert_eq!(results[1].1.timestamp(), 1_700_000_200);
+    }
+
+    #[test]
+    fn detect_shell_whitespace_then_content() {
+        let f = write_temp("\n\n\n: 1700000100:0;ls\n");
+        assert_eq!(detect_shell_from_content(f.path()), Shell::Zsh);
+    }
 }

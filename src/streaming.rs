@@ -269,11 +269,34 @@ mod tests {
 
     #[test]
     fn test_spinner_guard_creates_and_drops() {
+        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
         {
             let guard = SpinnerGuard::new();
-            assert!(guard.did_start || !guard.did_start);
+            assert!(guard.did_start);
+            assert!(SPINNER_ACTIVE.load(Ordering::SeqCst));
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!SPINNER_ACTIVE.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_spinner_guard_second_is_noop() {
+        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        let guard1 = SpinnerGuard::new();
+        assert!(guard1.did_start);
+        let guard2 = SpinnerGuard::new();
+        assert!(!guard2.did_start);
+        drop(guard2);
+        assert!(SPINNER_ACTIVE.load(Ordering::SeqCst));
+        drop(guard1);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    #[test]
+    fn test_spinner_frames_returns_defaults() {
+        let frames = spinner_frames();
+        assert!(frames.len() >= 10);
+        assert_eq!(frames[0], "⠋");
     }
 
     #[test]
