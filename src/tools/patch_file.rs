@@ -98,6 +98,27 @@ fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(dest)
 }
 
+#[cfg(unix)]
+fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    f.write_all(content.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 pub fn execute(
     input: &serde_json::Value,
     original_query: &str,
@@ -213,7 +234,13 @@ pub fn execute(
     let backup = backup_to_trash(&path)?;
     eprintln!("  Backup: {}", backup.display());
 
-    std::fs::write(&path, &modified)?;
+    if path.exists() {
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!("target is a symlink (refusing to follow)");
+        }
+    }
+    write_nofollow(&path, &modified)?;
     eprintln!("{green}✓ patched {}{reset}", path.display());
 
     if !private {

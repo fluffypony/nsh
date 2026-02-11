@@ -15,6 +15,7 @@ pub struct CaptureEngine {
     pause_seconds: u64,
     suppressed: bool,
     history_lines: Vec<String>,
+    max_history_lines: usize,
     prev_visible: Vec<String>,
     mark_state: Option<(usize, Vec<String>)>,
     #[allow(dead_code)]
@@ -42,10 +43,22 @@ impl CaptureEngine {
             pause_seconds,
             suppressed: false,
             history_lines: Vec::new(),
+            max_history_lines: max_scrollback_lines,
             prev_visible: Vec::new(),
             mark_state: None,
             capture_mode,
             alt_screen_mode,
+        }
+    }
+
+    fn push_history_line(&mut self, line: String) {
+        if line.trim().is_empty() {
+            return;
+        }
+        self.history_lines.push(line);
+        if self.max_history_lines > 0 && self.history_lines.len() > self.max_history_lines {
+            let excess = self.history_lines.len() - self.max_history_lines;
+            self.history_lines.drain(0..excess);
         }
     }
 
@@ -69,8 +82,7 @@ impl CaptureEngine {
             self.paused_until = Some(Instant::now() + Duration::from_secs(self.pause_seconds));
             if !self.suppressed {
                 self.suppressed = true;
-                self.history_lines
-                    .push("[nsh: output capture suppressed (high output rate)]".into());
+                self.push_history_line("[nsh: output capture suppressed (high output rate)]".into());
             }
             return;
         }
@@ -96,9 +108,7 @@ impl CaptureEngine {
         if !self.prev_visible.is_empty() {
             let scrolled = detect_scrolled_lines(&self.prev_visible, &cur_lines);
             for line in scrolled {
-                if !line.trim().is_empty() {
-                    self.history_lines.push(line);
-                }
+                self.push_history_line(line);
             }
         }
 
@@ -389,9 +399,22 @@ pub fn pump_loop(
     let scrollback_path = nsh_dir.join(format!("scrollback_{session_id}"));
     let redact_active_path = nsh_dir.join(format!("redact_active_{session_id}"));
 
+    // Set PTY master to non-blocking to prevent deadlock:
+    // Without this, write_all to pty_master can block when the PTY buffer is full,
+    // while the shell is blocked writing to the PTY slave (circular wait).
+    {
+        use std::os::fd::AsRawFd;
+        let flags = unsafe { libc::fcntl(pty_master.as_raw_fd(), libc::F_GETFL) };
+        if flags >= 0 {
+            unsafe { libc::fcntl(pty_master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        }
+    }
+
     let mut buf = [0u8; 8192];
     let mut last_activity = Instant::now();
     let mut last_flush = Instant::now();
+    let mut pending_pty_write: Vec<u8> = Vec::new();
+    const MAX_PENDING: usize = 256 * 1024;
 
     loop {
         if winch_pending.swap(false, Ordering::Relaxed) {
@@ -410,9 +433,19 @@ pub fn pump_loop(
             tv_nsec: timeout_ns % 1_000_000_000,
         };
 
+        let stdin_flags = if pending_pty_write.len() < MAX_PENDING {
+            PollFlags::IN
+        } else {
+            PollFlags::empty()
+        };
+        let pty_flags = if pending_pty_write.is_empty() {
+            PollFlags::IN
+        } else {
+            PollFlags::IN | PollFlags::OUT
+        };
         let mut poll_fds: Vec<PollFd> = vec![
-            PollFd::new(&real_stdin, PollFlags::IN),
-            PollFd::new(&pty_master, PollFlags::IN),
+            PollFd::new(&real_stdin, stdin_flags),
+            PollFd::new(&pty_master, pty_flags),
         ];
 
         let legacy_idx = listener.as_ref().map(|l| {
@@ -453,6 +486,7 @@ pub fn pump_loop(
                     &mut last_flush,
                     &scrollback_path,
                     &redact_active_path,
+                    &mut pending_pty_write,
                 ) {
                     break;
                 }
@@ -506,14 +540,41 @@ fn handle_io(
     last_flush: &mut Instant,
     scrollback_path: &std::path::Path,
     redact_active_path: &std::path::Path,
+    pending_pty_write: &mut Vec<u8>,
 ) -> bool {
     use rustix::event::PollFlags;
+
+    if pty_poll.revents().contains(PollFlags::OUT) && !pending_pty_write.is_empty() {
+        match rustix::io::write(pty_master, pending_pty_write) {
+            Ok(n) => {
+                pending_pty_write.drain(0..n);
+            }
+            Err(e) if e == rustix::io::Errno::INTR || e == rustix::io::Errno::AGAIN => {}
+            Err(_) => return true,
+        }
+    }
 
     if stdin_poll.revents().contains(PollFlags::IN) {
         match rustix::io::read(real_stdin, &mut *buf) {
             Ok(0) => return true,
             Ok(n) => {
-                let _ = write_all(pty_master, &buf[..n]);
+                if pending_pty_write.is_empty() {
+                    match rustix::io::write(pty_master, &buf[..n]) {
+                        Ok(written) if written < n => {
+                            pending_pty_write.extend_from_slice(&buf[written..n]);
+                        }
+                        Ok(_) => {}
+                        Err(e) if e == rustix::io::Errno::AGAIN => {
+                            pending_pty_write.extend_from_slice(&buf[..n]);
+                        }
+                        Err(e) if e == rustix::io::Errno::INTR => {
+                            pending_pty_write.extend_from_slice(&buf[..n]);
+                        }
+                        Err(_) => return true,
+                    }
+                } else {
+                    pending_pty_write.extend_from_slice(&buf[..n]);
+                }
                 *last_activity = Instant::now();
             }
             Err(e) if e == rustix::io::Errno::INTR || e == rustix::io::Errno::AGAIN => {}

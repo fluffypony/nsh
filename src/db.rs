@@ -295,8 +295,23 @@ impl Db {
     pub fn open() -> anyhow::Result<Self> {
         let dir = crate::config::Config::nsh_dir();
         std::fs::create_dir_all(&dir)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+
         let config = crate::config::Config::load().unwrap_or_default();
-        let mut conn = Connection::open(dir.join("nsh.db"))?;
+        let db_path = dir.join("nsh.db");
+        let mut conn = Connection::open(&db_path)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600));
+        }
+
         init_db(&conn, config.db.busy_timeout_ms)?;
         conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
         let db = Self {

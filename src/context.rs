@@ -396,16 +396,22 @@ fn gather_custom_instructions(config: &Config, cwd: &str) -> Option<String> {
 
 fn detect_project_info(cwd: &str, config: &Config) -> ProjectInfo {
     let project_type = detect_project_type(cwd);
-    let root = if project_type != "unknown" {
-        Some(cwd.to_string())
+
+    let project_root = if project_type != "unknown" {
+        find_project_root(cwd)
     } else {
         None
     };
 
+    let root = project_root
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+
     let (git_branch, git_status, git_commits) = detect_git_info(cwd, config.context.git_commits);
 
-    let files = if root.is_some() {
-        list_project_files(cwd, config.context.project_files_limit)
+    let files = if let Some(ref root_path) = project_root {
+        let root_str = root_path.to_string_lossy();
+        list_project_files(&root_str, config.context.project_files_limit)
     } else {
         Vec::new()
     };
@@ -418,6 +424,14 @@ fn detect_project_info(cwd: &str, config: &Config) -> ProjectInfo {
         git_commits,
         files,
     }
+}
+
+fn find_project_root(cwd: &str) -> Option<std::path::PathBuf> {
+    let git_root = run_git_with_timeout(&["rev-parse", "--show-toplevel"], cwd);
+    if let Some(root) = git_root {
+        return Some(std::path::PathBuf::from(root));
+    }
+    Some(std::path::PathBuf::from(cwd))
 }
 
 fn detect_project_type(cwd: &str) -> String {

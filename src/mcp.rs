@@ -147,13 +147,16 @@ impl McpServer {
                     use futures::StreamExt;
                     let sse_fut = async {
                         let mut body_stream = resp.bytes_stream();
-                        let mut buffer = String::new();
+                        let mut raw_buffer: Vec<u8> = Vec::new();
                         while let Some(chunk) = body_stream.next().await {
                             let chunk = chunk?;
-                            buffer.push_str(&String::from_utf8_lossy(&chunk));
-                            while let Some(pos) = buffer.find("\n\n") {
-                                let event_block = buffer[..pos].to_string();
-                                buffer = buffer[pos + 2..].to_string();
+                            raw_buffer.extend_from_slice(&chunk);
+
+                            while let Some(pos) = raw_buffer.windows(2).position(|w| w == b"\n\n") {
+                                let event_bytes = raw_buffer[..pos].to_vec();
+                                raw_buffer = raw_buffer[pos + 2..].to_vec();
+
+                                let event_block = String::from_utf8_lossy(&event_bytes);
                                 for line in event_block.lines() {
                                     if let Some(data) = line.strip_prefix("data: ") {
                                         let data = data.trim();

@@ -108,6 +108,7 @@ pub async fn handle_query(
             std::process::exit(130);
         }
 
+        let used_forced_json = force_json_next;
         let extra_body = if force_json_next {
             force_json_next = false;
             Some(serde_json::json!({"response_format": {"type": "json_object"}}))
@@ -161,7 +162,9 @@ pub async fn handle_query(
         // ── JSON fallback for models that don't use tool calling ──
         let has_tool_calls = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         let response = if !has_tool_calls {
-            force_json_next = true;
+            if !used_forced_json {
+                force_json_next = true;
+            }
             let text_content: String = response.content.iter()
                 .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
                 .collect::<Vec<_>>().join("");
@@ -454,6 +457,9 @@ pub async fn handle_query(
         }
 
         if tool_results.is_empty() {
+            if force_json_next {
+                continue;
+            }
             eprintln!("nsh: no tool calls in response, aborting");
             break;
         }
@@ -821,8 +827,8 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "command" => &["command", "explanation"],
         "chat" => &["response"],
         "grep_file" | "read_file" => &["path"],
-        "write_file" => &["path"],
-        "patch_file" => &["path", "search"],
+        "write_file" => &["path", "content", "reason"],
+        "patch_file" => &["path", "search", "replace", "reason"],
         "run_command" => &["command", "reason"],
         "web_search" => &["query"],
         "ask_user" => &["question"],
@@ -1044,7 +1050,7 @@ mod tests {
 
     #[test]
     fn test_validate_tool_input_write_file_ok() {
-        let input = json!({"path": "/tmp/out"});
+        let input = json!({"path": "/tmp/out", "content": "hello", "reason": "test"});
         assert!(validate_tool_input("write_file", &input).is_ok());
     }
 
@@ -1056,8 +1062,15 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_tool_input_write_file_missing_content() {
+        let input = json!({"path": "/tmp/out"});
+        let err = validate_tool_input("write_file", &input).unwrap_err();
+        assert!(err.contains("content"));
+    }
+
+    #[test]
     fn test_validate_tool_input_patch_file_ok() {
-        let input = json!({"path": "/tmp/f", "search": "old"});
+        let input = json!({"path": "/tmp/f", "search": "old", "replace": "new", "reason": "fix"});
         assert!(validate_tool_input("patch_file", &input).is_ok());
     }
 
@@ -1066,6 +1079,13 @@ mod tests {
         let input = json!({"path": "/tmp/f"});
         let err = validate_tool_input("patch_file", &input).unwrap_err();
         assert!(err.contains("search"));
+    }
+
+    #[test]
+    fn test_validate_tool_input_patch_file_missing_replace() {
+        let input = json!({"path": "/tmp/f", "search": "old"});
+        let err = validate_tool_input("patch_file", &input).unwrap_err();
+        assert!(err.contains("replace"));
     }
 
     #[test]
