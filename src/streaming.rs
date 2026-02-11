@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 static SPINNER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SPINNER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
+static LAST_STREAM_HAD_TEXT: AtomicBool = AtomicBool::new(false);
 
 static CHAT_COLOR: OnceLock<String> = OnceLock::new();
 static SPINNER_FRAMES: OnceLock<Vec<String>> = OnceLock::new();
@@ -29,6 +30,10 @@ pub fn set_json_output(enabled: bool) {
 
 pub fn json_output_enabled() -> bool {
     JSON_OUTPUT.load(Ordering::SeqCst)
+}
+
+pub fn last_stream_had_text() -> bool {
+    LAST_STREAM_HAD_TEXT.load(Ordering::SeqCst)
 }
 
 fn chat_color() -> &'static str {
@@ -120,6 +125,7 @@ pub async fn consume_stream(
     rx: &mut mpsc::Receiver<StreamEvent>,
     cancelled: &Arc<AtomicBool>,
 ) -> anyhow::Result<Message> {
+    LAST_STREAM_HAD_TEXT.store(false, Ordering::SeqCst);
     let mut is_streaming = false;
     let mut json_display = if JSON_OUTPUT.load(Ordering::SeqCst) {
         Some(crate::json_display::JsonDisplay::new())
@@ -134,6 +140,7 @@ pub async fn consume_stream(
         }
         match event {
             crate::stream_consumer::DisplayEvent::TextChunk(text) => {
+                LAST_STREAM_HAD_TEXT.store(true, Ordering::SeqCst);
                 if !is_streaming {
                     is_streaming = true;
                     eprint!("{color}");

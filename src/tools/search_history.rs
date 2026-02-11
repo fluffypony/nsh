@@ -3,6 +3,14 @@ use crate::db::Db;
 use regex::Regex;
 use std::collections::HashSet;
 
+#[derive(Debug, Clone)]
+struct EntitySearchIntent {
+    executable: Option<String>,
+    entity: Option<String>,
+    entity_type: Option<String>,
+    latest_only: bool,
+}
+
 pub fn execute(
     db: &Db,
     input: &serde_json::Value,
@@ -23,6 +31,10 @@ pub fn execute(
         .unwrap_or(false);
     let session = input.get("session").and_then(|v| v.as_str());
     let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let command_filter = input.get("command").and_then(|v| v.as_str());
+    let entity_filter = input.get("entity").and_then(|v| v.as_str());
+    let entity_type_filter = input.get("entity_type").and_then(|v| v.as_str());
+    let latest_only = input.get("latest_only").and_then(|v| v.as_bool());
 
     // Resolve relative time strings like "1h", "2d", "1w"
     let resolved_since = since.map(resolve_relative_time);
@@ -42,45 +54,60 @@ pub fn execute(
         && exit_code.is_none()
         && !failed_only
         && session.is_none()
+        && command_filter.is_none()
+        && entity_filter.is_none()
+        && entity_type_filter.is_none()
+        && latest_only.is_none()
     {
-        return Ok("No search criteria provided. Use 'query', 'regex', 'since', 'exit_code', or 'failed_only'.".into());
+        return Ok("No search criteria provided. Use 'query', 'regex', 'command', 'entity', 'since', 'exit_code', or 'failed_only'.".into());
     }
 
-    let ssh_intent = is_ssh_intent(query, regex);
-    let raw_limit = if ssh_intent {
-        limit.saturating_mul(20).max(200)
-    } else {
-        limit
-    };
-    let search_regex = if ssh_intent {
-        Some(SSH_COMMAND_REGEX)
-    } else {
-        regex
-    };
-    let search_query = if ssh_intent { None } else { query };
+    if let Some(intent) = infer_entity_search_intent(
+        query,
+        regex,
+        command_filter,
+        entity_filter,
+        entity_type_filter,
+        latest_only,
+    ) {
+        let raw_limit = if intent.latest_only || intent.entity.is_some() {
+            limit.saturating_mul(20).max(200)
+        } else {
+            limit.saturating_mul(10).max(100)
+        };
+        let entity_matches = db.search_command_entities(
+            intent.executable.as_deref(),
+            intent.entity.as_deref(),
+            intent.entity_type.as_deref(),
+            resolved_since.as_deref(),
+            resolved_until.as_deref(),
+            session_filter.as_deref(),
+            Some(session_id),
+            raw_limit,
+        )?;
+
+        if !entity_matches.is_empty() {
+            let summary = summarize_entity_matches(&entity_matches, &intent, limit);
+            if !summary.is_empty() {
+                return Ok(crate::redact::redact_secrets(&summary, &config.redaction));
+            }
+        }
+    }
 
     let matches = db.search_history_advanced(
-        search_query,
-        search_regex,
+        query,
+        regex,
         resolved_since.as_deref(),
         resolved_until.as_deref(),
         exit_code,
         failed_only,
         session_filter.as_deref(),
         Some(session_id),
-        raw_limit,
+        limit,
     )?;
 
     if matches.is_empty() {
         return Ok("No matching commands found.".into());
-    }
-
-    if ssh_intent {
-        let summary = summarize_ssh_targets(&matches, query, limit);
-        if summary.is_empty() {
-            return Ok("No SSH commands found in history.".into());
-        }
-        return Ok(crate::redact::redact_secrets(&summary, &config.redaction));
     }
 
     let mut result = String::new();
@@ -103,7 +130,11 @@ pub fn execute(
         result.push('\n');
     }
 
-    let memory_query = query.or(regex).unwrap_or("");
+    let memory_query = query
+        .or(regex)
+        .or(command_filter)
+        .or(entity_filter)
+        .unwrap_or("");
     let memory_matches = if memory_query.is_empty() {
         Vec::new()
     } else {
@@ -120,55 +151,45 @@ pub fn execute(
     Ok(crate::redact::redact_secrets(&result, &config.redaction))
 }
 
-const SSH_COMMAND_REGEX: &str = r"(?i)(^|\s)(ssh)(\s|$)";
-
-fn is_ssh_intent(query: Option<&str>, regex: Option<&str>) -> bool {
-    query
-        .or(regex)
-        .map(|s| s.to_ascii_lowercase().contains("ssh"))
-        .unwrap_or(false)
-}
-
-fn summarize_ssh_targets(
-    matches: &[crate::db::HistoryMatch],
-    query: Option<&str>,
+fn summarize_entity_matches(
+    matches: &[crate::db::CommandEntityMatch],
+    intent: &EntitySearchIntent,
     limit: usize,
 ) -> String {
-    let host_filters = query.map(extract_host_filters).unwrap_or_default();
-    let host_filter_set: HashSet<String> = host_filters.into_iter().collect();
-
-    let mut result = String::new();
-    if host_filter_set.is_empty() {
-        result.push_str("Recent SSH targets (most recent first):\n");
-    } else {
-        result.push_str("Recent SSH targets matching your query (most recent first):\n");
+    if matches.is_empty() {
+        return String::new();
     }
 
-    let mut seen_targets = HashSet::new();
+    if intent.latest_only {
+        let m = &matches[0];
+        return format!(
+            "Most recent matching target:\n- [{}] {} (via {})\n  command: {}\n",
+            m.started_at, m.entity, m.executable, m.command
+        );
+    }
+
+    let mut result = String::new();
+    if let Some(executable) = &intent.executable {
+        result.push_str(&format!(
+            "Recent machine targets for `{executable}` (most recent first):\n"
+        ));
+    } else {
+        result.push_str("Recent machine targets (most recent first):\n");
+    }
+
+    let mut seen_targets: HashSet<String> = HashSet::new();
     let mut rows = 0usize;
 
     for m in matches {
-        let Some(target) = extract_ssh_target(&m.command) else {
-            continue;
-        };
-
-        if !host_filter_set.is_empty() {
-            let target_lc = target.to_ascii_lowercase();
-            let cmd_lc = m.command.to_ascii_lowercase();
-            let matched = host_filter_set
-                .iter()
-                .all(|f| target_lc.contains(f) || cmd_lc.contains(f));
-            if !matched {
-                continue;
-            }
-        }
-
-        let key = target.to_ascii_lowercase();
+        let key = m.entity.to_ascii_lowercase();
         if !seen_targets.insert(key) {
             continue;
         }
 
-        result.push_str(&format!("- [{}] {}\n", m.started_at, target));
+        result.push_str(&format!(
+            "- [{}] {} (via {})\n",
+            m.started_at, m.entity, m.executable
+        ));
         rows += 1;
         if rows >= limit {
             break;
@@ -178,184 +199,337 @@ fn summarize_ssh_targets(
     if rows == 0 { String::new() } else { result }
 }
 
-fn extract_host_filters(query: &str) -> Vec<String> {
-    let user_host_re = Regex::new(r"\b[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\b").unwrap();
+fn infer_entity_search_intent(
+    query: Option<&str>,
+    regex: Option<&str>,
+    command: Option<&str>,
+    entity: Option<&str>,
+    entity_type: Option<&str>,
+    latest_only: Option<bool>,
+) -> Option<EntitySearchIntent> {
+    let query_str = query.unwrap_or("");
+    let has_explicit_filters =
+        command.is_some() || entity.is_some() || entity_type.is_some() || latest_only.is_some();
+    if !has_explicit_filters && regex.is_some() {
+        return None;
+    }
+
+    let inferred_command = if command.is_none() {
+        infer_command_from_query(query_str)
+    } else {
+        None
+    };
+    let inferred_entity = if entity.is_none() {
+        extract_query_entity(query_str)
+    } else {
+        None
+    };
+    let inferred_entity_type = if entity_type.is_none() && is_machine_intent_query(query_str) {
+        Some("machine".to_string())
+    } else {
+        None
+    };
+    let latest = latest_only.unwrap_or_else(|| query_indicates_latest(query_str));
+
+    let executable = command
+        .and_then(normalize_query_command)
+        .or(inferred_command);
+    let entity_norm = entity.and_then(normalize_query_entity).or(inferred_entity);
+    let entity_type_norm = entity_type
+        .and_then(normalize_entity_type)
+        .or(inferred_entity_type);
+
+    let query_word_count = tokenize_query_words(query_str).len();
+    let should_use = has_explicit_filters
+        || (executable.is_some()
+            && (entity_norm.is_some()
+                || entity_type_norm.is_some()
+                || is_machine_intent_query(query_str)
+                || query_word_count <= 3));
+
+    if !should_use {
+        return None;
+    }
+
+    Some(EntitySearchIntent {
+        executable,
+        entity: entity_norm,
+        entity_type: entity_type_norm,
+        latest_only: latest,
+    })
+}
+
+fn infer_command_from_query(query: &str) -> Option<String> {
+    if query.trim().is_empty() {
+        return None;
+    }
+    let lower = query.to_ascii_lowercase();
+    let used_with_re =
+        Regex::new(r"\bthat\s+([a-z0-9_./-]+)\s+has\s+been\s+used\s+with\b").unwrap();
+    if let Some(caps) = used_with_re.captures(&lower) {
+        if let Some(m) = caps.get(1) {
+            if let Some(cmd) = normalize_query_command_word(m.as_str()) {
+                return Some(cmd);
+            }
+        }
+    }
+
+    let words = tokenize_query_words(&lower);
+    for (idx, word) in words.iter().enumerate() {
+        if matches!(word.as_str(), "into" | "from" | "to" | "with") {
+            if let Some(cmd) = find_previous_command_candidate(&words, idx) {
+                return Some(cmd);
+            }
+        }
+    }
+
+    if let Some(i_idx) = words.iter().position(|w| w == "i") {
+        if let Some(cmd) = find_next_command_candidate(&words, i_idx + 1) {
+            return Some(cmd);
+        }
+    }
+
+    for word in &words {
+        if let Some(cmd) = normalize_query_command_word(word) {
+            if !is_query_stopword(&cmd) {
+                return Some(cmd);
+            }
+        }
+    }
+    None
+}
+
+fn find_previous_command_candidate(words: &[String], idx: usize) -> Option<String> {
+    for word in words[..idx].iter().rev() {
+        if let Some(cmd) = normalize_query_command_word(word) {
+            if !is_query_stopword(&cmd) {
+                return Some(cmd);
+            }
+        }
+    }
+    None
+}
+
+fn find_next_command_candidate(words: &[String], start: usize) -> Option<String> {
+    for word in words.iter().skip(start) {
+        if let Some(cmd) = normalize_query_command_word(word) {
+            if !is_query_stopword(&cmd) {
+                return Some(cmd);
+            }
+        }
+    }
+    None
+}
+
+fn normalize_query_command(input: &str) -> Option<String> {
+    normalize_query_command_word(input)
+}
+
+fn normalize_query_command_word(word: &str) -> Option<String> {
+    let mut normalized = word
+        .trim()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if let Some(last) = normalized.rsplit('/').next() {
+        normalized = last.to_string();
+    }
+    if normalized.ends_with("'d") {
+        normalized.truncate(normalized.len() - 2);
+    }
+    if normalized.ends_with("ed") && normalized.len() > 4 {
+        normalized.truncate(normalized.len() - 2);
+    } else if normalized.ends_with('d') && normalized.len() > 3 {
+        let base = &normalized[..normalized.len() - 1];
+        if matches!(base, "ssh" | "telnet" | "rsync" | "scp" | "sftp") {
+            normalized = base.to_string();
+        }
+    }
+    if normalized == "sshd" {
+        normalized = "ssh".to_string();
+    }
+    if normalized.is_empty()
+        || normalized.chars().all(|c| c.is_ascii_digit())
+        || is_query_stopword(&normalized)
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn extract_query_entity(query: &str) -> Option<String> {
+    if query.trim().is_empty() {
+        return None;
+    }
+
+    let user_host_re = Regex::new(r"\b[a-zA-Z0-9._-]+@([a-zA-Z0-9._:-]+)\b").unwrap();
+    if let Some(caps) = user_host_re.captures(query) {
+        if let Some(m) = caps.get(1) {
+            if let Some(v) = normalize_query_entity(m.as_str()) {
+                return Some(v);
+            }
+        }
+    }
+
     let ipv4_re = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
-    let host_re = Regex::new(r"\b[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}\b").unwrap();
-
-    let mut out = Vec::new();
-    for re in [&user_host_re, &ipv4_re, &host_re] {
-        for m in re.find_iter(query) {
-            out.push(m.as_str().to_ascii_lowercase());
+    if let Some(m) = ipv4_re.find(query) {
+        if let Some(v) = normalize_query_entity(m.as_str()) {
+            return Some(v);
         }
     }
-    out.sort();
-    out.dedup();
-    out
-}
 
-fn extract_ssh_target(command: &str) -> Option<String> {
-    let tokens = shell_words::split(command).ok()?;
-    let cmd_idx = find_invoked_command_index(&tokens)?;
-    let cmd = tokens[cmd_idx].as_str();
-    if cmd == "ssh" || cmd.ends_with("/ssh") {
-        return parse_ssh_target_after(&tokens, cmd_idx + 1);
+    let host_re = Regex::new(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\.[a-zA-Z]{2,}\b").unwrap();
+    if let Some(m) = host_re.find(query) {
+        if let Some(v) = normalize_query_entity(m.as_str()) {
+            return Some(v);
+        }
     }
     None
 }
 
-fn parse_ssh_target_after(tokens: &[String], mut i: usize) -> Option<String> {
-    while i < tokens.len() {
-        let tok = tokens[i].as_str();
-        if tok == "--" {
-            i += 1;
-            continue;
+fn normalize_query_entity(entity: &str) -> Option<String> {
+    let token = entity
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | ';' | ')' | '(' | '[' | ']'))
+        .trim_matches('.');
+    if token.is_empty() {
+        return None;
+    }
+    let mut host = token.rsplit('@').next().unwrap_or(token);
+    if host.starts_with('[') && host.ends_with(']') && host.len() > 2 {
+        host = &host[1..host.len() - 1];
+    }
+    if let Some((h, port)) = host.rsplit_once(':') {
+        if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
+            host = h;
         }
-        if tok.starts_with('-') {
-            if ssh_option_takes_value(tok) && i + 1 < tokens.len() {
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        let cleaned = tok.trim_end_matches([',', ';', ':']).to_string();
-        if cleaned.is_empty() {
-            return None;
-        }
-        return Some(cleaned);
+    }
+    let host = host.trim_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    if host.parse::<std::net::Ipv4Addr>().is_ok() || host.parse::<std::net::Ipv6Addr>().is_ok() {
+        return Some(host.to_ascii_lowercase());
+    }
+    if host.eq_ignore_ascii_case("localhost") {
+        return Some("localhost".to_string());
+    }
+    if is_hostname_like(host) {
+        return Some(host.to_ascii_lowercase());
     }
     None
 }
 
-fn is_env_assignment(token: &str) -> bool {
-    !token.starts_with('-') && token.contains('=') && !token.starts_with("ssh")
+fn normalize_entity_type(entity_type: &str) -> Option<String> {
+    let normalized = entity_type.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "machine" | "host" | "ip" => Some(normalized),
+        _ => None,
+    }
 }
 
-fn find_invoked_command_index(tokens: &[String]) -> Option<usize> {
-    let mut i = 0usize;
-    while i < tokens.len() {
-        let tok = tokens[i].as_str();
-        if tok == "env" {
-            i += 1;
-            while i < tokens.len() {
-                let t = tokens[i].as_str();
-                if t == "--" {
-                    i += 1;
-                    break;
-                }
-                if t == "-u" {
-                    i = (i + 2).min(tokens.len());
-                    continue;
-                }
-                if t.starts_with('-') || is_env_assignment(t) {
-                    i += 1;
-                    continue;
-                }
-                break;
-            }
-            continue;
-        }
-        if tok == "sudo" {
-            i += 1;
-            while i < tokens.len() {
-                let t = tokens[i].as_str();
-                if t == "--" {
-                    i += 1;
-                    break;
-                }
-                if t == "-u"
-                    || t == "-g"
-                    || t == "-h"
-                    || t == "-p"
-                    || t == "-r"
-                    || t == "-t"
-                    || t == "-C"
-                    || t == "--user"
-                    || t == "--group"
-                    || t == "--host"
-                    || t == "--prompt"
-                    || t == "--chroot"
-                    || t == "--command-timeout"
-                {
-                    i = (i + 2).min(tokens.len());
-                    continue;
-                }
-                if t.starts_with('-') {
-                    i += 1;
-                    continue;
-                }
-                break;
-            }
-            continue;
-        }
-        if tok == "command" || tok == "builtin" || tok == "noglob" || tok == "nocorrect" {
-            i += 1;
-            continue;
-        }
-        if is_env_assignment(tok) {
-            i += 1;
-            continue;
-        }
-        return Some(i);
-    }
-    None
+fn tokenize_query_words(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| {
+                !c.is_ascii_alphanumeric() && c != '\'' && c != '_' && c != '-' && c != '.'
+            })
+            .to_ascii_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
-fn ssh_option_takes_value(tok: &str) -> bool {
-    if tok.starts_with("--") {
-        return !tok.contains('=');
-    }
-    if tok.len() > 2 {
-        let short = &tok[..2];
-        if matches!(
-            short,
-            "-b" | "-c"
-                | "-D"
-                | "-E"
-                | "-e"
-                | "-F"
-                | "-I"
-                | "-i"
-                | "-J"
-                | "-L"
-                | "-l"
-                | "-m"
-                | "-O"
-                | "-o"
-                | "-p"
-                | "-Q"
-                | "-R"
-                | "-S"
-                | "-W"
-                | "-w"
-        ) {
-            // Attached forms like -p22 or -luser do not consume next arg.
-            return false;
-        }
-    }
+fn is_machine_intent_query(query: &str) -> bool {
+    let q = query.to_ascii_lowercase();
+    [
+        "server",
+        "servers",
+        "machine",
+        "machines",
+        "host",
+        "hosts",
+        "hostname",
+        "hostnames",
+        "ip",
+        "ips",
+        "address",
+        "addresses",
+    ]
+    .iter()
+    .any(|k| q.contains(k))
+}
+
+fn query_indicates_latest(query: &str) -> bool {
+    let q = query.to_ascii_lowercase();
+    q.contains("last") || q.contains("most recent") || q.contains("latest")
+}
+
+fn is_query_stopword(word: &str) -> bool {
     matches!(
-        tok,
-        "-b" | "-c"
-            | "-D"
-            | "-E"
-            | "-e"
-            | "-F"
-            | "-I"
-            | "-i"
-            | "-J"
-            | "-L"
-            | "-l"
-            | "-m"
-            | "-O"
-            | "-o"
-            | "-p"
-            | "-Q"
-            | "-R"
-            | "-S"
-            | "-W"
-            | "-w"
+        word,
+        "a" | "all"
+            | "am"
+            | "an"
+            | "and"
+            | "are"
+            | "been"
+            | "did"
+            | "do"
+            | "from"
+            | "had"
+            | "has"
+            | "have"
+            | "hostname"
+            | "hostnames"
+            | "host"
+            | "hosts"
+            | "i"
+            | "in"
+            | "into"
+            | "ip"
+            | "ips"
+            | "is"
+            | "last"
+            | "latest"
+            | "machine"
+            | "machines"
+            | "most"
+            | "my"
+            | "of"
+            | "on"
+            | "recent"
+            | "recently"
+            | "server"
+            | "servers"
+            | "that"
+            | "the"
+            | "to"
+            | "used"
+            | "what"
+            | "when"
+            | "which"
+            | "with"
+            | "were"
     )
+}
+
+fn is_hostname_like(value: &str) -> bool {
+    if value.len() > 253 {
+        return false;
+    }
+    if !value.contains('.') {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
 }
 
 fn resolve_relative_time(input: &str) -> String {
@@ -732,45 +906,135 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_ssh_target_basic() {
+    fn test_execute_query_for_ping_servers_recently() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "ping -c 1 198.51.100.10",
+            "/project",
+            Some(0),
+            "2026-02-11T17:47:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "test_sess",
+            "ping -c 1 api.example.net",
+            "/project",
+            Some(0),
+            "2026-02-11T17:48:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let input = serde_json::json!({"query": "what are the servers I pinged recently"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("198.51.100.10"));
+        assert!(result.contains("api.example.net"));
+    }
+
+    #[test]
+    fn test_execute_query_for_last_telnet_ip() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "telnet 203.0.113.7 443",
+            "/project",
+            Some(0),
+            "2026-02-11T17:49:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "when did I last telnet into 203.0.113.7"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("2026-02-11T17:49:15Z"));
+        assert!(result.contains("203.0.113.7"));
+    }
+
+    #[test]
+    fn test_execute_query_for_custom_command_entities() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "waffle prod1.example.com --check",
+            "/project",
+            Some(0),
+            "2026-02-11T17:47:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "test_sess",
+            "waffle backup.example.net --sync",
+            "/project",
+            Some(0),
+            "2026-02-11T17:48:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let input = serde_json::json!({"query": "what are all the machines that waffle has been used with"});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("prod1.example.com"));
+        assert!(result.contains("backup.example.net"));
+    }
+
+    #[test]
+    fn test_infer_command_from_query_inflections() {
         assert_eq!(
-            extract_ssh_target("ssh fluffypony@example.com"),
-            Some("fluffypony@example.com".to_string())
+            infer_command_from_query("what servers have I sshd into recently"),
+            Some("ssh".to_string())
+        );
+        assert_eq!(
+            infer_command_from_query("what servers have I ssh'd into recently"),
+            Some("ssh".to_string())
+        );
+        assert_eq!(
+            infer_command_from_query("what are the IP addresses I telnet'd into"),
+            Some("telnet".to_string())
+        );
+        assert_eq!(
+            infer_command_from_query("what are the hostnames I recently rsync'd from"),
+            Some("rsync".to_string())
         );
     }
 
     #[test]
-    fn test_extract_ssh_target_with_options() {
-        assert_eq!(
-            extract_ssh_target("ssh -p 2222 -i ~/.ssh/id_ed25519 admin@10.0.0.10"),
-            Some("admin@10.0.0.10".to_string())
-        );
-        assert_eq!(
-            extract_ssh_target("ssh -p2222 root@192.0.2.7"),
-            Some("root@192.0.2.7".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_ssh_target_skips_non_ssh() {
-        assert_eq!(extract_ssh_target("systemctl restart sshd"), None);
-        assert_eq!(extract_ssh_target("echo ssh"), None);
-        assert_eq!(
-            extract_ssh_target("nsh query --private what servers have I sshd into recently"),
-            None
-        );
-        assert_eq!(
-            extract_ssh_target("nsh query --private when did I last ssh into 135.181.128.145"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_extract_ssh_target_with_sudo_wrapper() {
-        assert_eq!(
-            extract_ssh_target("sudo -u deploy ssh admin@10.0.0.8"),
-            Some("admin@10.0.0.8".to_string())
-        );
+    fn test_infer_entity_intent_for_used_with_phrase() {
+        let intent = infer_entity_search_intent(
+            Some("what are all the machines that waffle has been used with"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("entity intent");
+        assert_eq!(intent.executable.as_deref(), Some("waffle"));
+        assert_eq!(intent.entity_type.as_deref(), Some("machine"));
     }
 
     #[test]
@@ -818,15 +1082,13 @@ mod tests {
         let config = Config::default();
         let input = serde_json::json!({"query": "ssh"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(result.contains("Recent SSH targets"));
+        assert!(result.contains("Recent machine targets for `ssh`"));
         assert_eq!(
-            result
-                .matches("fluffypony_cwiaf@ssh.phx.nearlyfreespeech.net")
-                .count(),
+            result.matches("ssh.phx.nearlyfreespeech.net").count(),
             1,
             "duplicate SSH targets should be collapsed to one line"
         );
-        assert!(result.contains("admin@135.181.128.145"));
+        assert!(result.contains("135.181.128.145"));
     }
 
     #[test]

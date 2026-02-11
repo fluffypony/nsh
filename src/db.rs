@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
+const COMMAND_ENTITY_BACKFILL_MAX_ID_KEY: &str = "command_entities_backfilled_max_id_v1";
 
 pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -58,6 +59,17 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             output          TEXT,
             summary         TEXT,
             summary_status  TEXT DEFAULT NULL
+        );
+
+        -- Structured entities extracted from command arguments
+        CREATE TABLE IF NOT EXISTS command_entities (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            command_id      INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+            executable      TEXT NOT NULL,
+            entity          TEXT NOT NULL,
+            entity_norm     TEXT NOT NULL,
+            entity_type     TEXT NOT NULL,
+            UNIQUE(command_id, executable, entity_norm, entity_type)
         );
 
         -- FTS5 virtual table for full-text search
@@ -134,6 +146,12 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             ON commands(session_id, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_commands_started
             ON commands(started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_command_entities_executable
+            ON command_entities(executable, entity_type);
+        CREATE INDEX IF NOT EXISTS idx_command_entities_entity_norm
+            ON command_entities(entity_norm, entity_type);
+        CREATE INDEX IF NOT EXISTS idx_command_entities_command
+            ON command_entities(command_id);
         CREATE INDEX IF NOT EXISTS idx_sessions_tty
             ON sessions(tty, started_at DESC);
         CREATE INDEX IF NOT EXISTS idx_conversations_session
@@ -246,6 +264,26 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
         )?;
     }
 
+    if current_version < 5 {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS command_entities (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                command_id      INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+                executable      TEXT NOT NULL,
+                entity          TEXT NOT NULL,
+                entity_norm     TEXT NOT NULL,
+                entity_type     TEXT NOT NULL,
+                UNIQUE(command_id, executable, entity_norm, entity_type)
+            );
+            CREATE INDEX IF NOT EXISTS idx_command_entities_executable
+                ON command_entities(executable, entity_type);
+            CREATE INDEX IF NOT EXISTS idx_command_entities_entity_norm
+                ON command_entities(entity_norm, entity_type);
+            CREATE INDEX IF NOT EXISTS idx_command_entities_command
+                ON command_entities(command_id);",
+        )?;
+    }
+
     if current_version < SCHEMA_VERSION {
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
@@ -340,10 +378,11 @@ impl Db {
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         init_db(&conn, 10000)?;
-        Ok(Self {
+        let db = Self {
             conn,
             max_output_bytes: 32768,
-        })
+        };
+        Ok(db)
     }
 
     // ── Session management ─────────────────────────────────────────
@@ -457,6 +496,15 @@ impl Db {
             ],
         )?;
         let rowid = tx.last_insert_rowid();
+
+        for e in extract_command_entities(command) {
+            tx.execute(
+                "INSERT OR IGNORE INTO command_entities \
+                 (command_id, executable, entity, entity_norm, entity_type) \
+                 VALUES (?, ?, ?, ?, ?)",
+                params![rowid, e.executable, e.entity, e.entity_norm, e.entity_type],
+            )?;
+        }
 
         tx.commit()?;
         Ok(rowid)
@@ -721,11 +769,150 @@ impl Db {
     }
 
     pub fn command_count(&self) -> rusqlite::Result<usize> {
-        self.conn.query_row(
-            "SELECT COUNT(*) FROM commands",
-            [],
-            |row| row.get::<_, i64>(0).map(|v| v as usize),
-        )
+        self.conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| {
+                row.get::<_, i64>(0).map(|v| v as usize)
+            })
+    }
+
+    pub fn search_command_entities(
+        &self,
+        executable_filter: Option<&str>,
+        entity_filter: Option<&str>,
+        entity_type_filter: Option<&str>,
+        since: Option<&str>,
+        until: Option<&str>,
+        session_filter: Option<&str>,
+        current_session: Option<&str>,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<CommandEntityMatch>> {
+        self.backfill_command_entities_if_needed()?;
+
+        let mut sql = String::from(
+            "SELECT ce.command_id, c.session_id, c.command, c.cwd, c.started_at,
+                    ce.executable, ce.entity, ce.entity_type
+             FROM command_entities ce
+             JOIN commands c ON c.id = ce.command_id
+             WHERE 1=1",
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(exe) = executable_filter.map(normalize_executable_name) {
+            if !exe.is_empty() {
+                sql.push_str(" AND ce.executable = ?");
+                params_vec.push(Box::new(exe));
+            }
+        }
+
+        if let Some(entity_ty) = entity_type_filter.map(|s| s.trim().to_ascii_lowercase()) {
+            if entity_ty == "machine" {
+                sql.push_str(" AND ce.entity_type IN ('host', 'ip')");
+            } else if !entity_ty.is_empty() {
+                sql.push_str(" AND ce.entity_type = ?");
+                params_vec.push(Box::new(entity_ty));
+            }
+        }
+
+        if let Some(entity) = entity_filter {
+            let norm = normalize_entity_token(entity);
+            if !norm.is_empty() {
+                sql.push_str(" AND ce.entity_norm LIKE ?");
+                params_vec.push(Box::new(format!("%{norm}%")));
+            }
+        }
+
+        if let Some(s) = since {
+            sql.push_str(" AND c.started_at >= ?");
+            params_vec.push(Box::new(s.to_string()));
+        }
+        if let Some(u) = until {
+            sql.push_str(" AND c.started_at <= ?");
+            params_vec.push(Box::new(u.to_string()));
+        }
+        if let Some(sf) = session_filter {
+            let resolved = if sf == "current" {
+                current_session.unwrap_or("default")
+            } else {
+                sf
+            };
+            sql.push_str(" AND c.session_id = ?");
+            params_vec.push(Box::new(resolved.to_string()));
+        }
+
+        sql.push_str(" ORDER BY c.started_at DESC, ce.entity_norm ASC LIMIT ?");
+        params_vec.push(Box::new(limit as i64));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(CommandEntityMatch {
+                command_id: row.get(0)?,
+                session_id: row.get(1)?,
+                command: row.get(2)?,
+                cwd: row.get(3)?,
+                started_at: row.get(4)?,
+                executable: row.get(5)?,
+                entity: row.get(6)?,
+                entity_type: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn backfill_command_entities_if_needed(&self) -> rusqlite::Result<usize> {
+        let max_command_id: i64 = self
+            .conn
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM commands", [], |row| {
+                row.get(0)
+            })?;
+        let last_backfilled_id = self
+            .get_meta(COMMAND_ENTITY_BACKFILL_MAX_ID_KEY)?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+
+        if max_command_id <= last_backfilled_id {
+            return Ok(0);
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        let mut inserted = 0usize;
+        {
+            let mut stmt = tx.prepare(
+                "SELECT id, command
+                 FROM commands
+                 WHERE id > ?
+                   AND id NOT IN (SELECT DISTINCT command_id FROM command_entities)
+                 ORDER BY id ASC",
+            )?;
+            let rows = stmt.query_map(params![last_backfilled_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (command_id, command) = row?;
+                for e in extract_command_entities(&command) {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO command_entities \
+                         (command_id, executable, entity, entity_norm, entity_type) \
+                         VALUES (?, ?, ?, ?, ?)",
+                        params![
+                            command_id,
+                            e.executable,
+                            e.entity,
+                            e.entity_norm,
+                            e.entity_type
+                        ],
+                    )?;
+                    inserted += 1;
+                }
+            }
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            params![COMMAND_ENTITY_BACKFILL_MAX_ID_KEY, max_command_id.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(inserted)
     }
 
     // ── Memory system ──────────────────────────────────────────────
@@ -1515,6 +1702,18 @@ pub struct HistoryMatch {
     pub output_highlight: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommandEntityMatch {
+    pub command_id: i64,
+    pub session_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub started_at: String,
+    pub executable: String,
+    pub entity: String,
+    pub entity_type: String,
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct OtherSessionCommand {
@@ -1652,6 +1851,251 @@ fn gethostname() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+#[derive(Debug, Clone)]
+struct ExtractedCommandEntity {
+    executable: String,
+    entity: String,
+    entity_norm: String,
+    entity_type: String,
+}
+
+fn extract_command_entities(command: &str) -> Vec<ExtractedCommandEntity> {
+    let tokens = match shell_words::split(command) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let Some(cmd_idx) = find_invoked_command_index(&tokens) else {
+        return Vec::new();
+    };
+    let executable = normalize_executable_name(tokens[cmd_idx].as_str());
+    if executable.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for token in tokens.iter().skip(cmd_idx + 1) {
+        if token == "--" {
+            continue;
+        }
+        for machine in extract_machine_candidates(token) {
+            let entity_type = if is_ip_address(&machine) {
+                "ip"
+            } else {
+                "host"
+            };
+            let entity_norm = normalize_entity_token(&machine);
+            if entity_norm.is_empty() {
+                continue;
+            }
+            let key = (entity_norm.clone(), entity_type.to_string());
+            if !seen.insert(key) {
+                continue;
+            }
+            out.push(ExtractedCommandEntity {
+                executable: executable.clone(),
+                entity: machine,
+                entity_norm,
+                entity_type: entity_type.to_string(),
+            });
+        }
+    }
+    out
+}
+
+fn find_invoked_command_index(tokens: &[String]) -> Option<usize> {
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        if tok == "env" {
+            i += 1;
+            while i < tokens.len() {
+                let t = tokens[i].as_str();
+                if t == "--" {
+                    i += 1;
+                    break;
+                }
+                if t == "-u" {
+                    i = (i + 2).min(tokens.len());
+                    continue;
+                }
+                if t.starts_with('-') || is_env_assignment(t) {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
+        if tok == "sudo" {
+            i += 1;
+            while i < tokens.len() {
+                let t = tokens[i].as_str();
+                if t == "--" {
+                    i += 1;
+                    break;
+                }
+                if t == "-u"
+                    || t == "-g"
+                    || t == "-h"
+                    || t == "-p"
+                    || t == "-r"
+                    || t == "-t"
+                    || t == "-C"
+                    || t == "--user"
+                    || t == "--group"
+                    || t == "--host"
+                    || t == "--prompt"
+                    || t == "--chroot"
+                    || t == "--command-timeout"
+                {
+                    i = (i + 2).min(tokens.len());
+                    continue;
+                }
+                if t.starts_with('-') {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            continue;
+        }
+        if tok == "command" || tok == "builtin" || tok == "noglob" || tok == "nocorrect" {
+            i += 1;
+            continue;
+        }
+        if is_env_assignment(tok) {
+            i += 1;
+            continue;
+        }
+        return Some(i);
+    }
+    None
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    if token.starts_with('-') || token.starts_with('=') {
+        return false;
+    }
+    let Some((k, _v)) = token.split_once('=') else {
+        return false;
+    };
+    !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn normalize_executable_name(token: &str) -> String {
+    let base = token.rsplit('/').next().unwrap_or(token);
+    base.trim().trim_matches('\'').to_ascii_lowercase()
+}
+
+fn extract_machine_candidates(token: &str) -> Vec<String> {
+    let mut out = Vec::new();
+
+    let cleaned = token
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | ';' | ')' | '(' | ']' | '['))
+        .trim_matches('.');
+    if cleaned.is_empty() {
+        return out;
+    }
+
+    if let Some(host) = extract_host_from_url(cleaned) {
+        out.push(host);
+    }
+
+    if let Some(host) = extract_host_from_remote_path(cleaned) {
+        out.push(host);
+    }
+
+    if let Some(host) = normalize_host_token(cleaned) {
+        out.push(host);
+    }
+
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn extract_host_from_url(token: &str) -> Option<String> {
+    let (_, rest) = token.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    normalize_host_token(authority)
+}
+
+fn extract_host_from_remote_path(token: &str) -> Option<String> {
+    if token.starts_with('/') || token.starts_with("./") || token.starts_with("~/") {
+        return None;
+    }
+    let (left, right) = token.split_once(':')?;
+    if left.is_empty() || right.is_empty() {
+        return None;
+    }
+    normalize_host_token(left)
+}
+
+fn normalize_host_token(token: &str) -> Option<String> {
+    let token = token
+        .trim()
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | ';' | ')' | '('))
+        .trim();
+    if token.is_empty() {
+        return None;
+    }
+
+    let after_at = token.rsplit('@').next().unwrap_or(token);
+    let mut host = after_at;
+    if host.starts_with('[') && host.ends_with(']') && host.len() > 2 {
+        host = &host[1..host.len() - 1];
+    }
+
+    // host:port (but keep IPv6 literals intact)
+    if let Some((h, port)) = host.rsplit_once(':') {
+        if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
+            host = h;
+        }
+    }
+
+    let host = host.trim_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+
+    if is_ip_address(host) || is_hostname_like(host) {
+        return Some(host.to_ascii_lowercase());
+    }
+    None
+}
+
+fn normalize_entity_token(token: &str) -> String {
+    normalize_host_token(token).unwrap_or_else(|| token.trim().to_ascii_lowercase())
+}
+
+fn is_ip_address(value: &str) -> bool {
+    value.parse::<std::net::Ipv4Addr>().is_ok() || value.parse::<std::net::Ipv6Addr>().is_ok()
+}
+
+fn is_hostname_like(value: &str) -> bool {
+    if value.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if !value.contains('.') {
+        return false;
+    }
+    if value.len() > 253 {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1710,6 +2154,108 @@ mod tests {
         let results = db.search_history("cargo", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].cmd_highlight.contains("cargo"));
+    }
+
+    #[test]
+    fn test_insert_command_extracts_machine_entities() {
+        let db = test_db();
+        db.insert_command(
+            "s1",
+            "ssh -p 2222 admin@203.0.113.10",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+
+        let entities = db
+            .search_command_entities(
+                Some("ssh"),
+                Some("203.0.113.10"),
+                Some("ip"),
+                None,
+                None,
+                None,
+                None,
+                10,
+            )
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].entity, "203.0.113.10");
+        assert_eq!(entities[0].entity_type, "ip");
+        assert_eq!(entities[0].executable, "ssh");
+    }
+
+    #[test]
+    fn test_search_command_entities_machine_filter() {
+        let db = test_db();
+        db.insert_command(
+            "s1",
+            "telnet example.net 23",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1",
+            "ping 1.1.1.1",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+
+        let entities = db
+            .search_command_entities(None, None, Some("machine"), None, None, None, None, 10)
+            .unwrap();
+        assert!(entities.iter().any(|e| e.entity == "example.net"));
+        assert!(entities.iter().any(|e| e.entity == "1.1.1.1"));
+    }
+
+    #[test]
+    fn test_backfill_command_entities_from_existing_commands() {
+        let db = test_db();
+        db.create_session("s1", "/dev/pts/0", "zsh", 123).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO commands (session_id, command, cwd, exit_code, started_at, duration_ms, output) \
+                 VALUES ('s1', 'rsync -av root@backup.example.com:/data ./', '/tmp', 0, '2025-01-01T00:00:00Z', NULL, NULL)",
+                [],
+            )
+            .unwrap();
+
+        let inserted = db.backfill_command_entities_if_needed().unwrap();
+        assert!(inserted > 0);
+        let entities = db
+            .search_command_entities(
+                Some("rsync"),
+                Some("backup.example.com"),
+                Some("host"),
+                None,
+                None,
+                None,
+                None,
+                10,
+            )
+            .unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].entity, "backup.example.com");
     }
 
     #[test]
@@ -2091,24 +2637,58 @@ mod tests {
     fn test_search_history_advanced_with_since_until() {
         let db = test_db();
         db.insert_command(
-            "s1", "early cmd", "/tmp", Some(0),
-            "2025-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "early cmd",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "middle cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "middle cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "late cmd", "/tmp", Some(0),
-            "2025-12-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "late cmd",
+            "/tmp",
+            Some(0),
+            "2025-12-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None,
-            Some("2025-03-01T00:00:00Z"),
-            Some("2025-09-01T00:00:00Z"),
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                Some("2025-03-01T00:00:00Z"),
+                Some("2025-09-01T00:00:00Z"),
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("middle"));
     }
@@ -2117,17 +2697,35 @@ mod tests {
     fn test_search_history_advanced_failed_only() {
         let db = test_db();
         db.insert_command(
-            "s1", "good cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "good cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "bad cmd", "/tmp", Some(1),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "bad cmd",
+            "/tmp",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, true, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, None, None, None, None, true, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("bad"));
         assert_eq!(results[0].exit_code, Some(1));
@@ -2137,18 +2735,45 @@ mod tests {
     fn test_search_history_advanced_session_filter() {
         let db = test_db();
         db.insert_command(
-            "sess_a", "cmd alpha", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_a",
+            "cmd alpha",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess_b", "cmd beta", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_b",
+            "cmd beta",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, false,
-            Some("sess_a"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("sess_a"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("alpha"));
     }
@@ -2157,21 +2782,48 @@ mod tests {
     fn test_search_history_advanced_exit_code_filter() {
         let db = test_db();
         db.insert_command(
-            "s1", "exit zero", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "exit zero",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "exit two", "/tmp", Some(2),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "exit two",
+            "/tmp",
+            Some(2),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "exit one", "/tmp", Some(1),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "exit one",
+            "/tmp",
+            Some(1),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, Some(2), false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, None, None, None, Some(2), false, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("exit two"));
     }
@@ -2181,10 +2833,17 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let conv_id = db.insert_conversation(
-            "s1", "run tests", "command", "cargo test",
-            Some("runs the test suite"), false, true,
-        ).unwrap();
+        let conv_id = db
+            .insert_conversation(
+                "s1",
+                "run tests",
+                "command",
+                "cargo test",
+                Some("runs the test suite"),
+                false,
+                true,
+            )
+            .unwrap();
         assert!(conv_id > 0);
 
         let pending = db.find_pending_conversation("s1").unwrap();
@@ -2193,12 +2852,16 @@ mod tests {
         assert_eq!(id, conv_id);
         assert_eq!(response, "cargo test");
 
-        db.update_conversation_result(conv_id, 0, Some("all tests passed")).unwrap();
+        db.update_conversation_result(conv_id, 0, Some("all tests passed"))
+            .unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
         assert_eq!(convos[0].result_exit_code, Some(0));
-        assert_eq!(convos[0].result_output_snippet.as_deref(), Some("all tests passed"));
+        assert_eq!(
+            convos[0].result_output_snippet.as_deref(),
+            Some("all tests passed")
+        );
     }
 
     #[test]
@@ -2207,13 +2870,27 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_usage(
-            "s1", Some("hello"), "gpt-4", "openai",
-            Some(100), Some(50), Some(0.01), None,
-        ).unwrap();
+            "s1",
+            Some("hello"),
+            "gpt-4",
+            "openai",
+            Some(100),
+            Some(50),
+            Some(0.01),
+            None,
+        )
+        .unwrap();
         db.insert_usage(
-            "s1", Some("world"), "gpt-4", "openai",
-            Some(200), Some(100), Some(0.02), None,
-        ).unwrap();
+            "s1",
+            Some("world"),
+            "gpt-4",
+            "openai",
+            Some(200),
+            Some(100),
+            Some(0.02),
+            None,
+        )
+        .unwrap();
 
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 1);
@@ -2231,9 +2908,16 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_usage(
-            "s1", Some("q"), "claude", "anthropic",
-            Some(50), Some(25), None, Some("gen_abc"),
-        ).unwrap();
+            "s1",
+            Some("q"),
+            "claude",
+            "anthropic",
+            Some(50),
+            Some(25),
+            None,
+            Some("gen_abc"),
+        )
+        .unwrap();
 
         let updated = db.update_usage_cost("gen_abc", 0.05).unwrap();
         assert!(updated);
@@ -2250,13 +2934,27 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_usage(
-            "s1", Some("q"), "gpt-4", "openai",
-            Some(10), Some(5), None, Some("gen_123"),
-        ).unwrap();
+            "s1",
+            Some("q"),
+            "gpt-4",
+            "openai",
+            Some(10),
+            Some(5),
+            None,
+            Some("gen_123"),
+        )
+        .unwrap();
         db.insert_usage(
-            "s1", Some("q2"), "gpt-4", "openai",
-            Some(10), Some(5), Some(0.01), Some("gen_456"),
-        ).unwrap();
+            "s1",
+            Some("q2"),
+            "gpt-4",
+            "openai",
+            Some(10),
+            Some(5),
+            Some(0.01),
+            Some("gen_456"),
+        )
+        .unwrap();
 
         let pending = db.get_pending_generation_ids().unwrap();
         assert!(pending.contains(&"gen_123".to_string()));
@@ -2266,12 +2964,24 @@ mod tests {
     #[test]
     fn test_update_command_output() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "my cmd", "/tmp", None,
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "my cmd",
+                "/tmp",
+                None,
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let updated = db.update_command(id, Some(42), Some("some output")).unwrap();
+        let updated = db
+            .update_command(id, Some(42), Some("some output"))
+            .unwrap();
         assert!(updated);
 
         let (exit_code, output): (Option<i32>, Option<String>) = db
@@ -2290,9 +3000,18 @@ mod tests {
     fn test_prune_if_due() {
         let db = test_db();
         db.insert_command(
-            "s1", "old prunable", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "old prunable",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune_if_due(30).unwrap();
 
@@ -2309,9 +3028,15 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         for i in 0..5 {
             db.insert_conversation(
-                "s1", &format!("query{i}"), "chat", &format!("resp{i}"),
-                None, false, false,
-            ).unwrap();
+                "s1",
+                &format!("query{i}"),
+                "chat",
+                &format!("resp{i}"),
+                None,
+                false,
+                false,
+            )
+            .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
@@ -2334,21 +3059,43 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_command(
-            "s1", "cargo build", "/project", Some(0),
-            "2025-06-01T00:00:00Z", Some(5200), Some("Compiled OK"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cargo build",
+                "/project",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                Some(5200),
+                Some("Compiled OK"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id, "Built project successfully").unwrap();
 
         db.insert_command(
-            "s1", "cargo test", "/project", Some(1),
-            "2025-06-01T00:01:00Z", Some(3000), None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo test",
+            "/project",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            Some(3000),
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
         assert_eq!(cmds.len(), 2);
         assert_eq!(cmds[0].command, "cargo build");
-        assert_eq!(cmds[0].summary.as_deref(), Some("Built project successfully"));
+        assert_eq!(
+            cmds[0].summary.as_deref(),
+            Some("Built project successfully")
+        );
         assert_eq!(cmds[0].duration_ms, Some(5200));
         assert_eq!(cmds[1].command, "cargo test");
         assert!(cmds[1].summary.is_none());
@@ -2361,13 +3108,31 @@ mod tests {
         db.create_session("s2", "/dev/pts/1", "bash", 5678).unwrap();
 
         db.insert_command(
-            "s1", "cmd_s1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_s1",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s2", "cmd_s2", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s2",
+            "cmd_s2",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
         assert_eq!(cmds.len(), 1);
@@ -2381,13 +3146,31 @@ mod tests {
         db.create_session("s2", "/dev/pts/1", "bash", 5678).unwrap();
 
         db.insert_command(
-            "s1", "cmd_mine", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
-        ).unwrap();
+            "s1",
+            "cmd_mine",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/0",
+            "zsh",
+            1234,
+        )
+        .unwrap();
         db.insert_command(
-            "s2", "cmd_other", "/home", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "/dev/pts/1", "bash", 5678,
-        ).unwrap();
+            "s2",
+            "cmd_other",
+            "/home",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "bash",
+            5678,
+        )
+        .unwrap();
 
         let others = db.other_sessions_with_summaries("s1", 5, 5).unwrap();
         assert_eq!(others.len(), 1);
@@ -2400,14 +3183,31 @@ mod tests {
     fn test_search_history_fts() {
         let db = test_db();
         db.insert_command(
-            "s1", "docker compose up", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("Starting containers... done"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "docker compose up",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("Starting containers... done"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "git log --oneline", "/app", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "git log --oneline",
+            "/app",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let results = db.search_history("docker", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -2422,17 +3222,35 @@ mod tests {
     fn test_search_history_fts_with_advanced() {
         let db = test_db();
         db.insert_command(
-            "s1", "make build", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make build",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make test", "/project", Some(1),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make test",
+            "/project",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("make"), None, None, None, None, true, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(Some("make"), None, None, None, None, true, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("make test"));
     }
@@ -2443,23 +3261,31 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.update_heartbeat("s1").unwrap();
-        let hb: Option<String> = db.conn.query_row(
-            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let hb: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(hb.is_some());
 
-        let ended: Option<String> = db.conn.query_row(
-            "SELECT ended_at FROM sessions WHERE id = 's1'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let ended: Option<String> = db
+            .conn
+            .query_row("SELECT ended_at FROM sessions WHERE id = 's1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert!(ended.is_none());
 
         db.end_session("s1").unwrap();
-        let ended: Option<String> = db.conn.query_row(
-            "SELECT ended_at FROM sessions WHERE id = 's1'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let ended: Option<String> = db
+            .conn
+            .query_row("SELECT ended_at FROM sessions WHERE id = 's1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert!(ended.is_some());
     }
 
@@ -2467,20 +3293,39 @@ mod tests {
     fn test_prune_keeps_recent() {
         let db = test_db();
         db.insert_command(
-            "s1", "ancient", "/tmp", Some(0),
-            "2015-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "ancient",
+            "/tmp",
+            Some(0),
+            "2015-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "recent", "/tmp", Some(0),
-            "2099-12-31T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "recent",
+            "/tmp",
+            Some(0),
+            "2099-12-31T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let deleted = db.prune(365).unwrap();
         assert_eq!(deleted, 1);
 
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
 
         let results = db.search_history("recent", 10).unwrap();
@@ -2491,9 +3336,18 @@ mod tests {
     fn test_commands_needing_summary_excludes_no_output() {
         let db = test_db();
         db.insert_command(
-            "s1", "no output cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "no output cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let needing = db.commands_needing_summary(10).unwrap();
         assert!(needing.is_empty());
@@ -2502,10 +3356,20 @@ mod tests {
     #[test]
     fn test_commands_needing_summary_excludes_already_summarized() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "summarized cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output text"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "summarized cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output text"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id, "already done").unwrap();
 
         let needing = db.commands_needing_summary(10).unwrap();
@@ -2516,17 +3380,44 @@ mod tests {
     fn test_mark_unsummarized_for_llm_and_needing_llm() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output1"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd1",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("output1"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd2", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, Some("output2"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd2",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("output2"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd3", "/tmp", Some(0),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd3",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let marked = db.mark_unsummarized_for_llm().unwrap();
         assert_eq!(marked, 2);
@@ -2541,20 +3432,34 @@ mod tests {
     #[test]
     fn test_mark_summary_error() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "failing cmd", "/tmp", Some(1),
-            "2025-06-01T00:00:00Z", None, Some("error output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "failing cmd",
+                "/tmp",
+                Some(1),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("error output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.mark_summary_error(id, "API timeout").unwrap();
 
         let needing = db.commands_needing_summary(10).unwrap();
         assert!(needing.is_empty());
 
-        let summary: Option<String> = db.conn.query_row(
-            "SELECT summary FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let summary: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(summary.unwrap().contains("[error: API timeout]"));
     }
 
@@ -2563,22 +3468,40 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id1 = db.insert_conversation(
-            "s1", "deploy", "command", "kubectl apply -f deploy.yaml",
-            Some("deploy to k8s"), false, false,
-        ).unwrap();
-        let id2 = db.insert_conversation(
-            "s1", "check status", "command", "kubectl get pods",
-            None, false, false,
-        ).unwrap();
+        let id1 = db
+            .insert_conversation(
+                "s1",
+                "deploy",
+                "command",
+                "kubectl apply -f deploy.yaml",
+                Some("deploy to k8s"),
+                false,
+                false,
+            )
+            .unwrap();
+        let id2 = db
+            .insert_conversation(
+                "s1",
+                "check status",
+                "command",
+                "kubectl get pods",
+                None,
+                false,
+                false,
+            )
+            .unwrap();
 
-        db.update_conversation_result(id1, 0, Some("deployment created")).unwrap();
+        db.update_conversation_result(id1, 0, Some("deployment created"))
+            .unwrap();
         db.update_conversation_result(id2, 1, None).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 2);
         assert_eq!(convos[0].result_exit_code, Some(0));
-        assert_eq!(convos[0].result_output_snippet.as_deref(), Some("deployment created"));
+        assert_eq!(
+            convos[0].result_output_snippet.as_deref(),
+            Some("deployment created")
+        );
         assert_eq!(convos[1].result_exit_code, Some(1));
         assert!(convos[1].result_output_snippet.is_none());
     }
@@ -2598,9 +3521,15 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_conversation(
-            "s1", "what is rust", "chat", "Rust is a systems language",
-            None, false, false,
-        ).unwrap();
+            "s1",
+            "what is rust",
+            "chat",
+            "Rust is a systems language",
+            None,
+            false,
+            false,
+        )
+        .unwrap();
 
         let pending = db.find_pending_conversation("s1").unwrap();
         assert!(pending.is_none());
@@ -2611,10 +3540,9 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let conv_id = db.insert_conversation(
-            "s1", "build", "command", "cargo build",
-            None, false, false,
-        ).unwrap();
+        let conv_id = db
+            .insert_conversation("s1", "build", "command", "cargo build", None, false, false)
+            .unwrap();
         db.update_conversation_result(conv_id, 0, None).unwrap();
 
         let pending = db.find_pending_conversation("s1").unwrap();
@@ -2626,16 +3554,23 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_usage(
-            "s1", Some("hello world"), "claude-3-opus", "anthropic",
-            Some(500), Some(200), Some(0.10), Some("gen_xyz"),
-        ).unwrap();
+        let id = db
+            .insert_usage(
+                "s1",
+                Some("hello world"),
+                "claude-3-opus",
+                "anthropic",
+                Some(500),
+                Some(200),
+                Some(0.10),
+                Some("gen_xyz"),
+            )
+            .unwrap();
         assert!(id > 0);
 
-        let id2 = db.insert_usage(
-            "s1", None, "gpt-4o", "openai",
-            None, None, None, None,
-        ).unwrap();
+        let id2 = db
+            .insert_usage("s1", None, "gpt-4o", "openai", None, None, None, None)
+            .unwrap();
         assert!(id2 > id);
 
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
@@ -2671,9 +3606,18 @@ mod tests {
     fn test_optimize_and_integrity() {
         let db = test_db();
         db.insert_command(
-            "s1", "test cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "test cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.optimize_fts().unwrap();
         db.check_fts_integrity().unwrap();
@@ -2683,18 +3627,45 @@ mod tests {
     fn test_search_history_advanced_current_session_alias() {
         let db = test_db();
         db.insert_command(
-            "my_sess", "cmd here", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "my_sess",
+            "cmd here",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other_sess", "cmd there", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other_sess",
+            "cmd there",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, false,
-            Some("current"), Some("my_sess"), 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("current"),
+                Some("my_sess"),
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("cmd here"));
     }
@@ -2702,10 +3673,20 @@ mod tests {
     #[test]
     fn test_update_command() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "running cmd", "/tmp", None,
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "running cmd",
+                "/tmp",
+                None,
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let updated = db.update_command(id, Some(0), Some("all good")).unwrap();
         assert!(updated);
@@ -2713,10 +3694,14 @@ mod tests {
         let updated_again = db.update_command(id, None, Some("extra output")).unwrap();
         assert!(updated_again);
 
-        let (code, out): (Option<i32>, Option<String>) = db.conn.query_row(
-            "SELECT exit_code, output FROM commands WHERE id = ?",
-            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (code, out): (Option<i32>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT exit_code, output FROM commands WHERE id = ?",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(code, Some(0));
         assert_eq!(out.as_deref(), Some("extra output"));
     }
@@ -2741,10 +3726,20 @@ mod tests {
     #[test]
     fn test_update_summary_idempotent() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let first = db.update_summary(id, "summary v1").unwrap();
         assert!(first);
@@ -2752,28 +3747,39 @@ mod tests {
         let second = db.update_summary(id, "summary v2").unwrap();
         assert!(!second);
 
-        let summary: Option<String> = db.conn.query_row(
-            "SELECT summary FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let summary: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(summary.as_deref(), Some("summary v1"));
     }
 
     #[test]
     fn test_prune_also_removes_ended_sessions() {
         let db = test_db();
-        db.create_session("old_sess", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.conn.execute(
-            "UPDATE sessions SET ended_at = '2015-01-01T00:00:00Z' WHERE id = 'old_sess'",
-            [],
-        ).unwrap();
+        db.create_session("old_sess", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
+        db.conn
+            .execute(
+                "UPDATE sessions SET ended_at = '2015-01-01T00:00:00Z' WHERE id = 'old_sess'",
+                [],
+            )
+            .unwrap();
 
         db.prune(30).unwrap();
 
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE id = 'old_sess'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'old_sess'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -2781,17 +3787,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_regex_filter() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo build --release", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo build --release",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cargo test --release", "/project", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo test --release",
+            "/project",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), Some("test"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                Some("test"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("cargo test"));
     }
@@ -2802,8 +3836,10 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.create_session("s2", "/dev/pts/1", "bash", 5678).unwrap();
 
-        db.insert_conversation("s1", "q1", "chat", "r1", None, false, false).unwrap();
-        db.insert_conversation("s2", "q2", "chat", "r2", None, false, false).unwrap();
+        db.insert_conversation("s1", "q1", "chat", "r1", None, false, false)
+            .unwrap();
+        db.insert_conversation("s2", "q2", "chat", "r2", None, false, false)
+            .unwrap();
 
         let c1 = db.get_conversations("s1", 10).unwrap();
         let c2 = db.get_conversations("s2", 10).unwrap();
@@ -2817,17 +3853,44 @@ mod tests {
     fn test_search_history_multiple_results_ordered_by_relevance() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo build", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo build",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cargo test", "/project", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo test",
+            "/project",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cargo bench", "/project", Some(0),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo bench",
+            "/project",
+            Some(0),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let results = db.search_history("cargo", 10).unwrap();
         assert_eq!(results.len(), 3);
@@ -2841,9 +3904,18 @@ mod tests {
         let db = test_db();
         for i in 0..10 {
             db.insert_command(
-                "s1", &format!("grep pattern{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None, None, "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("grep pattern{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
 
         let results = db.search_history("grep", 3).unwrap();
@@ -2854,12 +3926,22 @@ mod tests {
     fn test_search_history_matches_output() {
         let db = test_db();
         db.insert_command(
-            "s1", "run_script", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("unique_sentinel_output_value"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run_script",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("unique_sentinel_output_value"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history("unique_sentinel_output_value", 10).unwrap();
+        let results = db
+            .search_history("unique_sentinel_output_value", 10)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "run_script");
     }
@@ -2867,11 +3949,22 @@ mod tests {
     #[test]
     fn test_search_history_matches_summary_via_fts() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "make deploy", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("deploying..."), "", "", 0,
-        ).unwrap();
-        db.update_summary(id, "deployed application to production kubernetes cluster").unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "make deploy",
+                "/app",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("deploying..."),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        db.update_summary(id, "deployed application to production kubernetes cluster")
+            .unwrap();
 
         let results = db.search_history("kubernetes", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -2882,9 +3975,18 @@ mod tests {
     fn test_search_history_matches_cwd() {
         let db = test_db();
         db.insert_command(
-            "s1", "ls", "/unique/searchable/directory", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "ls",
+            "/unique/searchable/directory",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let results = db.search_history("searchable", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -2894,9 +3996,18 @@ mod tests {
     fn test_search_history_hyphenated_term() {
         let db = test_db();
         db.insert_command(
-            "s1", "echo from-ht", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("from-ht"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "echo from-ht",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("from-ht"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let results = db.search_history("from-ht", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -2909,10 +4020,13 @@ mod tests {
         init_db(&conn, 10000).unwrap();
         init_db(&conn, 10000).unwrap();
 
-        let version: String = conn.query_row(
-            "SELECT value FROM meta WHERE key = 'schema_version'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
 
         conn.execute(
@@ -2923,27 +4037,43 @@ mod tests {
             "INSERT INTO commands (session_id, command, started_at) VALUES ('x', 'echo hi', '2025-01-01T00:00:00Z')",
             [],
         ).unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM commands_fts WHERE commands_fts MATCH 'echo'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM commands_fts WHERE commands_fts MATCH 'echo'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
     #[test]
     fn test_insert_command_with_none_values() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "echo hello", "/tmp",
-            None, "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "echo hello",
+                "/tmp",
+                None,
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         assert!(id > 0);
 
-        let (exit_code, duration, output): (Option<i32>, Option<i64>, Option<String>) =
-            db.conn.query_row(
+        let (exit_code, duration, output): (Option<i32>, Option<i64>, Option<String>) = db
+            .conn
+            .query_row(
                 "SELECT exit_code, duration_ms, output FROM commands WHERE id = ?",
-                params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).unwrap();
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
         assert!(exit_code.is_none());
         assert!(duration.is_none());
         assert!(output.is_none());
@@ -2953,16 +4083,30 @@ mod tests {
     fn test_insert_command_with_very_long_command() {
         let db = test_db();
         let long_cmd = "x".repeat(100_000);
-        let id = db.insert_command(
-            "s1", &long_cmd, "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                &long_cmd,
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         assert!(id > 0);
 
-        let stored: String = db.conn.query_row(
-            "SELECT command FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: String = db
+            .conn
+            .query_row(
+                "SELECT command FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(stored.len(), 100_000);
     }
 
@@ -2970,15 +4114,29 @@ mod tests {
     fn test_insert_command_with_unicode_output() {
         let db = test_db();
         let unicode_output = "日本語テスト 🦀 émojis résumé café";
-        let id = db.insert_command(
-            "s1", "echo intl", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some(unicode_output), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "echo intl",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some(unicode_output),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let stored: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(stored.as_deref(), Some(unicode_output));
     }
 
@@ -2991,15 +4149,29 @@ mod tests {
         init_db(&db.conn, 10000).unwrap();
 
         let output = "aaaa日本語bbb";
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some(output), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some(output),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let stored: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let stored = stored.unwrap();
         assert!(stored.contains("[truncated by nsh]"));
         assert!(stored.is_char_boundary(0));
@@ -3010,16 +4182,18 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_usage(
-            "s1",
-            Some("translate this code"),
-            "claude-3.5-sonnet",
-            "anthropic",
-            Some(1500),
-            Some(800),
-            Some(0.0234),
-            Some("gen_full_test_123"),
-        ).unwrap();
+        let id = db
+            .insert_usage(
+                "s1",
+                Some("translate this code"),
+                "claude-3.5-sonnet",
+                "anthropic",
+                Some(1500),
+                Some(800),
+                Some(0.0234),
+                Some("gen_full_test_123"),
+            )
+            .unwrap();
         assert!(id > 0);
 
         let (model, provider, input, output, cost, gen_id, query): UsageRow = db.conn.query_row(
@@ -3043,22 +4217,52 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id1 = db.insert_command(
-            "s1", "first", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", Some(100), Some("out1"), "", "", 0,
-        ).unwrap();
+        let id1 = db
+            .insert_command(
+                "s1",
+                "first",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                Some(100),
+                Some("out1"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id1, "summary for first").unwrap();
 
-        let id2 = db.insert_command(
-            "s1", "second", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", Some(200), Some("out2"), "", "", 0,
-        ).unwrap();
+        let id2 = db
+            .insert_command(
+                "s1",
+                "second",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:01:00Z",
+                Some(200),
+                Some("out2"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id2, "summary for second").unwrap();
 
-        let id3 = db.insert_command(
-            "s1", "third", "/tmp", Some(1),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id3 = db
+            .insert_command(
+                "s1",
+                "third",
+                "/tmp",
+                Some(1),
+                "2025-06-01T00:02:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         let _ = id3;
 
         let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
@@ -3077,24 +4281,54 @@ mod tests {
     fn test_other_sessions_with_summaries_multiple_sessions() {
         let db = test_db();
         db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.create_session("other1", "/dev/pts/1", "bash", 5678).unwrap();
-        db.create_session("other2", "/dev/pts/2", "fish", 9012).unwrap();
+        db.create_session("other1", "/dev/pts/1", "bash", 5678)
+            .unwrap();
+        db.create_session("other2", "/dev/pts/2", "fish", 9012)
+            .unwrap();
 
         db.insert_command(
-            "me", "my_cmd", "/home", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
-        ).unwrap();
+            "me",
+            "my_cmd",
+            "/home",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/0",
+            "zsh",
+            1234,
+        )
+        .unwrap();
 
-        let id1 = db.insert_command(
-            "other1", "their_cmd_1", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, Some("output1"), "/dev/pts/1", "bash", 5678,
-        ).unwrap();
+        let id1 = db
+            .insert_command(
+                "other1",
+                "their_cmd_1",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:01:00Z",
+                None,
+                Some("output1"),
+                "/dev/pts/1",
+                "bash",
+                5678,
+            )
+            .unwrap();
         db.update_summary(id1, "summary for other1").unwrap();
 
         db.insert_command(
-            "other2", "their_cmd_2", "/var", Some(1),
-            "2025-06-01T00:02:00Z", None, None, "/dev/pts/2", "fish", 9012,
-        ).unwrap();
+            "other2",
+            "their_cmd_2",
+            "/var",
+            Some(1),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "/dev/pts/2",
+            "fish",
+            9012,
+        )
+        .unwrap();
 
         let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
         assert_eq!(others.len(), 2);
@@ -3110,13 +4344,23 @@ mod tests {
     fn test_other_sessions_excludes_ended() {
         let db = test_db();
         db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.create_session("ended", "/dev/pts/1", "bash", 5678).unwrap();
+        db.create_session("ended", "/dev/pts/1", "bash", 5678)
+            .unwrap();
         db.end_session("ended").unwrap();
 
         db.insert_command(
-            "ended", "ended_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "/dev/pts/1", "bash", 5678,
-        ).unwrap();
+            "ended",
+            "ended_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "bash",
+            5678,
+        )
+        .unwrap();
 
         let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
         assert!(others.is_empty());
@@ -3127,15 +4371,29 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id1 = db.insert_conversation(
-            "s1", "how do I list files", "chat", "Use ls -la to list files",
-            None, false, false,
-        ).unwrap();
+        let id1 = db
+            .insert_conversation(
+                "s1",
+                "how do I list files",
+                "chat",
+                "Use ls -la to list files",
+                None,
+                false,
+                false,
+            )
+            .unwrap();
 
-        let id2 = db.insert_conversation(
-            "s1", "list files", "command", "ls -la",
-            Some("lists all files including hidden"), false, true,
-        ).unwrap();
+        let id2 = db
+            .insert_conversation(
+                "s1",
+                "list files",
+                "command",
+                "ls -la",
+                Some("lists all files including hidden"),
+                false,
+                true,
+            )
+            .unwrap();
 
         assert!(id2 > id1);
 
@@ -3145,7 +4403,8 @@ mod tests {
         assert_eq!(pid, id2);
         assert_eq!(resp, "ls -la");
 
-        db.update_conversation_result(id2, 0, Some("total 42\ndrwxr-xr-x")).unwrap();
+        db.update_conversation_result(id2, 0, Some("total 42\ndrwxr-xr-x"))
+            .unwrap();
 
         let pending = db.find_pending_conversation("s1").unwrap();
         assert!(pending.is_none());
@@ -3156,7 +4415,10 @@ mod tests {
         assert!(convos[0].result_exit_code.is_none());
         assert_eq!(convos[1].response_type, "command");
         assert_eq!(convos[1].result_exit_code, Some(0));
-        assert_eq!(convos[1].explanation.as_deref(), Some("lists all files including hidden"));
+        assert_eq!(
+            convos[1].explanation.as_deref(),
+            Some("lists all files including hidden")
+        );
 
         db.clear_conversations("s1").unwrap();
         let convos = db.get_conversations("s1", 10).unwrap();
@@ -3167,25 +4429,51 @@ mod tests {
     fn test_insert_command_creates_session_on_conflict() {
         let db = test_db();
         db.insert_command(
-            "auto_sess", "echo hello", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "/dev/pts/5", "zsh", 999,
-        ).unwrap();
+            "auto_sess",
+            "echo hello",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/5",
+            "zsh",
+            999,
+        )
+        .unwrap();
 
-        let tty: String = db.conn.query_row(
-            "SELECT tty FROM sessions WHERE id = 'auto_sess'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let tty: String = db
+            .conn
+            .query_row(
+                "SELECT tty FROM sessions WHERE id = 'auto_sess'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(tty, "/dev/pts/5");
 
         db.insert_command(
-            "auto_sess", "echo world", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "/dev/pts/6", "bash", 1000,
-        ).unwrap();
+            "auto_sess",
+            "echo world",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "/dev/pts/6",
+            "bash",
+            1000,
+        )
+        .unwrap();
 
-        let tty: String = db.conn.query_row(
-            "SELECT tty FROM sessions WHERE id = 'auto_sess'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let tty: String = db
+            .conn
+            .query_row(
+                "SELECT tty FROM sessions WHERE id = 'auto_sess'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(tty, "/dev/pts/6");
     }
 
@@ -3201,18 +4489,26 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let hb1: Option<String> = db.conn.query_row(
-            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let hb1: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(10));
         db.update_heartbeat("s1").unwrap();
 
-        let hb2: Option<String> = db.conn.query_row(
-            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let hb2: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         assert!(hb1.is_some());
         assert!(hb2.is_some());
@@ -3224,10 +4520,18 @@ mod tests {
         let db = test_db();
         for i in 0..5 {
             db.insert_command(
-                "s1", &format!("cmd{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None,
-                Some(&format!("output{i}")), "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("cmd{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                Some(&format!("output{i}")),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
 
         let needing = db.commands_needing_summary(2).unwrap();
@@ -3240,30 +4544,55 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE id = 's1'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM sessions WHERE id = 's1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(count, 1);
     }
 
     #[test]
     fn test_insert_command_with_all_fields() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cargo test --release", "/home/user/project",
-            Some(0), "2025-06-01T12:30:00Z", Some(45000),
-            Some("running 42 tests\ntest result: ok"), "/dev/pts/3", "zsh", 5555,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cargo test --release",
+                "/home/user/project",
+                Some(0),
+                "2025-06-01T12:30:00Z",
+                Some(45000),
+                Some("running 42 tests\ntest result: ok"),
+                "/dev/pts/3",
+                "zsh",
+                5555,
+            )
+            .unwrap();
 
         let (cmd, cwd, exit_code, duration, output): (
-            String, Option<String>, Option<i32>, Option<i64>, Option<String>,
-        ) = db.conn.query_row(
-            "SELECT command, cwd, exit_code, duration_ms, output FROM commands WHERE id = ?",
-            params![id], |row| Ok((
-                row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-            )),
-        ).unwrap();
+            String,
+            Option<String>,
+            Option<i32>,
+            Option<i64>,
+            Option<String>,
+        ) = db
+            .conn
+            .query_row(
+                "SELECT command, cwd, exit_code, duration_ms, output FROM commands WHERE id = ?",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
         assert_eq!(cmd, "cargo test --release");
         assert_eq!(cwd.as_deref(), Some("/home/user/project"));
         assert_eq!(exit_code, Some(0));
@@ -3275,18 +4604,45 @@ mod tests {
     fn test_search_history_advanced_regex_only_no_fts() {
         let db = test_db();
         db.insert_command(
-            "s1", "curl https://api.example.com/v1/users", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "curl https://api.example.com/v1/users",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "wget https://api.example.com/v2/data", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "wget https://api.example.com/v2/data",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some(r"https://api\.example\.com/v1"), None, None,
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some(r"https://api\.example\.com/v1"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("curl"));
     }
@@ -3295,9 +4651,18 @@ mod tests {
     fn test_prune_cleans_fts_index() {
         let db = test_db();
         db.insert_command(
-            "s1", "old_prunable_unique_cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "old_prunable_unique_cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let before = db.search_history("old_prunable_unique_cmd", 10).unwrap();
         assert_eq!(before.len(), 1);
@@ -3361,13 +4726,27 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_usage(
-            "s1", Some("old query"), "gpt-4", "openai",
-            Some(100), Some(50), Some(0.01), None,
-        ).unwrap();
+            "s1",
+            Some("old query"),
+            "gpt-4",
+            "openai",
+            Some(100),
+            Some(50),
+            Some(0.01),
+            None,
+        )
+        .unwrap();
         db.insert_usage(
-            "s1", Some("new query"), "gpt-4", "openai",
-            Some(200), Some(100), Some(0.02), None,
-        ).unwrap();
+            "s1",
+            Some("new query"),
+            "gpt-4",
+            "openai",
+            Some(200),
+            Some(100),
+            Some(0.02),
+            None,
+        )
+        .unwrap();
 
         let stats = db.get_usage_stats(UsagePeriod::Today).unwrap();
         assert_eq!(stats.len(), 1);
@@ -3380,19 +4759,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_since() {
         let db = test_db();
         db.insert_command(
-            "s1", "early cargo build", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "early cargo build",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "late cargo test", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "late cargo test",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), None,
-            Some("2025-01-01T00:00:00Z"), None,
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                None,
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("late"));
     }
@@ -3401,19 +4806,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_until() {
         let db = test_db();
         db.insert_command(
-            "s1", "early cargo build", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "early cargo build",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "late cargo test", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "late cargo test",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), None,
-            None, Some("2025-01-01T00:00:00Z"),
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                None,
+                None,
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("early"));
     }
@@ -3422,18 +4853,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_exit_code() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo build ok", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo build ok",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cargo build fail", "/tmp", Some(1),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo build fail",
+            "/tmp",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), None, None, None,
-            Some(1), false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                None,
+                None,
+                None,
+                Some(1),
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("fail"));
     }
@@ -3442,18 +4900,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_session_filter() {
         let db = test_db();
         db.insert_command(
-            "sess_x", "cargo run alpha", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_x",
+            "cargo run alpha",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess_y", "cargo run beta", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_y",
+            "cargo run beta",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), None, None, None,
-            None, false, Some("sess_x"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("sess_x"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("alpha"));
     }
@@ -3462,24 +4947,58 @@ mod tests {
     fn test_search_history_advanced_fts_with_all_filters() {
         let db = test_db();
         db.insert_command(
-            "s1", "npm test pass", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "npm test pass",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "npm test fail", "/app", Some(1),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "npm test fail",
+            "/app",
+            Some(1),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s2", "npm test other", "/app", Some(1),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s2",
+            "npm test other",
+            "/app",
+            Some(1),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("npm"), None,
-            Some("2025-06-01T06:00:00Z"),
-            Some("2025-06-01T18:00:00Z"),
-            Some(1), false, Some("s1"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("npm"),
+                None,
+                Some("2025-06-01T06:00:00Z"),
+                Some("2025-06-01T18:00:00Z"),
+                Some(1),
+                false,
+                Some("s1"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("npm test fail"));
     }
@@ -3488,18 +5007,35 @@ mod tests {
     fn test_search_history_advanced_fts_failed_only() {
         let db = test_db();
         db.insert_command(
-            "s1", "make build success", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make build success",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make build failure", "/project", Some(2),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make build failure",
+            "/project",
+            Some(2),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("make"), None, None, None,
-            None, true, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(Some("make"), None, None, None, None, true, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("failure"));
     }
@@ -3512,19 +5048,33 @@ mod tests {
         };
         init_db(&db.conn, 10000).unwrap();
 
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let long_output = "a".repeat(100);
         let updated = db.update_command(id, None, Some(&long_output)).unwrap();
         assert!(updated);
 
-        let stored: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let stored = stored.unwrap();
         assert!(stored.contains("[truncated by nsh]"));
         assert!(stored.len() < long_output.len());
@@ -3538,19 +5088,33 @@ mod tests {
         };
         init_db(&db.conn, 10000).unwrap();
 
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let output = "aaa日本語bbb";
         let updated = db.update_command(id, None, Some(output)).unwrap();
         assert!(updated);
 
-        let stored: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let stored = stored.unwrap();
         assert!(stored.contains("[truncated by nsh]"));
     }
@@ -3559,24 +5123,58 @@ mod tests {
     fn test_search_history_advanced_fts_with_since_and_until() {
         let db = test_db();
         db.insert_command(
-            "s1", "git commit early", "/repo", Some(0),
-            "2025-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "git commit early",
+            "/repo",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "git commit middle", "/repo", Some(0),
-            "2025-06-15T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "git commit middle",
+            "/repo",
+            Some(0),
+            "2025-06-15T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "git commit late", "/repo", Some(0),
-            "2025-12-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "git commit late",
+            "/repo",
+            Some(0),
+            "2025-12-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("git"), None,
-            Some("2025-03-01T00:00:00Z"),
-            Some("2025-09-01T00:00:00Z"),
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("git"),
+                None,
+                Some("2025-03-01T00:00:00Z"),
+                Some("2025-09-01T00:00:00Z"),
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("middle"));
     }
@@ -3585,18 +5183,45 @@ mod tests {
     fn test_search_history_advanced_fts_session_filter_literal() {
         let db = test_db();
         db.insert_command(
-            "my_session", "docker build target", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "my_session",
+            "docker build target",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other_session", "docker push target", "/app", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other_session",
+            "docker push target",
+            "/app",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("docker"), None, None, None,
-            None, false, Some("my_session"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("docker"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("my_session"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("docker build"));
     }
@@ -3610,15 +5235,29 @@ mod tests {
         init_db(&db.conn, 10000).unwrap();
 
         let output = "hello";
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some(output), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some(output),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let stored: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(stored.as_deref(), Some("hello"));
     }
 
@@ -3631,15 +5270,29 @@ mod tests {
         init_db(&db.conn, 10000).unwrap();
 
         let output = "hello!";
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some(output), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some(output),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let stored: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let stored: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let stored = stored.unwrap();
         assert!(stored.contains("[truncated by nsh]"));
         assert!(stored.starts_with("hello"));
@@ -3649,26 +5302,49 @@ mod tests {
     fn test_prune_if_due_skips_when_recently_pruned() {
         let db = test_db();
         db.insert_command(
-            "s1", "old cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "old cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune_if_due(30).unwrap();
-        let count1: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
-        ).unwrap();
+        let count1: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count1, 0);
 
         db.insert_command(
-            "s1", "another old cmd", "/tmp", Some(0),
-            "2020-02-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "another old cmd",
+            "/tmp",
+            Some(0),
+            "2020-02-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune_if_due(30).unwrap();
-        let count2: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(count2, 1, "should NOT prune again since last_prune_at is recent");
+        let count2: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count2, 1,
+            "should NOT prune again since last_prune_at is recent"
+        );
     }
 
     #[test]
@@ -3678,9 +5354,18 @@ mod tests {
 
         for i in 0..10 {
             db.insert_command(
-                "s1", &format!("cmd_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None, None, "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("cmd_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
 
         let cmds = db.recent_commands_with_summaries("s1", 3).unwrap();
@@ -3708,9 +5393,39 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_usage("s1", None, "gpt-4", "openai", Some(100), Some(50), Some(0.01), None).unwrap();
-        db.insert_usage("s1", None, "claude", "anthropic", Some(200), Some(100), Some(0.05), None).unwrap();
-        db.insert_usage("s1", None, "gpt-4", "openai", Some(150), Some(75), Some(0.02), None).unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "gpt-4",
+            "openai",
+            Some(100),
+            Some(50),
+            Some(0.01),
+            None,
+        )
+        .unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "claude",
+            "anthropic",
+            Some(200),
+            Some(100),
+            Some(0.05),
+            None,
+        )
+        .unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "gpt-4",
+            "openai",
+            Some(150),
+            Some(75),
+            Some(0.02),
+            None,
+        )
+        .unwrap();
 
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 2);
@@ -3724,20 +5439,45 @@ mod tests {
     fn test_search_history_advanced_fts_regex_filters_output() {
         let db = test_db();
         db.insert_command(
-            "s1", "run script1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("error: connection refused"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run script1",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("error: connection refused"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "run script2", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None,
-            Some("success: all good"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run script2",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("success: all good"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("run"), Some("connection"), None, None,
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("run"),
+                Some("connection"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("script1"));
     }
@@ -3745,7 +5485,8 @@ mod tests {
     #[test]
     fn test_cleanup_orphaned_sessions_ignores_ended() {
         let db = test_db();
-        db.create_session("ended_sess", "/dev/pts/0", "zsh", 2_000_000_000).unwrap();
+        db.create_session("ended_sess", "/dev/pts/0", "zsh", 2_000_000_000)
+            .unwrap();
         db.end_session("ended_sess").unwrap();
 
         let cleaned = db.cleanup_orphaned_sessions().unwrap();
@@ -3828,7 +5569,11 @@ mod tests {
         let msg = exchange.to_tool_result_message("tool_3");
         assert!(matches!(msg.role, crate::provider::Role::Tool));
         match &msg.content[0] {
-            crate::provider::ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+            crate::provider::ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
                 assert_eq!(tool_use_id, "tool_3");
                 assert!(content.contains("command"));
                 assert!(content.contains("cargo test"));
@@ -3925,7 +5670,19 @@ mod tests {
     fn test_command_count_after_insert() {
         let db = Db::open_in_memory().unwrap();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.insert_command("s1", "ls", "/tmp", Some(0), "2025-01-01T00:00:00Z", None, None, "", "zsh", 1234).unwrap();
+        db.insert_command(
+            "s1",
+            "ls",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "zsh",
+            1234,
+        )
+        .unwrap();
         assert_eq!(db.command_count().unwrap(), 1);
     }
 
@@ -3985,7 +5742,8 @@ mod tests {
     fn test_get_memories_limit() {
         let db = Db::open_in_memory().unwrap();
         for i in 0..5 {
-            db.upsert_memory(&format!("k{i}"), &format!("v{i}")).unwrap();
+            db.upsert_memory(&format!("k{i}"), &format!("v{i}"))
+                .unwrap();
         }
         let mems = db.get_memories(3).unwrap();
         assert_eq!(mems.len(), 3);
@@ -3994,7 +5752,8 @@ mod tests {
     #[test]
     fn test_search_memories() {
         let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("editor", "vim is the best editor").unwrap();
+        db.upsert_memory("editor", "vim is the best editor")
+            .unwrap();
         db.upsert_memory("shell", "zsh with oh-my-zsh").unwrap();
         let results = db.search_memories("editor").unwrap();
         assert!(!results.is_empty());
@@ -4082,10 +5841,18 @@ mod tests {
         let db = test_db();
         for i in 0..5 {
             db.insert_command(
-                "s1", &format!("cmd{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None,
-                Some(&format!("output{i}")), "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("cmd{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                Some(&format!("output{i}")),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
         db.mark_unsummarized_for_llm().unwrap();
         let cmds = db.commands_needing_llm_summary(2).unwrap();
@@ -4110,9 +5877,18 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.insert_command(
-            "s1", "my cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
-        ).unwrap();
+            "s1",
+            "my cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/0",
+            "zsh",
+            1234,
+        )
+        .unwrap();
         let others = db.recent_commands_other_sessions("s1", 10).unwrap();
         assert!(others.is_empty());
     }
@@ -4122,15 +5898,12 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation(
-            "s1", "first", "command", "echo first",
-            None, false, true,
-        ).unwrap();
+        db.insert_conversation("s1", "first", "command", "echo first", None, false, true)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        let id2 = db.insert_conversation(
-            "s1", "second", "command", "echo second",
-            None, false, true,
-        ).unwrap();
+        let id2 = db
+            .insert_conversation("s1", "second", "command", "echo second", None, false, true)
+            .unwrap();
 
         let pending = db.find_pending_conversation("s1").unwrap();
         assert!(pending.is_some());
@@ -4143,18 +5916,45 @@ mod tests {
     fn test_search_history_advanced_regex_with_since() {
         let db = test_db();
         db.insert_command(
-            "s1", "curl http://old.com", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "curl http://old.com",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "curl http://new.com", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "curl http://new.com",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("curl"), Some("2025-01-01T00:00:00Z"),
-            None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("curl"),
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("new.com"));
     }
@@ -4163,18 +5963,45 @@ mod tests {
     fn test_search_history_advanced_regex_with_failed_only() {
         let db = test_db();
         db.insert_command(
-            "s1", "make deploy-ok", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make deploy-ok",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make deploy-fail", "/app", Some(1),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make deploy-fail",
+            "/app",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("deploy"), None, None,
-            None, true, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("deploy"),
+                None,
+                None,
+                None,
+                true,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("deploy-fail"));
     }
@@ -4184,9 +6011,18 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.insert_command(
-            "s1", "only mine", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "/dev/pts/0", "zsh", 1234,
-        ).unwrap();
+            "s1",
+            "only mine",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/0",
+            "zsh",
+            1234,
+        )
+        .unwrap();
 
         let others = db.other_sessions_with_summaries("s1", 5, 10).unwrap();
         assert!(others.is_empty());
@@ -4195,10 +6031,20 @@ mod tests {
     #[test]
     fn test_mark_summary_error_excludes_from_needing_summary() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let needing_before = db.commands_needing_summary(10).unwrap();
         assert_eq!(needing_before.len(), 1);
@@ -4215,15 +6061,26 @@ mod tests {
     #[test]
     fn test_update_summary_updates_fts() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "deploy app", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("deploying..."), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "deploy app",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("deploying..."),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let before = db.search_history("kubernetes_cluster_xyz", 10).unwrap();
         assert!(before.is_empty());
 
-        db.update_summary(id, "deployed to kubernetes_cluster_xyz").unwrap();
+        db.update_summary(id, "deployed to kubernetes_cluster_xyz")
+            .unwrap();
 
         let after = db.search_history("kubernetes_cluster_xyz", 10).unwrap();
         assert_eq!(after.len(), 1);
@@ -4257,13 +6114,31 @@ mod tests {
     fn test_command_count_after_prune() {
         let db = test_db();
         db.insert_command(
-            "s1", "old", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "old",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "new", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "new",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         assert_eq!(db.command_count().unwrap(), 2);
 
         db.prune(30).unwrap();
@@ -4274,17 +6149,35 @@ mod tests {
     fn test_search_history_advanced_no_filters_returns_all() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd1",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd2", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd2",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, None, None, None, None, false, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 
@@ -4326,16 +6219,28 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         let big_output = "x".repeat(50_000);
-        let id = db.insert_command(
-            "s1", "echo big", "/tmp", Some(0),
-            "2025-01-01T00:00:00Z", Some(100), Some(&big_output),
-            "/dev/pts/0", "zsh", 1234,
-        ).unwrap();
-        let stored: String = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id],
-            |row| row.get(0),
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "echo big",
+                "/tmp",
+                Some(0),
+                "2025-01-01T00:00:00Z",
+                Some(100),
+                Some(&big_output),
+                "/dev/pts/0",
+                "zsh",
+                1234,
+            )
+            .unwrap();
+        let stored: String = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(stored.len() < big_output.len());
         assert!(stored.ends_with("... [truncated by nsh]"));
     }
@@ -4343,8 +6248,28 @@ mod tests {
     #[test]
     fn test_get_usage_stats_all() {
         let db = test_db();
-        db.insert_usage("s1", Some("hello"), "gpt-4", "openai", Some(100), Some(50), Some(0.01), Some("gen1")).unwrap();
-        db.insert_usage("s1", Some("world"), "gpt-4", "openai", Some(200), Some(80), Some(0.02), Some("gen2")).unwrap();
+        db.insert_usage(
+            "s1",
+            Some("hello"),
+            "gpt-4",
+            "openai",
+            Some(100),
+            Some(50),
+            Some(0.01),
+            Some("gen1"),
+        )
+        .unwrap();
+        db.insert_usage(
+            "s1",
+            Some("world"),
+            "gpt-4",
+            "openai",
+            Some(200),
+            Some(80),
+            Some(0.02),
+            Some("gen2"),
+        )
+        .unwrap();
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 1);
         let (model, calls, inp, out, cost) = &stats[0];
@@ -4358,7 +6283,17 @@ mod tests {
     #[test]
     fn test_get_usage_stats_today() {
         let db = test_db();
-        db.insert_usage("s1", None, "claude", "anthropic", Some(10), Some(5), Some(0.001), None).unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "claude",
+            "anthropic",
+            Some(10),
+            Some(5),
+            Some(0.001),
+            None,
+        )
+        .unwrap();
         let stats = db.get_usage_stats(UsagePeriod::Today).unwrap();
         assert_eq!(stats.len(), 1);
     }
@@ -4366,7 +6301,8 @@ mod tests {
     #[test]
     fn test_get_usage_stats_week() {
         let db = test_db();
-        db.insert_usage("s1", None, "m1", "p1", Some(1), Some(1), Some(0.0), None).unwrap();
+        db.insert_usage("s1", None, "m1", "p1", Some(1), Some(1), Some(0.0), None)
+            .unwrap();
         let stats = db.get_usage_stats(UsagePeriod::Week).unwrap();
         assert_eq!(stats.len(), 1);
     }
@@ -4374,7 +6310,8 @@ mod tests {
     #[test]
     fn test_get_usage_stats_month() {
         let db = test_db();
-        db.insert_usage("s1", None, "m1", "p1", Some(1), Some(1), Some(0.0), None).unwrap();
+        db.insert_usage("s1", None, "m1", "p1", Some(1), Some(1), Some(0.0), None)
+            .unwrap();
         let stats = db.get_usage_stats(UsagePeriod::Month).unwrap();
         assert_eq!(stats.len(), 1);
     }
@@ -4389,7 +6326,17 @@ mod tests {
     #[test]
     fn test_update_usage_cost_with_generation_id() {
         let db = test_db();
-        db.insert_usage("s1", None, "gpt-4", "openai", Some(10), Some(5), Some(0.0), Some("g1")).unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "gpt-4",
+            "openai",
+            Some(10),
+            Some(5),
+            Some(0.0),
+            Some("g1"),
+        )
+        .unwrap();
         assert!(db.update_usage_cost("g1", 1.23).unwrap());
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert!((stats[0].4 - 1.23).abs() < 1e-9);
@@ -4411,9 +6358,18 @@ mod tests {
     fn test_rebuild_fts_after_insert() {
         let db = test_db();
         db.insert_command(
-            "s1", "ls", "/tmp", Some(0),
-            "2025-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "ls",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.rebuild_fts().unwrap();
         db.check_fts_integrity().unwrap();
     }
@@ -4422,9 +6378,18 @@ mod tests {
     fn test_optimize_fts_after_insert() {
         let db = test_db();
         db.insert_command(
-            "s1", "grep foo", "/home", Some(1),
-            "2025-01-01T00:00:00Z", None, Some("no match"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "grep foo",
+            "/home",
+            Some(1),
+            "2025-01-01T00:00:00Z",
+            None,
+            Some("no match"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.optimize_fts().unwrap();
     }
 
@@ -4433,11 +6398,14 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.end_session("s1").unwrap();
-        let ended_at: Option<String> = db.conn.query_row(
-            "SELECT ended_at FROM sessions WHERE id = ?",
-            params!["s1"],
-            |row| row.get(0),
-        ).unwrap();
+        let ended_at: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = ?",
+                params!["s1"],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(ended_at.is_some());
     }
 
@@ -4445,18 +6413,24 @@ mod tests {
     fn test_update_heartbeat_on_existing_session() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
-        let before: String = db.conn.query_row(
-            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let before: String = db
+            .conn
+            .query_row(
+                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
         db.update_heartbeat("s1").unwrap();
-        let after: String = db.conn.query_row(
-            "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let after: String = db
+            .conn
+            .query_row(
+                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(after >= before);
     }
 
@@ -4465,13 +6439,31 @@ mod tests {
         let db = test_db();
         assert_eq!(db.command_count().unwrap(), 0);
         db.insert_command(
-            "s1", "a", "/tmp", Some(0),
-            "2025-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "a",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "b", "/tmp", Some(0),
-            "2025-01-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "b",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         assert_eq!(db.command_count().unwrap(), 2);
     }
 
@@ -4492,7 +6484,8 @@ mod tests {
     #[test]
     fn test_get_pending_generation_ids_excludes_no_generation_id() {
         let db = test_db();
-        db.insert_usage("s1", None, "gpt-4", "openai", Some(10), Some(5), None, None).unwrap();
+        db.insert_usage("s1", None, "gpt-4", "openai", Some(10), Some(5), None, None)
+            .unwrap();
         let pending = db.get_pending_generation_ids().unwrap();
         assert!(pending.is_empty());
     }
@@ -4500,7 +6493,17 @@ mod tests {
     #[test]
     fn test_get_pending_generation_ids_excludes_already_costed() {
         let db = test_db();
-        db.insert_usage("s1", None, "gpt-4", "openai", Some(10), Some(5), Some(0.01), Some("gen_paid")).unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "gpt-4",
+            "openai",
+            Some(10),
+            Some(5),
+            Some(0.01),
+            Some("gen_paid"),
+        )
+        .unwrap();
         let pending = db.get_pending_generation_ids().unwrap();
         assert!(!pending.contains(&"gen_paid".to_string()));
     }
@@ -4509,21 +6512,58 @@ mod tests {
     fn test_search_history_advanced_regex_with_exit_code() {
         let db = test_db();
         db.insert_command(
-            "s1", "make build", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make build",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make test", "/project", Some(1),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make test",
+            "/project",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make deploy", "/project", Some(2),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make deploy",
+            "/project",
+            Some(2),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("make"), None, None, Some(1), false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("make"),
+                None,
+                None,
+                Some(1),
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("make test"));
     }
@@ -4532,22 +6572,58 @@ mod tests {
     fn test_search_history_advanced_regex_with_session_and_date() {
         let db = test_db();
         db.insert_command(
-            "s_a", "curl http://old.example.com", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s_a",
+            "curl http://old.example.com",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s_a", "curl http://new.example.com", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s_a",
+            "curl http://new.example.com",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s_b", "curl http://other.example.com", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s_b",
+            "curl http://other.example.com",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("curl"), Some("2025-01-01T00:00:00Z"), None,
-            None, false, Some("s_a"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("curl"),
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                None,
+                false,
+                Some("s_a"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("new.example.com"));
     }
@@ -4556,18 +6632,45 @@ mod tests {
     fn test_search_history_advanced_regex_with_until() {
         let db = test_db();
         db.insert_command(
-            "s1", "wget http://early.com", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "wget http://early.com",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "wget http://late.com", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "wget http://late.com",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("wget"), None, Some("2025-01-01T00:00:00Z"),
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("wget"),
+                None,
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("early.com"));
     }
@@ -4576,19 +6679,45 @@ mod tests {
     fn test_search_history_advanced_regex_matches_output() {
         let db = test_db();
         db.insert_command(
-            "s1", "run_tool", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("FATAL: disk full"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run_tool",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("FATAL: disk full"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "run_other", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None,
-            Some("all good"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run_other",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("all good"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("FATAL"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("FATAL"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "run_tool");
     }
@@ -4598,31 +6727,54 @@ mod tests {
         let db = test_db();
         for i in 0..5 {
             db.insert_command(
-                "s1", &format!("cmd_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None, None, "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("cmd_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, false, None, None, 3,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, None, None, None, None, false, None, None, 3)
+            .unwrap();
         assert_eq!(results.len(), 3);
     }
 
     #[test]
     fn test_update_command_preserves_existing_exit_code() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(42),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(42),
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.update_command(id, None, Some("new output")).unwrap();
 
-        let (exit_code, output): (Option<i32>, Option<String>) = db.conn.query_row(
-            "SELECT exit_code, output FROM commands WHERE id = ?",
-            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (exit_code, output): (Option<i32>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT exit_code, output FROM commands WHERE id = ?",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(exit_code, Some(42));
         assert_eq!(output.as_deref(), Some("new output"));
     }
@@ -4633,17 +6785,44 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         db.insert_command(
-            "s1", "third_chrono", "/tmp", Some(0),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "third_chrono",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "first_chrono", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "first_chrono",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "second_chrono", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "second_chrono",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
         assert_eq!(cmds.len(), 3);
@@ -4657,9 +6836,11 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation("s1", "third", "chat", "r3", None, false, false).unwrap();
+        db.insert_conversation("s1", "third", "chat", "r3", None, false, false)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        db.insert_conversation("s1", "fourth", "chat", "r4", None, false, false).unwrap();
+        db.insert_conversation("s1", "fourth", "chat", "r4", None, false, false)
+            .unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 2);
@@ -4673,7 +6854,8 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.create_session("s2", "/dev/pts/1", "bash", 5678).unwrap();
 
-        db.insert_conversation("s1", "q", "chat", "r", None, false, false).unwrap();
+        db.insert_conversation("s1", "q", "chat", "r", None, false, false)
+            .unwrap();
 
         let convos = db.get_conversations("s2", 10).unwrap();
         assert!(convos.is_empty());
@@ -4683,18 +6865,45 @@ mod tests {
     fn test_search_history_advanced_fts_literal_session() {
         let db = test_db();
         db.insert_command(
-            "cur_sess", "npm run build matching", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "cur_sess",
+            "npm run build matching",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other_sess", "npm run test matching", "/app", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other_sess",
+            "npm run test matching",
+            "/app",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("npm"), None, None, None, None, false,
-            Some("cur_sess"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("npm"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("cur_sess"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("build"));
     }
@@ -4703,14 +6912,23 @@ mod tests {
     fn test_other_sessions_with_summaries_respects_limit() {
         let db = test_db();
         db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.create_session("other", "/dev/pts/1", "bash", 5678).unwrap();
+        db.create_session("other", "/dev/pts/1", "bash", 5678)
+            .unwrap();
 
         for i in 0..10 {
             db.insert_command(
-                "other", &format!("cmd_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None, None,
-                "/dev/pts/1", "bash", 5678,
-            ).unwrap();
+                "other",
+                &format!("cmd_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                None,
+                "/dev/pts/1",
+                "bash",
+                5678,
+            )
+            .unwrap();
         }
 
         let others = db.other_sessions_with_summaries("me", 1, 3).unwrap();
@@ -4721,13 +6939,32 @@ mod tests {
     fn test_search_history_advanced_regex_no_match() {
         let db = test_db();
         db.insert_command(
-            "s1", "echo hello", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "echo hello",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("^zzz_no_match$"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("^zzz_no_match$"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -4735,9 +6972,18 @@ mod tests {
     fn test_rebuild_fts_idempotent() {
         let db = test_db();
         db.insert_command(
-            "s1", "idempotent_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "idempotent_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.rebuild_fts().unwrap();
         db.rebuild_fts().unwrap();
@@ -4757,10 +7003,18 @@ mod tests {
         let db = test_db();
         for i in 0..10 {
             db.insert_command(
-                "s1", &format!("cmd_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None,
-                Some(&format!("output_{i}")), "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("cmd_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                Some(&format!("output_{i}")),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
         db.check_fts_integrity().unwrap();
     }
@@ -4769,13 +7023,31 @@ mod tests {
     fn test_commands_needing_llm_summary() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd_with_output", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("some output"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_with_output",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("some output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd_no_output", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_no_output",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let before = db.commands_needing_llm_summary(10).unwrap();
         assert!(before.is_empty());
@@ -4790,10 +7062,20 @@ mod tests {
     #[test]
     fn test_mark_summary_error_prevents_reprocessing() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "error_cmd", "/tmp", Some(1),
-            "2025-06-01T00:00:00Z", None, Some("crash output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "error_cmd",
+                "/tmp",
+                Some(1),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("crash output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.mark_summary_error(id, "rate limited").unwrap();
 
@@ -4803,10 +7085,14 @@ mod tests {
         let needing_llm = db.commands_needing_llm_summary(10).unwrap();
         assert!(needing_llm.is_empty());
 
-        let (summary, status): (Option<String>, Option<String>) = db.conn.query_row(
-            "SELECT summary, summary_status FROM commands WHERE id = ?",
-            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (summary, status): (Option<String>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT summary, summary_status FROM commands WHERE id = ?",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert!(summary.unwrap().contains("[error: rate limited]"));
         assert_eq!(status.as_deref(), Some("error"));
     }
@@ -4814,18 +7100,32 @@ mod tests {
     #[test]
     fn test_mark_summary_error_no_overwrite_existing_summary() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "already_done", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "already_done",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id, "good summary").unwrap();
 
         db.mark_summary_error(id, "should not overwrite").unwrap();
 
-        let summary: Option<String> = db.conn.query_row(
-            "SELECT summary FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let summary: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(summary.as_deref(), Some("good summary"));
     }
 
@@ -4842,15 +7142,33 @@ mod tests {
         assert_eq!(db.command_count().unwrap(), 0);
 
         db.insert_command(
-            "s1", "cmd1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd1",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         assert_eq!(db.command_count().unwrap(), 1);
 
         db.insert_command(
-            "s1", "cmd2", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd2",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         assert_eq!(db.command_count().unwrap(), 2);
     }
 
@@ -4881,10 +7199,18 @@ mod tests {
         let db = test_db();
         for i in 0..5 {
             db.insert_command(
-                "s1", &format!("rebuild_test_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None,
-                Some(&format!("output for rebuild test {i}")), "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("rebuild_test_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                Some(&format!("output for rebuild test {i}")),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
 
         db.rebuild_fts().unwrap();
@@ -4898,25 +7224,64 @@ mod tests {
     fn test_commands_needing_summary_with_mixed_states() {
         let db = test_db();
         db.insert_command(
-            "s1", "no_output", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "no_output",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let id_with_output = db.insert_command(
-            "s1", "has_output", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, Some("output here"), "", "", 0,
-        ).unwrap();
+        let id_with_output = db
+            .insert_command(
+                "s1",
+                "has_output",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:01:00Z",
+                None,
+                Some("output here"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let id_summarized = db.insert_command(
-            "s1", "already_summarized", "/tmp", Some(0),
-            "2025-06-01T00:02:00Z", None, Some("more output"), "", "", 0,
-        ).unwrap();
+        let id_summarized = db
+            .insert_command(
+                "s1",
+                "already_summarized",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:02:00Z",
+                None,
+                Some("more output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id_summarized, "done").unwrap();
 
-        let id_errored = db.insert_command(
-            "s1", "errored", "/tmp", Some(1),
-            "2025-06-01T00:03:00Z", None, Some("error output"), "", "", 0,
-        ).unwrap();
+        let id_errored = db
+            .insert_command(
+                "s1",
+                "errored",
+                "/tmp",
+                Some(1),
+                "2025-06-01T00:03:00Z",
+                None,
+                Some("error output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.mark_summary_error(id_errored, "failed").unwrap();
 
         let needing = db.commands_needing_summary(10).unwrap();
@@ -4928,9 +7293,18 @@ mod tests {
     fn test_prune_if_due_sets_meta() {
         let db = test_db();
         db.insert_command(
-            "s1", "old_cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "old_cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune_if_due(30).unwrap();
 
@@ -4942,38 +7316,63 @@ mod tests {
     fn test_prune_if_due_idempotent() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd_a", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_a",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd_b", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_b",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune_if_due(30).unwrap();
-        let count1: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
-        ).unwrap();
+        let count1: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count1, 1);
 
         db.prune_if_due(30).unwrap();
-        let count2: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM commands", [], |row| row.get(0),
-        ).unwrap();
+        let count2: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count2, 1);
     }
 
     #[test]
     fn test_update_heartbeat_creates_timestamp() {
         let db = test_db();
-        db.create_session("hb_sess", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("hb_sess", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
 
         db.update_heartbeat("hb_sess").unwrap();
 
-        let hb: Option<String> = db.conn.query_row(
-            "SELECT last_heartbeat FROM sessions WHERE id = 'hb_sess'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let hb: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT last_heartbeat FROM sessions WHERE id = 'hb_sess'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(hb.is_some());
         assert!(hb.unwrap().contains("T"));
     }
@@ -4981,11 +7380,22 @@ mod tests {
     #[test]
     fn test_fts_search_after_summary_update() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "npm run build", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("built ok"), "", "", 0,
-        ).unwrap();
-        db.update_summary(id, "webpack compilation successful with zero warnings").unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "npm run build",
+                "/app",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("built ok"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        db.update_summary(id, "webpack compilation successful with zero warnings")
+            .unwrap();
 
         let results = db.search_history("webpack", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -5101,13 +7511,31 @@ mod tests {
     fn test_commands_needing_summary() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd1", "/tmp", Some(0), "2025-01-01T00:00:00Z",
-            None, Some("output here"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd1",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            Some("output here"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd2", "/tmp", Some(0), "2025-01-01T00:01:00Z",
-            None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd2",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         let needing = db.commands_needing_summary(10).unwrap();
         assert_eq!(needing.len(), 1);
         assert_eq!(needing[0].command, "cmd1");
@@ -5117,9 +7545,18 @@ mod tests {
     fn test_mark_unsummarized_for_llm() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd1", "/tmp", Some(0), "2025-01-01T00:00:00Z",
-            None, Some("output"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd1",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            Some("output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         let marked = db.mark_unsummarized_for_llm().unwrap();
         assert_eq!(marked, 1);
         let needing_llm = db.commands_needing_llm_summary(10).unwrap();
@@ -5129,7 +7566,19 @@ mod tests {
     #[test]
     fn test_fts_maintenance() {
         let db = test_db();
-        db.insert_command("s1", "test cmd", "/", Some(0), "2025-01-01T00:00:00Z", None, None, "", "", 0).unwrap();
+        db.insert_command(
+            "s1",
+            "test cmd",
+            "/",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         assert!(db.rebuild_fts().is_ok());
         assert!(db.optimize_fts().is_ok());
         assert!(db.check_fts_integrity().is_ok());
@@ -5138,23 +7587,103 @@ mod tests {
     #[test]
     fn test_search_history_advanced_regex() {
         let db = test_db();
-        db.insert_command("s1", "cargo build", "/proj", Some(0), "2025-01-01T00:00:00Z", None, None, "", "", 0).unwrap();
-        db.insert_command("s1", "cargo test", "/proj", Some(0), "2025-01-01T00:01:00Z", None, None, "", "", 0).unwrap();
-        db.insert_command("s1", "npm install", "/proj", Some(0), "2025-01-01T00:02:00Z", None, None, "", "", 0).unwrap();
-        let results = db.search_history_advanced(
-            None, Some("cargo.*"), None, None, None, false, None, None, 10,
-        ).unwrap();
+        db.insert_command(
+            "s1",
+            "cargo build",
+            "/proj",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1",
+            "cargo test",
+            "/proj",
+            Some(0),
+            "2025-01-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1",
+            "npm install",
+            "/proj",
+            Some(0),
+            "2025-01-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("cargo.*"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                10,
+            )
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 
     #[test]
     fn test_search_history_advanced_date_range() {
         let db = test_db();
-        db.insert_command("s1", "old", "/", Some(0), "2020-01-01T00:00:00Z", None, None, "", "", 0).unwrap();
-        db.insert_command("s1", "new", "/", Some(0), "2025-06-01T00:00:00Z", None, None, "", "", 0).unwrap();
-        let results = db.search_history_advanced(
-            None, None, Some("2025-01-01T00:00:00Z"), None, None, false, None, None, 10,
-        ).unwrap();
+        db.insert_command(
+            "s1",
+            "old",
+            "/",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1",
+            "new",
+            "/",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                None,
+                false,
+                None,
+                None,
+                10,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "new");
     }
@@ -5162,11 +7691,35 @@ mod tests {
     #[test]
     fn test_search_history_advanced_fts_with_filters() {
         let db = test_db();
-        db.insert_command("s1", "cargo build", "/proj", Some(0), "2025-01-01T00:00:00Z", None, Some("success"), "", "", 0).unwrap();
-        db.insert_command("s1", "cargo test", "/proj", Some(1), "2025-01-01T00:01:00Z", None, Some("failed"), "", "", 0).unwrap();
-        let results = db.search_history_advanced(
-            Some("cargo"), None, None, None, None, true, None, None, 10,
-        ).unwrap();
+        db.insert_command(
+            "s1",
+            "cargo build",
+            "/proj",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            Some("success"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "s1",
+            "cargo test",
+            "/proj",
+            Some(1),
+            "2025-01-01T00:01:00Z",
+            None,
+            Some("failed"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let results = db
+            .search_history_advanced(Some("cargo"), None, None, None, None, true, None, None, 10)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "cargo test");
     }
@@ -5175,13 +7728,32 @@ mod tests {
     fn test_search_history_advanced_fts_hyphenated_term() {
         let db = test_db();
         db.insert_command(
-            "s1", "echo from-ht", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("from-ht"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "echo from-ht",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("from-ht"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("from-ht"), None, None, None, None, false, None, None, 10,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("from-ht"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                10,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "echo from-ht");
     }
@@ -5190,8 +7762,18 @@ mod tests {
     fn test_conversation_insert_and_fetch() {
         let db = test_db();
         db.create_session("cv1", "/dev/pts/0", "zsh", 1).unwrap();
-        db.insert_conversation("cv1", "how do I X", "command", "ls -la", Some("list files"), false, false).unwrap();
-        db.insert_conversation("cv1", "and Y?", "chat", "try this", None, false, false).unwrap();
+        db.insert_conversation(
+            "cv1",
+            "how do I X",
+            "command",
+            "ls -la",
+            Some("list files"),
+            false,
+            false,
+        )
+        .unwrap();
+        db.insert_conversation("cv1", "and Y?", "chat", "try this", None, false, false)
+            .unwrap();
         let convos = db.get_conversations("cv1", 10).unwrap();
         assert_eq!(convos.len(), 2);
         assert_eq!(convos[0].query, "how do I X");
@@ -5202,9 +7784,18 @@ mod tests {
     fn test_unicode_in_commands() {
         let db = test_db();
         db.insert_command(
-            "s1", "echo 'こんにちは 🌍'", "/tmp", Some(0),
-            "2025-01-01T00:00:00Z", None, Some("こんにちは 🌍"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "echo 'こんにちは 🌍'",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            Some("こんにちは 🌍"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         let results = db.search_history("こんにちは", 10).unwrap();
         assert!(!results.is_empty());
     }
@@ -5232,15 +7823,20 @@ mod tests {
     fn test_cleanup_orphaned_sessions_skips_alive_process() {
         let db = test_db();
         let my_pid = std::process::id() as i64;
-        db.create_session("alive_sess", "/dev/pts/0", "zsh", my_pid).unwrap();
+        db.create_session("alive_sess", "/dev/pts/0", "zsh", my_pid)
+            .unwrap();
 
         let cleaned = db.cleanup_orphaned_sessions().unwrap();
         assert_eq!(cleaned, 0, "should not clean up session with alive PID");
 
-        let ended_at: Option<String> = db.conn.query_row(
-            "SELECT ended_at FROM sessions WHERE id = 'alive_sess'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let ended_at: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = 'alive_sess'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(ended_at.is_none());
     }
 
@@ -5250,22 +7846,32 @@ mod tests {
         let my_pid = std::process::id() as i64;
         let dead_pid: i64 = 2_000_000_000;
 
-        db.create_session("alive", "/dev/pts/0", "zsh", my_pid).unwrap();
-        db.create_session("dead", "/dev/pts/1", "zsh", dead_pid).unwrap();
+        db.create_session("alive", "/dev/pts/0", "zsh", my_pid)
+            .unwrap();
+        db.create_session("dead", "/dev/pts/1", "zsh", dead_pid)
+            .unwrap();
 
         let cleaned = db.cleanup_orphaned_sessions().unwrap();
         assert_eq!(cleaned, 1);
 
-        let alive_ended: Option<String> = db.conn.query_row(
-            "SELECT ended_at FROM sessions WHERE id = 'alive'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let alive_ended: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = 'alive'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(alive_ended.is_none());
 
-        let dead_ended: Option<String> = db.conn.query_row(
-            "SELECT ended_at FROM sessions WHERE id = 'dead'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let dead_ended: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT ended_at FROM sessions WHERE id = 'dead'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(dead_ended.is_some());
     }
 
@@ -5295,11 +7901,20 @@ mod tests {
     #[test]
     fn test_command_for_summary_struct_fields() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "compile project", "/home/dev", Some(1),
-            "2025-06-01T00:00:00Z", None,
-            Some("error: could not compile"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "compile project",
+                "/home/dev",
+                Some(1),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("error: could not compile"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let needing = db.commands_needing_summary(10).unwrap();
         assert_eq!(needing.len(), 1);
@@ -5314,15 +7929,36 @@ mod tests {
     #[test]
     fn test_search_history_advanced_regex_matches_summary() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "generic_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
-        db.update_summary(id, "compiled with warnings about deprecated API").unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "generic_cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        db.update_summary(id, "compiled with warnings about deprecated API")
+            .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("deprecated"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("deprecated"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "generic_cmd");
     }
@@ -5331,19 +7967,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_regex_filters_on_output() {
         let db = test_db();
         db.insert_command(
-            "s1", "run tests alpha", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("PASS: all tests passed"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run tests alpha",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("PASS: all tests passed"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "run tests beta", "/app", Some(1),
-            "2025-06-01T00:01:00Z", None,
-            Some("FAIL: 3 tests failed"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run tests beta",
+            "/app",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("FAIL: 3 tests failed"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("tests"), Some("FAIL"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("tests"),
+                Some("FAIL"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].output.as_deref().unwrap().contains("FAIL"));
     }
@@ -5352,18 +8014,45 @@ mod tests {
     fn test_search_history_advanced_current_session_alias_with_regex() {
         let db = test_db();
         db.insert_command(
-            "my_sess", "rsync files here", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "my_sess",
+            "rsync files here",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other_sess", "rsync files there", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other_sess",
+            "rsync files there",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("rsync"), None, None, None, false,
-            Some("current"), Some("my_sess"), 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("rsync"),
+                None,
+                None,
+                None,
+                false,
+                Some("current"),
+                Some("my_sess"),
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("here"));
     }
@@ -5373,10 +8062,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn, 10000).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT count(*) FROM commands_fts WHERE commands_fts MATCH 'test'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM commands_fts WHERE commands_fts MATCH 'test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -5390,9 +8082,9 @@ mod tests {
             [],
         ).unwrap();
 
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memories", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -5401,9 +8093,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn, 5000).unwrap();
 
-        let fk: i64 = conn.query_row(
-            "PRAGMA foreign_keys", [], |row| row.get(0),
-        ).unwrap();
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(fk, 1);
     }
 
@@ -5421,16 +8113,20 @@ mod tests {
             [],
         ).unwrap();
 
-        let matches: bool = conn.query_row(
-            "SELECT 'cargo build --release' REGEXP 'cargo.*release'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let matches: bool = conn
+            .query_row(
+                "SELECT 'cargo build --release' REGEXP 'cargo.*release'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(matches);
 
-        let no_match: bool = conn.query_row(
-            "SELECT 'echo hello' REGEXP 'cargo.*release'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let no_match: bool = conn
+            .query_row("SELECT 'echo hello' REGEXP 'cargo.*release'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert!(!no_match);
     }
 
@@ -5439,15 +8135,15 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id1 = db.insert_conversation(
-            "s1", "q1", "chat", "r1", None, false, false,
-        ).unwrap();
-        let id2 = db.insert_conversation(
-            "s1", "q2", "chat", "r2", None, false, false,
-        ).unwrap();
-        let id3 = db.insert_conversation(
-            "s1", "q3", "command", "ls", Some("list"), true, true,
-        ).unwrap();
+        let id1 = db
+            .insert_conversation("s1", "q1", "chat", "r1", None, false, false)
+            .unwrap();
+        let id2 = db
+            .insert_conversation("s1", "q2", "chat", "r2", None, false, false)
+            .unwrap();
+        let id3 = db
+            .insert_conversation("s1", "q3", "command", "ls", Some("list"), true, true)
+            .unwrap();
 
         assert!(id2 > id1);
         assert!(id3 > id2);
@@ -5458,14 +8154,17 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation(
-            "s1", "q", "command", "ls", None, true, true,
-        ).unwrap();
+        db.insert_conversation("s1", "q", "command", "ls", None, true, true)
+            .unwrap();
 
-        let (executed, pending): (i32, i32) = db.conn.query_row(
-            "SELECT executed, pending FROM conversations WHERE session_id = 's1'",
-            [], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (executed, pending): (i32, i32) = db
+            .conn
+            .query_row(
+                "SELECT executed, pending FROM conversations WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(executed, 1);
         assert_eq!(pending, 1);
     }
@@ -5475,9 +8174,9 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_conversation(
-            "s1", "q", "command", "rm -rf /tmp/test", None, false, false,
-        ).unwrap();
+        let id = db
+            .insert_conversation("s1", "q", "command", "rm -rf /tmp/test", None, false, false)
+            .unwrap();
 
         db.update_conversation_result(id, 0, None).unwrap();
 
@@ -5491,15 +8190,19 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_conversation(
-            "s1", "compile", "command", "make all", None, false, false,
-        ).unwrap();
+        let id = db
+            .insert_conversation("s1", "compile", "command", "make all", None, false, false)
+            .unwrap();
 
-        db.update_conversation_result(id, 2, Some("make: *** Error 2")).unwrap();
+        db.update_conversation_result(id, 2, Some("make: *** Error 2"))
+            .unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos[0].result_exit_code, Some(2));
-        assert_eq!(convos[0].result_output_snippet.as_deref(), Some("make: *** Error 2"));
+        assert_eq!(
+            convos[0].result_output_snippet.as_deref(),
+            Some("make: *** Error 2")
+        );
     }
 
     #[test]
@@ -5552,28 +8255,71 @@ mod tests {
     fn test_search_history_advanced_regex_with_all_non_fts_filters() {
         let db = test_db();
         db.insert_command(
-            "s1", "make clean", "/proj", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make clean",
+            "/proj",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make build", "/proj", Some(0),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make build",
+            "/proj",
+            Some(0),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s2", "make test", "/proj", Some(1),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s2",
+            "make test",
+            "/proj",
+            Some(1),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "make deploy", "/proj", Some(1),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "make deploy",
+            "/proj",
+            Some(1),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("make"),
-            Some("2025-06-01T06:00:00Z"),
-            Some("2025-06-01T18:00:00Z"),
-            None, true, Some("s1"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("make"),
+                Some("2025-06-01T06:00:00Z"),
+                Some("2025-06-01T18:00:00Z"),
+                None,
+                true,
+                Some("s1"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("deploy"));
     }
@@ -5581,27 +8327,46 @@ mod tests {
     #[test]
     fn test_insert_command_with_duration() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "sleep 5", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", Some(5000), None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "sleep 5",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                Some(5000),
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let duration: Option<i64> = db.conn.query_row(
-            "SELECT duration_ms FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let duration: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT duration_ms FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(duration, Some(5000));
     }
 
     #[test]
     fn test_create_session_stores_hostname_and_username() {
         let db = test_db();
-        db.create_session("s_host", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("s_host", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
 
-        let (hostname, username): (Option<String>, Option<String>) = db.conn.query_row(
-            "SELECT hostname, username FROM sessions WHERE id = 's_host'",
-            [], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (hostname, username): (Option<String>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT hostname, username FROM sessions WHERE id = 's_host'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert!(hostname.is_some());
         assert!(username.is_some());
     }
@@ -5612,7 +8377,10 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.set_session_label("s1", "first").unwrap();
         db.set_session_label("s1", "second").unwrap();
-        assert_eq!(db.get_session_label("s1").unwrap(), Some("second".to_string()));
+        assert_eq!(
+            db.get_session_label("s1").unwrap(),
+            Some("second".to_string())
+        );
     }
 
     #[test]
@@ -5621,12 +8389,10 @@ mod tests {
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         db.create_session("s2", "/dev/pts/1", "bash", 5678).unwrap();
 
-        db.insert_conversation(
-            "s1", "q1", "command", "cmd_s1", None, false, true,
-        ).unwrap();
-        db.insert_conversation(
-            "s2", "q2", "command", "cmd_s2", None, false, true,
-        ).unwrap();
+        db.insert_conversation("s1", "q1", "command", "cmd_s1", None, false, true)
+            .unwrap();
+        db.insert_conversation("s2", "q2", "command", "cmd_s2", None, false, true)
+            .unwrap();
 
         let pending_s1 = db.find_pending_conversation("s1").unwrap();
         let pending_s2 = db.find_pending_conversation("s2").unwrap();
@@ -5640,9 +8406,18 @@ mod tests {
     fn test_search_history_with_special_fts_chars() {
         let db = test_db();
         db.insert_command(
-            "s1", "echo 'hello world'", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "echo 'hello world'",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let results = db.search_history("hello", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -5651,15 +8426,29 @@ mod tests {
     #[test]
     fn test_insert_command_output_none_stored_as_null() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "quiet cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "quiet cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let output: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let output: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(output.is_none());
     }
 
@@ -5668,11 +8457,19 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_conversation(
-            "s1", "the query", "command", "the response",
-            Some("the explanation"), true, true,
-        ).unwrap();
-        db.update_conversation_result(id, 42, Some("exit output")).unwrap();
+        let id = db
+            .insert_conversation(
+                "s1",
+                "the query",
+                "command",
+                "the response",
+                Some("the explanation"),
+                true,
+                true,
+            )
+            .unwrap();
+        db.update_conversation_result(id, 42, Some("exit output"))
+            .unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
@@ -5688,7 +8485,8 @@ mod tests {
     #[test]
     fn test_usage_period_variants() {
         let db = test_db();
-        db.insert_usage("s1", None, "m", "p", Some(1), Some(1), Some(0.0), None).unwrap();
+        db.insert_usage("s1", None, "m", "p", Some(1), Some(1), Some(0.0), None)
+            .unwrap();
 
         assert!(!db.get_usage_stats(UsagePeriod::Today).unwrap().is_empty());
         assert!(!db.get_usage_stats(UsagePeriod::Week).unwrap().is_empty());
@@ -5699,32 +8497,60 @@ mod tests {
     #[test]
     fn test_insert_command_empty_output_stored() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some(""), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some(""),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let output: Option<String> = db.conn.query_row(
-            "SELECT output FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let output: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT output FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(output.as_deref(), Some(""));
     }
 
     #[test]
     fn test_update_command_with_none_values_preserves() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(5),
-            "2025-06-01T00:00:00Z", None, Some("original"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(5),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("original"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.update_command(id, None, None).unwrap();
 
-        let (exit_code, output): (Option<i32>, Option<String>) = db.conn.query_row(
-            "SELECT exit_code, output FROM commands WHERE id = ?",
-            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (exit_code, output): (Option<i32>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT exit_code, output FROM commands WHERE id = ?",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(exit_code, Some(5));
         assert_eq!(output.as_deref(), Some("original"));
     }
@@ -5733,18 +8559,45 @@ mod tests {
     fn test_search_history_advanced_regex_with_session_filter() {
         let db = test_db();
         db.insert_command(
-            "sess1", "python run.py", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess1",
+            "python run.py",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess2", "python test.py", "/app", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess2",
+            "python test.py",
+            "/app",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("python"), None, None, None, false,
-            Some("sess1"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("python"),
+                None,
+                None,
+                None,
+                false,
+                Some("sess1"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("run.py"));
     }
@@ -5774,18 +8627,45 @@ mod tests {
     fn test_search_history_advanced_no_fts_regex_with_current_session_no_current() {
         let db = test_db();
         db.insert_command(
-            "default", "echo fallback", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "default",
+            "echo fallback",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other", "echo other", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other",
+            "echo other",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("echo"), None, None, None, false,
-            Some("current"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("echo"),
+                None,
+                None,
+                None,
+                false,
+                Some("current"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("fallback"));
     }
@@ -5794,18 +8674,45 @@ mod tests {
     fn test_search_history_advanced_no_fts_no_regex_with_until() {
         let db = test_db();
         db.insert_command(
-            "s1", "early_cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "early_cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "late_cmd", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "late_cmd",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, Some("2025-01-01T00:00:00Z"),
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                None,
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("early_cmd"));
     }
@@ -5814,17 +8721,35 @@ mod tests {
     fn test_search_history_advanced_no_fts_no_regex_with_exit_code() {
         let db = test_db();
         db.insert_command(
-            "s1", "success_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "success_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "fail_cmd_42", "/tmp", Some(42),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "fail_cmd_42",
+            "/tmp",
+            Some(42),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, Some(42), false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, None, None, None, Some(42), false, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("fail_cmd_42"));
     }
@@ -5833,17 +8758,35 @@ mod tests {
     fn test_search_history_advanced_no_fts_no_regex_failed_only() {
         let db = test_db();
         db.insert_command(
-            "s1", "ok_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "ok_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "broken_cmd", "/tmp", Some(3),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "broken_cmd",
+            "/tmp",
+            Some(3),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, true, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, None, None, None, None, true, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("broken_cmd"));
     }
@@ -5852,18 +8795,45 @@ mod tests {
     fn test_search_history_advanced_no_fts_no_regex_session_filter_literal() {
         let db = test_db();
         db.insert_command(
-            "sess_alpha", "alpha_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_alpha",
+            "alpha_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess_beta", "beta_cmd", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_beta",
+            "beta_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, None, None, None, None, false,
-            Some("sess_alpha"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("sess_alpha"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("alpha_cmd"));
     }
@@ -5872,14 +8842,32 @@ mod tests {
     fn test_search_history_advanced_fts_with_regex_invalid_regex_ignored() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo build something", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo build something",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), Some("[invalid(regex"), None, None,
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                Some("[invalid(regex"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -5887,18 +8875,45 @@ mod tests {
     fn test_search_history_advanced_fts_current_session_alias() {
         let db = test_db();
         db.insert_command(
-            "my_fts_sess", "npm install fts_target", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "my_fts_sess",
+            "npm install fts_target",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other_fts_sess", "npm install fts_other", "/app", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other_fts_sess",
+            "npm install fts_other",
+            "/app",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("npm"), None, None, None, None, false,
-            Some("my_fts_sess"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("npm"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("my_fts_sess"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("fts_target"));
     }
@@ -5974,37 +8989,94 @@ mod tests {
     fn test_search_history_advanced_fts_session_filter_passes_literal() {
         let db = test_db();
         db.insert_command(
-            "active_sess", "cargo fts_sess_lit alpha", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "active_sess",
+            "cargo fts_sess_lit alpha",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "other_sess", "cargo fts_sess_lit beta", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "other_sess",
+            "cargo fts_sess_lit beta",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("fts_sess_lit"), None, None, None, None, false,
-            Some("current"), Some("active_sess"), 100,
-        ).unwrap();
-        assert!(results.is_empty(), "FTS path passes 'current' literally, not resolved");
+        let results = db
+            .search_history_advanced(
+                Some("fts_sess_lit"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("current"),
+                Some("active_sess"),
+                100,
+            )
+            .unwrap();
+        assert!(
+            results.is_empty(),
+            "FTS path passes 'current' literally, not resolved"
+        );
     }
 
     #[test]
     fn test_search_history_advanced_regex_current_session_alias() {
         let db = test_db();
         db.insert_command(
-            "my_active", "wget regex_curr_test_aaa", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "my_active",
+            "wget regex_curr_test_aaa",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "someone_else", "wget regex_curr_test_bbb", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "someone_else",
+            "wget regex_curr_test_bbb",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("regex_curr_test"), None, None, None, false,
-            Some("current"), Some("my_active"), 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("regex_curr_test"),
+                None,
+                None,
+                None,
+                false,
+                Some("current"),
+                Some("my_active"),
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("aaa"));
     }
@@ -6012,16 +9084,36 @@ mod tests {
     #[test]
     fn test_search_history_advanced_regex_matches_summary_field() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "run_deploy_xyz", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("deploying..."), "", "", 0,
-        ).unwrap();
-        db.update_summary(id, "deployed to unique_regex_cluster_abc").unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "run_deploy_xyz",
+                "/app",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("deploying..."),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        db.update_summary(id, "deployed to unique_regex_cluster_abc")
+            .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("unique_regex_cluster_abc"), None, None,
-            None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("unique_regex_cluster_abc"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "run_deploy_xyz");
     }
@@ -6030,24 +9122,58 @@ mod tests {
     fn test_search_history_advanced_regex_with_all_filters() {
         let db = test_db();
         db.insert_command(
-            "sess_r", "curl http://api.test.com/v1", "/app", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_r",
+            "curl http://api.test.com/v1",
+            "/app",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess_r", "curl http://api.test.com/v2", "/app", Some(1),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_r",
+            "curl http://api.test.com/v2",
+            "/app",
+            Some(1),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess_other", "curl http://api.test.com/v3", "/app", Some(1),
-            "2025-06-01T12:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_other",
+            "curl http://api.test.com/v3",
+            "/app",
+            Some(1),
+            "2025-06-01T12:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some(r"curl.*api\.test"),
-            Some("2025-06-01T06:00:00Z"),
-            Some("2025-06-01T18:00:00Z"),
-            Some(1), false, Some("sess_r"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some(r"curl.*api\.test"),
+                Some("2025-06-01T06:00:00Z"),
+                Some("2025-06-01T18:00:00Z"),
+                Some(1),
+                false,
+                Some("sess_r"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("v2"));
     }
@@ -6056,20 +9182,45 @@ mod tests {
     fn test_search_history_advanced_fts_with_regex_filters_output_match() {
         let db = test_db();
         db.insert_command(
-            "s1", "run job_a", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("unique_sentinel_fts_regex_out_val"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run job_a",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("unique_sentinel_fts_regex_out_val"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "run job_b", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None,
-            Some("nothing special here"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "run job_b",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("nothing special here"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("run"), Some("unique_sentinel_fts_regex_out_val"),
-            None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("run"),
+                Some("unique_sentinel_fts_regex_out_val"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("job_a"));
     }
@@ -6078,14 +9229,32 @@ mod tests {
     fn test_search_history_advanced_fts_regex_no_match_filters_all() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo fts_nomatch_test", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo fts_nomatch_test",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("fts_nomatch_test"), Some("^zzz_impossible_pattern$"),
-            None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("fts_nomatch_test"),
+                Some("^zzz_impossible_pattern$"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert!(results.is_empty());
     }
 
@@ -6093,24 +9262,45 @@ mod tests {
     fn test_search_history_advanced_fts_invalid_regex_ignored() {
         let db = test_db();
         db.insert_command(
-            "s1", "cargo fts_badregex_test", "/project", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cargo fts_badregex_test",
+            "/project",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("fts_badregex_test"), Some("[invalid regex"),
-            None, None, None, false, None, None, 100,
-        ).unwrap();
-        assert_eq!(results.len(), 1, "invalid regex should be ignored, returning unfiltered results");
+        let results = db
+            .search_history_advanced(
+                Some("fts_badregex_test"),
+                Some("[invalid regex"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "invalid regex should be ignored, returning unfiltered results"
+        );
     }
 
     #[test]
     fn test_insert_usage_null_tokens_and_cost() {
         let db = test_db();
-        let id = db.insert_usage(
-            "s1", None, "local-model", "ollama",
-            None, None, None, None,
-        ).unwrap();
+        let id = db
+            .insert_usage("s1", None, "local-model", "ollama", None, None, None, None)
+            .unwrap();
         assert!(id > 0);
 
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
@@ -6127,21 +9317,48 @@ mod tests {
     fn test_search_history_advanced_regex_failed_only_combined() {
         let db = test_db();
         db.insert_command(
-            "s1", "apt install good", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "apt install good",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "apt install bad", "/tmp", Some(100),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "apt install bad",
+            "/tmp",
+            Some(100),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "pip install other", "/tmp", Some(1),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "pip install other",
+            "/tmp",
+            Some(1),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("apt"), None, None, None, true, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(None, Some("apt"), None, None, None, true, None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("bad"));
     }
@@ -6150,18 +9367,45 @@ mod tests {
     fn test_search_history_advanced_regex_with_session_filter_literal() {
         let db = test_db();
         db.insert_command(
-            "sess_alpha", "find regex_sess_lit_test /data", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_alpha",
+            "find regex_sess_lit_test /data",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "sess_beta", "find regex_sess_lit_test /other", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "sess_beta",
+            "find regex_sess_lit_test /other",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some("regex_sess_lit_test"), None, None, None, false,
-            Some("sess_alpha"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some("regex_sess_lit_test"),
+                None,
+                None,
+                None,
+                false,
+                Some("sess_alpha"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("/data"));
     }
@@ -6175,12 +9419,17 @@ mod tests {
     #[test]
     fn test_insert_command_sets_session_hostname_username() {
         let db = test_db();
-        db.create_session("host_test_s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("host_test_s1", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
 
-        let (hostname, username): (Option<String>, Option<String>) = db.conn.query_row(
-            "SELECT hostname, username FROM sessions WHERE id = 'host_test_s1'",
-            [], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (hostname, username): (Option<String>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT hostname, username FROM sessions WHERE id = 'host_test_s1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert!(hostname.is_some(), "hostname should be set");
         assert!(username.is_some(), "username should be set");
     }
@@ -6189,13 +9438,31 @@ mod tests {
     fn test_prune_zero_retention_days() {
         let db = test_db();
         db.insert_command(
-            "s1", "recent_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "recent_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "old_cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "old_cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let deleted = db.prune(0).unwrap();
         assert_eq!(deleted, 2, "zero retention should delete all past commands");
@@ -6206,13 +9473,31 @@ mod tests {
     fn test_prune_very_large_retention_keeps_all() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd_a", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_a",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "cmd_b", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd_b",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let deleted = db.prune(99999).unwrap();
         assert_eq!(deleted, 0);
@@ -6223,9 +9508,18 @@ mod tests {
     fn test_prune_if_due_no_old_data() {
         let db = test_db();
         db.insert_command(
-            "s1", "future_cmd", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "future_cmd",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune_if_due(30).unwrap();
         assert_eq!(db.command_count().unwrap(), 1);
@@ -6246,14 +9540,27 @@ mod tests {
     #[test]
     fn test_update_command_triggers_fts_update() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "run_script", "/tmp", None,
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "run_script",
+                "/tmp",
+                None,
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        db.update_command(id, Some(0), Some("unique_fts_update_sentinel_xyz")).unwrap();
+        db.update_command(id, Some(0), Some("unique_fts_update_sentinel_xyz"))
+            .unwrap();
 
-        let results = db.search_history("unique_fts_update_sentinel_xyz", 10).unwrap();
+        let results = db
+            .search_history("unique_fts_update_sentinel_xyz", 10)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].command, "run_script");
     }
@@ -6269,13 +9576,31 @@ mod tests {
     fn test_optimize_fts_after_prune() {
         let db = test_db();
         db.insert_command(
-            "s1", "old_opt_cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, Some("old output"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "old_opt_cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            Some("old output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "new_opt_cmd", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, Some("new output"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "new_opt_cmd",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            Some("new output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         db.prune(30).unwrap();
         db.optimize_fts().unwrap();
@@ -6290,10 +9615,18 @@ mod tests {
         let db = test_db();
         for i in 0..20 {
             db.insert_command(
-                "s1", &format!("integrity_cmd_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None,
-                Some(&format!("output_{i}")), "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("integrity_cmd_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                Some(&format!("output_{i}")),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
         db.prune(0).unwrap();
         db.rebuild_fts().unwrap();
@@ -6303,17 +9636,38 @@ mod tests {
     #[test]
     fn test_command_count_after_manual_delete() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "to_delete", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "to_delete",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.insert_command(
-            "s1", "to_keep", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "to_keep",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         assert_eq!(db.command_count().unwrap(), 2);
 
-        db.conn.execute("DELETE FROM commands WHERE id = ?", params![id]).unwrap();
+        db.conn
+            .execute("DELETE FROM commands WHERE id = ?", params![id])
+            .unwrap();
         assert_eq!(db.command_count().unwrap(), 1);
     }
 
@@ -6351,7 +9705,8 @@ mod tests {
         let db = test_db();
         let (id, _) = db.upsert_memory("original_key", "original_val").unwrap();
 
-        db.update_memory(id, Some("updated_key"), Some("updated_val")).unwrap();
+        db.update_memory(id, Some("updated_key"), Some("updated_val"))
+            .unwrap();
 
         let mem = db.get_memory_by_id(id).unwrap().unwrap();
         assert_eq!(mem.key, "updated_key");
@@ -6362,16 +9717,19 @@ mod tests {
     #[test]
     fn test_insert_usage_minimal_fields() {
         let db = test_db();
-        let id = db.insert_usage(
-            "s1", None, "local", "ollama",
-            None, None, None, None,
-        ).unwrap();
+        let id = db
+            .insert_usage("s1", None, "local", "ollama", None, None, None, None)
+            .unwrap();
         assert!(id > 0);
 
-        let (model, cost): (String, Option<f64>) = db.conn.query_row(
-            "SELECT model, cost_usd FROM usage WHERE id = ?",
-            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (model, cost): (String, Option<f64>) = db
+            .conn
+            .query_row(
+                "SELECT model, cost_usd FROM usage WHERE id = ?",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(model, "local");
         assert!(cost.is_none());
     }
@@ -6379,16 +9737,19 @@ mod tests {
     #[test]
     fn test_update_usage_cost_multiple_records_same_gen_id() {
         let db = test_db();
-        db.insert_usage("s1", None, "m1", "p1", None, None, None, Some("dup_gen")).unwrap();
-        db.insert_usage("s1", None, "m1", "p1", None, None, None, Some("dup_gen")).unwrap();
+        db.insert_usage("s1", None, "m1", "p1", None, None, None, Some("dup_gen"))
+            .unwrap();
+        db.insert_usage("s1", None, "m1", "p1", None, None, None, Some("dup_gen"))
+            .unwrap();
 
         let updated = db.update_usage_cost("dup_gen", 0.99).unwrap();
         assert!(updated);
 
         let costs: Vec<Option<f64>> = {
-            let mut stmt = db.conn.prepare(
-                "SELECT cost_usd FROM usage WHERE generation_id = 'dup_gen'",
-            ).unwrap();
+            let mut stmt = db
+                .conn
+                .prepare("SELECT cost_usd FROM usage WHERE generation_id = 'dup_gen'")
+                .unwrap();
             stmt.query_map([], |row| row.get(0))
                 .unwrap()
                 .collect::<Result<_, _>>()
@@ -6400,9 +9761,12 @@ mod tests {
     #[test]
     fn test_get_pending_generation_ids_multiple() {
         let db = test_db();
-        db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_a")).unwrap();
-        db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_b")).unwrap();
-        db.insert_usage("s1", None, "m", "p", None, None, Some(0.01), Some("done_c")).unwrap();
+        db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_a"))
+            .unwrap();
+        db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_b"))
+            .unwrap();
+        db.insert_usage("s1", None, "m", "p", None, None, Some(0.01), Some("done_c"))
+            .unwrap();
 
         let pending = db.get_pending_generation_ids().unwrap();
         assert_eq!(pending.len(), 2);
@@ -6414,11 +9778,20 @@ mod tests {
     #[test]
     fn test_commands_needing_summary_returns_fields() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "detailed_cmd", "/home/user", Some(2),
-            "2025-06-01T00:00:00Z", None,
-            Some("detailed output text"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "detailed_cmd",
+                "/home/user",
+                Some(2),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("detailed output text"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         let needing = db.commands_needing_summary(10).unwrap();
         assert_eq!(needing.len(), 1);
@@ -6432,31 +9805,65 @@ mod tests {
     #[test]
     fn test_update_summary_updates_status_to_done() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "status_cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "status_cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.update_summary(id, "a summary").unwrap();
 
-        let status: Option<String> = db.conn.query_row(
-            "SELECT summary_status FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let status: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary_status FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(status.as_deref(), Some("done"));
     }
 
     #[test]
     fn test_commands_needing_llm_summary_excludes_errored() {
         let db = test_db();
-        let id1 = db.insert_command(
-            "s1", "cmd_needs_llm", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output1"), "", "", 0,
-        ).unwrap();
-        let id2 = db.insert_command(
-            "s1", "cmd_errored", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, Some("output2"), "", "", 0,
-        ).unwrap();
+        let id1 = db
+            .insert_command(
+                "s1",
+                "cmd_needs_llm",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output1"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        let id2 = db
+            .insert_command(
+                "s1",
+                "cmd_errored",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:01:00Z",
+                None,
+                Some("output2"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.mark_unsummarized_for_llm().unwrap();
         db.mark_summary_error(id2, "failed").unwrap();
@@ -6470,9 +9877,18 @@ mod tests {
     fn test_mark_unsummarized_for_llm_idempotent() {
         let db = test_db();
         db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let first = db.mark_unsummarized_for_llm().unwrap();
         assert_eq!(first, 1);
@@ -6484,17 +9900,31 @@ mod tests {
     #[test]
     fn test_mark_summary_error_sets_status_and_summary() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "err_cmd", "/tmp", Some(1),
-            "2025-06-01T00:00:00Z", None, Some("crash"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "err_cmd",
+                "/tmp",
+                Some(1),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("crash"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         db.mark_summary_error(id, "connection refused").unwrap();
 
-        let (summary, status): (Option<String>, Option<String>) = db.conn.query_row(
-            "SELECT summary, summary_status FROM commands WHERE id = ?",
-            params![id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (summary, status): (Option<String>, Option<String>) = db
+            .conn
+            .query_row(
+                "SELECT summary, summary_status FROM commands WHERE id = ?",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(status.as_deref(), Some("error"));
         assert_eq!(summary.as_deref(), Some("[error: connection refused]"));
     }
@@ -6504,11 +9934,20 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let id = db.insert_command(
-            "s1", "make build", "/project", Some(0),
-            "2025-06-01T12:30:00Z", Some(15000),
-            Some("Compiled"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "make build",
+                "/project",
+                Some(0),
+                "2025-06-01T12:30:00Z",
+                Some(15000),
+                Some("Compiled"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.update_summary(id, "built successfully").unwrap();
 
         let cmds = db.recent_commands_with_summaries("s1", 10).unwrap();
@@ -6526,13 +9965,23 @@ mod tests {
     fn test_other_sessions_with_summaries_includes_summary_field() {
         let db = test_db();
         db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.create_session("them", "/dev/pts/1", "bash", 5678).unwrap();
+        db.create_session("them", "/dev/pts/1", "bash", 5678)
+            .unwrap();
 
-        let id = db.insert_command(
-            "them", "cargo build", "/proj", Some(0),
-            "2025-06-01T00:00:00Z", None,
-            Some("Compiled"), "/dev/pts/1", "bash", 5678,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "them",
+                "cargo build",
+                "/proj",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("Compiled"),
+                "/dev/pts/1",
+                "bash",
+                5678,
+            )
+            .unwrap();
         db.update_summary(id, "compiled the project").unwrap();
 
         let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
@@ -6545,14 +9994,32 @@ mod tests {
     fn test_prune_one_day_retention() {
         let db = test_db();
         db.insert_command(
-            "s1", "yesterday_cmd", "/tmp", Some(0),
-            "2020-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "yesterday_cmd",
+            "/tmp",
+            Some(0),
+            "2020-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         let now_str = chrono::Utc::now().to_rfc3339();
         db.insert_command(
-            "s1", "now_cmd", "/tmp", Some(0),
-            &now_str, None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "now_cmd",
+            "/tmp",
+            Some(0),
+            &now_str,
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let deleted = db.prune(1).unwrap();
         assert_eq!(deleted, 1);
@@ -6601,26 +10068,71 @@ mod tests {
     #[test]
     fn test_update_command_fts_reflects_new_output() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "fts_update_test_cmd", "/tmp", None,
-            "2025-06-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "fts_update_test_cmd",
+                "/tmp",
+                None,
+                "2025-06-01T00:00:00Z",
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
-        let before = db.search_history("fts_unique_output_sentinel_abc", 10).unwrap();
+        let before = db
+            .search_history("fts_unique_output_sentinel_abc", 10)
+            .unwrap();
         assert!(before.is_empty());
 
-        db.update_command(id, Some(0), Some("fts_unique_output_sentinel_abc")).unwrap();
+        db.update_command(id, Some(0), Some("fts_unique_output_sentinel_abc"))
+            .unwrap();
 
-        let after = db.search_history("fts_unique_output_sentinel_abc", 10).unwrap();
+        let after = db
+            .search_history("fts_unique_output_sentinel_abc", 10)
+            .unwrap();
         assert_eq!(after.len(), 1);
     }
 
     #[test]
     fn test_get_usage_stats_groups_by_model() {
         let db = test_db();
-        db.insert_usage("s1", None, "gpt-4o", "openai", Some(100), Some(50), Some(0.01), None).unwrap();
-        db.insert_usage("s1", None, "claude-3", "anthropic", Some(200), Some(100), Some(0.05), None).unwrap();
-        db.insert_usage("s1", None, "gpt-4o", "openai", Some(300), Some(150), Some(0.03), None).unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "gpt-4o",
+            "openai",
+            Some(100),
+            Some(50),
+            Some(0.01),
+            None,
+        )
+        .unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "claude-3",
+            "anthropic",
+            Some(200),
+            Some(100),
+            Some(0.05),
+            None,
+        )
+        .unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "gpt-4o",
+            "openai",
+            Some(300),
+            Some(150),
+            Some(0.03),
+            None,
+        )
+        .unwrap();
 
         let stats = db.get_usage_stats(UsagePeriod::All).unwrap();
         assert_eq!(stats.len(), 2);
@@ -6630,7 +10142,10 @@ mod tests {
         assert_eq!(gpt4o.2, 400);
         assert_eq!(gpt4o.3, 200);
 
-        let claude = stats.iter().find(|(m, _, _, _, _)| m == "claude-3").unwrap();
+        let claude = stats
+            .iter()
+            .find(|(m, _, _, _, _)| m == "claude-3")
+            .unwrap();
         assert_eq!(claude.1, 1);
     }
 
@@ -6639,9 +10154,24 @@ mod tests {
     #[test]
     fn test_get_usage_stats_all_periods_with_recent_data() {
         let db = test_db();
-        db.insert_usage("s1", None, "model-x", "prov", Some(10), Some(5), Some(0.001), None).unwrap();
+        db.insert_usage(
+            "s1",
+            None,
+            "model-x",
+            "prov",
+            Some(10),
+            Some(5),
+            Some(0.001),
+            None,
+        )
+        .unwrap();
 
-        for period in [UsagePeriod::Today, UsagePeriod::Week, UsagePeriod::Month, UsagePeriod::All] {
+        for period in [
+            UsagePeriod::Today,
+            UsagePeriod::Week,
+            UsagePeriod::Month,
+            UsagePeriod::All,
+        ] {
             let stats = db.get_usage_stats(period).unwrap();
             assert_eq!(stats.len(), 1);
             assert_eq!(stats[0].0, "model-x");
@@ -6652,7 +10182,8 @@ mod tests {
     fn test_get_memories_respects_limit_ordering() {
         let db = test_db();
         for i in 0..5 {
-            db.upsert_memory(&format!("key_{i}"), &format!("val_{i}")).unwrap();
+            db.upsert_memory(&format!("key_{i}"), &format!("val_{i}"))
+                .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
@@ -6679,15 +10210,11 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation(
-            "s1", "old build", "command", "make old",
-            None, false, false,
-        ).unwrap();
+        db.insert_conversation("s1", "old build", "command", "make old", None, false, false)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        db.insert_conversation(
-            "s1", "new build", "command", "make new",
-            None, false, false,
-        ).unwrap();
+        db.insert_conversation("s1", "new build", "command", "make new", None, false, false)
+            .unwrap();
 
         let pending = db.find_pending_conversation("s1").unwrap();
         assert!(pending.is_some());
@@ -6698,14 +10225,34 @@ mod tests {
     #[test]
     fn test_mark_unsummarized_for_llm_skips_already_errored() {
         let db = test_db();
-        let id1 = db.insert_command(
-            "s1", "cmd1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("out1"), "", "", 0,
-        ).unwrap();
-        let id2 = db.insert_command(
-            "s1", "cmd2", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, Some("out2"), "", "", 0,
-        ).unwrap();
+        let id1 = db
+            .insert_command(
+                "s1",
+                "cmd1",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("out1"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        let id2 = db
+            .insert_command(
+                "s1",
+                "cmd2",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:01:00Z",
+                None,
+                Some("out2"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         db.mark_summary_error(id1, "failed").unwrap();
 
         let marked = db.mark_unsummarized_for_llm().unwrap();
@@ -6719,18 +10266,32 @@ mod tests {
     #[test]
     fn test_update_summary_prevents_overwrite() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "cmd", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "cmd",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("output"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
 
         assert!(db.update_summary(id, "first summary").unwrap());
         assert!(!db.update_summary(id, "second summary").unwrap());
 
-        let summary: Option<String> = db.conn.query_row(
-            "SELECT summary FROM commands WHERE id = ?",
-            params![id], |row| row.get(0),
-        ).unwrap();
+        let summary: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT summary FROM commands WHERE id = ?",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(summary.as_deref(), Some("first summary"));
     }
 
@@ -6749,10 +10310,14 @@ mod tests {
         db.cleanup_orphaned_sessions().unwrap();
 
         for sid in ["neg_pid_x", "zero_pid_x"] {
-            let ended: Option<String> = db.conn.query_row(
-                "SELECT ended_at FROM sessions WHERE id = ?",
-                params![sid], |row| row.get(0),
-            ).unwrap();
+            let ended: Option<String> = db
+                .conn
+                .query_row(
+                    "SELECT ended_at FROM sessions WHERE id = ?",
+                    params![sid],
+                    |row| row.get(0),
+                )
+                .unwrap();
             assert!(ended.is_none(), "{sid} should remain open");
         }
     }
@@ -6760,13 +10325,59 @@ mod tests {
     #[test]
     fn test_search_history_advanced_fts_combined_with_session_and_exit() {
         let db = test_db();
-        db.insert_command("sa", "cargo test pass", "/p", Some(0), "2025-06-01T00:00:00Z", None, None, "", "", 0).unwrap();
-        db.insert_command("sa", "cargo test fail", "/p", Some(1), "2025-06-01T00:01:00Z", None, None, "", "", 0).unwrap();
-        db.insert_command("sb", "cargo test other", "/p", Some(1), "2025-06-01T00:02:00Z", None, None, "", "", 0).unwrap();
+        db.insert_command(
+            "sa",
+            "cargo test pass",
+            "/p",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "sa",
+            "cargo test fail",
+            "/p",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "sb",
+            "cargo test other",
+            "/p",
+            Some(1),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            Some("cargo"), None, None, None, Some(1), false, Some("sa"), None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                None,
+                None,
+                None,
+                Some(1),
+                false,
+                Some("sa"),
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("cargo test fail"));
     }
@@ -6774,11 +10385,21 @@ mod tests {
     #[test]
     fn test_run_doctor_no_prune_no_vacuum() {
         let db = test_db();
-        db.create_session("doc_s1", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("doc_s1", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
         db.insert_command(
-            "doc_s1", "echo doctor test", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("ok"), "", "", 0,
-        ).unwrap();
+            "doc_s1",
+            "echo doctor test",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("ok"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let config = crate::config::Config::default();
         let result = db.run_doctor(30, true, true, &config);
@@ -6789,13 +10410,31 @@ mod tests {
     fn test_run_doctor_with_prune_and_vacuum() {
         let db = test_db();
         db.insert_command(
-            "doc_s2", "ancient cmd", "/tmp", Some(0),
-            "2015-01-01T00:00:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "doc_s2",
+            "ancient cmd",
+            "/tmp",
+            Some(0),
+            "2015-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "doc_s2", "recent cmd", "/tmp", Some(0),
-            "2099-01-01T00:00:00Z", None, Some("output"), "", "", 0,
-        ).unwrap();
+            "doc_s2",
+            "recent cmd",
+            "/tmp",
+            Some(0),
+            "2099-01-01T00:00:00Z",
+            None,
+            Some("output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let config = crate::config::Config::default();
         let result = db.run_doctor(365, false, false, &config);
@@ -6806,26 +10445,73 @@ mod tests {
     fn test_search_history_advanced_regex_only_no_fts_v2() {
         let db = test_db();
         db.insert_command(
-            "s1", "curl https://api.example.com/v2/users", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("200 OK"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "curl https://api.example.com/v2/users",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("200 OK"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "wget https://cdn.example.com/file.tar.gz", "/tmp", Some(0),
-            "2025-06-01T00:01:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "wget https://cdn.example.com/file.tar.gz",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "echo hello", "/tmp", Some(0),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "echo hello",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some(r"https://.*example\.com"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some(r"https://.*example\.com"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 2);
 
-        let results = db.search_history_advanced(
-            None, Some(r"curl.*v2"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some(r"curl.*v2"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("curl"));
     }
@@ -6833,21 +10519,51 @@ mod tests {
     #[test]
     fn test_search_history_advanced_regex_matches_output_and_summary() {
         let db = test_db();
-        let id = db.insert_command(
-            "s1", "run_tests", "/project", Some(1),
-            "2025-06-01T00:00:00Z", None,
-            Some("FAILED: test_widget_render"), "", "", 0,
-        ).unwrap();
-        db.update_summary(id, "Widget render test failed with assertion error").unwrap();
+        let id = db
+            .insert_command(
+                "s1",
+                "run_tests",
+                "/project",
+                Some(1),
+                "2025-06-01T00:00:00Z",
+                None,
+                Some("FAILED: test_widget_render"),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        db.update_summary(id, "Widget render test failed with assertion error")
+            .unwrap();
 
-        let results = db.search_history_advanced(
-            None, Some(r"FAILED.*widget"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some(r"FAILED.*widget"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
 
-        let results = db.search_history_advanced(
-            None, Some(r"assertion error"), None, None, None, false, None, None, 100,
-        ).unwrap();
+        let results = db
+            .search_history_advanced(
+                None,
+                Some(r"assertion error"),
+                None,
+                None,
+                None,
+                false,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 
@@ -6857,10 +10573,14 @@ mod tests {
         let result = db.update_heartbeat("nonexistent_session_xyz");
         assert!(result.is_ok());
 
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE id = 'nonexistent_session_xyz'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'nonexistent_session_xyz'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -6868,17 +10588,44 @@ mod tests {
     fn test_commands_needing_llm_summary_lifecycle() {
         let db = test_db();
         db.insert_command(
-            "s1", "complex_cmd_1", "/tmp", Some(0),
-            "2025-06-01T00:00:00Z", None, Some("long output here"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "complex_cmd_1",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            Some("long output here"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "complex_cmd_2", "/tmp", Some(1),
-            "2025-06-01T00:01:00Z", None, Some("error output"), "", "", 0,
-        ).unwrap();
+            "s1",
+            "complex_cmd_2",
+            "/tmp",
+            Some(1),
+            "2025-06-01T00:01:00Z",
+            None,
+            Some("error output"),
+            "",
+            "",
+            0,
+        )
+        .unwrap();
         db.insert_command(
-            "s1", "no_output_cmd", "/tmp", Some(0),
-            "2025-06-01T00:02:00Z", None, None, "", "", 0,
-        ).unwrap();
+            "s1",
+            "no_output_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:02:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
 
         let needing_llm = db.commands_needing_llm_summary(10).unwrap();
         assert!(needing_llm.is_empty());
@@ -6889,11 +10636,13 @@ mod tests {
         let needing_llm = db.commands_needing_llm_summary(10).unwrap();
         assert_eq!(needing_llm.len(), 2);
 
-        db.update_summary(needing_llm[0].id, "LLM summary for cmd").unwrap();
+        db.update_summary(needing_llm[0].id, "LLM summary for cmd")
+            .unwrap();
         let needing_llm = db.commands_needing_llm_summary(10).unwrap();
         assert_eq!(needing_llm.len(), 1);
 
-        db.mark_summary_error(needing_llm[0].id, "rate limited").unwrap();
+        db.mark_summary_error(needing_llm[0].id, "rate limited")
+            .unwrap();
         let needing_llm = db.commands_needing_llm_summary(10).unwrap();
         assert!(needing_llm.is_empty());
     }
@@ -6903,10 +10652,18 @@ mod tests {
         let db = test_db();
         for i in 0..5 {
             db.insert_command(
-                "s1", &format!("cmd_{i}"), "/tmp", Some(0),
-                &format!("2025-06-01T00:{i:02}:00Z"), None,
-                Some(&format!("output {i}")), "", "", 0,
-            ).unwrap();
+                "s1",
+                &format!("cmd_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{i:02}:00Z"),
+                None,
+                Some(&format!("output {i}")),
+                "",
+                "",
+                0,
+            )
+            .unwrap();
         }
         db.mark_unsummarized_for_llm().unwrap();
 
@@ -6917,27 +10674,48 @@ mod tests {
     #[test]
     fn test_schema_migration_from_v0() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         init_db(&conn, 10000).unwrap();
 
-        let version: String = conn.query_row(
-            "SELECT value FROM meta WHERE key = 'schema_version'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
 
         conn.execute(
             "INSERT INTO memories (key, value, created_at, updated_at) VALUES ('test', 'val', '2025-01-01', '2025-01-01')",
             [],
         ).unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM memories", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
+
+        conn.execute(
+            "INSERT INTO sessions (id, tty, shell, pid, started_at) VALUES ('migr_s', '/dev/pts/0', 'zsh', 1, '2025-01-01T00:00:00Z')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO commands (session_id, command, cwd, started_at) VALUES ('migr_s', 'ssh root@example.com', '/tmp', '2025-01-01T00:00:01Z')",
+            [],
+        ).unwrap();
+        let db = Db {
+            conn,
+            max_output_bytes: 32768,
+        };
+        let inserted = db.backfill_command_entities_if_needed().unwrap();
+        assert!(inserted >= 1);
     }
 }

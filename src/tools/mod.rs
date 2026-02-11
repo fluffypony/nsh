@@ -2,8 +2,11 @@ pub mod ask_user;
 pub mod chat;
 pub mod command;
 pub mod grep_file;
+pub mod install_mcp;
+pub mod install_skill;
 pub mod list_directory;
 pub mod man_page;
+pub mod manage_config;
 pub mod memory;
 pub mod patch_file;
 pub mod read_file;
@@ -11,9 +14,6 @@ pub mod run_command;
 pub mod search_history;
 pub mod web_search;
 pub mod write_file;
-pub mod manage_config;
-pub mod install_skill;
-pub mod install_mcp;
 
 use std::path::PathBuf;
 
@@ -25,7 +25,10 @@ pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
     validate_read_path_with_access(raw_path, "block")
 }
 
-pub fn validate_read_path_with_access(raw_path: &str, sensitive_file_access: &str) -> Result<PathBuf, String> {
+pub fn validate_read_path_with_access(
+    raw_path: &str,
+    sensitive_file_access: &str,
+) -> Result<PathBuf, String> {
     let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
         dirs::home_dir().unwrap_or_default().join(rest)
     } else if raw_path == "~" {
@@ -46,18 +49,14 @@ pub fn validate_read_path_with_access(raw_path: &str, sensitive_file_access: &st
     let abs = if expanded.is_absolute() {
         expanded
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(expanded)
+        std::env::current_dir().unwrap_or_default().join(expanded)
     };
 
     let canonical = match std::fs::canonicalize(&abs) {
         Ok(p) => p,
         Err(_) => {
             if abs.exists() {
-                return Err(format!(
-                    "Access denied: cannot resolve '{raw_path}'"
-                ));
+                return Err(format!("Access denied: cannot resolve '{raw_path}'"));
             }
             abs
         }
@@ -83,9 +82,7 @@ pub fn validate_read_path_with_access(raw_path: &str, sensitive_file_access: &st
                 let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
                 if canonical.starts_with(&dir_canonical) {
                     if sensitive_file_access == "ask" {
-                        eprintln!(
-                            "\x1b[1;33m⚠ '{raw_path}' is in a sensitive directory\x1b[0m"
-                        );
+                        eprintln!("\x1b[1;33m⚠ '{raw_path}' is in a sensitive directory\x1b[0m");
                         eprint!("\x1b[1;33mAllow access? [y/N]\x1b[0m ");
                         let _ = std::io::Write::flush(&mut std::io::stderr());
                         if read_tty_confirmation() {
@@ -202,6 +199,26 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description":
                             "Search query (natural language or FTS5 syntax)"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description":
+                            "Executable filter for entity-aware lookups (for example: ssh, ping, rsync)"
+                    },
+                    "entity": {
+                        "type": "string",
+                        "description":
+                            "Entity filter (hostname, IP, or remote target token)"
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description":
+                            "Entity type filter: machine, host, or ip"
+                    },
+                    "latest_only": {
+                        "type": "boolean",
+                        "description":
+                            "If true, return only the most recent entity match"
                     },
                     "regex": {
                         "type": "string",
@@ -611,7 +628,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             description: "Store a fact, preference, or note in persistent \
                           memory. If a memory with the same key already \
                           exists, it will be updated. Memories are shown \
-                          in your context on every query.".into(),
+                          in your context on every query."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -630,7 +648,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "forget_memory".into(),
             description: "Delete a memory by its ID. Memory IDs are visible \
-                          in the <memories> context block.".into(),
+                          in the <memories> context block."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -645,7 +664,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "update_memory".into(),
             description: "Update an existing memory by ID. Provide a new \
-                          key, value, or both.".into(),
+                          key, value, or both."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -687,7 +707,10 @@ mod tests {
     fn test_tool_definitions_have_valid_schemas() {
         let tools = all_tool_definitions();
         for tool in &tools {
-            let obj = tool.parameters.as_object().expect("parameters should be an object");
+            let obj = tool
+                .parameters
+                .as_object()
+                .expect("parameters should be an object");
             assert_eq!(obj.get("type").and_then(|v| v.as_str()), Some("object"));
         }
     }
@@ -697,7 +720,11 @@ mod tests {
         let tools = all_tool_definitions();
         let mut names = HashSet::new();
         for tool in &tools {
-            assert!(names.insert(tool.name.clone()), "duplicate tool name: {}", tool.name);
+            assert!(
+                names.insert(tool.name.clone()),
+                "duplicate tool name: {}",
+                tool.name
+            );
         }
     }
 
@@ -706,11 +733,24 @@ mod tests {
         let tools = all_tool_definitions();
         let names: HashSet<String> = tools.iter().map(|t| t.name.clone()).collect();
         let expected = [
-            "command", "chat", "search_history", "grep_file", "read_file",
-            "list_directory", "web_search", "run_command", "ask_user",
-            "write_file", "patch_file", "man_page",
-            "manage_config", "install_skill", "install_mcp_server",
-            "remember", "forget_memory", "update_memory",
+            "command",
+            "chat",
+            "search_history",
+            "grep_file",
+            "read_file",
+            "list_directory",
+            "web_search",
+            "run_command",
+            "ask_user",
+            "write_file",
+            "patch_file",
+            "man_page",
+            "manage_config",
+            "install_skill",
+            "install_mcp_server",
+            "remember",
+            "forget_memory",
+            "update_memory",
         ];
         for name in &expected {
             assert!(names.contains(*name), "missing tool: {name}");
@@ -722,7 +762,11 @@ mod tests {
         let tools = all_tool_definitions();
         for tool in &tools {
             let obj = tool.parameters.as_object().unwrap();
-            assert!(obj.contains_key("required"), "tool '{}' missing 'required' field", tool.name);
+            assert!(
+                obj.contains_key("required"),
+                "tool '{}' missing 'required' field",
+                tool.name
+            );
         }
     }
 
@@ -960,12 +1004,29 @@ mod tests {
         let tools = all_tool_definitions();
         let sh = tools.iter().find(|t| t.name == "search_history").unwrap();
         let props = sh.parameters["properties"].as_object().unwrap();
-        let expected_props = ["query", "regex", "since", "until", "exit_code", "failed_only", "session", "limit"];
+        let expected_props = [
+            "query",
+            "command",
+            "entity",
+            "entity_type",
+            "latest_only",
+            "regex",
+            "since",
+            "until",
+            "exit_code",
+            "failed_only",
+            "session",
+            "limit",
+        ];
         for p in &expected_props {
-            assert!(props.contains_key(*p), "search_history missing property: {p}");
+            assert!(
+                props.contains_key(*p),
+                "search_history missing property: {p}"
+            );
         }
         assert_eq!(props["exit_code"]["type"], "integer");
         assert_eq!(props["failed_only"]["type"], "boolean");
+        assert_eq!(props["latest_only"]["type"], "boolean");
         assert_eq!(props["limit"]["default"], 20);
     }
 
@@ -1008,7 +1069,10 @@ mod tests {
     #[test]
     fn test_install_mcp_server_transport_enum() {
         let tools = all_tool_definitions();
-        let mcp = tools.iter().find(|t| t.name == "install_mcp_server").unwrap();
+        let mcp = tools
+            .iter()
+            .find(|t| t.name == "install_mcp_server")
+            .unwrap();
         let transport = &mcp.parameters["properties"]["transport"];
         let enum_vals = transport["enum"].as_array().unwrap();
         let vals: Vec<&str> = enum_vals.iter().map(|v| v.as_str().unwrap()).collect();
@@ -1162,7 +1226,10 @@ mod tests {
     #[test]
     fn test_install_mcp_server_args_is_string_array() {
         let tools = all_tool_definitions();
-        let mcp = tools.iter().find(|t| t.name == "install_mcp_server").unwrap();
+        let mcp = tools
+            .iter()
+            .find(|t| t.name == "install_mcp_server")
+            .unwrap();
         let args = &mcp.parameters["properties"]["args"];
         assert_eq!(args["type"], "array");
         assert_eq!(args["items"]["type"], "string");
@@ -1176,11 +1243,24 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "command", "chat", "search_history", "grep_file", "read_file",
-                "list_directory", "web_search", "run_command", "ask_user",
-                "write_file", "patch_file", "man_page", "manage_config",
-                "install_skill", "install_mcp_server", "remember",
-                "forget_memory", "update_memory",
+                "command",
+                "chat",
+                "search_history",
+                "grep_file",
+                "read_file",
+                "list_directory",
+                "web_search",
+                "run_command",
+                "ask_user",
+                "write_file",
+                "patch_file",
+                "man_page",
+                "manage_config",
+                "install_skill",
+                "install_mcp_server",
+                "remember",
+                "forget_memory",
+                "update_memory",
             ]
         );
     }
@@ -1208,7 +1288,10 @@ mod tests {
     #[test]
     fn test_install_mcp_server_timeout_default() {
         let tools = all_tool_definitions();
-        let mcp = tools.iter().find(|t| t.name == "install_mcp_server").unwrap();
+        let mcp = tools
+            .iter()
+            .find(|t| t.name == "install_mcp_server")
+            .unwrap();
         let timeout = &mcp.parameters["properties"]["timeout_seconds"];
         assert_eq!(timeout["type"], "integer");
         assert_eq!(timeout["default"], 30);

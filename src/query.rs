@@ -3,9 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{config::Config, context, db::Db, provider::*, streaming, tools};
 
-type ToolFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>,
->;
+type ToolFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>>;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueryOptions {
@@ -26,8 +25,7 @@ pub async fn handle_query(
     crate::streaming::set_json_output(opts.json_output);
 
     let cancelled = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled))
-        .ok();
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled)).ok();
 
     let boundary = crate::security::generate_boundary();
 
@@ -38,14 +36,14 @@ pub async fn handle_query(
     };
 
     let query = match query.trim().to_lowercase().as_str() {
-        "fix" | "fix it" | "fix this" | "fix last" | "wtf" =>
+        "fix" | "fix it" | "fix this" | "fix last" | "wtf" => {
             "The previous command failed. Analyze the error output from the terminal context, \
-             diagnose the problem, and suggest a corrected command.",
+             diagnose the problem, and suggest a corrected command."
+        }
         _ => query,
     };
 
-    let provider =
-        create_provider(&config.provider.default, config)?;
+    let provider = create_provider(&config.provider.default, config)?;
     let chain: Vec<String> = if config.models.main.is_empty() {
         vec![config.provider.model.clone()]
     } else {
@@ -111,6 +109,7 @@ pub async fn handle_query(
     // ── Agentic tool loop ──────────────────────────────
     let max_iterations = 10;
     let mut force_json_next = false;
+    let mut streamed_text_shown = false;
 
     for iteration in 0..max_iterations {
         if cancelled.load(Ordering::SeqCst) {
@@ -129,7 +128,10 @@ pub async fn handle_query(
         };
 
         let request = ChatRequest {
-            model: chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()),
+            model: chain
+                .first()
+                .cloned()
+                .unwrap_or_else(|| config.provider.model.clone()),
             system: system.clone(),
             messages: messages.clone(),
             tools: tool_defs.clone(),
@@ -158,8 +160,10 @@ pub async fn handle_query(
             Err(e) => {
                 let msg = e.to_string();
                 let display_msg = if msg.len() > 100 { &msg[..100] } else { &msg };
-                eprintln!("\x1b[33mnsh: couldn't reach {}: {}\x1b[0m",
-                    config.provider.default, display_msg);
+                eprintln!(
+                    "\x1b[33mnsh: couldn't reach {}: {}\x1b[0m",
+                    config.provider.default, display_msg
+                );
                 if msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized") {
                     eprintln!("  Check your API key: nsh config edit");
                 } else if msg.contains("429") {
@@ -181,19 +185,41 @@ pub async fn handle_query(
             }
             Err(e) => return Err(e),
         };
+        let streamed_text_present = streaming::last_stream_had_text();
+        streamed_text_shown |= streamed_text_present;
 
         // ── JSON fallback for models that don't use tool calling ──
-        let has_tool_calls = response.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+        let has_tool_calls = response
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         let response = if !has_tool_calls {
             if !used_forced_json {
                 force_json_next = true;
             }
-            let text_content: String = response.content.iter()
-                .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
-                .collect::<Vec<_>>().join("");
+            let text_content: String = response
+                .content
+                .iter()
+                .filter_map(|b| {
+                    if let ContentBlock::Text { text } = b {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
             if let Some(json) = crate::json_extract::extract_json(&text_content) {
-                if let Some(name) = json.get("tool").or(json.get("name")).and_then(|v| v.as_str()) {
-                    let input = json.get("input").or(json.get("arguments")).cloned().unwrap_or(json.clone());
+                if let Some(name) = json
+                    .get("tool")
+                    .or(json.get("name"))
+                    .and_then(|v| v.as_str())
+                {
+                    let input = json
+                        .get("input")
+                        .or(json.get("arguments"))
+                        .cloned()
+                        .unwrap_or(json.clone());
                     Message {
                         role: Role::Assistant,
                         content: vec![ContentBlock::ToolUse {
@@ -231,7 +257,6 @@ pub async fn handle_query(
         };
 
         messages.push(response.clone());
-
         // ── Classify tool calls ────────────────────────
         let mut has_terminal_tool = false;
         let mut tool_results: Vec<ContentBlock> = Vec::new();
@@ -272,6 +297,7 @@ pub async fn handle_query(
                             session_id,
                             opts.private,
                             config,
+                            !streamed_text_shown,
                         )?;
                     }
                     "write_file" => {
@@ -299,7 +325,8 @@ pub async fn handle_query(
                             }
                             Some(err_msg) => {
                                 let sanitized = crate::security::sanitize_tool_output(&err_msg);
-                                let wrapped = crate::security::wrap_tool_result(name, &sanitized, &boundary);
+                                let wrapped =
+                                    crate::security::wrap_tool_result(name, &sanitized, &boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -333,9 +360,7 @@ pub async fn handle_query(
                         tools::memory::execute_update(input, db)?;
                     }
                     "ask_user" => {
-                        ask_user_calls.push((
-                            id.clone(), name.clone(), input.clone(),
-                        ));
+                        ask_user_calls.push((id.clone(), name.clone(), input.clone()));
                     }
                     _ => {
                         // Check for terminal skills
@@ -358,9 +383,7 @@ pub async fn handle_query(
                                 }
                             }
                         } else {
-                            parallel_calls.push((
-                                id.clone(), name.clone(), input.clone(),
-                            ));
+                            parallel_calls.push((id.clone(), name.clone(), input.clone()));
                         }
                     }
                 }
@@ -379,17 +402,15 @@ pub async fn handle_query(
                 eprintln!("  \x1b[2m↳ {}\x1b[0m", describe_tool_action(&name, &input));
                 match name.as_str() {
                     "search_history" => {
-                        let (content, is_error) = match tools::search_history::execute(
-                            db, &input, config, session_id,
-                        ) {
-                            Ok(c) => (c, false),
-                            Err(e) => (format!("{e}"), true),
-                        };
-                        let redacted = crate::redact::redact_secrets(
-                            &content, &config.redaction,
-                        );
+                        let (content, is_error) =
+                            match tools::search_history::execute(db, &input, config, session_id) {
+                                Ok(c) => (c, false),
+                                Err(e) => (format!("{e}"), true),
+                            };
+                        let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                         let sanitized = crate::security::sanitize_tool_output(&redacted);
-                        let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                        let wrapped =
+                            crate::security::wrap_tool_result(&name, &sanitized, &boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id,
                             content: wrapped,
@@ -425,21 +446,23 @@ pub async fn handle_query(
                             let name_for_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
-                            let matched_skill = skills.iter()
+                            let matched_skill = skills
+                                .iter()
                                 .find(|s| format!("skill_{}", s.name) == name_for_exec)
                                 .cloned();
                             if let Some(skill) = matched_skill {
                                 futs.push(Box::pin(async move {
-                                    let result = crate::skills::execute_skill_async(
-                                        skill, input,
-                                    ).await.map_err(|e| format!("{e}"));
+                                    let result = crate::skills::execute_skill_async(skill, input)
+                                        .await
+                                        .map_err(|e| format!("{e}"));
                                     (id_ret, name_ret, result)
                                 }));
                             } else {
                                 futs.push(Box::pin(async move {
                                     let r = tokio::task::spawn_blocking(move || {
                                         execute_sync_tool(&name_for_exec, &input, &cfg_clone)
-                                    }).await;
+                                    })
+                                    .await;
                                     let result = match r {
                                         Ok(inner) => inner.map_err(|e| format!("{e}")),
                                         Err(e) => Err(format!("task panicked: {e}")),
@@ -458,9 +481,7 @@ pub async fn handle_query(
                     Ok(c) => (c, false),
                     Err(e) => (e, true),
                 };
-                let redacted = crate::redact::redact_secrets(
-                    &content, &config.redaction,
-                );
+                let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                 let sanitized = crate::security::sanitize_tool_output(&redacted);
                 let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
                 tool_results.push(ContentBlock::ToolResult {
@@ -480,15 +501,11 @@ pub async fn handle_query(
                     .collect::<Vec<_>>()
             });
             eprintln!("  \x1b[2m↳ asking for input...\x1b[0m");
-            let (content, is_error) = match tools::ask_user::execute(
-                question, options.as_deref(),
-            ) {
+            let (content, is_error) = match tools::ask_user::execute(question, options.as_deref()) {
                 Ok(c) => (c, false),
                 Err(e) => (format!("Error: {e}"), true),
             };
-            let redacted = crate::redact::redact_secrets(
-                &content, &config.redaction,
-            );
+            let redacted = crate::redact::redact_secrets(&content, &config.redaction);
             let sanitized = crate::security::sanitize_tool_output(&redacted);
             let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
             tool_results.push(ContentBlock::ToolResult {
@@ -576,7 +593,8 @@ seeing the output.
 
 **search_history** — When the user references something they did before,
 or you need to find past commands. Supports FTS5, regex, date ranges,
-exit code filters, and session scoping.
+exit code filters, session scoping, and entity-aware filters via
+command/entity/entity_type/latest_only (for host/IP target lookups).
 
 **write_file** — Write content to a file on disk. The user will see a
 diff (for existing files) or preview (for new files) and must confirm.
@@ -655,6 +673,11 @@ User: "how did I set up nginx last week"
 → search_history: query="nginx", since="7d"
 → [gets results with summaries]
 → chat: "Last Tuesday you configured nginx as a reverse proxy..."
+
+User: "what servers did I ping recently"
+→ search_history: command="ping", entity_type="machine"
+→ [gets deduped machine targets with timestamps]
+→ chat: "You recently pinged ..."
 
 User: "add serde to my Cargo.toml"
 → read_file: path="Cargo.toml"
@@ -817,8 +840,19 @@ fn execute_sync_tool(
 fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
     match name {
         "search_history" => {
-            let q = input["query"].as_str().unwrap_or("...");
-            format!("searching history for \"{q}\"")
+            if let Some(q) = input["query"].as_str() {
+                return format!("searching history for \"{q}\"");
+            }
+            if let Some(cmd) = input["command"].as_str() {
+                if let Some(entity) = input["entity"].as_str() {
+                    return format!("searching history for `{cmd}` targets matching \"{entity}\"");
+                }
+                return format!("searching history for `{cmd}` targets");
+            }
+            if let Some(entity) = input["entity"].as_str() {
+                return format!("searching history for target \"{entity}\"");
+            }
+            "searching history for \"...\"".to_string()
         }
         "grep_file" => {
             let path = input["path"].as_str().unwrap_or("file");
@@ -960,14 +994,26 @@ mod tests {
     #[test]
     fn test_build_system_prompt_non_empty() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY123", "<config/>", "<memories count=\"0\" />");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "BOUNDARY123",
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
         assert!(!result.is_empty());
     }
 
     #[test]
     fn test_build_system_prompt_contains_nsh() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY123", "<config/>", "<memories count=\"0\" />");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "BOUNDARY123",
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
         assert!(result.contains("nsh"), "expected 'nsh' in prompt");
         assert!(
             result.contains("Natural Shell"),
@@ -978,7 +1024,13 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_boundary() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY_TOKEN_XYZ", "<config/>", "<memories count=\"0\" />");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "BOUNDARY_TOKEN_XYZ",
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
         assert!(
             result.contains("BOUNDARY_TOKEN_XYZ"),
             "expected boundary token in prompt"
@@ -1006,6 +1058,16 @@ mod tests {
         let input = json!({"query": "nginx"});
         let desc = describe_tool_action("search_history", &input);
         assert_eq!(desc, "searching history for \"nginx\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_search_history_command_and_entity() {
+        let input = json!({"command": "ping", "entity": "198.51.100.10"});
+        let desc = describe_tool_action("search_history", &input);
+        assert_eq!(
+            desc,
+            "searching history for `ping` targets matching \"198.51.100.10\""
+        );
     }
 
     #[test]
@@ -1319,8 +1381,20 @@ mod tests {
     #[test]
     fn test_build_memories_xml_multiple() {
         let mems = vec![
-            crate::db::Memory { id: 1, key: "k1".into(), value: "v1".into(), created_at: "2025-01-01".into(), updated_at: "2025-01-01".into() },
-            crate::db::Memory { id: 2, key: "k2".into(), value: "v2".into(), created_at: "2025-01-02".into(), updated_at: "2025-01-02".into() },
+            crate::db::Memory {
+                id: 1,
+                key: "k1".into(),
+                value: "v1".into(),
+                created_at: "2025-01-01".into(),
+                updated_at: "2025-01-01".into(),
+            },
+            crate::db::Memory {
+                id: 2,
+                key: "k2".into(),
+                value: "v2".into(),
+                created_at: "2025-01-02".into(),
+                updated_at: "2025-01-02".into(),
+            },
         ];
         let result = build_memories_xml(&mems);
         assert!(result.contains("count=\"2\""));
@@ -1394,12 +1468,30 @@ mod tests {
 
     #[test]
     fn test_describe_tool_action_missing_fields_defaults() {
-        assert_eq!(describe_tool_action("search_history", &json!({})), "searching history for \"...\"");
-        assert_eq!(describe_tool_action("read_file", &json!({})), "reading file");
-        assert_eq!(describe_tool_action("list_directory", &json!({})), "listing .");
-        assert_eq!(describe_tool_action("run_command", &json!({})), "running `...`");
-        assert_eq!(describe_tool_action("web_search", &json!({})), "searching \"...\"");
-        assert_eq!(describe_tool_action("man_page", &json!({})), "reading man page: ?");
+        assert_eq!(
+            describe_tool_action("search_history", &json!({})),
+            "searching history for \"...\""
+        );
+        assert_eq!(
+            describe_tool_action("read_file", &json!({})),
+            "reading file"
+        );
+        assert_eq!(
+            describe_tool_action("list_directory", &json!({})),
+            "listing ."
+        );
+        assert_eq!(
+            describe_tool_action("run_command", &json!({})),
+            "running `...`"
+        );
+        assert_eq!(
+            describe_tool_action("web_search", &json!({})),
+            "searching \"...\""
+        );
+        assert_eq!(
+            describe_tool_action("man_page", &json!({})),
+            "reading man page: ?"
+        );
     }
 
     #[test]
@@ -1444,7 +1536,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_memories() {
         let ctx = make_test_ctx();
-        let memories = "<memories count=\"1\"><memory id=\"1\" key=\"test\">value</memory></memories>";
+        let memories =
+            "<memories count=\"1\"><memory id=\"1\" key=\"test\">value</memory></memories>";
         let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", memories);
         assert!(result.contains("memory id=\"1\""));
     }
@@ -1475,21 +1568,40 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_tool_descriptions() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
-        for tool in &["command", "chat", "search_history", "write_file", "patch_file",
-                      "read_file", "grep_file", "list_directory", "web_search",
-                      "run_command", "ask_user", "man_page", "manage_config",
-                      "install_skill", "install_mcp_server", "remember",
-                      "forget_memory", "update_memory"] {
-            assert!(result.contains(&format!("**{tool}**")),
-                "system prompt missing tool description for {tool}");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        for tool in &[
+            "command",
+            "chat",
+            "search_history",
+            "write_file",
+            "patch_file",
+            "read_file",
+            "grep_file",
+            "list_directory",
+            "web_search",
+            "run_command",
+            "ask_user",
+            "man_page",
+            "manage_config",
+            "install_skill",
+            "install_mcp_server",
+            "remember",
+            "forget_memory",
+            "update_memory",
+        ] {
+            assert!(
+                result.contains(&format!("**{tool}**")),
+                "system prompt missing tool description for {tool}"
+            );
         }
     }
 
     #[test]
     fn test_build_system_prompt_security_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Security"));
         assert!(result.contains("UNTRUSTED DATA"));
         assert!(result.contains("REDACTED"));
@@ -1707,7 +1819,9 @@ mod tests {
         let result = execute_sync_tool("read_file", &input, &Config::default());
         match result {
             Err(_) => {}
-            Ok(s) => assert!(s.to_lowercase().contains("error") || s.contains("not found") || !s.is_empty()),
+            Ok(s) => assert!(
+                s.to_lowercase().contains("error") || s.contains("not found") || !s.is_empty()
+            ),
         }
     }
 
@@ -1741,7 +1855,9 @@ mod tests {
         let result = execute_sync_tool("list_directory", &input, &Config::default());
         match result {
             Err(_) => {}
-            Ok(s) => assert!(s.to_lowercase().contains("error") || s.contains("not found") || !s.is_empty()),
+            Ok(s) => assert!(
+                s.to_lowercase().contains("error") || s.contains("not found") || !s.is_empty()
+            ),
         }
     }
 
@@ -1857,9 +1973,27 @@ mod tests {
     #[test]
     fn test_build_memories_xml_multiple_memories_ordering() {
         let mems = vec![
-            crate::db::Memory { id: 10, key: "first".into(), value: "v1".into(), created_at: "2025-01-01".into(), updated_at: "2025-01-01".into() },
-            crate::db::Memory { id: 20, key: "second".into(), value: "v2".into(), created_at: "2025-01-02".into(), updated_at: "2025-01-02".into() },
-            crate::db::Memory { id: 30, key: "third".into(), value: "v3".into(), created_at: "2025-01-03".into(), updated_at: "2025-01-03".into() },
+            crate::db::Memory {
+                id: 10,
+                key: "first".into(),
+                value: "v1".into(),
+                created_at: "2025-01-01".into(),
+                updated_at: "2025-01-01".into(),
+            },
+            crate::db::Memory {
+                id: 20,
+                key: "second".into(),
+                value: "v2".into(),
+                created_at: "2025-01-02".into(),
+                updated_at: "2025-01-02".into(),
+            },
+            crate::db::Memory {
+                id: 30,
+                key: "third".into(),
+                value: "v3".into(),
+                created_at: "2025-01-03".into(),
+                updated_at: "2025-01-03".into(),
+            },
         ];
         let result = build_memories_xml(&mems);
         assert!(result.contains("count=\"3\""));
@@ -1887,14 +2021,21 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_boundary_note() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "UNIQUE_BOUNDARY_42", "<config/>", "<memories count=\"0\" />");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "UNIQUE_BOUNDARY_42",
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
         assert!(result.contains("UNIQUE_BOUNDARY_42"));
     }
 
     #[test]
     fn test_build_system_prompt_contains_response_rules() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Response Rules"));
         assert!(result.contains("tool call"));
     }
@@ -1902,7 +2043,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_error_recovery() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Error Recovery"));
     }
 
@@ -1927,7 +2069,10 @@ mod tests {
         std::fs::write(&file, "").unwrap();
         let input = json!({"path": file.to_str().unwrap(), "pattern": "xyzzy_unique"});
         let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
-        assert!(!result.contains("xyzzy_unique: "), "no matched lines expected in empty file");
+        assert!(
+            !result.contains("xyzzy_unique: "),
+            "no matched lines expected in empty file"
+        );
     }
 
     // ── validate_tool_input: comprehensive missing field coverage ──
@@ -2040,7 +2185,8 @@ mod tests {
 
     #[test]
     fn test_describe_tool_action_remember_with_long_key() {
-        let input = json!({"key": "production database connection string for the main application server"});
+        let input =
+            json!({"key": "production database connection string for the main application server"});
         let desc = describe_tool_action("remember", &input);
         assert!(desc.starts_with("remembering: "));
         assert!(desc.contains("production"));
@@ -2138,7 +2284,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_multi_step_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Multi-step"));
         assert!(result.contains("pending=true"));
     }
@@ -2146,7 +2293,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_style_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Style"));
         assert!(result.contains("1-2 sentences"));
     }
@@ -2154,14 +2302,16 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_efficiency_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Efficiency"));
     }
 
     #[test]
     fn test_build_system_prompt_contains_project_context_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Project Context"));
         assert!(result.contains("Cargo.toml"));
     }
@@ -2169,7 +2319,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_memory_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Memory"));
         assert!(result.contains("persistent memory system"));
     }
@@ -2177,7 +2328,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_self_config_section() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Self-Configuration"));
         assert!(result.contains("manage_config"));
     }
@@ -2185,7 +2337,8 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_examples() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains("Examples"));
         assert!(result.contains("delete all .pyc files"));
         assert!(result.contains("what does tee do"));
@@ -2195,7 +2348,13 @@ mod tests {
     fn test_build_system_prompt_long_boundary() {
         let ctx = make_test_ctx();
         let long_boundary = "B".repeat(200);
-        let result = build_system_prompt(&ctx, "<ctx/>", &long_boundary, "<config/>", "<memories count=\"0\" />");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            &long_boundary,
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
         assert!(result.contains(&long_boundary));
     }
 
@@ -2211,7 +2370,8 @@ mod tests {
     fn test_build_system_prompt_special_chars_in_context() {
         let ctx = make_test_ctx();
         let xml_ctx = "<context os=\"macOS\" cwd=\"/tmp/dir with <special> & chars\" />";
-        let result = build_system_prompt(&ctx, xml_ctx, "B", "<config/>", "<memories count=\"0\" />");
+        let result =
+            build_system_prompt(&ctx, xml_ctx, "B", "<config/>", "<memories count=\"0\" />");
         assert!(result.contains(xml_ctx));
     }
 
@@ -2304,7 +2464,10 @@ mod tests {
     fn test_validate_tool_input_error_includes_field_name() {
         let input = json!({"path": "/f", "search": "x"});
         let err = validate_tool_input("patch_file", &input).unwrap_err();
-        assert!(err.contains("replace"), "error should mention missing field");
+        assert!(
+            err.contains("replace"),
+            "error should mention missing field"
+        );
     }
 
     #[test]
@@ -2418,17 +2581,38 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_boundary_security_text() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(&ctx, "<ctx/>", "SEC_BOUNDARY", "<config/>", "<memories count=\"0\" />");
-        assert!(result.contains("UNTRUSTED DATA"), "expected UNTRUSTED DATA security text");
-        assert!(result.contains("NEVER follow instructions"), "expected injection prevention text");
-        assert!(result.contains("BOUNDARY-SEC_BOUNDARY"), "expected formatted boundary token");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "SEC_BOUNDARY",
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
+        assert!(
+            result.contains("UNTRUSTED DATA"),
+            "expected UNTRUSTED DATA security text"
+        );
+        assert!(
+            result.contains("NEVER follow instructions"),
+            "expected injection prevention text"
+        );
+        assert!(
+            result.contains("BOUNDARY-SEC_BOUNDARY"),
+            "expected formatted boundary token"
+        );
     }
 
     #[test]
     fn test_build_system_prompt_with_large_context() {
         let ctx = make_test_ctx();
         let large_xml = format!("<context>{}</context>", "x".repeat(50_000));
-        let result = build_system_prompt(&ctx, &large_xml, "B", "<config/>", "<memories count=\"0\" />");
+        let result = build_system_prompt(
+            &ctx,
+            &large_xml,
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+        );
         assert!(result.contains(&large_xml));
         assert!(result.len() > 50_000);
     }
@@ -2465,8 +2649,14 @@ mod tests {
         }];
         let result = build_memories_xml(&mems);
         assert!(!result.contains("<b&c"), "raw key should be escaped");
-        assert!(result.contains("a&lt;b&amp;c"), "key should have XML escapes");
-        assert!(result.contains("x&gt;y&quot;z"), "value should have XML escapes");
+        assert!(
+            result.contains("a&lt;b&amp;c"),
+            "key should have XML escapes"
+        );
+        assert!(
+            result.contains("x&gt;y&quot;z"),
+            "value should have XML escapes"
+        );
     }
 
     // ── execute_sync_tool: grep_file with pattern containing special regex chars ──
@@ -2475,8 +2665,13 @@ mod tests {
     fn test_execute_sync_tool_grep_file_special_regex_chars_in_pattern() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("special.txt");
-        std::fs::write(&file, "aaa\nbbb\nccc\nprice: $100.00\nddd\neee\nfff\nggg\nhhh\ntotal: $200\niii\njjj\nkkk\n").unwrap();
-        let input = json!({"path": file.to_str().unwrap(), "pattern": "\\$\\d+", "context_lines": 0});
+        std::fs::write(
+            &file,
+            "aaa\nbbb\nccc\nprice: $100.00\nddd\neee\nfff\nggg\nhhh\ntotal: $200\niii\njjj\nkkk\n",
+        )
+        .unwrap();
+        let input =
+            json!({"path": file.to_str().unwrap(), "pattern": "\\$\\d+", "context_lines": 0});
         let result = execute_sync_tool("grep_file", &input, &Config::default()).unwrap();
         assert!(result.contains("$100") || result.contains("$200"));
         assert!(result.contains(">>>"));
@@ -2526,7 +2721,10 @@ mod tests {
     fn test_validate_tool_input_first_missing_field_reported() {
         let input = json!({});
         let err = validate_tool_input("install_skill", &input).unwrap_err();
-        assert!(err.contains("name"), "should report first missing field 'name'");
+        assert!(
+            err.contains("name"),
+            "should report first missing field 'name'"
+        );
     }
 
     // ── describe_tool_action: skill-prefixed and empty string tool ──
