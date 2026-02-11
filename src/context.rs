@@ -1818,4 +1818,392 @@ mod tests {
         let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
         assert!(result.is_none());
     }
+
+    // --- build_xml_context: project without git info ---
+
+    #[test]
+    fn test_build_xml_context_project_without_git() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/project".into()),
+            project_type: "Node.js".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![FileEntry {
+                path: "index.js".into(),
+                kind: "file".into(),
+                size: "200B".into(),
+            }],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("type=\"Node.js\""));
+        assert!(!xml.contains("<git"));
+        assert!(xml.contains("index.js"));
+    }
+
+    // --- build_xml_context: project with git branch but no status ---
+
+    #[test]
+    fn test_build_xml_context_git_branch_without_status() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/project".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("feature-x".into()),
+            git_status: None,
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("branch=\"feature-x\""));
+        assert!(!xml.contains("status="));
+    }
+
+    // --- build_xml_context: project with empty files list ---
+
+    #[test]
+    fn test_build_xml_context_project_no_files() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/project".into()),
+            project_type: "Go".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<project root=\"/project\" type=\"Go\">"));
+        assert!(!xml.contains("<files"));
+        assert!(xml.contains("</project>"));
+    }
+
+    // --- build_xml_context: multiple git commits ---
+
+    #[test]
+    fn test_build_xml_context_multiple_git_commits() {
+        let mut ctx = make_minimal_ctx();
+        ctx.project_info = ProjectInfo {
+            root: Some("/repo".into()),
+            project_type: "Rust/Cargo".into(),
+            git_branch: Some("main".into()),
+            git_status: Some("clean".into()),
+            git_commits: vec![
+                GitCommit {
+                    hash: "aaa111".into(),
+                    message: "First commit".into(),
+                    relative_time: "3 hours ago".into(),
+                },
+                GitCommit {
+                    hash: "bbb222".into(),
+                    message: "Second commit".into(),
+                    relative_time: "1 hour ago".into(),
+                },
+            ],
+            files: vec![],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("hash=\"aaa111\""));
+        assert!(xml.contains("First commit"));
+        assert!(xml.contains("hash=\"bbb222\""));
+        assert!(xml.contains("Second commit"));
+    }
+
+    // --- build_xml_context: special chars in environment fields ---
+
+    #[test]
+    fn test_build_xml_context_escapes_env_fields() {
+        let mut ctx = make_minimal_ctx();
+        ctx.cwd = "/tmp/dir with <special> & \"chars\"".into();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("&lt;special&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;chars&quot;"));
+    }
+
+    // --- build_xml_context: session_history with no summary ---
+
+    #[test]
+    fn test_build_xml_session_history_no_summary() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "echo hello".into(),
+            cwd: Some("/tmp".into()),
+            exit_code: Some(0),
+            started_at: "2025-06-01T12:00:00Z".into(),
+            duration_ms: Some(10),
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<input>echo hello</input>"));
+        assert!(!xml.contains("<summary>"), "no summary tag when summary is None");
+    }
+
+    // --- build_xml_context: session_history with missing exit code ---
+
+    #[test]
+    fn test_build_xml_session_history_missing_exit_code() {
+        let mut ctx = make_minimal_ctx();
+        ctx.session_history = vec![CommandWithSummary {
+            command: "sleep 10".into(),
+            cwd: None,
+            exit_code: None,
+            started_at: "2025-06-01T12:00:00Z".into(),
+            duration_ms: None,
+            summary: None,
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("exit=\"-1\""), "None exit_code should render as -1");
+    }
+
+    // --- build_xml_context: other_sessions with no summary ---
+
+    #[test]
+    fn test_build_xml_other_sessions_no_summary() {
+        let mut ctx = make_minimal_ctx();
+        ctx.other_sessions = vec![OtherSessionSummary {
+            command: "top".into(),
+            cwd: None,
+            exit_code: None,
+            started_at: "2025-06-01T12:00:00Z".into(),
+            summary: None,
+            tty: "/dev/ttys003".into(),
+            shell: "bash".into(),
+            session_id: "other1".into(),
+        }];
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<input>top</input>"));
+        assert!(!xml.contains("<summary>"), "no summary tag when summary is None");
+        assert!(xml.contains("exit=\"-1\""));
+    }
+
+    // --- build_xml_context: everything combined ---
+
+    #[test]
+    fn test_build_xml_context_all_fields_populated() {
+        let mut ctx = make_minimal_ctx();
+        ctx.scrollback_text = "$ whoami\ntestuser".into();
+        ctx.ssh_context = Some("<ssh remote_ip=\"10.0.0.1\" />".into());
+        ctx.container_context = Some("<container type=\"docker\" />".into());
+        ctx.custom_instructions = Some("Be concise.".into());
+        ctx.session_history = vec![CommandWithSummary {
+            command: "make".into(),
+            cwd: Some("/project".into()),
+            exit_code: Some(0),
+            started_at: "2025-01-01T00:00:00Z".into(),
+            duration_ms: Some(500),
+            summary: Some("Build ok".into()),
+        }];
+        ctx.other_sessions = vec![OtherSessionSummary {
+            command: "htop".into(),
+            cwd: None,
+            exit_code: Some(0),
+            started_at: "2025-01-01T01:00:00Z".into(),
+            summary: None,
+            tty: "/dev/ttys004".into(),
+            shell: "zsh".into(),
+            session_id: "sess-other".into(),
+        }];
+        ctx.project_info = ProjectInfo {
+            root: Some("/myproject".into()),
+            project_type: "Python".into(),
+            git_branch: Some("dev".into()),
+            git_status: Some("2 changed files".into()),
+            git_commits: vec![GitCommit {
+                hash: "def456".into(),
+                message: "Add feature".into(),
+                relative_time: "5 min ago".into(),
+            }],
+            files: vec![FileEntry {
+                path: "app.py".into(),
+                kind: "file".into(),
+                size: "3.2KB".into(),
+            }],
+        };
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.starts_with("<context>"));
+        assert!(xml.ends_with("</context>"));
+        assert!(xml.contains("<ssh remote_ip=\"10.0.0.1\" />"));
+        assert!(xml.contains("<container type=\"docker\" />"));
+        assert!(xml.contains("<custom_instructions>"));
+        assert!(xml.contains("Be concise."));
+        assert!(xml.contains("<recent_terminal"));
+        assert!(xml.contains("<session_history"));
+        assert!(xml.contains("<other_sessions>"));
+        assert!(xml.contains("branch=\"dev\""));
+        assert!(xml.contains("app.py"));
+    }
+
+    // --- detect_os returns string containing arch ---
+
+    #[test]
+    fn test_detect_os_contains_arch() {
+        let os = detect_os();
+        assert!(
+            os.contains(std::env::consts::ARCH),
+            "expected arch in OS string, got: {os}"
+        );
+    }
+
+    // --- detect_hostname is non-empty (already tested but verify no-panic) ---
+
+    #[test]
+    fn test_detect_hostname_does_not_panic() {
+        let _ = detect_hostname();
+    }
+
+    // --- detect_machine_info contains cores ---
+
+    #[test]
+    fn test_detect_machine_info_contains_cores() {
+        let info = detect_machine_info();
+        assert!(
+            info.contains("cores"),
+            "expected 'cores' in machine info, got: {info}"
+        );
+    }
+
+    // --- detect_timezone is non-empty ---
+
+    #[test]
+    fn test_detect_timezone_non_empty_value() {
+        let tz = detect_timezone();
+        assert!(!tz.is_empty());
+        assert_ne!(tz, "unknown", "timezone should be detected on CI/dev machines");
+    }
+
+    // --- get_cached_system_info consistency across calls ---
+
+    #[test]
+    fn test_get_cached_system_info_all_fields_consistent() {
+        let info1 = get_cached_system_info();
+        let info2 = get_cached_system_info();
+        assert_eq!(info1.os_info, info2.os_info);
+        assert_eq!(info1.hostname, info2.hostname);
+        assert_eq!(info1.machine_info, info2.machine_info);
+        assert_eq!(info1.timezone_info, info2.timezone_info);
+        assert_eq!(info1.locale_info, info2.locale_info);
+    }
+
+    // --- xml_escape preserves newlines and single quotes ---
+
+    #[test]
+    fn test_xml_escape_preserves_single_quotes() {
+        assert_eq!(xml_escape("it's"), "it's");
+    }
+
+    #[test]
+    fn test_xml_escape_preserves_newlines() {
+        assert_eq!(xml_escape("line1\nline2"), "line1\nline2");
+    }
+
+    #[test]
+    fn test_xml_escape_preserves_tabs_and_whitespace() {
+        assert_eq!(xml_escape("a\tb"), "a\tb");
+        assert_eq!(xml_escape("  leading"), "  leading");
+    }
+
+    // --- find_git_root ---
+
+    #[test]
+    fn test_find_git_root_in_git_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let subdir = tmp.path().join("src").join("deep");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let root = find_git_root(subdir.to_str().unwrap());
+        assert_eq!(root, Some(tmp.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_find_git_root_no_git() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = find_git_root(tmp.path().to_str().unwrap());
+        // May find a parent .git, but if tmp is truly isolated it won't
+        // Just verify it doesn't panic
+        let _ = result;
+    }
+
+    // --- read_scrollback_file ---
+
+    #[test]
+    fn test_read_scrollback_file_existing() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let session = "test_sess_123";
+        std::fs::write(
+            tmp.path().join(format!("scrollback_{session}")),
+            "$ echo hello\nhello\n",
+        )
+        .unwrap();
+        let result = read_scrollback_file(session, tmp.path());
+        assert_eq!(result, "$ echo hello\nhello\n");
+    }
+
+    // --- list_project_files_fallback skips common dirs ---
+
+    #[test]
+    fn test_list_project_files_fallback_skips_node_modules() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("app.js"), "").unwrap();
+        let nm = tmp.path().join("node_modules");
+        std::fs::create_dir(&nm).unwrap();
+        std::fs::write(nm.join("dep.js"), "").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            !paths.iter().any(|p| p.contains("node_modules")),
+            "should skip node_modules: {paths:?}"
+        );
+        assert!(paths.contains(&"app.js"));
+    }
+
+    // --- list_project_files_fallback skips target dir ---
+
+    #[test]
+    fn test_list_project_files_fallback_skips_target() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("main.rs"), "").unwrap();
+        let target = tmp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("debug"), "").unwrap();
+        let entries = list_project_files_fallback(tmp.path(), 100);
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(
+            !paths.iter().any(|p| p.contains("target")),
+            "should skip target: {paths:?}"
+        );
+    }
+
+    // --- format_size boundary ---
+
+    #[test]
+    fn test_format_size_just_under_mb() {
+        let result = format_size(1024 * 1024 - 1);
+        assert!(result.ends_with("KB"), "got: {result}");
+    }
+
+    #[test]
+    fn test_format_size_exactly_1kb() {
+        assert_eq!(format_size(1024), "1.0KB");
+    }
+
+    // --- which_exists for common tools ---
+
+    #[test]
+    fn test_which_exists_sh() {
+        assert!(which_exists("sh"), "sh should exist on any Unix system");
+    }
+
+    // --- detect_project_type dedup ---
+
+    #[test]
+    fn test_detect_project_type_no_duplicates() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let t = detect_project_type(tmp.path().to_str().unwrap());
+        let count = t.matches("Rust/Cargo").count();
+        assert_eq!(count, 1, "should not duplicate: {t}");
+    }
 }

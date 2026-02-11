@@ -334,4 +334,120 @@ mod tests {
         let e = anyhow::anyhow!("something went wrong");
         assert!(!is_retryable_error(&e));
     }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_tool_use_content() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| {
+                Ok(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "t1".into(),
+                        name: "search".into(),
+                        input: serde_json::json!({"q": "test"}),
+                    }],
+                })
+            }),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("stream fail"))),
+        };
+        let mut rx = stream_with_complete_fallback(&provider, dummy_request())
+            .await
+            .unwrap();
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::ToolUseStart { name, .. } if name == "search"));
+        let delta = rx.recv().await.unwrap();
+        assert!(matches!(delta, StreamEvent::ToolUseDelta(_)));
+        let end = rx.recv().await.unwrap();
+        assert!(matches!(end, StreamEvent::ToolUseEnd));
+        let done = rx.recv().await.unwrap();
+        assert!(matches!(done, StreamEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn stream_with_complete_fallback_both_fail() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("complete also fails"))),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("stream fails"))),
+        };
+        let result = stream_with_complete_fallback(&provider, dummy_request()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_all_fail() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("nope"))),
+            stream_result: Arc::new(|| Err(anyhow::anyhow!("also nope"))),
+        };
+        let chain = vec!["model-a".to_string()];
+        let result = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("also nope") || err_msg.contains("nope"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_empty_chain() {
+        let provider = MockProvider {
+            complete_result: Arc::new(|| unreachable!()),
+            stream_result: Arc::new(|| unreachable!()),
+        };
+        let chain: Vec<String> = vec![];
+        let result = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exhausted"));
+    }
+
+    #[tokio::test]
+    async fn call_chain_with_fallback_think_retries_on_retryable() {
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cc = call_count.clone();
+        let provider = MockProvider {
+            complete_result: Arc::new(|| Err(anyhow::anyhow!("503 Service Unavailable"))),
+            stream_result: Arc::new(move || {
+                let n = cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    Err(anyhow::anyhow!("503 Service Unavailable"))
+                } else {
+                    let (tx, rx) = mpsc::channel(8);
+                    tokio::spawn(async move {
+                        let _ = tx.send(StreamEvent::TextDelta("ok".into())).await;
+                        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                    });
+                    Ok(rx)
+                }
+            }),
+        };
+        let chain = vec!["model-a".to_string()];
+        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+            .await
+            .unwrap();
+        assert_eq!(model, "model-a");
+        let first = rx.recv().await.unwrap();
+        assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
+    }
+
+    #[test]
+    fn retryable_internal_server_error() {
+        let e = anyhow::anyhow!("Internal Server Error");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_bad_gateway() {
+        let e = anyhow::anyhow!("Bad Gateway");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_service_unavailable() {
+        let e = anyhow::anyhow!("Service Unavailable");
+        assert!(is_retryable_error(&e));
+    }
+
+    #[test]
+    fn retryable_gateway_timeout() {
+        let e = anyhow::anyhow!("Gateway Timeout");
+        assert!(is_retryable_error(&e));
+    }
 }

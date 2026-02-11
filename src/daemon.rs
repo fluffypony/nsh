@@ -672,4 +672,174 @@ mod tests {
         .unwrap();
         generate_summaries_sync(&db);
     }
+
+    #[test]
+    fn test_handle_status_request() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(DaemonRequest::Status, &capture, &db_tx, 65536);
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert!(d["version"].is_string());
+                assert!(d["pid"].is_number());
+            }
+            _ => panic!("expected Ok with data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_scrollback_request() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.process(b"hello world\r\n");
+        }
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::Scrollback { max_lines: 100 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert!(d["scrollback"].is_string());
+            }
+            _ => panic!("expected Ok with scrollback data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_capture_mark_request() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::CaptureMark { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+    }
+
+    #[test]
+    fn test_handle_capture_read_request() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        {
+            let mut eng = capture.lock().unwrap();
+            eng.mark();
+            eng.process(b"captured output\r\n");
+        }
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 100 },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert!(d["output"].is_string());
+            }
+            _ => panic!("expected Ok with output data"),
+        }
+    }
+
+    #[test]
+    fn test_handle_summarize_check_request() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::SummarizeCheck { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        assert!(matches!(resp, DaemonResponse::Ok { data: None }));
+    }
+
+    #[test]
+    fn test_handle_context_not_implemented() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::Context { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("not yet implemented"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_handle_mcp_tool_call_not_implemented() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, _db_rx) = std::sync::mpsc::channel();
+        let resp = handle_daemon_request(
+            DaemonRequest::McpToolCall { tool: "test".into(), input: serde_json::json!({}) },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("not yet implemented"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_handle_record_db_unavailable() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
+        drop(db_rx);
+        let resp = handle_daemon_request(
+            DaemonRequest::Record {
+                session: "s1".into(),
+                command: "ls".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2025-01-01T00:00:00Z".into(),
+                tty: "".into(),
+                pid: 0,
+                shell: "".into(),
+                duration_ms: None,
+                output: None,
+            },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("DB thread unavailable"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn test_handle_heartbeat_db_unavailable() {
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
+        drop(db_rx);
+        let resp = handle_daemon_request(
+            DaemonRequest::Heartbeat { session: "s1".into() },
+            &capture,
+            &db_tx,
+            65536,
+        );
+        match resp {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("DB thread unavailable"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
 }

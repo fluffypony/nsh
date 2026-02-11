@@ -1681,4 +1681,89 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_max_history_lines_cap() {
+        let mut eng = CaptureEngine::new(4, 80, 0, 2, 20, "vt100".into(), "drop".into());
+        for i in 0..100 {
+            eng.process(format!("line number {i}\r\n").as_bytes());
+        }
+        assert!(eng.total_line_count() <= 20, "history should be capped at max_history_lines");
+    }
+
+    #[test]
+    fn test_push_history_line_skips_empty() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.push_history_line("".into());
+        eng.push_history_line("   ".into());
+        eng.push_history_line("\t".into());
+        assert_eq!(eng.total_line_count(), 0);
+    }
+
+    #[test]
+    fn test_push_history_line_keeps_nonempty() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.push_history_line("hello".into());
+        assert_eq!(eng.total_line_count(), 1);
+    }
+
+    #[test]
+    fn test_rate_limit_pauses_and_resumes() {
+        let mut eng = CaptureEngine::new(24, 80, 50, 0, 10_000, "vt100".into(), "drop".into());
+        eng.process(&[b'X'; 100]);
+        let lines_after_pause = eng.get_lines(100);
+        assert!(lines_after_pause.contains("[nsh: output capture suppressed"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        eng.process(b"after resume\r\n");
+        let lines_after_resume = eng.get_lines(100);
+        assert!(lines_after_resume.contains("after resume"));
+    }
+
+    #[test]
+    fn test_capture_since_mark_max_bytes_truncation() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.mark();
+        let long_line = format!("{}\r\n", "A".repeat(500));
+        eng.process(long_line.as_bytes());
+        let captured = eng.capture_since_mark(50).unwrap();
+        assert!(captured.len() <= 100, "should be truncated to near max_bytes");
+    }
+
+    #[test]
+    fn test_get_lines_zero_returns_empty_or_minimal() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"hello\r\n");
+        let output = eng.get_lines(0);
+        assert!(output.is_empty() || output.lines().count() == 0);
+    }
+
+    #[test]
+    fn test_multiple_marks_only_latest_counts() {
+        let mut eng = CaptureEngine::new(24, 80, 0, 2, 10_000, "vt100".into(), "drop".into());
+        eng.process(b"first\r\n");
+        eng.mark();
+        eng.process(b"second\r\n");
+        eng.mark();
+        eng.process(b"third\r\n");
+        let captured = eng.capture_since_mark(65536).unwrap();
+        assert!(captured.contains("third"));
+    }
+
+    #[test]
+    fn test_truncate_for_storage_151_lines() {
+        let lines: Vec<String> = (0..151).map(|i| format!("line {i}")).collect();
+        let input = lines.join("\n");
+        let result = truncate_for_storage(&input, 65536);
+        assert!(result.contains("lines omitted"));
+        assert!(result.contains("line 0"));
+        assert!(result.contains("line 150"));
+    }
+
+    #[test]
+    fn test_detect_scrolled_lines_prev_subset_of_cur() {
+        let prev: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["a", "b", "c", "d"].into_iter().map(String::from).collect();
+        let scrolled = detect_scrolled_lines(&prev, &cur);
+        assert!(scrolled.is_empty());
+    }
 }
