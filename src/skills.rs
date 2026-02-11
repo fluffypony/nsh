@@ -131,15 +131,12 @@ pub fn skill_tool_definitions(skills: &[Skill]) -> Vec<ToolDefinition> {
         .collect()
 }
 
-const SHELL_METACHARACTERS: &[char] = &[
-    ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"',
-];
-
 fn validate_param_value(value: &str) -> anyhow::Result<()> {
-    for ch in SHELL_METACHARACTERS {
-        if value.contains(*ch) {
-            anyhow::bail!("Parameter value contains forbidden shell metacharacter '{ch}'");
-        }
+    if !value.chars().all(|c| c.is_alphanumeric() || " -_./,:=@+%^#".contains(c)) {
+        anyhow::bail!(
+            "Parameter value contains disallowed characters. \
+             Only alphanumeric characters and [ -_./,:=@+%^#] are permitted."
+        );
     }
     Ok(())
 }
@@ -396,13 +393,28 @@ mod tests {
 
     #[test]
     fn test_validate_param_value_all_forbidden() {
-        for ch in SHELL_METACHARACTERS {
+        let dangerous = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"'];
+        for ch in &dangerous {
             let val = format!("foo{ch}bar");
             assert!(
                 validate_param_value(&val).is_err(),
                 "Expected rejection for char '{ch}'"
             );
         }
+    }
+
+    #[test]
+    fn test_validate_param_value_allowed_chars() {
+        assert!(validate_param_value("hello-world").is_ok());
+        assert!(validate_param_value("path/to/file.txt").is_ok());
+        assert!(validate_param_value("key=value").is_ok());
+        assert!(validate_param_value("user@host").is_ok());
+        assert!(validate_param_value("100%").is_ok());
+        assert!(validate_param_value("a,b,c").is_ok());
+        assert!(validate_param_value("item #1").is_ok());
+        assert!(validate_param_value("a+b").is_ok());
+        assert!(validate_param_value("foo:bar").is_ok());
+        assert!(validate_param_value("a^b").is_ok());
     }
 
     #[test]

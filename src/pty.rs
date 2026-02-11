@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::pump::{CaptureEngine, pump_loop};
 
 static RESTORE_TERMIOS: OnceLock<(libc::c_int, Termios)> = OnceLock::new();
+static PTSNAME_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct PtyPair {
     pub master: OwnedFd,
@@ -13,14 +14,17 @@ pub struct PtyPair {
 }
 
 // Note: rustix::pty::ptsname() calls the non-thread-safe macOS ptsname(3).
-// Currently safe because PTY creation happens before fork(). If PTY creation
-// ever moves to a threaded context, a Mutex around ptsname would be needed.
+// PTSNAME_LOCK exists for future-proofing against refactoring that might
+// move PTY creation after thread spawning.
 pub fn create_pty() -> anyhow::Result<PtyPair> {
     let master = openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)?;
     grantpt(&master)?;
     unlockpt(&master)?;
 
-    let slave_name = ptsname(&master, Vec::new())?;
+    let slave_name = {
+        let _guard = PTSNAME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        ptsname(&master, Vec::new())?
+    };
     let slave = rustix::fs::open(
         slave_name.as_c_str(),
         rustix::fs::OFlags::RDWR | rustix::fs::OFlags::NOCTTY,
@@ -174,7 +178,15 @@ mod exec {
                 );
             }
         };
-        let args: Vec<CString> = args.iter().filter_map(|a| CString::new(*a).ok()).collect();
+        let args: Vec<CString> = match args.iter().map(|a| CString::new(*a)).collect::<Result<Vec<_>, _>>() {
+            Ok(v) => v,
+            Err(e) => {
+                return std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("argument contains null byte: {e}"),
+                );
+            }
+        };
         let arg_ptrs: Vec<*const libc::c_char> = args
             .iter()
             .map(|a| a.as_ptr())

@@ -655,6 +655,11 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
             return false;
         }
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        tracing::warn!("Rejecting daemon connection: peer UID check not implemented for this platform");
+        return false;
+    }
     true
 }
 

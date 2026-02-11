@@ -1031,8 +1031,10 @@ fn redact_config_keys(val: &mut toml::Value) {
             for (key, v) in table.iter_mut() {
                 if key == "api_key" {
                     if let toml::Value::String(s) = v {
-                        if s.len() > 8 {
-                            *s = format!("{}...{}", &s[..4], &s[s.len() - 4..]);
+                        if s.chars().count() > 8 {
+                            let prefix: String = s.chars().take(4).collect();
+                            let suffix: String = s.chars().rev().take(4).collect::<String>().chars().rev().collect();
+                            *s = format!("{prefix}...{suffix}");
                         } else {
                             *s = "****".into();
                         }

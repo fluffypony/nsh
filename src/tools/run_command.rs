@@ -12,6 +12,12 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
         ));
     }
 
+    let sensitive_paths = ["/.ssh", "/.gnupg", "/.aws", "/.nsh", "/id_rsa", "/id_ed25519"];
+    let lower_cmd = cmd.to_lowercase();
+    if sensitive_paths.iter().any(|p| lower_cmd.contains(p)) {
+        return Ok("DENIED: command references a sensitive path".to_string());
+    }
+
     let argv =
         shell_words::split(cmd).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
     let (exe, args) = argv

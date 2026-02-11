@@ -214,9 +214,6 @@ impl Default for ToolsConfig {
             run_command_allowlist: vec![
                 "uname".into(),
                 "which".into(),
-                "cat".into(),
-                "head".into(),
-                "tail".into(),
                 "wc".into(),
                 "file".into(),
                 "stat".into(),
@@ -1041,7 +1038,6 @@ base_url = "https://custom.api.example.com"
         let tools = ToolsConfig::default();
         assert!(tools.is_command_allowed("ls"));
         assert!(tools.is_command_allowed("echo hello"));
-        assert!(tools.is_command_allowed("cat /etc/hosts"));
         assert!(tools.is_command_allowed("git status"));
         assert!(tools.is_command_allowed("git log --oneline -5"));
         assert!(tools.is_command_allowed("whoami"));
