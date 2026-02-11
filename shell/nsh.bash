@@ -19,10 +19,10 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
 fi
 
 export NSH_SESSION_ID="__SESSION_ID__"
-export NSH_TTY="$(tty)"
+export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 
 # Start session asynchronously
-nsh session start --session "$NSH_SESSION_ID" --tty "$(tty)" --shell "bash" --pid "$$" >/dev/null 2>&1 &
+nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --pid "$$" >/dev/null 2>&1 &
 disown 2>/dev/null
 
 # ── Aliases ─────────────────────────────────────────────
@@ -114,7 +114,7 @@ __nsh_prompt_command() {
             --exit-code "$exit_code" \
             --started-at "$start" \
             --duration-ms "$duration_ms" \
-            --tty "$(tty)" \
+            --tty "$NSH_TTY" \
             --pid "$$" \
             --shell "bash" >/dev/null 2>&1 &
         disown 2>/dev/null

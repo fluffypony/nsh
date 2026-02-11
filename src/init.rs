@@ -65,4 +65,31 @@ mod tests {
         );
         assert!(script.contains("NSH_SESSION_ID="));
     }
+
+    #[test]
+    fn test_zsh_prefers_original_tty_when_wrapped() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("export NSH_TTY=\"${NSH_ORIG_TTY:-$(tty)}\""),
+            "zsh init should preserve original tty identity under nsh wrap"
+        );
+    }
+
+    #[test]
+    fn test_bash_prefers_original_tty_when_wrapped() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("export NSH_TTY=\"${NSH_ORIG_TTY:-$(tty)}\""),
+            "bash init should preserve original tty identity under nsh wrap"
+        );
+    }
+
+    #[test]
+    fn test_fish_prefers_original_tty_when_wrapped() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("if set -q NSH_ORIG_TTY"),
+            "fish init should preserve original tty identity under nsh wrap"
+        );
+    }
 }

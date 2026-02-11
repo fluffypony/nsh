@@ -105,14 +105,20 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     )));
 
     let basename = shell.rsplit('/').next().unwrap_or(shell);
-    let argv0_cstr =
-        std::ffi::CString::new(format!("-{basename}")).expect("valid shell name");
+    let orig_tty = tty_path(real_stdin);
+    let argv0_cstr = std::ffi::CString::new(format!("-{basename}")).expect("valid shell name");
     let shell_cstr = std::ffi::CString::new(shell.to_owned()).expect("valid shell path");
     let mut env_vec: Vec<std::ffi::CString> = std::env::vars()
         .filter_map(|(k, v)| std::ffi::CString::new(format!("{k}={v}")).ok())
         .collect();
     env_vec.push(std::ffi::CString::new("NSH_PTY_ACTIVE=1").unwrap());
-    let env_ptrs: Vec<*const libc::c_char> = env_vec.iter()
+    if let Some(orig_tty) = orig_tty {
+        if let Ok(var) = std::ffi::CString::new(format!("NSH_ORIG_TTY={orig_tty}")) {
+            env_vec.push(var);
+        }
+    }
+    let env_ptrs: Vec<*const libc::c_char> = env_vec
+        .iter()
         .map(|e| e.as_ptr())
         .chain(std::iter::once(std::ptr::null()))
         .collect();
@@ -167,6 +173,26 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     }
 }
 
+fn tty_path(fd: BorrowedFd) -> Option<String> {
+    let mut buf = [0u8; 1024];
+    // SAFETY: ttyname_r writes a NUL-terminated C string to the provided buffer.
+    let rc = unsafe {
+        libc::ttyname_r(
+            fd.as_raw_fd(),
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            buf.len(),
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    let nul = buf.iter().position(|b| *b == 0)?;
+    if nul == 0 {
+        return None;
+    }
+    std::str::from_utf8(&buf[..nul]).ok().map(str::to_string)
+}
+
 pub fn exec_execvp(cmd: &str, args: &[&str]) -> std::io::Error {
     exec::execvp(cmd, args)
 }
@@ -183,7 +209,11 @@ mod exec {
                 );
             }
         };
-        let args: Vec<CString> = match args.iter().map(|a| CString::new(*a)).collect::<Result<Vec<_>, _>>() {
+        let args: Vec<CString> = match args
+            .iter()
+            .map(|a| CString::new(*a))
+            .collect::<Result<Vec<_>, _>>()
+        {
             Ok(v) => v,
             Err(e) => {
                 return std::io::Error::new(
@@ -282,15 +312,13 @@ mod tests {
             format!("{:?}", raw.local_modes),
             "raw mode should differ from original"
         );
-        termios::tcsetattr(
-            pair.slave.as_fd(),
-            termios::OptionalActions::Now,
-            &original,
-        )
-        .expect("restoring original termios should succeed");
+        termios::tcsetattr(pair.slave.as_fd(), termios::OptionalActions::Now, &original)
+            .expect("restoring original termios should succeed");
         let restored = termios::tcgetattr(pair.slave.as_fd()).unwrap();
         assert!(
-            restored.local_modes.contains(before.local_modes & !raw.local_modes),
+            restored
+                .local_modes
+                .contains(before.local_modes & !raw.local_modes),
             "restored modes should re-enable flags that raw mode cleared"
         );
     }
@@ -315,7 +343,9 @@ mod tests {
         let n = master_file.read(&mut buf).unwrap();
         assert!(n > 0, "should read data back from master");
         assert!(
-            std::str::from_utf8(&buf[..n]).unwrap().contains("hello pty"),
+            std::str::from_utf8(&buf[..n])
+                .unwrap()
+                .contains("hello pty"),
             "master should echo data written to slave"
         );
     }
@@ -371,8 +401,10 @@ mod tests {
     #[test]
     fn test_execvp_empty_command() {
         let err = exec::execvp("", &[""]);
-        assert!(err.kind() != std::io::ErrorKind::InvalidInput,
-            "empty string is valid CString, should fail with OS error not null-byte error");
+        assert!(
+            err.kind() != std::io::ErrorKind::InvalidInput,
+            "empty string is valid CString, should fail with OS error not null-byte error"
+        );
     }
 
     #[test]

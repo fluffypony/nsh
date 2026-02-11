@@ -15,16 +15,17 @@ enum Shell {
 
 pub fn import_if_needed(db: &crate::db::Db) {
     let result: anyhow::Result<()> = (|| {
-        if db.get_meta("shell_history_imported")?.is_some() {
+        let already_imported = db.get_meta("shell_history_imported")?.is_some();
+        let per_tty_imported = db.get_meta("shell_history_imported_per_tty")?.is_some();
+
+        if already_imported && per_tty_imported {
             return Ok(());
         }
 
-        if db.command_count()? > 0 {
-            db.set_meta("shell_history_imported", "1")?;
-            return Ok(());
+        let mut files = discover_history_files();
+        if already_imported && !per_tty_imported {
+            files.retain(|(path, shell)| *shell == Shell::Zsh && is_per_tty_zsh_history(path));
         }
-
-        let files = discover_history_files();
         let mut all_entries: Vec<(String, DateTime<Utc>)> = Vec::new();
 
         for (path, shell) in &files {
@@ -81,6 +82,7 @@ pub fn import_if_needed(db: &crate::db::Db) {
 
         db.end_session(SYNTHETIC_SESSION_ID)?;
         db.set_meta("shell_history_imported", "1")?;
+        db.set_meta("shell_history_imported_per_tty", "1")?;
         tracing::info!("nsh: imported {n} commands from shell history");
 
         Ok(())
@@ -89,6 +91,13 @@ pub fn import_if_needed(db: &crate::db::Db) {
     if let Err(e) = result {
         tracing::debug!("shell history import skipped: {e}");
     }
+}
+
+fn is_per_tty_zsh_history(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| name.starts_with(".zsh_history_ttys"))
+        .unwrap_or(false)
 }
 
 fn detect_shell_from_content(path: &Path) -> Shell {
@@ -126,6 +135,18 @@ fn discover_history_files() -> Vec<(PathBuf, Shell)> {
     ] {
         if path.exists() && !files.iter().any(|(p, _)| p == &path) {
             files.push((path, shell));
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&home) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if is_per_tty_zsh_history(&path) && !files.iter().any(|(p, _)| p == &path) {
+                files.push((path, Shell::Zsh));
+            }
         }
     }
 
@@ -220,8 +241,7 @@ fn parse_zsh_extended(content: &str) -> Vec<(String, DateTime<Utc>)> {
     while i < lines.len() {
         if let Some(caps) = re.captures(lines[i]) {
             let ts_val: i64 = caps[1].parse().unwrap_or(0);
-            let timestamp =
-                DateTime::from_timestamp(ts_val, 0).unwrap_or_else(Utc::now);
+            let timestamp = DateTime::from_timestamp(ts_val, 0).unwrap_or_else(Utc::now);
             let mut cmd = caps[2].to_string();
 
             while cmd.ends_with('\\') && i + 1 < lines.len() {
@@ -292,8 +312,12 @@ fn parse_fish(path: &Path, _file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::ffi::OsStr;
+    use std::fs;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    use tempfile::TempDir;
 
     fn write_temp(content: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
@@ -304,6 +328,43 @@ mod tests {
 
     fn fixed_mtime() -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000, 0).unwrap()
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only, serialized by #[serial] where needed.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only, serialized by #[serial] where needed.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                // SAFETY: test-only, serialized by #[serial] where needed.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: test-only, serialized by #[serial] where needed.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn temp_home() -> TempDir {
+        tempfile::tempdir().unwrap()
     }
 
     #[test]
@@ -421,16 +482,42 @@ mod tests {
             db.get_meta("shell_history_imported").unwrap().as_deref(),
             Some("1")
         );
+        assert_eq!(
+            db.get_meta("shell_history_imported_per_tty")
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
     }
 
     #[test]
+    #[serial]
     fn import_skips_when_already_imported() {
+        let home = temp_home();
+        let tty_hist = home.path().join(".zsh_history_ttys007");
+        fs::write(&tty_hist, "should_not_import\n").unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _histfile = EnvVarGuard::remove("HISTFILE");
+        let _xdg_data = EnvVarGuard::remove("XDG_DATA_HOME");
+
         let db = crate::db::Db::open_in_memory().unwrap();
         db.set_meta("shell_history_imported", "1").unwrap();
+        db.set_meta("shell_history_imported_per_tty", "1").unwrap();
         import_if_needed(&db);
         assert_eq!(
             db.get_meta("shell_history_imported").unwrap().as_deref(),
             Some("1")
+        );
+        assert_eq!(
+            db.get_meta("shell_history_imported_per_tty")
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            db.command_count().unwrap(),
+            0,
+            "no additional import should happen when both import flags are set"
         );
     }
 
@@ -488,15 +575,95 @@ mod tests {
     }
 
     #[test]
-    fn import_skips_when_db_has_commands() {
+    #[serial]
+    fn import_runs_when_db_has_commands() {
+        let home = temp_home();
+        let tty_hist = home.path().join(".zsh_history_ttys001");
+        fs::write(&tty_hist, "from_tty_hist\n").unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _histfile = EnvVarGuard::remove("HISTFILE");
+        let _xdg_data = EnvVarGuard::remove("XDG_DATA_HOME");
+
         let db = crate::db::Db::open_in_memory().unwrap();
         db.create_session("s1", "test", "test", 0).unwrap();
-        db.insert_command("s1", "echo hi", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
+        db.insert_command(
+            "s1",
+            "echo hi",
+            "/tmp",
+            None,
+            "2024-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "test",
+            0,
+        )
+        .unwrap();
         assert!(db.get_meta("shell_history_imported").unwrap().is_none());
         import_if_needed(&db);
         assert_eq!(
             db.get_meta("shell_history_imported").unwrap().as_deref(),
             Some("1")
+        );
+        assert!(
+            db.command_count().unwrap() > 1,
+            "import should still add shell history even when DB already contains commands"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn import_migrates_per_tty_files_for_legacy_flag() {
+        let home = temp_home();
+        let per_tty = home.path().join(".zsh_history_ttys003");
+        let regular_zsh = home.path().join(".zsh_history");
+        fs::write(&per_tty, "from_per_tty\n").unwrap();
+        fs::write(&regular_zsh, "from_regular_zsh\n").unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _histfile = EnvVarGuard::remove("HISTFILE");
+        let _xdg_data = EnvVarGuard::remove("XDG_DATA_HOME");
+
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.set_meta("shell_history_imported", "1").unwrap();
+
+        import_if_needed(&db);
+
+        let per_tty_hits = db.search_history("from_per_tty", 10).unwrap();
+        let regular_hits = db.search_history("from_regular_zsh", 10).unwrap();
+        assert_eq!(
+            per_tty_hits.len(),
+            1,
+            "per-tty zsh history should be imported during migration"
+        );
+        assert!(
+            regular_hits.is_empty(),
+            "legacy migration should not re-import regular zsh history entries"
+        );
+        assert_eq!(
+            db.get_meta("shell_history_imported_per_tty")
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn discover_includes_per_tty_zsh_history_files() {
+        let home = temp_home();
+        let tty_hist = home.path().join(".zsh_history_ttys009");
+        fs::write(&tty_hist, ": 1700000100:0;echo tty\n").unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _histfile = EnvVarGuard::remove("HISTFILE");
+        let _xdg_data = EnvVarGuard::remove("XDG_DATA_HOME");
+
+        let files = discover_history_files();
+        let canonical = tty_hist.canonicalize().unwrap();
+        assert!(
+            files
+                .iter()
+                .any(|(p, shell)| p == &canonical && *shell == Shell::Zsh),
+            "expected discover_history_files() to include per-tty zsh history files"
         );
     }
 
@@ -518,7 +685,9 @@ mod tests {
 
     #[test]
     fn parse_fish_ignores_non_entry_lines() {
-        let f = write_temp("- cmd: git status\n  when: 1700000100\n  paths:\n    - /tmp\n- cmd: ls\n  when: 1700000200\n");
+        let f = write_temp(
+            "- cmd: git status\n  when: 1700000100\n  paths:\n    - /tmp\n- cmd: ls\n  when: 1700000200\n",
+        );
         let results = parse_fish(f.path(), fixed_mtime());
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, "git status");
@@ -716,9 +885,45 @@ mod tests {
     fn import_filters_empty_and_comment_commands() {
         let db = crate::db::Db::open_in_memory().unwrap();
         db.create_session("check", "test", "test", 0).unwrap();
-        db.insert_command("check", "   ", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
-        db.insert_command("check", "#comment", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
-        db.insert_command("check", "real_cmd", "/tmp", None, "2024-01-01T00:00:00Z", None, None, "", "test", 0).unwrap();
+        db.insert_command(
+            "check",
+            "   ",
+            "/tmp",
+            None,
+            "2024-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "test",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "check",
+            "#comment",
+            "/tmp",
+            None,
+            "2024-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "test",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "check",
+            "real_cmd",
+            "/tmp",
+            None,
+            "2024-01-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "test",
+            0,
+        )
+        .unwrap();
         assert!(db.command_count().unwrap() > 0);
         import_if_needed(&db);
         assert_eq!(

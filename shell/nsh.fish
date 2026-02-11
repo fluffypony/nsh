@@ -13,7 +13,11 @@ if set -q NSH_SESSION_ID
 end
 
 set -gx NSH_SESSION_ID "__SESSION_ID__"
-set -gx NSH_TTY (tty)
+if set -q NSH_ORIG_TTY
+    set -gx NSH_TTY "$NSH_ORIG_TTY"
+else
+    set -gx NSH_TTY (tty)
+end
 
 # Start session asynchronously
 nsh session start --session $NSH_SESSION_ID --tty $NSH_TTY --shell fish --pid $fish_pid &>/dev/null &

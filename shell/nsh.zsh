@@ -16,10 +16,10 @@ fi
 
 # ── Session management ──────────────────────────────────
 export NSH_SESSION_ID="__SESSION_ID__"
-export NSH_TTY="$(tty)"
+export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 
 # Start session asynchronously
-nsh session start --session "$NSH_SESSION_ID" --tty "$(tty)" --shell "zsh" --pid "$$" >/dev/null 2>&1 &!
+nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "zsh" --pid "$$" >/dev/null 2>&1 &!
 
 # ── Aliases for ? and ?? ────────────────────────────────
 alias '?'='noglob nsh query --'
@@ -103,7 +103,7 @@ __nsh_precmd() {
         --exit-code "$exit_code" \
         --started-at "$start" \
         --duration-ms "$duration_ms" \
-        --tty "$(tty)" \
+        --tty "$NSH_TTY" \
         --pid "$$" \
         --shell "zsh" >/dev/null 2>&1 &!
 
