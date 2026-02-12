@@ -5,37 +5,24 @@
 # Captures lines like `? what's up` before zsh treats punctuation as syntax.
 __nsh_handle_nl_query_line() {
     local line="$BUFFER"
-    local prompt=""
 
     case "$line" in
         '?? '*)
-            prompt="${line#\?\? }"
-            BUFFER=""
-            CURSOR=0
-            zle -I
-            __nsh_clear_pending_command
-            command nsh query --think -- "$prompt"
-            zle reset-prompt
+            print -s -- "$line"
+            BUFFER="nsh_query_think ${(q)${line#\?\? }}"
+            zle __nsh_accept_line_orig
             return 0
             ;;
         '?! '*)
-            prompt="${line#\?! }"
-            BUFFER=""
-            CURSOR=0
-            zle -I
-            __nsh_clear_pending_command
-            command nsh query --private -- "$prompt"
-            zle reset-prompt
+            print -s -- "$line"
+            BUFFER="nsh_query_private ${(q)${line#\?! }}"
+            zle __nsh_accept_line_orig
             return 0
             ;;
         '? '*)
-            prompt="${line#\? }"
-            BUFFER=""
-            CURSOR=0
-            zle -I
-            __nsh_clear_pending_command
-            command nsh query -- "$prompt"
-            zle reset-prompt
+            print -s -- "$line"
+            BUFFER="nsh_query ${(q)${line#\? }}"
+            zle __nsh_accept_line_orig
             return 0
             ;;
     esac
@@ -70,16 +57,17 @@ __nsh_clear_pending_command() {
 
 nsh_query() {
     __nsh_clear_pending_command
+    printf '\x1b[2m? %s\x1b[0m\n' "$*" >&2
     command nsh query -- "$@"
 }
-
 nsh_query_think() {
     __nsh_clear_pending_command
+    printf '\x1b[2m?? %s\x1b[0m\n' "$*" >&2
     command nsh query --think -- "$@"
 }
-
 nsh_query_private() {
     __nsh_clear_pending_command
+    printf '\x1b[2m?! %s\x1b[0m\n' "$*" >&2
     command nsh query --private -- "$@"
 }
 
@@ -100,6 +88,7 @@ fi
 # ── Session management ──────────────────────────────────
 export NSH_SESSION_ID="__SESSION_ID__"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
+export NSH_HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
 
 # Start session asynchronously
 nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "zsh" --pid "$$" >/dev/null 2>&1 &!
@@ -115,6 +104,9 @@ __NSH_LAST_RECORDED_START=""
 
 # ── preexec: fires BEFORE each command executes ─────────
 __nsh_preexec() {
+    case "$1" in
+        nsh_query\ *|nsh_query_think\ *|nsh_query_private\ *) return ;;
+    esac
     export __NSH_CMD="$1"
     export __NSH_CMD_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     export __nsh_cmd_start_epoch=$(date +%s)
@@ -168,27 +160,44 @@ __nsh_precmd() {
     __NSH_LAST_RECORDED_CMD="$cmd"
     __NSH_LAST_RECORDED_START="$start"
 
-    # Hint after failure
-    if [[ $exit_code -ne 0 && -n "$cmd" ]]; then
-        case "$cmd" in
-            grep*|test*|"["*|diff*|cmp*|nsh*) ;; # benign failures
-            *)
-                printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
-                ;;
-        esac
-    fi
+    case "$cmd" in
+        nsh_query\ *|nsh_query_think\ *|nsh_query_private\ *) ;;
+        *)
+            # Hint after failure
+            if [[ $exit_code -ne 0 && -n "$cmd" ]]; then
+                if (( exit_code == 130 || exit_code == 143 || exit_code == 137 )); then
+                    :
+                else
+                    case "$cmd" in
+                        grep*|test*|"["*|diff*|cmp*|nsh*|ssh*|scp*|sftp*|rsync*|mosh*|ping*|curl*|wget*|ftp*|telnet*|nc*|exit*|logout*|fg*|bg*) ;;
+                        *)
+                            if [[ -n "${NSH_HINT_IGNORE:-}" ]]; then
+                                local _skip=0
+                                for pattern in ${(s: :)NSH_HINT_IGNORE}; do
+                                    [[ "$cmd" == ${~pattern} ]] && _skip=1 && break
+                                done
+                                (( _skip )) || printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
+                            else
+                                printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
+                            fi
+                            ;;
+                    esac
+                fi
+            fi
 
-    # Record command asynchronously (daemon-send with fallback to record)
-    nsh daemon-send record \
-        --session "$NSH_SESSION_ID" \
-        --command "$cmd" \
-        --cwd "$cwd" \
-        --exit-code "$exit_code" \
-        --started-at "$start" \
-        --duration-ms "$duration_ms" \
-        --tty "$NSH_TTY" \
-        --pid "$$" \
-        --shell "zsh" >/dev/null 2>&1 &!
+            # Record command asynchronously (daemon-send with fallback to record)
+            nsh daemon-send record \
+                --session "$NSH_SESSION_ID" \
+                --command "$cmd" \
+                --cwd "$cwd" \
+                --exit-code "$exit_code" \
+                --started-at "$start" \
+                --duration-ms "$duration_ms" \
+                --tty "$NSH_TTY" \
+                --pid "$$" \
+                --shell "zsh" >/dev/null 2>&1 &!
+            ;;
+    esac
 
     # Heartbeat for cross-TTY detection (~60s)
     local now=$(date +%s)
@@ -216,6 +225,7 @@ __nsh_check_pending() {
         command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __NSH_PENDING_CMD="$cmd"
+            print -s -- "$cmd"
             # print -z pushes text onto the editing buffer
             print -z "$cmd"
         fi

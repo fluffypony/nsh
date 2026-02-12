@@ -14,14 +14,17 @@ end
 # ── Nested shell guard ──────────────────────────────────
 if set -q NSH_SESSION_ID
     function nsh_query --wraps='nsh query --'
+        builtin history add -- "? $argv" 2>/dev/null
         __nsh_clear_pending_command
         command nsh query -- $argv
     end
     function nsh_query_think --wraps='nsh query --think --'
+        builtin history add -- "?? $argv" 2>/dev/null
         __nsh_clear_pending_command
         command nsh query --think -- $argv
     end
     function nsh_query_private --wraps='nsh query --private --'
+        builtin history add -- "?! $argv" 2>/dev/null
         __nsh_clear_pending_command
         command nsh query --private -- $argv
     end
@@ -37,6 +40,7 @@ if set -q NSH_ORIG_TTY
 else
     set -gx NSH_TTY (tty)
 end
+set -gx NSH_HISTFILE ~/.local/share/fish/fish_history
 
 # Start session asynchronously
 nsh session start --session $NSH_SESSION_ID --tty $NSH_TTY --shell fish --pid $fish_pid &>/dev/null &
@@ -44,14 +48,17 @@ disown 2>/dev/null
 
 # ── Abbreviations for ? and ?? ──────────────────────────
 function nsh_query --wraps='nsh query --'
+    builtin history add -- "? $argv" 2>/dev/null
     __nsh_clear_pending_command
     command nsh query -- $argv
 end
 function nsh_query_think --wraps='nsh query --think --'
+    builtin history add -- "?? $argv" 2>/dev/null
     __nsh_clear_pending_command
     command nsh query --think -- $argv
 end
 function nsh_query_private --wraps='nsh query --private --'
+    builtin history add -- "?! $argv" 2>/dev/null
     __nsh_clear_pending_command
     command nsh query --private -- $argv
 end
@@ -118,11 +125,15 @@ function __nsh_postexec --on-event fish_postexec
 
     # Hint after failure
     if test $exit_code -ne 0
-        switch "$cmd"
-            case 'grep*' 'test*' '\[*' 'diff*' 'cmp*' 'nsh*'
-                # benign failures
-            case '*'
-                printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' $exit_code >&2
+        if test $exit_code -eq 130 -o $exit_code -eq 143 -o $exit_code -eq 137
+            # Signal-based exit (Ctrl-C, SIGTERM, SIGKILL) — suppress
+        else
+            switch "$cmd"
+                case 'grep*' 'test*' '\[*' 'diff*' 'cmp*' 'nsh*' 'ssh*' 'scp*' 'sftp*' 'rsync*' 'mosh*' 'ping*' 'curl*' 'wget*' 'ftp*' 'telnet*' 'nc*' 'exit*' 'logout*' 'fg*' 'bg*'
+                    # benign failures
+                case '*'
+                    printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' $exit_code >&2
+            end
         end
     end
 

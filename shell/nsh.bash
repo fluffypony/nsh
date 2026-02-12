@@ -11,9 +11,9 @@ __nsh_clear_pending_command() {
 
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
-    nsh_query() { __nsh_clear_pending_command; command nsh query -- "$@"; }
-    nsh_query_think() { __nsh_clear_pending_command; command nsh query --think -- "$@"; }
-    nsh_query_private() { __nsh_clear_pending_command; command nsh query --private -- "$@"; }
+    nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; command nsh query -- "$@"; }
+    nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; command nsh query --think -- "$@"; }
+    nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; command nsh query --private -- "$@"; }
     alias '?'='nsh_query'
     alias '??'='nsh_query_think'
     alias '?!'='nsh_query_private'
@@ -28,15 +28,16 @@ fi
 
 export NSH_SESSION_ID="__SESSION_ID__"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
+export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"
 
 # Start session asynchronously
 nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --pid "$$" >/dev/null 2>&1 &
 disown 2>/dev/null
 
 # ── Aliases ─────────────────────────────────────────────
-nsh_query() { __nsh_clear_pending_command; command nsh query -- "$@"; }
-nsh_query_think() { __nsh_clear_pending_command; command nsh query --think -- "$@"; }
-nsh_query_private() { __nsh_clear_pending_command; command nsh query --private -- "$@"; }
+nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; command nsh query -- "$@"; }
+nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; command nsh query --think -- "$@"; }
+nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; command nsh query --private -- "$@"; }
 alias '?'='nsh_query'
 alias '??'='nsh_query_think'
 alias '?!'='nsh_query_private'
@@ -75,6 +76,7 @@ __nsh_ensure_hooks() {
         *";__nsh_prompt_command;"*) ;;
         *) PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
     esac
+    trap '__nsh_debug_trap' DEBUG 2>/dev/null
 }
 
 __nsh_prompt_command() {
@@ -107,12 +109,16 @@ __nsh_prompt_command() {
 
         # Hint after failure
         if [[ $exit_code -ne 0 ]]; then
-            case "$cmd" in
-                grep*|test*|"["*|diff*|cmp*|nsh*) ;; # benign failures
-                *)
-                    printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
-                    ;;
-            esac
+            if [[ $exit_code -eq 130 || $exit_code -eq 143 || $exit_code -eq 137 ]]; then
+                :
+            else
+                case "$cmd" in
+                    grep*|test*|"["*|diff*|cmp*|nsh*|ssh*|scp*|sftp*|rsync*|mosh*|ping*|curl*|wget*|ftp*|telnet*|nc*|exit*|logout*|fg*|bg*) ;;
+                    *)
+                        printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
+                        ;;
+                esac
+            fi
         fi
 
         nsh daemon-send record \

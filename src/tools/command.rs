@@ -77,7 +77,17 @@ pub fn execute(
         });
         eprintln!("{}", serde_json::to_string(&event)?);
     } else {
-        display_command_preview(&command, explanation, &risk);
+        match &risk {
+            RiskLevel::Safe => {
+                if !explanation.is_empty() {
+                    eprintln!("\x1b[2m  {explanation}\x1b[0m");
+                }
+            }
+            _ => {
+                display_command_preview(&command, explanation, &risk);
+                eprintln!("\x1b[2m  ↵ Enter to run · Edit first · Ctrl-C to cancel\x1b[0m");
+            }
+        }
     }
 
     let can_autorun = match risk {
@@ -125,46 +135,48 @@ pub fn execute(
         return Ok(());
     }
 
-    // Write command to pending file for shell hook to pick up
-    let nsh_dir = crate::config::Config::nsh_dir();
-    let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+    if config.execution.mode != "confirm" {
+        // Write command to pending file for shell hook to pick up
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
 
-    // Atomic write: temp file + rename, with 0o600 permissions
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let tmp = cmd_file.with_extension("tmp");
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(command.as_bytes())?;
-        std::fs::rename(&tmp, &cmd_file)?;
-    }
-
-    if pending {
-        let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
-        let tmp = pending_file.with_extension("tmp");
+        // Atomic write: temp file + rename, with 0o600 permissions
         {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
+            let tmp = cmd_file.with_extension("tmp");
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
                 .open(&tmp)?;
-            f.write_all(b"1")?;
+            f.write_all(command.as_bytes())?;
+            std::fs::rename(&tmp, &cmd_file)?;
         }
-        std::fs::rename(&tmp, &pending_file)?;
-    }
 
-    if !pending {
-        // Clear any stale pending_flag from a previous sequence
-        let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
-        let _ = std::fs::remove_file(&stale_flag);
+        if pending {
+            let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
+            let tmp = pending_file.with_extension("tmp");
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp)?;
+                f.write_all(b"1")?;
+            }
+            std::fs::rename(&tmp, &pending_file)?;
+        }
+
+        if !pending {
+            // Clear any stale pending_flag from a previous sequence
+            let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
+            let _ = std::fs::remove_file(&stale_flag);
+        }
     }
 
     if !private {
@@ -192,6 +204,9 @@ pub fn execute(
         );
     }
 
+    eprint!("\x1b[0m");
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+
     Ok(())
 }
 
@@ -213,6 +228,27 @@ pub(crate) fn reject_reason_for_generated_command(
         && looks_like_natural_language_question(trimmed_query)
     {
         return Some("model echoed the user's question instead of a shell command");
+    }
+
+    let lower = trimmed_command.to_ascii_lowercase();
+    let nl_indicators = [
+        "please ", "can you ", "could you ", "i want ", "i need ",
+        "help me ", "show me how", "how do i ", "what is ",
+    ];
+    if nl_indicators.iter().any(|p| lower.starts_with(p) || lower.contains(p)) {
+        return Some("generated command looks like natural language, not a shell command");
+    }
+
+    let cmd_lower = trimmed_command.to_ascii_lowercase();
+    let query_lower = trimmed_query.to_ascii_lowercase();
+    if cmd_lower == query_lower && !cmd_lower.contains('/') && !cmd_lower.starts_with("cd ") {
+        let first_word = cmd_lower.split_whitespace().next().unwrap_or("");
+        if !std::path::Path::new(&format!("/usr/bin/{first_word}")).exists()
+            && !std::path::Path::new(&format!("/usr/local/bin/{first_word}")).exists()
+            && !std::path::Path::new(&format!("/opt/homebrew/bin/{first_word}")).exists()
+        {
+            return Some("command appears to be the user's natural language request, not a shell command");
+        }
     }
 
     None
@@ -517,6 +553,7 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
     }
     eprintln!("{color}│{reset} $ {command}");
     eprintln!("{color}{bottom_line}{reset}");
+    eprintln!();
 }
 
 #[cfg(test)]
