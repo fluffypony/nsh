@@ -56,8 +56,8 @@ __nsh_debug_trap() {
     # Redact-next-command mechanism
     local redact_next="$HOME/.nsh/redact_next_${NSH_SESSION_ID}"
     if [[ -f "$redact_next" ]]; then
-        rm -f "$redact_next"
-        touch "$HOME/.nsh/redact_active_${NSH_SESSION_ID}"
+        command rm -f "$redact_next"
+        command touch "$HOME/.nsh/redact_active_${NSH_SESSION_ID}"
     fi
 }
 
@@ -87,7 +87,7 @@ __nsh_prompt_command() {
     fi
 
     # Remove redact_active flag
-    rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
+    command rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
 
     if [[ -n "$cmd" ]]; then
         # Deduplication guard
@@ -133,7 +133,7 @@ __nsh_prompt_command() {
     local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
     if [[ -f "$pending_flag" ]]; then
         if [[ -n "${__nsh_pending_cmd:-}" && "$cmd" == "$__nsh_pending_cmd" ]]; then
-            rm -f "$pending_flag"
+            command rm -f "$pending_flag"
             __nsh_pending_cmd=""
             nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &
             disown 2>/dev/null
@@ -146,8 +146,8 @@ __nsh_check_pending() {
     local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
     if [[ -f "$cmd_file" ]]; then
         local cmd
-        cmd="$(cat "$cmd_file")"
-        rm -f "$cmd_file"
+        cmd="$(command cat "$cmd_file")"
+        command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __nsh_pending_cmd="$cmd"
             # Method 1: READLINE_LINE (bash 5.1+)

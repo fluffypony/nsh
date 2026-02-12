@@ -53,8 +53,8 @@ function __nsh_preexec --on-event fish_preexec
     # Redact-next-command mechanism
     set -l redact_next "$HOME/.nsh/redact_next_$NSH_SESSION_ID"
     if test -f $redact_next
-        rm -f $redact_next
-        touch "$HOME/.nsh/redact_active_$NSH_SESSION_ID"
+        command rm -f $redact_next
+        command touch "$HOME/.nsh/redact_active_$NSH_SESSION_ID"
     end
 end
 
@@ -75,7 +75,7 @@ function __nsh_postexec --on-event fish_postexec
     end
 
     # Remove redact_active flag
-    rm -f "$HOME/.nsh/redact_active_$NSH_SESSION_ID" 2>/dev/null
+    command rm -f "$HOME/.nsh/redact_active_$NSH_SESSION_ID" 2>/dev/null
 
     if test -z "$cmd"
         return
@@ -122,7 +122,7 @@ function __nsh_postexec --on-event fish_postexec
     set -l pending_flag "$HOME/.nsh/pending_flag_$NSH_SESSION_ID"
     if test -f $pending_flag
         if test -n "$__nsh_pending_cmd" -a "$cmd" = "$__nsh_pending_cmd"
-            rm -f $pending_flag
+            command rm -f $pending_flag
             set -g __nsh_pending_cmd ""
             nsh query -- "__NSH_CONTINUE__" &>/dev/null &
             disown 2>/dev/null
@@ -134,8 +134,8 @@ end
 function __nsh_check_pending --on-event fish_prompt
     set -l cmd_file "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID"
     if test -f $cmd_file
-        set -l cmd (cat $cmd_file)
-        rm -f $cmd_file
+        set -l cmd (command cat $cmd_file)
+        command rm -f $cmd_file
         if test -n "$cmd"
             set -g __nsh_pending_cmd $cmd
             commandline -r -- "$cmd"

@@ -100,8 +100,8 @@ __nsh_preexec() {
     # Redact-next-command mechanism
     local redact_next="$HOME/.nsh/redact_next_${NSH_SESSION_ID}"
     if [[ -f "$redact_next" ]]; then
-        rm -f "$redact_next"
-        touch "$HOME/.nsh/redact_active_${NSH_SESSION_ID}"
+        command rm -f "$redact_next"
+        command touch "$HOME/.nsh/redact_active_${NSH_SESSION_ID}"
     fi
 }
 
@@ -130,7 +130,7 @@ __nsh_precmd() {
     fi
 
     # Remove redact_active flag
-    rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
+    command rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
 
     # Skip if no command was recorded
     [[ -z "${cmd:-}" ]] && return
@@ -175,7 +175,7 @@ __nsh_precmd() {
     local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
     if [[ -f "$pending_flag" ]]; then
         if [[ -n "${__NSH_PENDING_CMD:-}" && "$cmd" == "$__NSH_PENDING_CMD" ]]; then
-            rm -f "$pending_flag"
+            command rm -f "$pending_flag"
             __NSH_PENDING_CMD=""
             nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &!
         fi
@@ -186,8 +186,8 @@ __nsh_precmd() {
 __nsh_check_pending() {
     local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
     if [[ -f "$cmd_file" ]]; then
-        local cmd="$(cat "$cmd_file")"
-        rm -f "$cmd_file"
+        local cmd="$(command cat "$cmd_file")"
+        command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __NSH_PENDING_CMD="$cmd"
             # print -z pushes text onto the editing buffer

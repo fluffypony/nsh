@@ -122,4 +122,70 @@ mod tests {
             "zsh accept-line wrapper should handle '?! ' prompts"
         );
     }
+
+    #[test]
+    fn test_zsh_cleanup_uses_command_rm() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("command rm -f \"$cmd_file\""),
+            "zsh init should bypass rm aliases when clearing pending command files"
+        );
+    }
+
+    #[test]
+    fn test_bash_cleanup_uses_command_rm() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("command rm -f \"$cmd_file\""),
+            "bash init should bypass rm aliases when clearing pending command files"
+        );
+    }
+
+    #[test]
+    fn test_fish_cleanup_uses_command_rm() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("command rm -f $cmd_file"),
+            "fish init should bypass rm aliases when clearing pending command files"
+        );
+    }
+
+    #[test]
+    fn test_zsh_pending_file_io_uses_command() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("local cmd=\"$(command cat \"$cmd_file\")\""),
+            "zsh init should bypass cat aliases when reading pending command files"
+        );
+        assert!(
+            script.contains("command touch \"$HOME/.nsh/redact_active_${NSH_SESSION_ID}\""),
+            "zsh init should bypass touch aliases when toggling redact markers"
+        );
+    }
+
+    #[test]
+    fn test_bash_pending_file_io_uses_command() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("cmd=\"$(command cat \"$cmd_file\")\""),
+            "bash init should bypass cat aliases when reading pending command files"
+        );
+        assert!(
+            script.contains("command touch \"$HOME/.nsh/redact_active_${NSH_SESSION_ID}\""),
+            "bash init should bypass touch aliases when toggling redact markers"
+        );
+    }
+
+    #[test]
+    fn test_fish_pending_file_io_uses_command() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("set -l cmd (command cat $cmd_file)"),
+            "fish init should bypass cat aliases when reading pending command files"
+        );
+        assert!(
+            script.contains("command touch \"$HOME/.nsh/redact_active_$NSH_SESSION_ID\""),
+            "fish init should bypass touch aliases when toggling redact markers"
+        );
+    }
 }
