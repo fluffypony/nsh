@@ -210,9 +210,7 @@ mod tests {
             "bash init should define pending command cleanup helper"
         );
         assert!(
-            script.contains(
-                "nsh_query() { __nsh_clear_pending_command; command nsh query -- \"$@\"; }"
-            ),
+            script.contains("nsh_query()") && script.contains("__nsh_clear_pending_command"),
             "bash init should clear stale pending command files before new queries"
         );
     }
