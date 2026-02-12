@@ -9,25 +9,46 @@ __nsh_handle_nl_query_line() {
     case "$line" in
         '?? '*)
             print -s -- "$line"
-            BUFFER="nsh_query_think ${(q)${line#\?\? }}"
+            typeset -g __NSH_DEFERRED_QUERY="${line#\?\? }"
+            typeset -g __NSH_DEFERRED_TYPE="think"
+            BUFFER=""
             zle __nsh_accept_line_orig
             return 0
             ;;
         '?! '*)
             print -s -- "$line"
-            BUFFER="nsh_query_private ${(q)${line#\?! }}"
+            typeset -g __NSH_DEFERRED_QUERY="${line#\?! }"
+            typeset -g __NSH_DEFERRED_TYPE="private"
+            BUFFER=""
             zle __nsh_accept_line_orig
             return 0
             ;;
         '? '*)
             print -s -- "$line"
-            BUFFER="nsh_query ${(q)${line#\? }}"
+            typeset -g __NSH_DEFERRED_QUERY="${line#\? }"
+            typeset -g __NSH_DEFERRED_TYPE="query"
+            BUFFER=""
             zle __nsh_accept_line_orig
             return 0
             ;;
     esac
 
     return 1
+}
+
+# Runs deferred queries outside ZLE context (triggered from precmd)
+__nsh_run_deferred() {
+    if [[ -n "${__NSH_DEFERRED_QUERY:-}" ]]; then
+        local q="$__NSH_DEFERRED_QUERY"
+        local t="$__NSH_DEFERRED_TYPE"
+        __NSH_DEFERRED_QUERY=""
+        __NSH_DEFERRED_TYPE=""
+        case "$t" in
+            think) nsh_query_think "$q" ;;
+            private) nsh_query_private "$q" ;;
+            *) nsh_query "$q" ;;
+        esac
+    fi
 }
 
 __nsh_accept_line() {
@@ -80,6 +101,7 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     autoload -Uz add-zsh-hook
     __nsh_install_accept_line_widget
     add-zsh-hook preexec __nsh_preexec
+    add-zsh-hook precmd __nsh_run_deferred
     add-zsh-hook precmd __nsh_precmd
     add-zsh-hook precmd __nsh_check_pending
     return 0
@@ -236,6 +258,7 @@ __nsh_check_pending() {
 autoload -Uz add-zsh-hook
 __nsh_install_accept_line_widget
 add-zsh-hook preexec __nsh_preexec
+add-zsh-hook precmd __nsh_run_deferred
 add-zsh-hook precmd __nsh_precmd
 add-zsh-hook precmd __nsh_check_pending
 
