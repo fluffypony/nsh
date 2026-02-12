@@ -277,6 +277,21 @@ pub async fn handle_query(
 
                 match name.as_str() {
                     "command" => {
+                        if let Some(reason) = tools::command::reject_reason_for_generated_command(
+                            input["command"].as_str().unwrap_or(""),
+                            query,
+                        ) {
+                            let msg = format!(
+                                "Rejected command tool call: {reason}. Use a concrete shell command or use search_history/chat for non-command questions."
+                            );
+                            let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: wrapped,
+                                is_error: true,
+                            });
+                            continue;
+                        }
                         has_terminal_tool = true;
                         tools::command::execute(
                             input,
@@ -591,6 +606,8 @@ The `command` field MUST be directly executable shell syntax, never a
 restatement of the user's natural-language request. For directory navigation
 requests, generate a concrete `cd <path>` command. If the target is ambiguous,
 inspect filesystem/history first and choose a specific directory.
+If the user is asking about past activity ("when did I last ...", "what servers
+have I ..."), do NOT use command. Use search_history, then respond with chat.
 
 **chat** — ONLY for pure knowledge questions where no action is needed
 ("what does -r do?", "explain pipes", "how does git rebase work?").

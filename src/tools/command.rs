@@ -18,6 +18,11 @@ pub fn execute(
     let pending = input["pending"].as_bool().unwrap_or(false);
     let command = normalize_command_for_prefill(raw_command, original_query, db, session_id);
 
+    if let Some(reason) = reject_reason_for_generated_command(&command, original_query) {
+        eprintln!("nsh: skipped invalid generated command ({reason})");
+        return Ok(());
+    }
+
     let (risk, reason) = crate::security::assess_command(&command);
 
     match &risk {
@@ -188,6 +193,51 @@ pub fn execute(
     }
 
     Ok(())
+}
+
+pub(crate) fn reject_reason_for_generated_command(
+    command: &str,
+    original_query: &str,
+) -> Option<&'static str> {
+    let trimmed_command = command.trim();
+    if trimmed_command.is_empty() {
+        return Some("empty command");
+    }
+
+    let trimmed_query = original_query.trim();
+    if trimmed_query.is_empty() {
+        return None;
+    }
+
+    if trimmed_command.eq_ignore_ascii_case(trimmed_query)
+        && looks_like_natural_language_question(trimmed_query)
+    {
+        return Some("model echoed the user's question instead of a shell command");
+    }
+
+    None
+}
+
+fn looks_like_natural_language_question(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.ends_with('?') {
+        return true;
+    }
+
+    const QUESTION_PREFIXES: &[&str] = &[
+        "what ", "when ", "where ", "why ", "who ", "whom ", "which ", "how ", "can ", "could ",
+        "would ", "should ", "do ", "does ", "did ", "is ", "are ", "am ", "was ", "were ",
+        "will ",
+    ];
+
+    QUESTION_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
 }
 
 fn normalize_command_for_prefill(
@@ -716,9 +766,7 @@ mod tests {
         execute(&input, "", &db, session, false, &config, false).unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
         let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
-        assert!(cmd_file.exists());
-        assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "");
-        let _ = std::fs::remove_file(&cmd_file);
+        assert!(!cmd_file.exists());
     }
 
     #[test]
@@ -792,5 +840,51 @@ mod tests {
         let normalized =
             normalize_command_for_prefill("git status", "show me git status", &db, "default");
         assert_eq!(normalized, "git status");
+    }
+
+    #[test]
+    fn test_reject_reason_for_generated_command_question_echo() {
+        let reason = reject_reason_for_generated_command(
+            "when did I last ssh into 135.181.128.145",
+            "when did I last ssh into 135.181.128.145",
+        );
+        assert_eq!(
+            reason,
+            Some("model echoed the user's question instead of a shell command")
+        );
+    }
+
+    #[test]
+    fn test_reject_reason_for_generated_command_valid_command() {
+        let reason = reject_reason_for_generated_command(
+            "ssh root@135.181.128.145",
+            "ssh root@135.181.128.145",
+        );
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn test_execute_skips_prefill_for_question_echo() {
+        let session = "test_question_echo";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "when did I last ssh into 135.181.128.145",
+            "explanation": "This should not be accepted as a command",
+            "pending": false,
+        });
+        execute(
+            &input,
+            "when did I last ssh into 135.181.128.145",
+            &db,
+            session,
+            false,
+            &config,
+            false,
+        )
+        .unwrap();
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
+        assert!(!cmd_file.exists());
     }
 }
