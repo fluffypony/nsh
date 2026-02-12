@@ -188,4 +188,45 @@ mod tests {
             "fish init should bypass touch aliases when toggling redact markers"
         );
     }
+
+    #[test]
+    fn test_zsh_query_wrappers_clear_stale_pending_state() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("__nsh_clear_pending_command"),
+            "zsh init should define pending command cleanup helper"
+        );
+        assert!(
+            script.contains("alias '?'='noglob nsh_query'"),
+            "zsh init should route ? queries through wrapper functions"
+        );
+    }
+
+    #[test]
+    fn test_bash_query_wrappers_clear_stale_pending_state() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("__nsh_clear_pending_command"),
+            "bash init should define pending command cleanup helper"
+        );
+        assert!(
+            script.contains(
+                "nsh_query() { __nsh_clear_pending_command; command nsh query -- \"$@\"; }"
+            ),
+            "bash init should clear stale pending command files before new queries"
+        );
+    }
+
+    #[test]
+    fn test_fish_query_wrappers_clear_stale_pending_state() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("function __nsh_clear_pending_command"),
+            "fish init should define pending command cleanup helper"
+        );
+        assert!(
+            script.contains("abbr -a '?' -- 'nsh_query'"),
+            "fish init should route ? queries through wrapper functions"
+        );
+    }
 }

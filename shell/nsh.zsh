@@ -13,7 +13,8 @@ __nsh_handle_nl_query_line() {
             BUFFER=""
             CURSOR=0
             zle -I
-            nsh query --think -- "$prompt"
+            __nsh_clear_pending_command
+            command nsh query --think -- "$prompt"
             zle reset-prompt
             return 0
             ;;
@@ -22,7 +23,8 @@ __nsh_handle_nl_query_line() {
             BUFFER=""
             CURSOR=0
             zle -I
-            nsh query --private -- "$prompt"
+            __nsh_clear_pending_command
+            command nsh query --private -- "$prompt"
             zle reset-prompt
             return 0
             ;;
@@ -31,7 +33,8 @@ __nsh_handle_nl_query_line() {
             BUFFER=""
             CURSOR=0
             zle -I
-            nsh query -- "$prompt"
+            __nsh_clear_pending_command
+            command nsh query -- "$prompt"
             zle reset-prompt
             return 0
             ;;
@@ -57,12 +60,35 @@ __nsh_install_accept_line_widget() {
     fi
 }
 
+__nsh_clear_pending_command() {
+    [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
+    command rm -f \
+        "$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}" \
+        "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" 2>/dev/null
+    __NSH_PENDING_CMD=""
+}
+
+nsh_query() {
+    __nsh_clear_pending_command
+    command nsh query -- "$@"
+}
+
+nsh_query_think() {
+    __nsh_clear_pending_command
+    command nsh query --think -- "$@"
+}
+
+nsh_query_private() {
+    __nsh_clear_pending_command
+    command nsh query --private -- "$@"
+}
+
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     # Already inside nsh — only reinstall hooks, skip session init
-    alias '?'='noglob nsh query --'
-    alias '??'='noglob nsh query --think --'
-    alias '?!'='noglob nsh query --private --'
+    alias '?'='noglob nsh_query'
+    alias '??'='noglob nsh_query_think'
+    alias '?!'='noglob nsh_query_private'
     autoload -Uz add-zsh-hook
     __nsh_install_accept_line_widget
     add-zsh-hook preexec __nsh_preexec
@@ -79,9 +105,9 @@ export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "zsh" --pid "$$" >/dev/null 2>&1 &!
 
 # ── Aliases for ? and ?? ────────────────────────────────
-alias '?'='noglob nsh query --'
-alias '??'='noglob nsh query --think --'
-alias '?!'='noglob nsh query --private --'
+alias '?'='noglob nsh_query'
+alias '??'='noglob nsh_query_think'
+alias '?!'='noglob nsh_query_private'
 
 # ── State variables ─────────────────────────────────────
 __NSH_LAST_RECORDED_CMD=""

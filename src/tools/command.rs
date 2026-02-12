@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::security::RiskLevel;
+use std::path::Path;
 
 /// Handle the `command` tool: display explanation, write command to
 /// pending file for shell hook to prefill.
@@ -12,11 +13,12 @@ pub fn execute(
     config: &crate::config::Config,
     force_autorun: bool,
 ) -> anyhow::Result<()> {
-    let command = input["command"].as_str().unwrap_or("");
+    let raw_command = input["command"].as_str().unwrap_or("");
     let explanation = input["explanation"].as_str().unwrap_or("");
     let pending = input["pending"].as_bool().unwrap_or(false);
+    let command = normalize_command_for_prefill(raw_command, original_query, db, session_id);
 
-    let (risk, reason) = crate::security::assess_command(command);
+    let (risk, reason) = crate::security::assess_command(&command);
 
     match &risk {
         RiskLevel::Dangerous => {
@@ -70,7 +72,7 @@ pub fn execute(
         });
         eprintln!("{}", serde_json::to_string(&event)?);
     } else {
-        display_command_preview(command, explanation, &risk);
+        display_command_preview(&command, explanation, &risk);
     }
 
     let can_autorun = match risk {
@@ -82,12 +84,15 @@ pub fn execute(
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
         let status = std::process::Command::new("sh")
             .arg("-c")
-            .arg(command)
+            .arg(command.as_str())
             .status();
-        let exit_code = status.as_ref().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+        let exit_code = status
+            .as_ref()
+            .map(|s| s.code().unwrap_or(-1))
+            .unwrap_or(-1);
         if !private {
             let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
-            let redacted_response = crate::redact::redact_secrets(command, &config.redaction);
+            let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
             let redacted_explanation = Some(crate::redact::redact_secrets(
                 explanation,
                 &config.redaction,
@@ -105,7 +110,7 @@ pub fn execute(
                 session_id,
                 original_query,
                 "command",
-                command,
+                &command,
                 &risk.to_string(),
             );
         }
@@ -159,7 +164,7 @@ pub fn execute(
 
     if !private {
         let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
-        let redacted_response = crate::redact::redact_secrets(command, &config.redaction);
+        let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
         let redacted_explanation = Some(crate::redact::redact_secrets(
             explanation,
             &config.redaction,
@@ -177,12 +182,260 @@ pub fn execute(
             session_id,
             original_query,
             "command",
-            command,
+            &command,
             &risk.to_string(),
         );
     }
 
     Ok(())
+}
+
+fn normalize_command_for_prefill(
+    command: &str,
+    original_query: &str,
+    db: &Db,
+    session_id: &str,
+) -> String {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let source = if trimmed.eq_ignore_ascii_case(original_query.trim()) {
+        original_query.trim()
+    } else {
+        trimmed
+    };
+
+    if let Some(cd_command) = normalize_cd_command(source, db, session_id) {
+        return cd_command;
+    }
+
+    trimmed.to_string()
+}
+
+fn normalize_cd_command(command: &str, db: &Db, session_id: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let rest = trimmed.strip_prefix("cd ")?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Some("cd".to_string());
+    }
+    if rest == "-" || looks_explicit_cd_target(rest) {
+        return Some(format!("cd {rest}"));
+    }
+
+    let unquoted = strip_matching_quotes(rest);
+    let cleaned = cleanup_cd_target_phrase(unquoted);
+    let resolved = resolve_cd_target(cleaned.as_str(), db, session_id);
+    Some(format!("cd {}", shell_quote_if_needed(&resolved)))
+}
+
+fn looks_explicit_cd_target(target: &str) -> bool {
+    target.starts_with('~')
+        || target.starts_with('.')
+        || target.starts_with('/')
+        || target.starts_with('$')
+        || target.contains('/')
+        || target.contains('*')
+        || target.contains('?')
+        || target.contains('[')
+        || target.contains(']')
+}
+
+fn strip_matching_quotes(input: &str) -> &str {
+    if input.len() >= 2 {
+        let bytes = input.as_bytes();
+        if (bytes[0] == b'\'' && bytes[input.len() - 1] == b'\'')
+            || (bytes[0] == b'"' && bytes[input.len() - 1] == b'"')
+        {
+            return &input[1..input.len() - 1];
+        }
+    }
+    input
+}
+
+fn cleanup_cd_target_phrase(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || looks_explicit_cd_target(trimmed) {
+        return trimmed.to_string();
+    }
+
+    const FILLER_WORDS: &[&str] = &[
+        "to",
+        "into",
+        "in",
+        "the",
+        "a",
+        "an",
+        "folder",
+        "directory",
+        "dir",
+    ];
+
+    let tokens: Vec<String> = trimmed
+        .split_whitespace()
+        .filter_map(|tok| {
+            let cleaned = tok.trim_matches(|c: char| c == ',' || c == '.');
+            let lower = cleaned.to_ascii_lowercase();
+            if FILLER_WORDS.contains(&lower.as_str()) {
+                return None;
+            }
+            if cleaned.is_empty() {
+                return None;
+            }
+            Some(cleaned.to_string())
+        })
+        .collect();
+
+    if tokens.is_empty() {
+        trimmed.to_string()
+    } else {
+        tokens.join(" ")
+    }
+}
+
+fn resolve_cd_target(target: &str, db: &Db, session_id: &str) -> String {
+    if target.is_empty() || looks_explicit_cd_target(target) {
+        return target.to_string();
+    }
+
+    let candidates = cwd_directory_candidates(target);
+    if candidates.is_empty() {
+        return target.to_string();
+    }
+    if candidates.len() == 1 {
+        return candidates[0].clone();
+    }
+    if let Some(from_history) = choose_candidate_from_cd_history(&candidates, db, session_id) {
+        return from_history;
+    }
+    candidates[0].clone()
+}
+
+fn cwd_directory_candidates(target: &str) -> Vec<String> {
+    let target_lower = target.to_ascii_lowercase();
+    let mut exact = Vec::new();
+    let mut prefix = Vec::new();
+    let mut contains = Vec::new();
+
+    let entries = match std::fs::read_dir(".") {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let lower = name.to_ascii_lowercase();
+        if lower == target_lower {
+            exact.push(name);
+        } else if lower.starts_with(&target_lower) {
+            prefix.push(name);
+        } else if lower.contains(&target_lower) {
+            contains.push(name);
+        }
+    }
+
+    for group in [&mut exact, &mut prefix, &mut contains] {
+        group.sort();
+    }
+
+    if !exact.is_empty() {
+        exact
+    } else if !prefix.is_empty() {
+        prefix
+    } else {
+        contains
+    }
+}
+
+fn choose_candidate_from_cd_history(
+    candidates: &[String],
+    db: &Db,
+    session_id: &str,
+) -> Option<String> {
+    let try_filters = [Some("current"), None];
+    for session_filter in try_filters {
+        let history = db
+            .search_history_advanced(
+                None,
+                Some(r"^cd\s+"),
+                None,
+                None,
+                None,
+                false,
+                session_filter,
+                Some(session_id),
+                200,
+            )
+            .ok()?;
+
+        for row in history {
+            let Some(history_target) = extract_cd_target_from_command(&row.command) else {
+                continue;
+            };
+            if let Some(candidate) = match_history_target_to_candidates(&history_target, candidates)
+            {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn extract_cd_target_from_command(command: &str) -> Option<String> {
+    if let Ok(parts) = shell_words::split(command) {
+        if parts.first().map(|p| p.as_str()) == Some("cd") && parts.len() >= 2 {
+            return Some(parts[1].clone());
+        }
+    }
+    None
+}
+
+fn match_history_target_to_candidates(
+    history_target: &str,
+    candidates: &[String],
+) -> Option<String> {
+    let normalized = history_target.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let basename_lower = Path::new(normalized)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_ascii_lowercase());
+
+    candidates.iter().find_map(|candidate| {
+        let candidate_lower = candidate.to_ascii_lowercase();
+        let path_suffix = format!("/{candidate_lower}");
+        if normalized_lower == candidate_lower
+            || normalized_lower.ends_with(&path_suffix)
+            || basename_lower.as_deref() == Some(candidate_lower.as_str())
+        {
+            Some(candidate.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn shell_quote_if_needed(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._~/".contains(c))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn display_command_preview(command: &str, explanation: &str, risk: &crate::security::RiskLevel) {
@@ -220,15 +473,42 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
 mod tests {
     use super::*;
     use crate::security::RiskLevel;
+    use std::path::PathBuf;
+
+    struct CwdGuard {
+        old: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn push_to(path: &std::path::Path) -> Self {
+            let old = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { old }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.old);
+        }
+    }
 
     #[test]
     fn test_display_command_preview_safe() {
-        display_command_preview("ls -la", "List files in current directory", &RiskLevel::Safe);
+        display_command_preview(
+            "ls -la",
+            "List files in current directory",
+            &RiskLevel::Safe,
+        );
     }
 
     #[test]
     fn test_display_command_preview_elevated() {
-        display_command_preview("sudo rm file", "Remove file with sudo", &RiskLevel::Elevated);
+        display_command_preview(
+            "sudo rm file",
+            "Remove file with sudo",
+            &RiskLevel::Elevated,
+        );
     }
 
     #[test]
@@ -269,7 +549,11 @@ mod tests {
 
     #[test]
     fn test_display_command_preview_unicode_command() {
-        display_command_preview("echo '日本語テスト'", "Prints unicode text", &RiskLevel::Safe);
+        display_command_preview(
+            "echo '日本語テスト'",
+            "Prints unicode text",
+            &RiskLevel::Safe,
+        );
     }
 
     #[test]
@@ -451,5 +735,62 @@ mod tests {
         let convos = db.get_conversations(session, 10).unwrap();
         assert_eq!(convos.len(), 1);
         assert_eq!(convos[0].response, "true");
+    }
+
+    #[test]
+    fn test_cleanup_cd_target_phrase_removes_filler_words() {
+        assert_eq!(cleanup_cd_target_phrase("into the blink folder"), "blink");
+        assert_eq!(
+            cleanup_cd_target_phrase("to my-project directory"),
+            "my-project"
+        );
+        assert_eq!(cleanup_cd_target_phrase("~/code"), "~/code");
+    }
+
+    #[test]
+    fn test_normalize_cd_command_resolves_single_directory_match() {
+        let db = crate::db::Db::open_in_memory().expect("in-memory db");
+        let tmp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CwdGuard::push_to(tmp.path());
+        std::fs::create_dir(tmp.path().join("blink-browse")).unwrap();
+
+        let normalized = normalize_cd_command("cd into the blink folder", &db, "s1").unwrap();
+        assert_eq!(normalized, "cd blink-browse");
+    }
+
+    #[test]
+    fn test_normalize_cd_command_prefers_recent_history_on_ambiguous_match() {
+        let session = "test_cd_history";
+        let db = crate::db::Db::open_in_memory().expect("in-memory db");
+        db.create_session(session, "tty0", "zsh", 1234).unwrap();
+        db.insert_command(
+            session,
+            "cd blink-simulated",
+            "/tmp",
+            Some(0),
+            "2026-01-01T00:00:00Z",
+            Some(1),
+            None,
+            "",
+            "zsh",
+            1234,
+        )
+        .unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _cwd_guard = CwdGuard::push_to(tmp.path());
+        std::fs::create_dir(tmp.path().join("blink-browse")).unwrap();
+        std::fs::create_dir(tmp.path().join("blink-simulated")).unwrap();
+
+        let normalized = normalize_cd_command("cd into the blink folder", &db, session).unwrap();
+        assert_eq!(normalized, "cd blink-simulated");
+    }
+
+    #[test]
+    fn test_normalize_command_for_prefill_keeps_non_cd_command() {
+        let db = crate::db::Db::open_in_memory().expect("in-memory db");
+        let normalized =
+            normalize_command_for_prefill("git status", "show me git status", &db, "default");
+        assert_eq!(normalized, "git status");
     }
 }

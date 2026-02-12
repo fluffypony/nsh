@@ -1,11 +1,19 @@
 # nsh — Natural Shell integration for bash
 # Eval this: eval "$(nsh init bash)"
 
+__nsh_clear_pending_command() {
+    [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
+    command rm -f \
+        "$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}" \
+        "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" 2>/dev/null
+    __nsh_pending_cmd=""
+}
+
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
-    nsh_query() { nsh query -- "$@"; }
-    nsh_query_think() { nsh query --think -- "$@"; }
-    nsh_query_private() { nsh query --private -- "$@"; }
+    nsh_query() { __nsh_clear_pending_command; command nsh query -- "$@"; }
+    nsh_query_think() { __nsh_clear_pending_command; command nsh query --think -- "$@"; }
+    nsh_query_private() { __nsh_clear_pending_command; command nsh query --private -- "$@"; }
     alias '?'='nsh_query'
     alias '??'='nsh_query_think'
     alias '?!'='nsh_query_private'
@@ -26,9 +34,9 @@ nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --
 disown 2>/dev/null
 
 # ── Aliases ─────────────────────────────────────────────
-nsh_query() { nsh query -- "$@"; }
-nsh_query_think() { nsh query --think -- "$@"; }
-nsh_query_private() { nsh query --private -- "$@"; }
+nsh_query() { __nsh_clear_pending_command; command nsh query -- "$@"; }
+nsh_query_think() { __nsh_clear_pending_command; command nsh query --think -- "$@"; }
+nsh_query_private() { __nsh_clear_pending_command; command nsh query --private -- "$@"; }
 alias '?'='nsh_query'
 alias '??'='nsh_query_think'
 alias '?!'='nsh_query_private'

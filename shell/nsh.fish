@@ -1,14 +1,33 @@
 # nsh — Natural Shell integration for fish
 # Source this: nsh init fish | source
 
+function __nsh_clear_pending_command
+    if not set -q NSH_SESSION_ID
+        return
+    end
+    command rm -f \
+        "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID" \
+        "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" 2>/dev/null
+    set -g __nsh_pending_cmd ""
+end
+
 # ── Nested shell guard ──────────────────────────────────
 if set -q NSH_SESSION_ID
     function nsh_query --wraps='nsh query --'
-        nsh query -- $argv
+        __nsh_clear_pending_command
+        command nsh query -- $argv
     end
-    abbr -a '?' -- 'nsh query --'
-    abbr -a '??' -- 'nsh query --think --'
-    abbr -a '?!' -- 'nsh query --private --'
+    function nsh_query_think --wraps='nsh query --think --'
+        __nsh_clear_pending_command
+        command nsh query --think -- $argv
+    end
+    function nsh_query_private --wraps='nsh query --private --'
+        __nsh_clear_pending_command
+        command nsh query --private -- $argv
+    end
+    abbr -a '?' -- 'nsh_query'
+    abbr -a '??' -- 'nsh_query_think'
+    abbr -a '?!' -- 'nsh_query_private'
     return 0
 end
 
@@ -25,11 +44,20 @@ disown 2>/dev/null
 
 # ── Abbreviations for ? and ?? ──────────────────────────
 function nsh_query --wraps='nsh query --'
-    nsh query -- $argv
+    __nsh_clear_pending_command
+    command nsh query -- $argv
 end
-abbr -a '?' -- 'nsh query --'
-abbr -a '??' -- 'nsh query --think --'
-abbr -a '?!' -- 'nsh query --private --'
+function nsh_query_think --wraps='nsh query --think --'
+    __nsh_clear_pending_command
+    command nsh query --think -- $argv
+end
+function nsh_query_private --wraps='nsh query --private --'
+    __nsh_clear_pending_command
+    command nsh query --private -- $argv
+end
+abbr -a '?' -- 'nsh_query'
+abbr -a '??' -- 'nsh_query_think'
+abbr -a '?!' -- 'nsh_query_private'
 
 # ── State variables ─────────────────────────────────────
 set -g __nsh_cmd ""

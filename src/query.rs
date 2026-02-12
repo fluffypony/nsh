@@ -587,6 +587,10 @@ ALWAYS prefer command over chat when action is requested. If unsure what
 command to run, use command with pending=true to run an investigative
 command first (e.g., `which`, `cat`, `ls`, `grep`), then continue after
 seeing the output.
+The `command` field MUST be directly executable shell syntax, never a
+restatement of the user's natural-language request. For directory navigation
+requests, generate a concrete `cd <path>` command. If the target is ambiguous,
+inspect filesystem/history first and choose a specific directory.
 
 **chat** — ONLY for pure knowledge questions where no action is needed
 ("what does -r do?", "explain pipes", "how does git rebase work?").
