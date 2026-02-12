@@ -238,6 +238,24 @@ impl Default for ToolsConfig {
                 "git diff".into(),
                 "pip list".into(),
                 "cargo --version".into(),
+                "npm --version".into(),
+                "npm list -g --depth=0".into(),
+                "npm prefix -g".into(),
+                "npm config get prefix".into(),
+                "pipx --version".into(),
+                "pipx list".into(),
+                "pip3 --version".into(),
+                "pip3 list".into(),
+                "pip3 show".into(),
+                "brew --version".into(),
+                "brew list".into(),
+                "brew info".into(),
+                "brew --prefix".into(),
+                "brew outdated".into(),
+                "gem --version".into(),
+                "go version".into(),
+                "sw_vers".into(),
+                "type".into(),
             ],
             sensitive_file_access: "block".into(),
         }
@@ -274,32 +292,40 @@ pub fn is_setting_protected(key: &str) -> bool {
 }
 
 impl ToolsConfig {
-    pub fn is_command_allowed(&self, cmd: &str) -> bool {
+    pub fn is_command_allowed(&self, command: &str) -> bool {
+        let trimmed = command.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
         let dangerous_chars = [
             ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"',
         ];
-        if cmd.chars().any(|c| dangerous_chars.contains(&c)) {
+        if trimmed.chars().any(|c| dangerous_chars.contains(&c)) {
             return false;
         }
         if self.run_command_allowlist.contains(&"*".to_string()) {
             return true;
         }
-        let argv: Vec<&str> = cmd.split_whitespace().collect();
-        if argv.is_empty() {
-            return false;
+        let argv: Vec<&str> = trimmed.split_whitespace().collect();
+        for entry in &self.run_command_allowlist {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if let Some((allowed_cmd, allowed_sub)) = entry.split_once(':') {
+                if argv.first().map_or(false, |a| *a == allowed_cmd)
+                    && argv.get(1).map_or(false, |a| *a == allowed_sub)
+                {
+                    return true;
+                }
+            } else if trimmed == entry
+                || trimmed.starts_with(entry)
+                    && trimmed.as_bytes().get(entry.len()) == Some(&b' ')
+            {
+                return true;
+            }
         }
-        self.run_command_allowlist.iter().any(|allowed| {
-            let parts: Vec<&str> = allowed.split_whitespace().collect();
-            if parts.is_empty() {
-                return false;
-            }
-            if parts.len() == 1 {
-                argv[0] == parts[0]
-            } else {
-                argv.len() >= parts.len()
-                    && argv[..parts.len()].iter().zip(&parts).all(|(a, b)| a == b)
-            }
-        })
+        false
     }
 }
 

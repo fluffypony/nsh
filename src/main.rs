@@ -168,6 +168,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             .await;
             if let Err(ref e) = result {
                 if e.to_string().contains("interrupted") {
+                    eprint!("\x1b[?25h\x1b[0m");
+                    std::io::Write::flush(&mut std::io::stderr()).ok();
                     std::process::exit(130);
                 }
             }

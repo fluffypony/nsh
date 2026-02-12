@@ -860,6 +860,29 @@ fn detect_machine_info() -> String {
         parts.push(format!("pkg: {}", pkg_mgrs.join(", ")));
     }
 
+    let lang_pkg_mgrs: Vec<&str> = [
+        "npm", "npx", "yarn", "pnpm", "bun", "deno",
+        "pip3", "pipx", "uv",
+        "cargo", "rustup",
+        "gem", "go", "composer", "dotnet",
+    ]
+    .iter()
+    .filter(|cmd| which_exists(cmd))
+    .copied()
+    .collect();
+    if !lang_pkg_mgrs.is_empty() {
+        parts.push(format!("lang_pkg: {}", lang_pkg_mgrs.join(", ")));
+    }
+
+    let dev_tools: Vec<&str> = ["node", "python3", "rustc", "ruby", "java"]
+        .iter()
+        .filter(|cmd| which_exists(cmd))
+        .copied()
+        .collect();
+    if !dev_tools.is_empty() {
+        parts.push(format!("tools: {}", dev_tools.join(", ")));
+    }
+
     parts.join(", ")
 }
 

@@ -86,6 +86,64 @@ pub async fn generate_llm_summary(
     Ok(text.trim().to_string())
 }
 
+pub fn extract_package_association(cmd: &str, exit_code: i32) -> Option<(String, String)> {
+    if exit_code != 0 {
+        return None;
+    }
+    let tokens = shell_words::split(cmd).ok()?;
+    if tokens.len() < 3 {
+        return None;
+    }
+    let manager = tokens[0].rsplit('/').next().unwrap_or(&tokens[0]).to_lowercase();
+    let (pkg_name, _action) = match manager.as_str() {
+        "npm" | "npx" | "yarn" | "pnpm" => {
+            let action = tokens.get(1)?.as_str();
+            match action {
+                "install" | "update" | "add" | "upgrade" => {
+                    let pkg = tokens.iter().skip(2)
+                        .find(|t| !t.starts_with('-'))?;
+                    (pkg.clone(), action)
+                }
+                _ => return None,
+            }
+        }
+        "pip" | "pip3" | "pipx" | "uv" => {
+            if matches!(tokens.get(1)?.as_str(), "install" | "upgrade") {
+                let pkg = tokens.iter().skip(2)
+                    .find(|t| !t.starts_with('-'))?;
+                (pkg.clone(), tokens[1].as_str())
+            } else { return None; }
+        }
+        "brew" => {
+            let action = tokens.get(1)?.as_str();
+            if matches!(action, "install" | "upgrade" | "reinstall") {
+                let pkg = tokens.get(2)?.clone();
+                (pkg, action)
+            } else { return None; }
+        }
+        "cargo" => {
+            if tokens.get(1)?.as_str() == "install" {
+                let pkg = tokens.iter().skip(2)
+                    .find(|t| !t.starts_with('-'))?;
+                (pkg.clone(), "install")
+            } else { return None; }
+        }
+        "apt" | "apt-get" | "dnf" | "yum" => {
+            if matches!(tokens.get(1)?.as_str(), "install") {
+                let pkg = tokens.iter().skip(2)
+                    .find(|t| !t.starts_with('-'))?;
+                (pkg.clone(), "install")
+            } else { return None; }
+        }
+        _ => return None,
+    };
+
+    let short_name = pkg_name.rsplit('/').next().unwrap_or(&pkg_name).to_string();
+    let key = format!("package: {short_name}");
+    let value = format!("{manager} package ({pkg_name}), managed with: {cmd}");
+    Some((key, value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +462,37 @@ mod tests {
         let prompt = build_summary_prompt(&cmd);
         assert!(!prompt.contains("[...]"));
         assert!(prompt.contains(&long_line));
+    }
+
+    #[test]
+    fn test_extract_package_association_npm_install() {
+        let result = extract_package_association("npm install -g @sourcegraph/amp", 0);
+        assert!(result.is_some());
+        let (key, value) = result.unwrap();
+        assert!(key.contains("amp"));
+        assert!(value.contains("npm"));
+    }
+
+    #[test]
+    fn test_extract_package_association_failed_command() {
+        assert!(extract_package_association("npm install foo", 1).is_none());
+    }
+
+    #[test]
+    fn test_extract_package_association_brew_install() {
+        let result = extract_package_association("brew install ripgrep", 0);
+        assert!(result.is_some());
+        let (key, _) = result.unwrap();
+        assert!(key.contains("ripgrep"));
+    }
+
+    #[test]
+    fn test_extract_package_association_unknown_manager() {
+        assert!(extract_package_association("zypper install foo", 0).is_none());
+    }
+
+    #[test]
+    fn test_extract_package_association_too_few_tokens() {
+        assert!(extract_package_association("npm install", 0).is_none());
     }
 }

@@ -283,6 +283,11 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                     {
                         let _ = db.update_summary(*id, &trivial);
                     }
+                    if ec == 0 {
+                        if let Some((key, value)) = crate::summary::extract_package_association(&cmd_text, ec) {
+                            let _ = db.upsert_memory(&key, &value);
+                        }
+                    }
                     // Conversation feedback loop: if this command matches
                     // a pending conversation suggestion, record the result
                     if let Ok(Some((conv_id, suggested_cmd))) =
@@ -296,6 +301,14 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                                 Some(snippet.as_str())
                             };
                             let _ = db.update_conversation_result(conv_id, ec, snippet_ref);
+                        } else {
+                            let correction_snippet = format!(
+                                "User ran different command: {}",
+                                crate::util::truncate(&cmd_text, 200)
+                            );
+                            let _ = db.update_conversation_result(
+                                conv_id, ec, Some(&correction_snippet)
+                            );
                         }
                     }
                 }
