@@ -157,6 +157,10 @@ pub enum Commands {
         #[command(subcommand)]
         action: DaemonReadAction,
     },
+
+    /// Internal: run shell history import in a detached worker process
+    #[command(hide = true)]
+    HistoryImportRun,
 }
 
 #[derive(Subcommand)]

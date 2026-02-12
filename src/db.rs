@@ -369,8 +369,6 @@ impl Db {
             conn,
             max_output_bytes: config.context.max_output_storage_bytes,
         };
-        let _ = db.cleanup_orphaned_sessions();
-        crate::history_import::import_if_needed(&db);
         Ok(db)
     }
 

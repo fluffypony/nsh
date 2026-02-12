@@ -5,12 +5,87 @@ use regex::Regex;
 
 const MAX_IMPORT_ENTRIES: usize = 10_000;
 const SYNTHETIC_SESSION_ID: &str = "imported_shell_history";
+const IMPORT_LOCK_FILENAME: &str = "history_import.lock";
+const IMPORT_LOCK_STALE_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Shell {
     Bash,
     Zsh,
     Fish,
+}
+
+fn import_lock_path() -> PathBuf {
+    crate::config::Config::nsh_dir().join(IMPORT_LOCK_FILENAME)
+}
+
+fn clear_stale_lock_if_needed() {
+    let path = import_lock_path();
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return;
+    };
+    let Ok(modified) = meta.modified() else {
+        return;
+    };
+    if let Ok(elapsed) = modified.elapsed() {
+        if elapsed.as_secs() > IMPORT_LOCK_STALE_SECS {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+pub fn import_in_progress() -> bool {
+    clear_stale_lock_if_needed();
+    import_lock_path().exists()
+}
+
+pub fn clear_import_lock() {
+    let _ = std::fs::remove_file(import_lock_path());
+}
+
+pub fn needs_import(db: &crate::db::Db) -> anyhow::Result<bool> {
+    let already_imported = db.get_meta("shell_history_imported")?.is_some();
+    let per_tty_imported = db.get_meta("shell_history_imported_per_tty")?.is_some();
+    Ok(!(already_imported && per_tty_imported))
+}
+
+pub fn start_background_import_process() -> anyhow::Result<bool> {
+    clear_stale_lock_if_needed();
+    if import_in_progress() {
+        return Ok(false);
+    }
+
+    let db = crate::db::Db::open()?;
+    if !needs_import(&db)? {
+        return Ok(false);
+    }
+    drop(db);
+
+    let lock_path = import_lock_path();
+    let mut lock = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    use std::io::Write;
+    let _ = writeln!(lock, "{} {}", std::process::id(), chrono::Utc::now().to_rfc3339());
+
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("history-import-run")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Err(e) = cmd.spawn() {
+        clear_import_lock();
+        return Err(e.into());
+    }
+
+    Ok(true)
 }
 
 pub fn import_if_needed(db: &crate::db::Db) {
