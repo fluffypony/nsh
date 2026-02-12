@@ -86,14 +86,26 @@ pub async fn handle_query(
     let memories = db.get_memories(100).unwrap_or_default();
     let memories_xml = build_memories_xml(&memories);
 
-    let history_hits = db.search_history(&query, 5).unwrap_or_default();
     let mut relevant_history_xml = String::new();
-    if !history_hits.is_empty() {
-        relevant_history_xml.push_str("<relevant_history_from_db>\n");
-        for hit in &history_hits {
-            relevant_history_xml.push_str(&format!("  $ {}\n", hit.command));
+    let original_query = query;
+    let should_search_history = original_query.len() >= 4
+        && original_query.chars().any(|c| c.is_alphanumeric())
+        && !original_query.starts_with("The previous command failed")
+        && !original_query.starts_with("Re-run the last command")
+        && !original_query.starts_with("Continue the previous pending");
+    if should_search_history {
+        let search_term = &original_query[..original_query.len().min(200)];
+        let history_hits = db.search_history(search_term, 5).unwrap_or_default();
+        if !history_hits.is_empty() {
+            relevant_history_xml.push_str("<relevant_history_from_db>\n");
+            for hit in &history_hits {
+                relevant_history_xml.push_str(&format!(
+                    "  <cmd>{}</cmd>\n",
+                    context::xml_escape(&hit.command)
+                ));
+            }
+            relevant_history_xml.push_str("</relevant_history_from_db>\n");
         }
-        relevant_history_xml.push_str("</relevant_history_from_db>\n");
     }
 
     let system = build_system_prompt(&ctx, &xml_context, &boundary, &config_xml, &memories_xml, &relevant_history_xml);

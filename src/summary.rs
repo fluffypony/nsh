@@ -110,15 +110,21 @@ pub fn extract_package_association(cmd: &str, exit_code: i32) -> Option<(String,
         "pip" | "pip3" | "pipx" | "uv" => {
             if matches!(tokens.get(1)?.as_str(), "install" | "upgrade") {
                 let pkg = tokens.iter().skip(2)
-                    .find(|t| !t.starts_with('-'))?;
+                    .find(|t| {
+                        !t.starts_with('-')
+                            && *t != "."
+                            && !t.starts_with("./")
+                            && !t.contains('/')
+                    })?;
                 (pkg.clone(), tokens[1].as_str())
             } else { return None; }
         }
         "brew" => {
             let action = tokens.get(1)?.as_str();
             if matches!(action, "install" | "upgrade" | "reinstall") {
-                let pkg = tokens.get(2)?.clone();
-                (pkg, action)
+                let pkg = tokens.iter().skip(2)
+                    .find(|t| !t.starts_with('-'))?;
+                (pkg.clone(), action)
             } else { return None; }
         }
         "cargo" => {

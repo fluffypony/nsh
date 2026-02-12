@@ -243,11 +243,14 @@ pub(crate) fn reject_reason_for_generated_command(
     let query_lower = trimmed_query.to_ascii_lowercase();
     if cmd_lower == query_lower && !cmd_lower.contains('/') && !cmd_lower.starts_with("cd ") {
         let first_word = cmd_lower.split_whitespace().next().unwrap_or("");
-        if !std::path::Path::new(&format!("/usr/bin/{first_word}")).exists()
-            && !std::path::Path::new(&format!("/usr/local/bin/{first_word}")).exists()
-            && !std::path::Path::new(&format!("/opt/homebrew/bin/{first_word}")).exists()
-        {
-            return Some("command appears to be the user's natural language request, not a shell command");
+        if !first_word.is_empty() {
+            let found_in_path = std::env::var("PATH")
+                .unwrap_or_default()
+                .split(':')
+                .any(|dir| std::path::Path::new(dir).join(first_word).exists());
+            if !found_in_path {
+                return Some("command appears to be the user's natural language request, not a shell command");
+            }
         }
     }
 
