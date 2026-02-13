@@ -132,7 +132,10 @@ pub fn skill_tool_definitions(skills: &[Skill]) -> Vec<ToolDefinition> {
 }
 
 fn validate_param_value(value: &str) -> anyhow::Result<()> {
-    if !value.chars().all(|c| c.is_alphanumeric() || " -_./,:=@+%^#".contains(c)) {
+    if !value
+        .chars()
+        .all(|c| c.is_alphanumeric() || " -_./,:=@+%^#".contains(c))
+    {
         anyhow::bail!(
             "Parameter value contains disallowed characters. \
              Only alphanumeric characters and [ -_./,:=@+%^#] are permitted."
@@ -284,14 +287,23 @@ mod tests {
         assert_eq!(defs[0].description, "Search things");
         let props = defs[0].parameters.get("properties").unwrap();
         assert!(props.get("query").is_some());
-        let required = defs[0].parameters.get("required").unwrap().as_array().unwrap();
+        let required = defs[0]
+            .parameters
+            .get("required")
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert!(required.contains(&serde_json::json!("query")));
     }
 
     #[test]
     fn test_load_skills_nonexistent_dir() {
         let mut skills = HashMap::new();
-        load_skills_from_dir(Path::new("/nonexistent/path/that/does/not/exist"), false, &mut skills);
+        load_skills_from_dir(
+            Path::new("/nonexistent/path/that/does/not/exist"),
+            false,
+            &mut skills,
+        );
         assert!(skills.is_empty());
     }
 
@@ -393,7 +405,9 @@ mod tests {
 
     #[test]
     fn test_validate_param_value_all_forbidden() {
-        let dangerous = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"'];
+        let dangerous = [
+            ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\\', '\'', '"',
+        ];
         for ch in &dangerous {
             let val = format!("foo{ch}bar");
             assert!(
@@ -614,7 +628,11 @@ description = "has no command"
     #[test]
     fn test_load_skills_from_dir_nonexistent_dir() {
         let mut skills = HashMap::new();
-        load_skills_from_dir(std::path::Path::new("/nonexistent_dir_xyz_999"), false, &mut skills);
+        load_skills_from_dir(
+            std::path::Path::new("/nonexistent_dir_xyz_999"),
+            false,
+            &mut skills,
+        );
         assert!(skills.is_empty());
     }
 
@@ -917,7 +935,11 @@ timeout_seconds = 10
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("secret.toml");
-        std::fs::write(&path, "name = \"x\"\ndescription = \"x\"\ncommand = \"x\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "name = \"x\"\ndescription = \"x\"\ncommand = \"x\"\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut skills = HashMap::new();
         load_skills_from_dir(tmp.path(), false, &mut skills);
@@ -941,7 +963,11 @@ terminal = true
     #[test]
     fn test_load_skills_from_dir_nonexistent_directory() {
         let mut skills = HashMap::new();
-        load_skills_from_dir(std::path::Path::new("/nonexistent/path/xyz"), false, &mut skills);
+        load_skills_from_dir(
+            std::path::Path::new("/nonexistent/path/xyz"),
+            false,
+            &mut skills,
+        );
         assert!(skills.is_empty());
     }
 

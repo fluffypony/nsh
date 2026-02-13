@@ -228,8 +228,12 @@ mod tests {
         });
         let msg = parse_openai_response(&resp).unwrap();
         assert_eq!(msg.content.len(), 2);
-        assert!(matches!(&msg.content[0], ContentBlock::Text { text } if text == "Let me run that"));
-        assert!(matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "read_file"));
+        assert!(
+            matches!(&msg.content[0], ContentBlock::Text { text } if text == "Let me run that")
+        );
+        assert!(
+            matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "read_file")
+        );
     }
 
     #[test]
@@ -260,9 +264,7 @@ mod tests {
     fn message_serialization_roundtrip() {
         let msg = Message {
             role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: "hi".into(),
-            }],
+            content: vec![ContentBlock::Text { text: "hi".into() }],
         };
         let serialized = serde_json::to_string(&msg).unwrap();
         let deserialized: Message = serde_json::from_str(&serialized).unwrap();
@@ -281,10 +283,7 @@ mod tests {
             let s = serde_json::to_string(&role).unwrap();
             assert_eq!(s, expected);
             let back: Role = serde_json::from_str(&s).unwrap();
-            assert_eq!(
-                std::mem::discriminant(&role),
-                std::mem::discriminant(&back)
-            );
+            assert_eq!(std::mem::discriminant(&role), std::mem::discriminant(&back));
         }
     }
 

@@ -501,26 +501,41 @@ mod tests {
 
     #[test]
     fn test_print_diff_exactly_100_lines() {
-        let content = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_diff(&content, &content);
     }
 
     #[test]
     fn test_print_diff_truncation_over_100_lines() {
-        let old = (1..=101).map(|i| format!("old {i}")).collect::<Vec<_>>().join("\n");
-        let new = (1..=101).map(|i| format!("new {i}")).collect::<Vec<_>>().join("\n");
+        let old = (1..=101)
+            .map(|i| format!("old {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let new = (1..=101)
+            .map(|i| format!("new {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_diff(&old, &new);
     }
 
     #[test]
     fn test_print_preview_exactly_50_lines() {
-        let content = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_preview(&content);
     }
 
     #[test]
     fn test_print_preview_51_lines_truncates() {
-        let content = (1..=51).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=51)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_preview(&content);
     }
 
@@ -558,7 +573,10 @@ mod tests {
 
         let backup_path = backup_to_trash(tmp.path()).unwrap();
         let name = backup_path.file_name().unwrap().to_string_lossy();
-        assert!(name.contains("nsh_backup"), "should contain nsh_backup: {name}");
+        assert!(
+            name.contains("nsh_backup"),
+            "should contain nsh_backup: {name}"
+        );
         assert!(
             regex::Regex::new(r"\d{8}_\d{6}").unwrap().is_match(&name),
             "should contain timestamp YYYYMMDD_HHMMSS: {name}"
@@ -593,21 +611,36 @@ mod tests {
 
     #[test]
     fn test_print_diff_100_lines_boundary_no_truncation() {
-        let content = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
-        let modified = (1..=100).map(|i| format!("mod {i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let modified = (1..=100)
+            .map(|i| format!("mod {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_diff(&content, &modified);
     }
 
     #[test]
     fn test_print_diff_101_lines_boundary_truncation() {
-        let old = (1..=101).map(|i| format!("old {i}")).collect::<Vec<_>>().join("\n");
-        let new = (1..=101).map(|i| format!("new {i}")).collect::<Vec<_>>().join("\n");
+        let old = (1..=101)
+            .map(|i| format!("old {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let new = (1..=101)
+            .map(|i| format!("new {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_diff(&old, &new);
     }
 
     #[test]
     fn test_print_preview_50_lines_boundary_no_truncation() {
-        let content = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content = (1..=50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         print_preview(&content);
     }
 

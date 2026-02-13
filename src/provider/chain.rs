@@ -134,7 +134,9 @@ pub async fn call_chain_with_fallback_think(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{ChatRequest, ContentBlock, LlmProvider, Message, Role, StreamEvent, ToolChoice};
+    use crate::provider::{
+        ChatRequest, ContentBlock, LlmProvider, Message, Role, StreamEvent, ToolChoice,
+    };
     use std::sync::Arc;
 
     struct MockProvider {
@@ -226,9 +228,10 @@ mod tests {
             }),
         };
         let chain = vec!["model-a".to_string(), "model-b".to_string()];
-        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
-            .await
-            .unwrap();
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+                .await
+                .unwrap();
         assert_eq!(model, "model-a");
         let first = rx.recv().await.unwrap();
         assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
@@ -255,9 +258,10 @@ mod tests {
             }),
         };
         let chain = vec!["model-a".to_string(), "model-b".to_string()];
-        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
-            .await
-            .unwrap();
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+                .await
+                .unwrap();
         assert_eq!(model, "model-b");
         let first = rx.recv().await.unwrap();
         assert!(matches!(first, StreamEvent::TextDelta(t) if t == "from-b"));
@@ -380,7 +384,8 @@ mod tests {
             stream_result: Arc::new(|| Err(anyhow::anyhow!("also nope"))),
         };
         let chain = vec!["model-a".to_string()];
-        let result = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
+        let result =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("also nope") || err_msg.contains("nope"));
@@ -393,7 +398,8 @@ mod tests {
             stream_result: Arc::new(|| unreachable!()),
         };
         let chain: Vec<String> = vec![];
-        let result = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
+        let result =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("exhausted"));
     }
@@ -419,9 +425,10 @@ mod tests {
             }),
         };
         let chain = vec!["model-a".to_string()];
-        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
-            .await
-            .unwrap();
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+                .await
+                .unwrap();
         assert_eq!(model, "model-a");
         let first = rx.recv().await.unwrap();
         assert!(matches!(first, StreamEvent::TextDelta(t) if t == "ok"));
@@ -565,7 +572,9 @@ mod tests {
                 Ok(Message {
                     role: Role::Assistant,
                     content: vec![
-                        ContentBlock::Text { text: "thinking".into() },
+                        ContentBlock::Text {
+                            text: "thinking".into(),
+                        },
                         ContentBlock::ToolUse {
                             id: "t1".into(),
                             name: "search".into(),
@@ -621,7 +630,9 @@ mod tests {
                             content: "ignored".into(),
                             is_error: false,
                         },
-                        ContentBlock::Text { text: "after".into() },
+                        ContentBlock::Text {
+                            text: "after".into(),
+                        },
                     ],
                 })
             }),
@@ -757,9 +768,10 @@ mod tests {
             }),
         };
         let chain = vec!["model-a".to_string()];
-        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
-            .await
-            .unwrap();
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+                .await
+                .unwrap();
         assert_eq!(model, "model-a");
         let first = rx.recv().await.unwrap();
         assert!(matches!(first, StreamEvent::TextDelta(t) if t == "recovered"));
@@ -786,9 +798,10 @@ mod tests {
             }),
         };
         let chain = vec!["model-a".to_string(), "model-b".to_string()];
-        let (mut rx, model) = call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
-            .await
-            .unwrap();
+        let (mut rx, model) =
+            call_chain_with_fallback_think(&provider, dummy_request(), &chain, false)
+                .await
+                .unwrap();
         assert_eq!(model, "model-b");
         let first = rx.recv().await.unwrap();
         assert!(matches!(first, StreamEvent::TextDelta(t) if t == "from-b"));

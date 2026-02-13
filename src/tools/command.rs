@@ -232,10 +232,20 @@ pub(crate) fn reject_reason_for_generated_command(
 
     let lower = trimmed_command.to_ascii_lowercase();
     let nl_indicators = [
-        "please ", "can you ", "could you ", "i want ", "i need ",
-        "help me ", "show me how", "how do i ", "what is ",
+        "please ",
+        "can you ",
+        "could you ",
+        "i want ",
+        "i need ",
+        "help me ",
+        "show me how",
+        "how do i ",
+        "what is ",
     ];
-    if nl_indicators.iter().any(|p| lower.starts_with(p) || lower.contains(p)) {
+    if nl_indicators
+        .iter()
+        .any(|p| lower.starts_with(p) || lower.contains(p))
+    {
         return Some("generated command looks like natural language, not a shell command");
     }
 
@@ -249,7 +259,9 @@ pub(crate) fn reject_reason_for_generated_command(
                 .split(':')
                 .any(|dir| std::path::Path::new(dir).join(first_word).exists());
             if !found_in_path {
-                return Some("command appears to be the user's natural language request, not a shell command");
+                return Some(
+                    "command appears to be the user's natural language request, not a shell command",
+                );
             }
         }
     }

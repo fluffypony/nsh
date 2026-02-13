@@ -290,7 +290,11 @@ mod tests {
         AnthropicProvider::new(&config).unwrap()
     }
 
-    fn make_request(messages: Vec<Message>, tools: Vec<ToolDefinition>, tool_choice: ToolChoice) -> ChatRequest {
+    fn make_request(
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        tool_choice: ToolChoice,
+    ) -> ChatRequest {
         ChatRequest {
             model: "claude-3-haiku".into(),
             system: "You are helpful".into(),
@@ -320,7 +324,9 @@ mod tests {
         let req = make_request(
             vec![Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text { text: "hello".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
             }],
             vec![],
             ToolChoice::Auto,
@@ -338,7 +344,9 @@ mod tests {
         let req = make_request(
             vec![Message {
                 role: Role::Assistant,
-                content: vec![ContentBlock::Text { text: "sure thing".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "sure thing".into(),
+                }],
             }],
             vec![],
             ToolChoice::Auto,
@@ -420,11 +428,15 @@ mod tests {
     #[test]
     fn test_build_body_tool_choice_auto() {
         let provider = make_provider();
-        let req = make_request(vec![], vec![ToolDefinition {
-            name: "t".into(),
-            description: "d".into(),
-            parameters: json!({}),
-        }], ToolChoice::Auto);
+        let req = make_request(
+            vec![],
+            vec![ToolDefinition {
+                name: "t".into(),
+                description: "d".into(),
+                parameters: json!({}),
+            }],
+            ToolChoice::Auto,
+        );
         let body = provider.build_body(&req);
         assert_eq!(body["tool_choice"]["type"], "auto");
     }
@@ -432,11 +444,15 @@ mod tests {
     #[test]
     fn test_build_body_tool_choice_none() {
         let provider = make_provider();
-        let req = make_request(vec![], vec![ToolDefinition {
-            name: "t".into(),
-            description: "d".into(),
-            parameters: json!({}),
-        }], ToolChoice::None);
+        let req = make_request(
+            vec![],
+            vec![ToolDefinition {
+                name: "t".into(),
+                description: "d".into(),
+                parameters: json!({}),
+            }],
+            ToolChoice::None,
+        );
         let body = provider.build_body(&req);
         assert!(body.get("tool_choice").is_none());
     }
@@ -456,7 +472,9 @@ mod tests {
         let req = make_request(
             vec![Message {
                 role: Role::System,
-                content: vec![ContentBlock::Text { text: "system msg".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "system msg".into(),
+                }],
             }],
             vec![],
             ToolChoice::Auto,
@@ -480,8 +498,12 @@ mod tests {
             vec![Message {
                 role: Role::User,
                 content: vec![
-                    ContentBlock::Text { text: "hello".into() },
-                    ContentBlock::Text { text: "world".into() },
+                    ContentBlock::Text {
+                        text: "hello".into(),
+                    },
+                    ContentBlock::Text {
+                        text: "world".into(),
+                    },
                 ],
             }],
             vec![],
@@ -555,13 +577,17 @@ mod tests {
             vec![Message {
                 role: Role::Assistant,
                 content: vec![
-                    ContentBlock::Text { text: "Let me check".into() },
+                    ContentBlock::Text {
+                        text: "Let me check".into(),
+                    },
                     ContentBlock::ToolUse {
                         id: "tu1".into(),
                         name: "search".into(),
                         input: json!({"q": "test"}),
                     },
-                    ContentBlock::Text { text: "Also this".into() },
+                    ContentBlock::Text {
+                        text: "Also this".into(),
+                    },
                 ],
             }],
             vec![],
@@ -586,7 +612,9 @@ mod tests {
             vec![Message {
                 role: Role::User,
                 content: vec![
-                    ContentBlock::Text { text: "hello".into() },
+                    ContentBlock::Text {
+                        text: "hello".into(),
+                    },
                     ContentBlock::ToolUse {
                         id: "x".into(),
                         name: "y".into(),
@@ -609,7 +637,9 @@ mod tests {
             vec![Message {
                 role: Role::Assistant,
                 content: vec![
-                    ContentBlock::Text { text: "response".into() },
+                    ContentBlock::Text {
+                        text: "response".into(),
+                    },
                     ContentBlock::ToolResult {
                         tool_use_id: "tr1".into(),
                         content: "ignored".into(),
@@ -694,7 +724,9 @@ mod tests {
             vec![
                 Message {
                     role: Role::User,
-                    content: vec![ContentBlock::Text { text: "What is 2+2?".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "What is 2+2?".into(),
+                    }],
                 },
                 Message {
                     role: Role::Assistant,
@@ -702,7 +734,9 @@ mod tests {
                 },
                 Message {
                     role: Role::User,
-                    content: vec![ContentBlock::Text { text: "And 3+3?".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "And 3+3?".into(),
+                    }],
                 },
             ],
             vec![],
@@ -725,7 +759,9 @@ mod tests {
             vec![
                 Message {
                     role: Role::User,
-                    content: vec![ContentBlock::Text { text: "List files".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "List files".into(),
+                    }],
                 },
                 Message {
                     role: Role::Assistant,
@@ -775,7 +811,9 @@ mod tests {
             vec![Message {
                 role: Role::Tool,
                 content: vec![
-                    ContentBlock::Text { text: "stray text".into() },
+                    ContentBlock::Text {
+                        text: "stray text".into(),
+                    },
                     ContentBlock::ToolResult {
                         tool_use_id: "tu1".into(),
                         content: "ok".into(),
@@ -875,7 +913,10 @@ mod tests {
         assert_eq!(tools[0]["description"], "Does A");
         assert_eq!(tools[1]["name"], "tool_b");
         assert_eq!(tools[1]["description"], "Does B");
-        assert_eq!(tools[1]["input_schema"]["properties"]["x"]["type"], "number");
+        assert_eq!(
+            tools[1]["input_schema"]["properties"]["x"]["type"],
+            "number"
+        );
     }
 
     #[test]
@@ -911,23 +952,33 @@ mod tests {
             vec![
                 Message {
                     role: Role::User,
-                    content: vec![ContentBlock::Text { text: "first".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "first".into(),
+                    }],
                 },
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentBlock::Text { text: "second".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "second".into(),
+                    }],
                 },
                 Message {
                     role: Role::User,
-                    content: vec![ContentBlock::Text { text: "third".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "third".into(),
+                    }],
                 },
                 Message {
                     role: Role::Assistant,
-                    content: vec![ContentBlock::Text { text: "fourth".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "fourth".into(),
+                    }],
                 },
                 Message {
                     role: Role::User,
-                    content: vec![ContentBlock::Text { text: "fifth".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "fifth".into(),
+                    }],
                 },
             ],
             vec![],
@@ -977,7 +1028,9 @@ mod tests {
                         content: "should be ignored".into(),
                         is_error: false,
                     },
-                    ContentBlock::Text { text: "kept".into() },
+                    ContentBlock::Text {
+                        text: "kept".into(),
+                    },
                     ContentBlock::ToolUse {
                         id: "tu1".into(),
                         name: "x".into(),
@@ -1122,7 +1175,8 @@ mod tests {
     #[test]
     fn test_build_body_tool_description_and_input_schema() {
         let provider = make_provider();
-        let params = json!({"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]});
+        let params =
+            json!({"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]});
         let req = make_request(
             vec![],
             vec![ToolDefinition {
@@ -1318,7 +1372,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body)
+                    .set_body_string(sse_body),
             )
             .mount(&server)
             .await;
@@ -1332,7 +1386,10 @@ mod tests {
         while let Some(event) = rx.recv().await {
             match event {
                 StreamEvent::TextDelta(t) => texts.push(t),
-                StreamEvent::Done { .. } => { got_done = true; break; }
+                StreamEvent::Done { .. } => {
+                    got_done = true;
+                    break;
+                }
                 _ => {}
             }
         }
@@ -1358,7 +1415,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body)
+                    .set_body_string(sse_body),
             )
             .mount(&server)
             .await;
@@ -1403,7 +1460,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body)
+                    .set_body_string(sse_body),
             )
             .mount(&server)
             .await;
@@ -1436,7 +1493,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body)
+                    .set_body_string(sse_body),
             )
             .mount(&server)
             .await;
@@ -1474,7 +1531,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "text/event-stream")
-                    .set_body_string(sse_body)
+                    .set_body_string(sse_body),
             )
             .mount(&server)
             .await;

@@ -284,7 +284,9 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                         let _ = db.update_summary(*id, &trivial);
                     }
                     if ec == 0 {
-                        if let Some((key, value)) = crate::summary::extract_package_association(&cmd_text, ec) {
+                        if let Some((key, value)) =
+                            crate::summary::extract_package_association(&cmd_text, ec)
+                        {
                             let _ = db.upsert_memory(&key, &value);
                         }
                     }
@@ -307,7 +309,9 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                                 crate::util::truncate(&cmd_text, 200)
                             );
                             let _ = db.update_conversation_result(
-                                conv_id, ec, Some(&correction_snippet)
+                                conv_id,
+                                ec,
+                                Some(&correction_snippet),
                             );
                         }
                     }
@@ -478,11 +482,7 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
-        if let DaemonRequest::CaptureRead {
-            session,
-            max_lines,
-        } = parsed
-        {
+        if let DaemonRequest::CaptureRead { session, max_lines } = parsed {
             assert_eq!(session, "s1");
             assert_eq!(max_lines, 500);
         } else {
@@ -683,7 +683,15 @@ mod tests {
 
     #[test]
     fn test_handle_status_request() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(DaemonRequest::Status, &capture, &db_tx, 65536);
         match resp {
@@ -697,7 +705,15 @@ mod tests {
 
     #[test]
     fn test_handle_scrollback_request() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.process(b"hello world\r\n");
@@ -719,10 +735,20 @@ mod tests {
 
     #[test]
     fn test_handle_capture_mark_request() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::CaptureMark { session: "s1".into() },
+            DaemonRequest::CaptureMark {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -732,7 +758,15 @@ mod tests {
 
     #[test]
     fn test_handle_capture_read_request() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.mark();
@@ -740,7 +774,10 @@ mod tests {
         }
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 100 },
+            DaemonRequest::CaptureRead {
+                session: "s1".into(),
+                max_lines: 100,
+            },
             &capture,
             &db_tx,
             65536,
@@ -755,10 +792,20 @@ mod tests {
 
     #[test]
     fn test_handle_summarize_check_request() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::SummarizeCheck { session: "s1".into() },
+            DaemonRequest::SummarizeCheck {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -768,10 +815,20 @@ mod tests {
 
     #[test]
     fn test_handle_context_not_implemented() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::Context { session: "s1".into() },
+            DaemonRequest::Context {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -786,10 +843,21 @@ mod tests {
 
     #[test]
     fn test_handle_mcp_tool_call_not_implemented() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::McpToolCall { tool: "test".into(), input: serde_json::json!({}) },
+            DaemonRequest::McpToolCall {
+                tool: "test".into(),
+                input: serde_json::json!({}),
+            },
             &capture,
             &db_tx,
             65536,
@@ -804,7 +872,15 @@ mod tests {
 
     #[test]
     fn test_handle_record_db_unavailable() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
         drop(db_rx);
         let resp = handle_daemon_request(
@@ -834,11 +910,21 @@ mod tests {
 
     #[test]
     fn test_handle_heartbeat_db_unavailable() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
         drop(db_rx);
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "s1".into() },
+            DaemonRequest::Heartbeat {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -857,7 +943,15 @@ mod tests {
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         let re_json = serde_json::to_string(&req).unwrap();
         let re_parsed: DaemonRequest = serde_json::from_str(&re_json).unwrap();
-        if let DaemonRequest::Record { session, command, exit_code, duration_ms, output, .. } = re_parsed {
+        if let DaemonRequest::Record {
+            session,
+            command,
+            exit_code,
+            duration_ms,
+            output,
+            ..
+        } = re_parsed
+        {
             assert_eq!(session, "abc");
             assert_eq!(command, "pwd");
             assert_eq!(exit_code, 1);
@@ -907,19 +1001,30 @@ mod tests {
             (r#"{"type":"scrollback"}"#, "scrollback"),
             (r#"{"type":"context","session":"s"}"#, "context"),
             (r#"{"type":"status"}"#, "status"),
-            (r#"{"type":"mcp_tool_call","tool":"t","input":{}}"#, "mcp_tool_call"),
-            (r#"{"type":"summarize_check","session":"s"}"#, "summarize_check"),
+            (
+                r#"{"type":"mcp_tool_call","tool":"t","input":{}}"#,
+                "mcp_tool_call",
+            ),
+            (
+                r#"{"type":"summarize_check","session":"s"}"#,
+                "summarize_check",
+            ),
         ];
         for (json_str, tag) in variants {
             let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
             let serialized = serde_json::to_string(&req).unwrap();
-            assert!(serialized.contains(&format!("\"type\":\"{tag}\"")), "tag mismatch for {tag}");
+            assert!(
+                serialized.contains(&format!("\"type\":\"{tag}\"")),
+                "tag mismatch for {tag}"
+            );
         }
     }
 
     #[test]
     fn test_daemon_response_ok_with_data_roundtrip() {
-        let resp = DaemonResponse::ok_with_data(serde_json::json!({"list": [1, 2, 3], "nested": {"a": true}}));
+        let resp = DaemonResponse::ok_with_data(
+            serde_json::json!({"list": [1, 2, 3], "nested": {"a": true}}),
+        );
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
         if let DaemonResponse::Ok { data: Some(d) } = parsed {
@@ -974,7 +1079,19 @@ mod tests {
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         let json = serde_json::to_string(&req).unwrap();
         let re: DaemonRequest = serde_json::from_str(&json).unwrap();
-        if let DaemonRequest::Record { session, command, cwd, exit_code, tty, pid, shell, duration_ms, output, .. } = re {
+        if let DaemonRequest::Record {
+            session,
+            command,
+            cwd,
+            exit_code,
+            tty,
+            pid,
+            shell,
+            duration_ms,
+            output,
+            ..
+        } = re
+        {
             assert_eq!(session, "s1");
             assert_eq!(command, "ls -la");
             assert_eq!(cwd, "/home/user");
@@ -991,7 +1108,9 @@ mod tests {
 
     #[test]
     fn test_daemon_request_summarize_check_roundtrip() {
-        let req = DaemonRequest::SummarizeCheck { session: "sess42".into() };
+        let req = DaemonRequest::SummarizeCheck {
+            session: "sess42".into(),
+        };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
         if let DaemonRequest::SummarizeCheck { session } = parsed {
@@ -1006,7 +1125,15 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || run_db_thread(rx));
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
             DaemonRequest::Record {
                 session: "test_real_db".into(),
@@ -1042,9 +1169,19 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || run_db_thread(rx));
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "test_hb_sess".into() },
+            DaemonRequest::Heartbeat {
+                session: "test_hb_sess".into(),
+            },
             &capture,
             &tx,
             65536,
@@ -1069,7 +1206,15 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
             DaemonRequest::Record {
                 session: "s1".into(),
@@ -1111,9 +1256,19 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "s1".into() },
+            DaemonRequest::Heartbeat {
+                session: "s1".into(),
+            },
             &capture,
             &tx,
             65536,
@@ -1136,7 +1291,15 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
             DaemonRequest::Record {
                 session: "s1".into(),
@@ -1175,7 +1338,9 @@ mod tests {
             limit: 5,
             reply: reply_tx,
         });
-        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
 
@@ -1214,7 +1379,9 @@ mod tests {
             pending: false,
             reply: reply_tx,
         });
-        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
 
         let _ = tx.send(DbCommand::Shutdown);
@@ -1461,9 +1628,19 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "s1".into() },
+            DaemonRequest::Heartbeat {
+                session: "s1".into(),
+            },
             &capture,
             &tx,
             65536,
@@ -1478,7 +1655,15 @@ mod tests {
 
     #[test]
     fn test_handle_capture_read_truncates_to_max_lines() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            10000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.mark();
@@ -1488,7 +1673,10 @@ mod tests {
         }
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 5 },
+            DaemonRequest::CaptureRead {
+                session: "s1".into(),
+                max_lines: 5,
+            },
             &capture,
             &db_tx,
             65536,
@@ -1497,7 +1685,10 @@ mod tests {
             DaemonResponse::Ok { data: Some(d) } => {
                 let output = d["output"].as_str().unwrap();
                 let line_count = output.lines().count();
-                assert!(line_count <= 5, "expected at most 5 lines, got {line_count}");
+                assert!(
+                    line_count <= 5,
+                    "expected at most 5 lines, got {line_count}"
+                );
             }
             _ => panic!("expected Ok with output data"),
         }
@@ -1505,7 +1696,15 @@ mod tests {
 
     #[test]
     fn test_handle_scrollback_empty_capture() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
             DaemonRequest::Scrollback { max_lines: 10 },
@@ -1523,10 +1722,21 @@ mod tests {
 
     #[test]
     fn test_handle_capture_read_no_mark_returns_empty() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 100 },
+            DaemonRequest::CaptureRead {
+                session: "s1".into(),
+                max_lines: 100,
+            },
             &capture,
             &db_tx,
             65536,
@@ -1570,7 +1780,15 @@ mod tests {
 
     #[test]
     fn test_handle_status_contains_version_and_pid() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(DaemonRequest::Status, &capture, &db_tx, 65536);
         match resp {
@@ -1585,15 +1803,27 @@ mod tests {
     #[test]
     fn test_handle_summarize_check_sends_generate_summaries() {
         let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
-            DaemonRequest::SummarizeCheck { session: "s1".into() },
+            DaemonRequest::SummarizeCheck {
+                session: "s1".into(),
+            },
             &capture,
             &tx,
             65536,
         );
         assert!(matches!(resp, DaemonResponse::Ok { data: None }));
-        let cmd = rx.recv_timeout(std::time::Duration::from_millis(100)).unwrap();
+        let cmd = rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
         assert!(matches!(cmd, DbCommand::GenerateSummaries));
     }
 
@@ -1614,7 +1844,15 @@ mod tests {
 
     #[test]
     fn test_daemon_request_record_with_output_provided_takes_priority() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.mark();
@@ -1649,7 +1887,15 @@ mod tests {
 
     #[test]
     fn test_daemon_request_record_captures_when_output_none() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            10000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.mark();
@@ -1691,7 +1937,15 @@ mod tests {
 
     #[test]
     fn test_handle_capture_read_zero_max_lines() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            10000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.mark();
@@ -1701,7 +1955,10 @@ mod tests {
         }
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp = handle_daemon_request(
-            DaemonRequest::CaptureRead { session: "s1".into(), max_lines: 0 },
+            DaemonRequest::CaptureRead {
+                session: "s1".into(),
+                max_lines: 0,
+            },
             &capture,
             &db_tx,
             65536,
@@ -1717,7 +1974,15 @@ mod tests {
 
     #[test]
     fn test_handle_scrollback_with_data() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 10000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            10000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         {
             let mut eng = capture.lock().unwrap();
             eng.process(b"scroll content\r\n");
@@ -1755,7 +2020,10 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
-        if let DaemonRequest::Record { output: Some(o), .. } = parsed {
+        if let DaemonRequest::Record {
+            output: Some(o), ..
+        } = parsed
+        {
             assert_eq!(o.len(), 100_000);
         } else {
             panic!("expected Record with output");
@@ -1794,7 +2062,9 @@ mod tests {
             pending: false,
             reply: reply_tx,
         });
-        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
 
         let _ = tx.send(DbCommand::Shutdown);
@@ -1832,7 +2102,9 @@ mod tests {
             pending: true,
             reply: reply_tx,
         });
-        let result = reply_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = reply_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
 
         let _ = tx.send(DbCommand::Shutdown);
@@ -1865,7 +2137,9 @@ mod tests {
             limit: 10,
             reply: search_tx,
         });
-        let result = search_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = search_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
 
         let _ = tx.send(DbCommand::Shutdown);
@@ -1926,7 +2200,9 @@ mod tests {
             output: Some("/home".into()),
             reply: rec_tx,
         });
-        let result = rec_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = rec_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
         let id = result.unwrap();
         assert!(id > 0);
@@ -1936,7 +2212,9 @@ mod tests {
             session: "seq_sess".into(),
             reply: hb_tx,
         });
-        let hb_result = hb_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let hb_result = hb_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(hb_result.is_ok());
 
         let _ = tx.send(DbCommand::GenerateSummaries);
@@ -1955,7 +2233,15 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
             DaemonRequest::Record {
                 session: "s1".into(),
@@ -1991,9 +2277,19 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "s1".into() },
+            DaemonRequest::Heartbeat {
+                session: "s1".into(),
+            },
             &capture,
             &tx,
             65536,
@@ -2033,35 +2329,63 @@ mod tests {
         let _ = tx.send(DbCommand::GenerateSummaries);
 
         let _ = tx.send(DbCommand::Shutdown);
-        handle.join().expect("db thread should exit after heavy use");
+        handle
+            .join()
+            .expect("db thread should exit after heavy use");
     }
 
     #[test]
     fn test_generate_summaries_sync_with_trivial_command() {
         let db = crate::db::Db::open_in_memory().unwrap();
-        db.create_session("sum_sess", "/dev/pts/0", "zsh", 1).unwrap();
+        db.create_session("sum_sess", "/dev/pts/0", "zsh", 1)
+            .unwrap();
         db.insert_command(
-            "sum_sess", "cd /tmp", "/home", Some(0),
-            "2025-01-01T00:00:00Z", Some(5), None,
-            "/dev/pts/0", "zsh", 1,
-        ).unwrap();
+            "sum_sess",
+            "cd /tmp",
+            "/home",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            Some(5),
+            None,
+            "/dev/pts/0",
+            "zsh",
+            1,
+        )
+        .unwrap();
         db.insert_command(
-            "sum_sess", "ls", "/tmp", Some(0),
-            "2025-01-01T00:01:00Z", Some(10), Some("file1\nfile2"),
-            "/dev/pts/0", "zsh", 1,
-        ).unwrap();
+            "sum_sess",
+            "ls",
+            "/tmp",
+            Some(0),
+            "2025-01-01T00:01:00Z",
+            Some(10),
+            Some("file1\nfile2"),
+            "/dev/pts/0",
+            "zsh",
+            1,
+        )
+        .unwrap();
         generate_summaries_sync(&db);
     }
 
     #[test]
     fn test_generate_summaries_sync_with_failing_command() {
         let db = crate::db::Db::open_in_memory().unwrap();
-        db.create_session("fail_sess", "/dev/pts/0", "bash", 1).unwrap();
+        db.create_session("fail_sess", "/dev/pts/0", "bash", 1)
+            .unwrap();
         db.insert_command(
-            "fail_sess", "nonexistent_command", "/tmp", Some(127),
-            "2025-01-01T00:00:00Z", Some(10), Some("command not found"),
-            "/dev/pts/0", "bash", 1,
-        ).unwrap();
+            "fail_sess",
+            "nonexistent_command",
+            "/tmp",
+            Some(127),
+            "2025-01-01T00:00:00Z",
+            Some(10),
+            Some("command not found"),
+            "/dev/pts/0",
+            "bash",
+            1,
+        )
+        .unwrap();
         generate_summaries_sync(&db);
     }
 
@@ -2088,7 +2412,10 @@ mod tests {
     fn test_daemon_response_ok_skips_null_data() {
         let resp = DaemonResponse::ok();
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(!json.contains("data"), "Ok without data should skip data field: {json}");
+        assert!(
+            !json.contains("data"),
+            "Ok without data should skip data field: {json}"
+        );
     }
 
     #[test]
@@ -2117,7 +2444,14 @@ mod tests {
         let json_str = r#"{"type":"record","session":"s1","command":"ls","cwd":"/","exit_code":0,"started_at":"2025-01-01T00:00:00Z"}"#;
         let parsed: DaemonRequest = serde_json::from_str(json_str).unwrap();
         match parsed {
-            DaemonRequest::Record { tty, pid, shell, duration_ms, output, .. } => {
+            DaemonRequest::Record {
+                tty,
+                pid,
+                shell,
+                duration_ms,
+                output,
+                ..
+            } => {
                 assert_eq!(tty, "");
                 assert_eq!(pid, 0);
                 assert_eq!(shell, "");
@@ -2130,10 +2464,20 @@ mod tests {
 
     #[test]
     fn test_handle_context_and_mcp_not_implemented() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, _db_rx) = std::sync::mpsc::channel();
         let resp1 = handle_daemon_request(
-            DaemonRequest::Context { session: "s1".into() },
+            DaemonRequest::Context {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -2143,7 +2487,10 @@ mod tests {
             _ => panic!("expected Error for Context"),
         }
         let resp2 = handle_daemon_request(
-            DaemonRequest::McpToolCall { tool: "test".into(), input: serde_json::json!({}) },
+            DaemonRequest::McpToolCall {
+                tool: "test".into(),
+                input: serde_json::json!({}),
+            },
             &capture,
             &db_tx,
             65536,
@@ -2156,7 +2503,15 @@ mod tests {
 
     #[test]
     fn test_handle_summarize_check() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, db_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             while let Ok(cmd) = db_rx.recv() {
@@ -2166,7 +2521,9 @@ mod tests {
             }
         });
         let resp = handle_daemon_request(
-            DaemonRequest::SummarizeCheck { session: "s1".into() },
+            DaemonRequest::SummarizeCheck {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -2176,7 +2533,15 @@ mod tests {
 
     #[test]
     fn test_handle_record_db_tx_dropped() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
         drop(db_rx);
         let resp = handle_daemon_request(
@@ -2206,11 +2571,21 @@ mod tests {
 
     #[test]
     fn test_handle_heartbeat_db_tx_dropped() {
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let (db_tx, db_rx) = std::sync::mpsc::channel::<DbCommand>();
         drop(db_rx);
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "s1".into() },
+            DaemonRequest::Heartbeat {
+                session: "s1".into(),
+            },
             &capture,
             &db_tx,
             65536,
@@ -2255,7 +2630,9 @@ mod tests {
             output: Some("test result: ok. 10 passed".into()),
             reply: rec_tx,
         });
-        let result = rec_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let result = rec_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         assert!(result.is_ok());
 
         let _ = tx.send(DbCommand::Shutdown);
@@ -2271,7 +2648,15 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
             DaemonRequest::Record {
                 session: "s1".into(),
@@ -2306,9 +2691,19 @@ mod tests {
             }
         });
 
-        let capture = Mutex::new(crate::pump::CaptureEngine::new(24, 80, 0, 2, 1000, "vt100".into(), "drop".into()));
+        let capture = Mutex::new(crate::pump::CaptureEngine::new(
+            24,
+            80,
+            0,
+            2,
+            1000,
+            "vt100".into(),
+            "drop".into(),
+        ));
         let resp = handle_daemon_request(
-            DaemonRequest::Heartbeat { session: "s1".into() },
+            DaemonRequest::Heartbeat {
+                session: "s1".into(),
+            },
             &capture,
             &tx,
             65536,

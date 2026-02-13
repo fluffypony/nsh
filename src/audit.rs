@@ -222,7 +222,13 @@ mod tests {
 
     #[test]
     fn test_audit_log_unicode() {
-        audit_log("sess-uni", "こんにちは 🌍 émojis", "chat", "Ñoño résumé", "safe");
+        audit_log(
+            "sess-uni",
+            "こんにちは 🌍 émojis",
+            "chat",
+            "Ñoño résumé",
+            "safe",
+        );
     }
 
     #[test]
@@ -365,7 +371,10 @@ mod tests {
         rotate_audit_log_in_dir(tmp.path());
 
         let contents = std::fs::read_to_string(&log_path).unwrap();
-        assert_eq!(contents, "small content", "small file should not be rotated");
+        assert_eq!(
+            contents, "small content",
+            "small file should not be rotated"
+        );
 
         let archives: Vec<_> = std::fs::read_dir(tmp.path())
             .unwrap()
@@ -375,7 +384,10 @@ mod tests {
                 n.ends_with(".log.gz")
             })
             .collect();
-        assert!(archives.is_empty(), "no archives should be created for small files");
+        assert!(
+            archives.is_empty(),
+            "no archives should be created for small files"
+        );
     }
 
     #[test]
@@ -415,7 +427,11 @@ mod tests {
             .collect();
         assert_eq!(after.len(), 5, "only 5 archives should remain");
 
-        for removed in ["audit_20250100T000000.log.gz", "audit_20250101T000000.log.gz", "audit_20250102T000000.log.gz"] {
+        for removed in [
+            "audit_20250100T000000.log.gz",
+            "audit_20250101T000000.log.gz",
+            "audit_20250102T000000.log.gz",
+        ] {
             assert!(
                 !after.contains(&removed.to_string()),
                 "oldest archive {removed} should have been removed"
@@ -488,7 +504,10 @@ mod tests {
                 n.starts_with("audit_") && n.ends_with(".log.gz")
             })
             .count();
-        assert!(archive_count <= 5, "cleanup should cap archives at 5, got {archive_count}");
+        assert!(
+            archive_count <= 5,
+            "cleanup should cap archives at 5, got {archive_count}"
+        );
     }
 
     #[cfg(unix)]
@@ -501,7 +520,11 @@ mod tests {
 
         let log_path = tmp.path().join("audit.log");
         let perms = std::fs::metadata(&log_path).unwrap().permissions();
-        assert_eq!(perms.mode() & 0o777, 0o600, "audit.log should be owner-only");
+        assert_eq!(
+            perms.mode() & 0o777,
+            0o600,
+            "audit.log should be owner-only"
+        );
     }
 
     #[test]

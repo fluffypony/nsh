@@ -118,13 +118,9 @@ fn has_obfuscation(cmd: &str) -> Option<(RiskLevel, &'static str)> {
         return Some((RiskLevel::Elevated, "command substitution detected"));
     }
     if lower.contains("\\x") || cmd.contains("$'\\x") {
-        return Some((
-            RiskLevel::Elevated,
-            "hex/octal escape obfuscation detected",
-        ));
+        return Some((RiskLevel::Elevated, "hex/octal escape obfuscation detected"));
     }
-    let eval_exec_re =
-        regex::Regex::new(r"(?i)\b(eval|exec)\s+.").unwrap();
+    let eval_exec_re = regex::Regex::new(r"(?i)\b(eval|exec)\s+.").unwrap();
     if eval_exec_re.is_match(cmd) {
         return Some((RiskLevel::Elevated, "dynamic evaluation detected"));
     }
@@ -158,15 +154,14 @@ fn is_dangerous_target(arg: &str) -> bool {
     }
 
     let critical_paths = [
-        "/", "/*", "~", "~/*", "*", "/etc", "/usr", "/var", "/bin", "/sbin",
-        "/lib", "/boot", "/home", "/dev", "/sys", "/proc",
+        "/", "/*", "~", "~/*", "*", "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot",
+        "/home", "/dev", "/sys", "/proc",
     ];
     if critical_paths.contains(&arg) {
         return true;
     }
     let critical_dirs = [
-        "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot", "/home",
-        "/dev", "/sys", "/proc",
+        "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot", "/home", "/dev", "/sys", "/proc",
     ];
     for dir in &critical_dirs {
         if arg == format!("{dir}/*") {
@@ -196,15 +191,9 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
                 .join(" ");
             let inner_tokens = match shell_words::split(&inner_cmd) {
                 Ok(t) => t,
-                Err(_) => {
-                    return (
-                        RiskLevel::Elevated,
-                        Some("elevated privileges"),
-                    )
-                }
+                Err(_) => return (RiskLevel::Elevated, Some("elevated privileges")),
             };
-            let inner_refs: Vec<&str> =
-                inner_tokens.iter().map(|s| s.as_str()).collect();
+            let inner_refs: Vec<&str> = inner_tokens.iter().map(|s| s.as_str()).collect();
             let (inner_risk, inner_reason) = assess_single_command(&inner_refs);
             let max_risk = inner_risk.max(RiskLevel::Elevated);
             let reason = if max_risk > RiskLevel::Elevated {
@@ -227,8 +216,7 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
                 Ok(t) => t,
                 Err(_) => return (RiskLevel::Safe, None),
             };
-            let inner_refs: Vec<&str> =
-                inner_tokens.iter().map(|s| s.as_str()).collect();
+            let inner_refs: Vec<&str> = inner_tokens.iter().map(|s| s.as_str()).collect();
             assess_single_command(&inner_refs)
         }
         "rm" => {
@@ -236,10 +224,8 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
             let has_recursive = flags.contains(&'r') || flags.contains(&'R');
             let has_force = flags.contains(&'f');
             if has_recursive && has_force {
-                let non_flag_args: Vec<&&str> = rest
-                    .iter()
-                    .filter(|t| !t.starts_with('-'))
-                    .collect();
+                let non_flag_args: Vec<&&str> =
+                    rest.iter().filter(|t| !t.starts_with('-')).collect();
                 if non_flag_args.iter().any(|a| is_dangerous_target(a)) {
                     return (
                         RiskLevel::Dangerous,
@@ -259,19 +245,17 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
                 (RiskLevel::Elevated, Some("raw disk operation"))
             }
         }
-        "shred" | "wipefs" => {
-            (RiskLevel::Dangerous, Some("destructive disk/file operation"))
-        }
+        "shred" | "wipefs" => (
+            RiskLevel::Dangerous,
+            Some("destructive disk/file operation"),
+        ),
         "shutdown" | "reboot" | "halt" | "poweroff" | "init" => {
             (RiskLevel::Dangerous, Some("system shutdown/reboot"))
         }
         "chmod" => {
             let flags = extract_flags(rest);
             let recursive = flags.contains(&'R') || flags.contains(&'r');
-            let non_flag_args: Vec<&&str> = rest
-                .iter()
-                .filter(|t| !t.starts_with('-'))
-                .collect();
+            let non_flag_args: Vec<&&str> = rest.iter().filter(|t| !t.starts_with('-')).collect();
             let has_extreme_perm = non_flag_args.iter().any(|a| **a == "777" || **a == "000");
             let has_dangerous = non_flag_args.iter().any(|a| is_dangerous_target(a));
             if recursive && has_extreme_perm && has_dangerous {
@@ -283,11 +267,12 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
             (RiskLevel::Elevated, Some("permission change"))
         }
         "chown" => (RiskLevel::Elevated, Some("ownership change")),
-        "kill" | "pkill" | "killall" => {
-            (RiskLevel::Elevated, Some("process termination"))
-        }
+        "kill" | "pkill" | "killall" => (RiskLevel::Elevated, Some("process termination")),
         "systemctl" => {
-            if rest.first().is_some_and(|t| *t == "stop" || *t == "disable") {
+            if rest
+                .first()
+                .is_some_and(|t| *t == "stop" || *t == "disable")
+            {
                 (RiskLevel::Elevated, Some("service state change"))
             } else {
                 (RiskLevel::Safe, None)
@@ -308,8 +293,7 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
 fn check_pipe_to_shell(sub_commands: &[Vec<String>]) -> Option<&'static str> {
     let downloaders = ["curl", "wget", "fetch"];
     let interpreters = [
-        "sh", "bash", "zsh", "dash", "fish", "python", "perl", "ruby",
-        "node",
+        "sh", "bash", "zsh", "dash", "fish", "python", "perl", "ruby", "node",
     ];
 
     let mut has_downloader_before = false;

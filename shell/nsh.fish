@@ -11,21 +11,73 @@ function __nsh_clear_pending_command
     set -g __nsh_pending_cmd ""
 end
 
+function __nsh_load_suppressed_exit_codes
+    set -l codes (command nsh session suppressed-exit-codes 2>/dev/null)
+    if test $status -eq 0
+        set -gx NSH_HINT_SUPPRESSED_EXIT_CODES $codes
+    else
+        set -gx NSH_HINT_SUPPRESSED_EXIT_CODES 130 137 141 143
+    end
+end
+
+function __nsh_is_suppressed_exit_code --argument code
+    contains -- $code $NSH_HINT_SUPPRESSED_EXIT_CODES
+end
+
+function __nsh_query_ignore_exit_code
+    if test (count $argv) -lt 1
+        return 1
+    end
+    if test "$argv[1]" != "ignore"
+        return 1
+    end
+
+    set -l code ""
+    if test (count $argv) -ge 2
+        if string match -qr '^[0-9]+$' -- $argv[2]
+            set code $argv[2]
+        end
+    end
+    if test -z "$code"
+        if set -q NSH_LAST_FAILED_EXIT_CODE
+            set code $NSH_LAST_FAILED_EXIT_CODE
+        end
+    end
+
+    if test -z "$code" -o "$code" = "0"
+        printf '\x1b[2m  nsh: no recent failed exit code to ignore\x1b[0m\n' >&2
+        return 0
+    end
+
+    command nsh session ignore-exit-code --code $code >/dev/null 2>&1
+    if test $status -eq 0
+        __nsh_load_suppressed_exit_codes
+        printf '\x1b[2m  nsh: suppressed exit code %s for failure hints\x1b[0m\n' $code >&2
+    else
+        printf '\x1b[2m  nsh: failed to update suppressed exit codes\x1b[0m\n' >&2
+    end
+    return 0
+end
+
 # ── Nested shell guard ──────────────────────────────────
 if set -q NSH_SESSION_ID
+    __nsh_load_suppressed_exit_codes
     function nsh_query --wraps='nsh query --'
         builtin history add -- "? $argv" 2>/dev/null
         __nsh_clear_pending_command
+        __nsh_query_ignore_exit_code $argv; and return 0
         command nsh query -- $argv
     end
     function nsh_query_think --wraps='nsh query --think --'
         builtin history add -- "?? $argv" 2>/dev/null
         __nsh_clear_pending_command
+        __nsh_query_ignore_exit_code $argv; and return 0
         command nsh query --think -- $argv
     end
     function nsh_query_private --wraps='nsh query --private --'
         builtin history add -- "?! $argv" 2>/dev/null
         __nsh_clear_pending_command
+        __nsh_query_ignore_exit_code $argv; and return 0
         command nsh query --private -- $argv
     end
     abbr -a '?' -- 'nsh_query'
@@ -41,6 +93,7 @@ else
     set -gx NSH_TTY (tty)
 end
 set -gx NSH_HISTFILE ~/.local/share/fish/fish_history
+__nsh_load_suppressed_exit_codes
 
 function __nsh_restore_last_cwd
     set -l restore_cwd (command nsh session last-cwd --tty "$NSH_TTY" 2>/dev/null)
@@ -58,16 +111,19 @@ disown 2>/dev/null
 function nsh_query --wraps='nsh query --'
     builtin history add -- "? $argv" 2>/dev/null
     __nsh_clear_pending_command
+    __nsh_query_ignore_exit_code $argv; and return 0
     command nsh query -- $argv
 end
 function nsh_query_think --wraps='nsh query --think --'
     builtin history add -- "?? $argv" 2>/dev/null
     __nsh_clear_pending_command
+    __nsh_query_ignore_exit_code $argv; and return 0
     command nsh query --think -- $argv
 end
 function nsh_query_private --wraps='nsh query --private --'
     builtin history add -- "?! $argv" 2>/dev/null
     __nsh_clear_pending_command
+    __nsh_query_ignore_exit_code $argv; and return 0
     command nsh query --private -- $argv
 end
 abbr -a '?' -- 'nsh_query'
@@ -133,14 +189,15 @@ function __nsh_postexec --on-event fish_postexec
 
     # Hint after failure
     if test $exit_code -ne 0
-        if test $exit_code -eq 130 -o $exit_code -eq 143 -o $exit_code -eq 137
-            # Signal-based exit (Ctrl-C, SIGTERM, SIGKILL) — suppress
+        set -gx NSH_LAST_FAILED_EXIT_CODE $exit_code
+        if __nsh_is_suppressed_exit_code $exit_code
+            # Suppressed by configured exit-code list
         else
             switch "$cmd"
                 case 'grep*' 'test*' '\[*' 'diff*' 'cmp*' 'nsh*' 'ssh*' 'scp*' 'sftp*' 'rsync*' 'mosh*' 'ping*' 'curl*' 'wget*' 'ftp*' 'telnet*' 'nc*' 'exit*' 'logout*' 'fg*' 'bg*'
                     # benign failures
                 case '*'
-                    printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' $exit_code >&2
+                    printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix or ? ignore\x1b[0m\n' $exit_code >&2
             end
         end
     end

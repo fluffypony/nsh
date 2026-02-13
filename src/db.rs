@@ -876,11 +876,11 @@ impl Db {
     }
 
     pub fn backfill_command_entities_if_needed(&self) -> rusqlite::Result<usize> {
-        let max_command_id: i64 = self
-            .conn
-            .query_row("SELECT COALESCE(MAX(id), 0) FROM commands", [], |row| {
-                row.get(0)
-            })?;
+        let max_command_id: i64 =
+            self.conn
+                .query_row("SELECT COALESCE(MAX(id), 0) FROM commands", [], |row| {
+                    row.get(0)
+                })?;
         let last_backfilled_id = self
             .get_meta(COMMAND_ENTITY_BACKFILL_MAX_ID_KEY)?
             .and_then(|v| v.parse::<i64>().ok())
@@ -924,7 +924,10 @@ impl Db {
         }
         tx.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            params![COMMAND_ENTITY_BACKFILL_MAX_ID_KEY, max_command_id.to_string()],
+            params![
+                COMMAND_ENTITY_BACKFILL_MAX_ID_KEY,
+                max_command_id.to_string()
+            ],
         )?;
         tx.commit()?;
         Ok(inserted)

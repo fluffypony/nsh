@@ -260,7 +260,10 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             ));
             xml.push_str(&format!(
                 "      <input>{}</input>\n",
-                xml_escape(&crate::redact::redact_secrets(&cmd.command, &config.redaction)),
+                xml_escape(&crate::redact::redact_secrets(
+                    &cmd.command,
+                    &config.redaction
+                )),
             ));
             if let Some(ref summary) = cmd.summary {
                 let redacted = crate::redact::redact_secrets(summary, &config.redaction);
@@ -299,7 +302,10 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             ));
             xml.push_str(&format!(
                 "        <input>{}</input>\n",
-                xml_escape(&crate::redact::redact_secrets(&cmd.command, &config.redaction)),
+                xml_escape(&crate::redact::redact_secrets(
+                    &cmd.command,
+                    &config.redaction
+                )),
             ));
             if let Some(ref summary) = cmd.summary {
                 let redacted = crate::redact::redact_secrets(summary, &config.redaction);
@@ -861,9 +867,7 @@ fn detect_machine_info() -> String {
     }
 
     let lang_pkg_mgrs: Vec<&str> = [
-        "npm", "npx", "yarn", "pnpm", "bun", "deno",
-        "pip3", "pipx", "uv",
-        "cargo", "rustup",
+        "npm", "npx", "yarn", "pnpm", "bun", "deno", "pip3", "pipx", "uv", "cargo", "rustup",
         "gem", "go", "composer", "dotnet",
     ]
     .iter()
@@ -1454,7 +1458,10 @@ mod tests {
             !paths.iter().any(|p| p.contains(".git")),
             "fallback should skip .git dir: {paths:?}"
         );
-        assert!(paths.contains(&"file1.txt"), "should still list regular files: {paths:?}");
+        assert!(
+            paths.contains(&"file1.txt"),
+            "should still list regular files: {paths:?}"
+        );
     }
 
     #[test]
@@ -1621,7 +1628,10 @@ mod tests {
         assert!(xml.contains("<summary>Started server</summary>"));
         assert!(xml.contains("</other_sessions>"));
         let ttys001_count = xml.matches("tty=\"/dev/ttys001\"").count();
-        assert_eq!(ttys001_count, 1, "should group commands under same tty session");
+        assert_eq!(
+            ttys001_count, 1,
+            "should group commands under same tty session"
+        );
         let session_tags = xml.matches("<session tty=").count();
         assert_eq!(session_tags, 2, "should have 2 session elements for 2 TTYs");
     }
@@ -1960,7 +1970,10 @@ mod tests {
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<input>echo hello</input>"));
-        assert!(!xml.contains("<summary>"), "no summary tag when summary is None");
+        assert!(
+            !xml.contains("<summary>"),
+            "no summary tag when summary is None"
+        );
     }
 
     // --- build_xml_context: session_history with missing exit code ---
@@ -1977,7 +1990,10 @@ mod tests {
             summary: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
-        assert!(xml.contains("exit=\"-1\""), "None exit_code should render as -1");
+        assert!(
+            xml.contains("exit=\"-1\""),
+            "None exit_code should render as -1"
+        );
     }
 
     // --- build_xml_context: other_sessions with no summary ---
@@ -1997,7 +2013,10 @@ mod tests {
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<input>top</input>"));
-        assert!(!xml.contains("<summary>"), "no summary tag when summary is None");
+        assert!(
+            !xml.contains("<summary>"),
+            "no summary tag when summary is None"
+        );
         assert!(xml.contains("exit=\"-1\""));
     }
 
@@ -2093,7 +2112,10 @@ mod tests {
     fn test_detect_timezone_non_empty_value() {
         let tz = detect_timezone();
         assert!(!tz.is_empty());
-        assert_ne!(tz, "unknown", "timezone should be detected on CI/dev machines");
+        assert_ne!(
+            tz, "unknown",
+            "timezone should be detected on CI/dev machines"
+        );
     }
 
     // --- get_cached_system_info consistency across calls ---
@@ -2335,7 +2357,10 @@ mod tests {
         assert!(xml.contains("duration=\"1500ms\""));
         assert!(xml.contains("cwd=\"/home/user/proj\""));
         assert!(xml.contains("<input>git status</input>"));
-        assert!(!xml.contains("<summary></summary>"), "no empty summary tags for None");
+        assert!(
+            !xml.contains("<summary></summary>"),
+            "no empty summary tags for None"
+        );
         assert!(xml.contains("</session_history>"));
     }
 
@@ -2521,7 +2546,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("CMakeLists.txt"), "").unwrap();
         let t = detect_project_type(tmp.path().to_str().unwrap());
-        assert!(t.contains("C/C++ (CMake)"), "expected C/C++ (CMake), got: {t}");
+        assert!(
+            t.contains("C/C++ (CMake)"),
+            "expected C/C++ (CMake), got: {t}"
+        );
     }
 
     #[test]
@@ -2600,7 +2628,10 @@ mod tests {
         assert!(entries.is_some());
         let entries = entries.unwrap();
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(paths.contains(&"main.rs"), "should include main.rs: {paths:?}");
+        assert!(
+            paths.contains(&"main.rs"),
+            "should include main.rs: {paths:?}"
+        );
         assert!(
             !paths.iter().any(|p| p.ends_with(".log")),
             "should exclude .log files: {paths:?}"
@@ -3125,7 +3156,10 @@ mod tests {
         std::fs::write(tmp.path().join("visible.txt"), "hi").unwrap();
         let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
-        assert!(paths.contains(&".hidden"), "should include hidden files: {paths:?}");
+        assert!(
+            paths.contains(&".hidden"),
+            "should include hidden files: {paths:?}"
+        );
         assert!(paths.contains(&"visible.txt"));
     }
 
@@ -3506,7 +3540,10 @@ mod tests {
         let mut types = Vec::new();
         check_project_markers(tmp.path(), &mut types);
         let python_count = types.iter().filter(|&&t| t == "Python").count();
-        assert_eq!(python_count, 1, "Python should only appear once even with both markers");
+        assert_eq!(
+            python_count, 1,
+            "Python should only appear once even with both markers"
+        );
     }
 
     // --- detect_project_info with files ---
@@ -3522,7 +3559,10 @@ mod tests {
         assert!(info.root.is_some());
         assert!(!info.files.is_empty());
         let paths: Vec<&str> = info.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(paths.contains(&"main.rs"), "should include main.rs: {paths:?}");
+        assert!(
+            paths.contains(&"main.rs"),
+            "should include main.rs: {paths:?}"
+        );
     }
 
     // --- build_xml_context: large number of files ---
@@ -3706,19 +3746,14 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let session = "read_test_sess";
         let content = "line1\nline2\nline3\n";
-        std::fs::write(
-            tmp.path().join(format!("scrollback_{session}")),
-            content,
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), content).unwrap();
         let result = read_scrollback_file(session, tmp.path());
         assert_eq!(result, content);
     }
 
     #[test]
     fn test_read_scrollback_file_nonexistent_dir() {
-        let result =
-            read_scrollback_file("xyz", std::path::Path::new("/nonexistent_dir_abc_123"));
+        let result = read_scrollback_file("xyz", std::path::Path::new("/nonexistent_dir_abc_123"));
         assert!(result.is_empty());
     }
 
@@ -3775,11 +3810,8 @@ mod tests {
         std::fs::write(tmp.path().join("real.txt"), "data").unwrap();
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(
-                tmp.path().join("real.txt"),
-                tmp.path().join("link.txt"),
-            )
-            .unwrap();
+            std::os::unix::fs::symlink(tmp.path().join("real.txt"), tmp.path().join("link.txt"))
+                .unwrap();
             let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
             let link = entries.iter().find(|e| e.path == "link.txt");
             assert!(link.is_some(), "should list symlink");
@@ -3793,11 +3825,8 @@ mod tests {
         std::fs::write(tmp.path().join("real.txt"), "data").unwrap();
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(
-                tmp.path().join("real.txt"),
-                tmp.path().join("link.txt"),
-            )
-            .unwrap();
+            std::os::unix::fs::symlink(tmp.path().join("real.txt"), tmp.path().join("link.txt"))
+                .unwrap();
             let entries = list_project_files_fallback(tmp.path(), 100);
             let link = entries.iter().find(|e| e.path == "link.txt");
             assert!(link.is_some(), "should list symlink");
@@ -4147,19 +4176,34 @@ mod tests {
         let mut ctx = make_minimal_ctx();
         ctx.other_sessions = vec![
             OtherSessionSummary {
-                command: "a".into(), cwd: None, exit_code: Some(0),
-                started_at: "t1".into(), summary: None,
-                tty: "/dev/ttys001".into(), shell: "bash".into(), session_id: "s1".into(),
+                command: "a".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t1".into(),
+                summary: None,
+                tty: "/dev/ttys001".into(),
+                shell: "bash".into(),
+                session_id: "s1".into(),
             },
             OtherSessionSummary {
-                command: "b".into(), cwd: None, exit_code: Some(0),
-                started_at: "t2".into(), summary: None,
-                tty: "/dev/ttys002".into(), shell: "zsh".into(), session_id: "s2".into(),
+                command: "b".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t2".into(),
+                summary: None,
+                tty: "/dev/ttys002".into(),
+                shell: "zsh".into(),
+                session_id: "s2".into(),
             },
             OtherSessionSummary {
-                command: "c".into(), cwd: None, exit_code: Some(0),
-                started_at: "t3".into(), summary: None,
-                tty: "/dev/ttys003".into(), shell: "fish".into(), session_id: "s3".into(),
+                command: "c".into(),
+                cwd: None,
+                exit_code: Some(0),
+                started_at: "t3".into(),
+                summary: None,
+                tty: "/dev/ttys003".into(),
+                shell: "fish".into(),
+                session_id: "s3".into(),
             },
         ];
         let xml = build_xml_context(&ctx, &Config::default());
@@ -4306,11 +4350,7 @@ mod tests {
     fn test_read_scrollback_file_special_session_id() {
         let tmp = tempfile::TempDir::new().unwrap();
         let session = "sess-with.dots_and-dashes";
-        std::fs::write(
-            tmp.path().join(format!("scrollback_{session}")),
-            "content",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(format!("scrollback_{session}")), "content").unwrap();
         let result = read_scrollback_file(session, tmp.path());
         assert_eq!(result, "content");
     }
@@ -4382,7 +4422,10 @@ mod tests {
         ];
         let xml = build_xml_context(&ctx, &Config::default());
         let session_count = xml.matches("<session tty=").count();
-        assert_eq!(session_count, 3, "switching back to same tty opens new session tag");
+        assert_eq!(
+            session_count, 3,
+            "switching back to same tty opens new session tag"
+        );
         let close_count = xml.matches("</session>").count();
         assert_eq!(close_count, 3);
     }
@@ -4515,7 +4558,8 @@ mod tests {
 
     #[test]
     fn test_list_project_files_with_ignore_returns_none_on_errors_only() {
-        let entries = list_project_files_with_ignore(std::path::Path::new("/nonexistent_abc_xyz"), 100);
+        let entries =
+            list_project_files_with_ignore(std::path::Path::new("/nonexistent_abc_xyz"), 100);
         if let Some(e) = entries {
             assert!(e.is_empty());
         }
@@ -4583,16 +4627,14 @@ mod tests {
     #[test]
     fn test_build_xml_context_conversation_history_not_rendered_in_xml() {
         let mut ctx = make_minimal_ctx();
-        ctx.conversation_history = vec![
-            ConversationExchange {
-                query: "unique_query_marker_12345".into(),
-                response_type: "command".into(),
-                response: "unique_response_marker_67890".into(),
-                explanation: Some("unique_explanation_marker".into()),
-                result_exit_code: Some(0),
-                result_output_snippet: Some("unique_snippet".into()),
-            },
-        ];
+        ctx.conversation_history = vec![ConversationExchange {
+            query: "unique_query_marker_12345".into(),
+            response_type: "command".into(),
+            response: "unique_response_marker_67890".into(),
+            explanation: Some("unique_explanation_marker".into()),
+            result_exit_code: Some(0),
+            result_output_snippet: Some("unique_snippet".into()),
+        }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(
             !xml.contains("unique_query_marker_12345"),
@@ -4660,12 +4702,32 @@ mod tests {
     fn test_detect_git_info_status_format() {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path().to_str().unwrap();
-        std::process::Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
-        std::process::Command::new("git").args(["config", "user.email", "t@t.com"]).current_dir(dir).output().unwrap();
-        std::process::Command::new("git").args(["config", "user.name", "T"]).current_dir(dir).output().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
-        std::process::Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
-        std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(dir).output().unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         std::fs::write(tmp.path().join("b.txt"), "b").unwrap();
         let (_branch, status, _commits) = detect_git_info(dir, 5);
         assert_eq!(status.as_deref(), Some("1 changed files"));
@@ -4701,22 +4763,26 @@ mod tests {
     #[test]
     fn test_build_xml_context_conversation_history_not_in_xml() {
         let mut ctx = make_minimal_ctx();
-        ctx.conversation_history = vec![
-            ConversationExchange {
-                query: "list files".into(),
-                response_type: "command".into(),
-                response: "ls -la".into(),
-                explanation: Some("list all files".into()),
-                result_exit_code: Some(0),
-                result_output_snippet: Some("total 42".into()),
-            },
-        ];
+        ctx.conversation_history = vec![ConversationExchange {
+            query: "list files".into(),
+            response_type: "command".into(),
+            response: "ls -la".into(),
+            explanation: Some("list all files".into()),
+            result_exit_code: Some(0),
+            result_output_snippet: Some("total 42".into()),
+        }];
         let xml = build_xml_context(&ctx, &Config::default());
-        assert!(!xml.contains("list files"), "conversation history is replayed as messages, not in XML context");
+        assert!(
+            !xml.contains("list files"),
+            "conversation history is replayed as messages, not in XML context"
+        );
         assert_eq!(ctx.conversation_history.len(), 1);
         assert_eq!(ctx.conversation_history[0].query, "list files");
         assert_eq!(ctx.conversation_history[0].response, "ls -la");
-        assert_eq!(ctx.conversation_history[0].explanation.as_deref(), Some("list all files"));
+        assert_eq!(
+            ctx.conversation_history[0].explanation.as_deref(),
+            Some("list all files")
+        );
         assert_eq!(ctx.conversation_history[0].result_exit_code, Some(0));
     }
 
@@ -4758,7 +4824,10 @@ mod tests {
         std::fs::write(child.join("Cargo.toml"), "").unwrap();
         let t = detect_project_type(child.to_str().unwrap());
         assert!(t.contains("Rust"), "child should detect Rust, got: {t}");
-        assert!(t.contains("Node"), "should walk up to git root and detect Node, got: {t}");
+        assert!(
+            t.contains("Node"),
+            "should walk up to git root and detect Node, got: {t}"
+        );
     }
 
     #[test]
@@ -4795,15 +4864,19 @@ mod tests {
     fn test_list_project_files_with_ignore_symlinks() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::write(tmp.path().join("real.txt"), "content").unwrap();
-        std::os::unix::fs::symlink(
-            tmp.path().join("real.txt"),
-            tmp.path().join("link.txt"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("real.txt"), tmp.path().join("link.txt"))
+            .unwrap();
         let entries = list_project_files_with_ignore(tmp.path(), 100).unwrap();
         let link_entry = entries.iter().find(|e| e.path == "link.txt");
-        assert!(link_entry.is_some(), "should list symlink: {:?}", entries.iter().map(|e| &e.path).collect::<Vec<_>>());
+        assert!(
+            link_entry.is_some(),
+            "should list symlink: {:?}",
+            entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
         assert_eq!(link_entry.unwrap().kind, "symlink");
-        assert!(link_entry.unwrap().size.is_empty(), "symlinks should have empty size");
+        assert!(
+            link_entry.unwrap().size.is_empty(),
+            "symlinks should have empty size"
+        );
     }
 }

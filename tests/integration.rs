@@ -211,10 +211,7 @@ fn test_completions_zsh() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.is_empty(),
-        "Expected non-empty completions output"
-    );
+    assert!(!stdout.is_empty(), "Expected non-empty completions output");
 }
 
 #[test]
@@ -226,10 +223,7 @@ fn test_completions_bash() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.is_empty(),
-        "Expected non-empty completions output"
-    );
+    assert!(!stdout.is_empty(), "Expected non-empty completions output");
 }
 
 #[test]
@@ -241,10 +235,7 @@ fn test_completions_fish() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.is_empty(),
-        "Expected non-empty completions output"
-    );
+    assert!(!stdout.is_empty(), "Expected non-empty completions output");
 }
 
 #[test]
@@ -266,16 +257,27 @@ fn test_record_inserts_command() {
     let tmp = std::env::temp_dir().join("nsh_test_record");
     let output = std::process::Command::new("cargo")
         .args([
-            "run", "--", "record",
-            "--session", "test-integration-rec",
-            "--command", "echo hello",
-            "--cwd", "/tmp",
-            "--exit-code", "0",
-            "--started-at", "2025-01-01T00:00:00Z",
-            "--duration-ms", "10",
-            "--tty", "/dev/ttys000",
-            "--pid", "1234",
-            "--shell", "zsh",
+            "run",
+            "--",
+            "record",
+            "--session",
+            "test-integration-rec",
+            "--command",
+            "echo hello",
+            "--cwd",
+            "/tmp",
+            "--exit-code",
+            "0",
+            "--started-at",
+            "2025-01-01T00:00:00Z",
+            "--duration-ms",
+            "10",
+            "--tty",
+            "/dev/ttys000",
+            "--pid",
+            "1234",
+            "--shell",
+            "zsh",
         ])
         .env("HOME", &tmp)
         .output()
@@ -295,11 +297,18 @@ fn test_session_start_and_end() {
 
     let start = std::process::Command::new("cargo")
         .args([
-            "run", "--", "session", "start",
-            "--session", session_id,
-            "--tty", "/dev/ttys000",
-            "--shell", "zsh",
-            "--pid", "9999",
+            "run",
+            "--",
+            "session",
+            "start",
+            "--session",
+            session_id,
+            "--tty",
+            "/dev/ttys000",
+            "--shell",
+            "zsh",
+            "--pid",
+            "9999",
         ])
         .env("HOME", &tmp)
         .output()
@@ -311,10 +320,7 @@ fn test_session_start_and_end() {
     );
 
     let end = std::process::Command::new("cargo")
-        .args([
-            "run", "--", "session", "end",
-            "--session", session_id,
-        ])
+        .args(["run", "--", "session", "end", "--session", session_id])
         .env("HOME", &tmp)
         .output()
         .expect("failed to run nsh session end");
@@ -377,7 +383,9 @@ fn test_init_zsh_contains_hooks() {
         "zsh init should contain shell hooks, got: {script}"
     );
     assert!(
-        script.contains("nsh record") || script.contains("nsh session") || script.contains("nsh heartbeat"),
+        script.contains("nsh record")
+            || script.contains("nsh session")
+            || script.contains("nsh heartbeat"),
         "zsh init should reference nsh subcommands, got: {script}"
     );
 }
@@ -395,7 +403,9 @@ fn test_init_bash_contains_hooks() {
         "bash init should contain shell hooks, got: {script}"
     );
     assert!(
-        script.contains("nsh record") || script.contains("nsh session") || script.contains("nsh heartbeat"),
+        script.contains("nsh record")
+            || script.contains("nsh session")
+            || script.contains("nsh heartbeat"),
         "bash init should reference nsh subcommands, got: {script}"
     );
 }
@@ -454,8 +464,13 @@ fn test_session_label_missing_session() {
     let tmp = std::env::temp_dir().join("nsh_test_session_label");
     let output = std::process::Command::new("cargo")
         .args([
-            "run", "--", "session", "label", "test-label",
-            "--session", "nonexistent-session-id",
+            "run",
+            "--",
+            "session",
+            "label",
+            "test-label",
+            "--session",
+            "nonexistent-session-id",
         ])
         .env("HOME", &tmp)
         .output()

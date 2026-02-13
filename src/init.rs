@@ -140,7 +140,9 @@ mod tests {
     fn test_zsh_accept_line_install_heals_corrupt_orig_widget() {
         let script = generate_init_script("zsh");
         assert!(
-            script.contains("if [[ \"${widgets[__nsh_accept_line_orig]:-}\" == \"user:__nsh_accept_line\" ]]"),
+            script.contains(
+                "if [[ \"${widgets[__nsh_accept_line_orig]:-}\" == \"user:__nsh_accept_line\" ]]"
+            ),
             "zsh init should repair corrupted __nsh_accept_line_orig bindings"
         );
         assert!(

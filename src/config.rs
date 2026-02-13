@@ -9,6 +9,8 @@ use zeroize::Zeroizing;
 pub struct Config {
     pub provider: ProviderConfig,
     pub context: ContextConfig,
+    #[serde(default)]
+    pub hints: HintsConfig,
     pub tools: ToolsConfig,
     #[serde(default)]
     pub models: ModelsConfig,
@@ -27,6 +29,36 @@ pub struct Config {
     #[allow(dead_code)]
     #[serde(default)]
     pub execution: ExecutionConfig,
+}
+
+pub const DEFAULT_SUPPRESSED_EXIT_CODES: &[i32] = &[130, 137, 141, 143];
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct HintsConfig {
+    pub suppressed_exit_codes: Vec<i32>,
+}
+
+impl Default for HintsConfig {
+    fn default() -> Self {
+        Self {
+            suppressed_exit_codes: DEFAULT_SUPPRESSED_EXIT_CODES.to_vec(),
+        }
+    }
+}
+
+impl HintsConfig {
+    pub fn normalized_suppressed_exit_codes(&self) -> Vec<i32> {
+        let mut codes: Vec<i32> = self
+            .suppressed_exit_codes
+            .iter()
+            .copied()
+            .filter(|c| *c > 0 && *c <= 255)
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        codes
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -272,17 +304,16 @@ pub const TOOL_BLOCKED_KEYS: &[&str] = &[
     "redaction.disable_builtin",
 ];
 
-const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &[
-    "api_key",
-    "api_key_cmd",
-    "base_url",
-];
+const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &["api_key", "api_key_cmd", "base_url"];
 
 pub fn is_setting_protected(key: &str) -> bool {
     if TOOL_BLOCKED_KEYS.contains(&key) {
         return true;
     }
-    if key.split('.').any(|segment| TOOL_BLOCKED_KEY_SEGMENTS.contains(&segment)) {
+    if key
+        .split('.')
+        .any(|segment| TOOL_BLOCKED_KEY_SEGMENTS.contains(&segment))
+    {
         return true;
     }
     for blocked in TOOL_BLOCKED_KEYS {
@@ -321,8 +352,7 @@ impl ToolsConfig {
                     return true;
                 }
             } else if trimmed == entry
-                || trimmed.starts_with(entry)
-                    && trimmed.as_bytes().get(entry.len()) == Some(&b' ')
+                || trimmed.starts_with(entry) && trimmed.as_bytes().get(entry.len()) == Some(&b' ')
             {
                 return true;
             }
@@ -600,6 +630,85 @@ impl Config {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SuppressedExitCodesUpdate {
+    pub added: bool,
+    pub codes: Vec<i32>,
+}
+
+pub fn add_suppressed_exit_code(code: i32) -> anyhow::Result<SuppressedExitCodesUpdate> {
+    if !(1..=255).contains(&code) {
+        anyhow::bail!("exit code must be in 1..=255");
+    }
+
+    let path = Config::path();
+    let content = if path.exists() {
+        std::fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+
+    let mut doc: toml_edit::DocumentMut = if content.is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        content.parse::<toml_edit::DocumentMut>()?
+    };
+
+    let had_hints_table = matches!(doc.get("hints"), Some(item) if item.is_table());
+    if !had_hints_table {
+        doc["hints"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let hints = doc["hints"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("failed to prepare [hints] table"))?;
+
+    let had_key = hints.get("suppressed_exit_codes").is_some();
+    let mut codes: Vec<i32> = if had_key {
+        if let Some(arr) = hints
+            .get("suppressed_exit_codes")
+            .and_then(|v| v.as_array())
+        {
+            arr.iter()
+                .filter_map(|v| v.as_integer())
+                .filter_map(|v| i32::try_from(v).ok())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    } else {
+        DEFAULT_SUPPRESSED_EXIT_CODES.to_vec()
+    };
+
+    let added = !codes.contains(&code);
+    if added {
+        codes.push(code);
+    }
+    codes.retain(|c| *c > 0 && *c <= 255);
+    codes.sort_unstable();
+    codes.dedup();
+
+    let mut arr = toml_edit::Array::new();
+    for c in &codes {
+        arr.push(*c as i64);
+    }
+    hints["suppressed_exit_codes"] = toml_edit::value(arr);
+
+    let new_content = doc.to_string();
+    toml::from_str::<Config>(&new_content)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, new_content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(SuppressedExitCodesUpdate { added, codes })
+}
+
 pub fn build_config_xml(
     config: &Config,
     skills: &[crate::skills::Skill],
@@ -611,15 +720,38 @@ pub fn build_config_xml(
 
     // ── Provider ────────────────────────────────────────
     x.push_str("  <section name=\"provider\">\n");
-    opt(&mut x, "default", &config.provider.default,
-        "Active LLM provider", Some("openrouter,anthropic,openai,ollama,gemini"));
-    opt(&mut x, "model", &config.provider.model,
-        "Primary model for queries", None);
-    opt(&mut x, "fallback_model",
-        config.provider.fallback_model.as_deref().unwrap_or("(none)"),
-        "Fallback model on 429/5xx errors", None);
-    opt(&mut x, "timeout_seconds", &config.provider.timeout_seconds.to_string(),
-        "HTTP request timeout in seconds", None);
+    opt(
+        &mut x,
+        "default",
+        &config.provider.default,
+        "Active LLM provider",
+        Some("openrouter,anthropic,openai,ollama,gemini"),
+    );
+    opt(
+        &mut x,
+        "model",
+        &config.provider.model,
+        "Primary model for queries",
+        None,
+    );
+    opt(
+        &mut x,
+        "fallback_model",
+        config
+            .provider
+            .fallback_model
+            .as_deref()
+            .unwrap_or("(none)"),
+        "Fallback model on 429/5xx errors",
+        None,
+    );
+    opt(
+        &mut x,
+        "timeout_seconds",
+        &config.provider.timeout_seconds.to_string(),
+        "HTTP request timeout in seconds",
+        None,
+    );
     x.push_str("    <configured_providers>\n");
     for (name, auth) in [
         ("openrouter", &config.provider.openrouter),
@@ -628,7 +760,8 @@ pub fn build_config_xml(
         ("ollama", &config.provider.ollama),
         ("gemini", &config.provider.gemini),
     ] {
-        let has_key = auth.as_ref()
+        let has_key = auth
+            .as_ref()
             .and_then(|a| a.resolve_api_key(name).ok())
             .is_some();
         x.push_str(&format!(
@@ -640,33 +773,118 @@ pub fn build_config_xml(
 
     // ── Context ─────────────────────────────────────────
     x.push_str("  <section name=\"context\">\n");
-    opt(&mut x, "scrollback_lines", &config.context.scrollback_lines.to_string(),
-        "Max terminal scrollback lines captured", None);
-    opt(&mut x, "scrollback_pages", &config.context.scrollback_pages.to_string(),
-        "Terminal pages included in LLM context", None);
-    opt(&mut x, "history_summaries", &config.context.history_summaries.to_string(),
-        "Max command history summaries in context", None);
-    opt(&mut x, "history_limit", &config.context.history_limit.to_string(),
-        "Max conversation history entries per session", None);
-    opt(&mut x, "other_tty_summaries", &config.context.other_tty_summaries.to_string(),
-        "Command summaries per other TTY session", None);
-    opt(&mut x, "max_other_ttys", &config.context.max_other_ttys.to_string(),
-        "Max other TTY sessions included", None);
-    opt(&mut x, "project_files_limit", &config.context.project_files_limit.to_string(),
-        "Max project files listed in context", None);
-    opt(&mut x, "git_commits", &config.context.git_commits.to_string(),
-        "Recent git commits included in context", None);
-    opt(&mut x, "retention_days", &config.context.retention_days.to_string(),
-        "Days to retain command history", None);
-    opt(&mut x, "max_output_storage_bytes", &config.context.max_output_storage_bytes.to_string(),
-        "Max bytes of output stored per command", None);
-    opt(&mut x, "include_other_tty", &config.context.include_other_tty.to_string(),
-        "Include other TTY sessions in context", None);
-    opt(&mut x, "restore_last_cwd_per_tty", &config.context.restore_last_cwd_per_tty.to_string(),
-        "Restore shell cwd to the last directory used on this TTY", None);
-    let ci = config.context.custom_instructions.as_deref().unwrap_or("(none)");
-    opt(&mut x, "custom_instructions", ci,
-        "Custom instructions appended to system prompt", None);
+    opt(
+        &mut x,
+        "scrollback_lines",
+        &config.context.scrollback_lines.to_string(),
+        "Max terminal scrollback lines captured",
+        None,
+    );
+    opt(
+        &mut x,
+        "scrollback_pages",
+        &config.context.scrollback_pages.to_string(),
+        "Terminal pages included in LLM context",
+        None,
+    );
+    opt(
+        &mut x,
+        "history_summaries",
+        &config.context.history_summaries.to_string(),
+        "Max command history summaries in context",
+        None,
+    );
+    opt(
+        &mut x,
+        "history_limit",
+        &config.context.history_limit.to_string(),
+        "Max conversation history entries per session",
+        None,
+    );
+    opt(
+        &mut x,
+        "other_tty_summaries",
+        &config.context.other_tty_summaries.to_string(),
+        "Command summaries per other TTY session",
+        None,
+    );
+    opt(
+        &mut x,
+        "max_other_ttys",
+        &config.context.max_other_ttys.to_string(),
+        "Max other TTY sessions included",
+        None,
+    );
+    opt(
+        &mut x,
+        "project_files_limit",
+        &config.context.project_files_limit.to_string(),
+        "Max project files listed in context",
+        None,
+    );
+    opt(
+        &mut x,
+        "git_commits",
+        &config.context.git_commits.to_string(),
+        "Recent git commits included in context",
+        None,
+    );
+    opt(
+        &mut x,
+        "retention_days",
+        &config.context.retention_days.to_string(),
+        "Days to retain command history",
+        None,
+    );
+    opt(
+        &mut x,
+        "max_output_storage_bytes",
+        &config.context.max_output_storage_bytes.to_string(),
+        "Max bytes of output stored per command",
+        None,
+    );
+    opt(
+        &mut x,
+        "include_other_tty",
+        &config.context.include_other_tty.to_string(),
+        "Include other TTY sessions in context",
+        None,
+    );
+    opt(
+        &mut x,
+        "restore_last_cwd_per_tty",
+        &config.context.restore_last_cwd_per_tty.to_string(),
+        "Restore shell cwd to the last directory used on this TTY",
+        None,
+    );
+    let ci = config
+        .context
+        .custom_instructions
+        .as_deref()
+        .unwrap_or("(none)");
+    opt(
+        &mut x,
+        "custom_instructions",
+        ci,
+        "Custom instructions appended to system prompt",
+        None,
+    );
+    x.push_str("  </section>\n");
+
+    // ── Hints ───────────────────────────────────────────
+    x.push_str("  <section name=\"hints\">\n");
+    x.push_str(&format!(
+        "    <option key=\"suppressed_exit_codes\" value=\"{}\" description=\"Exit codes that should not show '? fix' failure hints\" />\n",
+        crate::context::xml_escape(
+            &config
+                .hints
+                .normalized_suppressed_exit_codes()
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    ));
     x.push_str("  </section>\n");
 
     // ── Models ──────────────────────────────────────────
@@ -695,16 +913,31 @@ pub fn build_config_xml(
 
     // ── Web Search ──────────────────────────────────────
     x.push_str("  <section name=\"web_search\">\n");
-    opt(&mut x, "provider", &config.web_search.provider,
-        "Provider for web search queries", None);
-    opt(&mut x, "model", &config.web_search.model,
-        "Model used for web search", None);
+    opt(
+        &mut x,
+        "provider",
+        &config.web_search.provider,
+        "Provider for web search queries",
+        None,
+    );
+    opt(
+        &mut x,
+        "model",
+        &config.web_search.model,
+        "Model used for web search",
+        None,
+    );
     x.push_str("  </section>\n");
 
     // ── Display ─────────────────────────────────────────
     x.push_str("  <section name=\"display\">\n");
-    opt(&mut x, "chat_color", &config.display.chat_color.replace('\x1b', "\\x1b"),
-        "ANSI escape for chat response color", None);
+    opt(
+        &mut x,
+        "chat_color",
+        &config.display.chat_color.replace('\x1b', "\\x1b"),
+        "ANSI escape for chat response color",
+        None,
+    );
     x.push_str("  </section>\n");
 
     // ── Redaction ───────────────────────────────────────
@@ -713,8 +946,13 @@ pub fn build_config_xml(
         "    <option key=\"enabled\" value=\"{}\" description=\"Auto-redact secrets before sending to LLM\" protected=\"true\" />\n",
         config.redaction.enabled
     ));
-    opt(&mut x, "replacement", &config.redaction.replacement,
-        "Replacement text for redacted secrets", None);
+    opt(
+        &mut x,
+        "replacement",
+        &config.redaction.replacement,
+        "Replacement text for redacted secrets",
+        None,
+    );
     x.push_str(&format!(
         "    <option key=\"disable_builtin\" value=\"{}\" description=\"Disable built-in secret patterns\" protected=\"true\" />\n",
         config.redaction.disable_builtin
@@ -727,16 +965,31 @@ pub fn build_config_xml(
 
     // ── Capture ─────────────────────────────────────────
     x.push_str("  <section name=\"capture\">\n");
-    opt(&mut x, "mode", &config.capture.mode,
-        "Terminal capture mode", Some("vt100"));
-    opt(&mut x, "alt_screen", &config.capture.alt_screen,
-        "How to handle alternate screen (TUI apps)", Some("drop,snapshot"));
+    opt(
+        &mut x,
+        "mode",
+        &config.capture.mode,
+        "Terminal capture mode",
+        Some("vt100"),
+    );
+    opt(
+        &mut x,
+        "alt_screen",
+        &config.capture.alt_screen,
+        "How to handle alternate screen (TUI apps)",
+        Some("drop,snapshot"),
+    );
     x.push_str("  </section>\n");
 
     // ── Execution ───────────────────────────────────────
     x.push_str("  <section name=\"execution\">\n");
-    opt(&mut x, "mode", &config.execution.mode,
-        "How suggested commands are delivered", Some("prefill,confirm,autorun"));
+    opt(
+        &mut x,
+        "mode",
+        &config.execution.mode,
+        "How suggested commands are delivered",
+        Some("prefill,confirm,autorun"),
+    );
     x.push_str(&format!(
         "    <option key=\"allow_unsafe_autorun\" value=\"{}\" description=\"Allow !! and autorun mode to auto-run elevated-risk commands (MANUAL EDIT ONLY)\" protected=\"true\" />\n",
         config.execution.allow_unsafe_autorun
@@ -745,8 +998,13 @@ pub fn build_config_xml(
 
     // ── DB ──────────────────────────────────────────────
     x.push_str("  <section name=\"db\">\n");
-    opt(&mut x, "busy_timeout_ms", &config.db.busy_timeout_ms.to_string(),
-        "SQLite busy timeout in milliseconds", None);
+    opt(
+        &mut x,
+        "busy_timeout_ms",
+        &config.db.busy_timeout_ms.to_string(),
+        "SQLite busy timeout in milliseconds",
+        None,
+    );
     x.push_str("  </section>\n");
 
     // ── MCP Servers ─────────────────────────────────────
@@ -777,7 +1035,11 @@ pub fn build_config_xml(
         skills.len()
     ));
     for skill in skills {
-        let source = if skill.is_project { "project" } else { "global" };
+        let source = if skill.is_project {
+            "project"
+        } else {
+            "global"
+        };
         x.push_str(&format!(
             "    <skill name=\"{}\" description=\"{}\" source=\"{source}\" terminal=\"{}\" />\n",
             xml_escape(&skill.name),
@@ -813,6 +1075,10 @@ mod tests {
         assert_eq!(config.provider.default, "openrouter");
         assert_eq!(config.provider.model, "google/gemini-2.5-flash");
         assert_eq!(config.provider.web_search_model, "perplexity/sonar");
+        assert_eq!(
+            config.hints.normalized_suppressed_exit_codes(),
+            vec![130, 137, 141, 143]
+        );
         assert_eq!(config.context.history_limit, 20);
         assert_eq!(config.context.retention_days, 1095);
         assert_eq!(config.context.history_summaries, 100);
@@ -1416,8 +1682,7 @@ git_commits = 10
 "#,
         )
         .unwrap();
-        let overlay: toml::Value =
-            toml::Value::Table(toml::map::Map::new());
+        let overlay: toml::Value = toml::Value::Table(toml::map::Map::new());
         deep_merge_toml(&mut base, &overlay);
         let config: Config = base.try_into().unwrap();
         assert_eq!(config.context.history_limit, 20);
@@ -1516,8 +1781,7 @@ mode = "autorun"
 
     #[test]
     fn test_sanitize_project_config_empty() {
-        let mut value: toml::Value =
-            toml::Value::Table(toml::map::Map::new());
+        let mut value: toml::Value = toml::Value::Table(toml::map::Map::new());
         sanitize_project_config(&mut value);
         let table = value.as_table().unwrap();
         assert!(table.is_empty());
@@ -1591,10 +1855,7 @@ fallback_model = "secondary"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.model, "primary");
-        assert_eq!(
-            config.provider.fallback_model.as_deref(),
-            Some("secondary")
-        );
+        assert_eq!(config.provider.fallback_model.as_deref(), Some("secondary"));
     }
 
     #[test]
@@ -1831,7 +2092,13 @@ model = "search-model"
     #[test]
     fn test_opt_with_choices() {
         let mut x = String::new();
-        opt(&mut x, "mode", "prefill", "execution mode", Some("prefill,confirm,autorun"));
+        opt(
+            &mut x,
+            "mode",
+            "prefill",
+            "execution mode",
+            Some("prefill,confirm,autorun"),
+        );
         assert!(x.contains("choices="));
         assert!(x.contains("prefill,confirm,autorun"));
     }
@@ -1871,7 +2138,12 @@ model = "search-model"
         // Unknown provider: no env var mapping, should bail
         let result = auth.resolve_api_key("unknown_provider");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No API key for unknown_provider"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No API key for unknown_provider")
+        );
 
         // Known provider with no env var set: should bail with env var name in message
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
@@ -1963,10 +2235,7 @@ key = "overridden"
         )
         .unwrap();
         deep_merge_toml(&mut base, &overlay);
-        assert_eq!(
-            base.get("key").unwrap().as_str(),
-            Some("overridden")
-        );
+        assert_eq!(base.get("key").unwrap().as_str(), Some("overridden"));
     }
 
     #[test]
@@ -2021,14 +2290,20 @@ model = "gpt-4"
 
     #[test]
     fn test_deep_merge_toml_overlapping_keys() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             a = 1
             b = 2
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             b = 99
             c = 3
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         let t = base.as_table().unwrap();
         assert_eq!(t["a"].as_integer(), Some(1));
@@ -2046,16 +2321,22 @@ model = "gpt-4"
 
     #[test]
     fn test_deep_merge_toml_nested_tables() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             [outer]
             keep = "yes"
             inner_val = "old"
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             [outer]
             inner_val = "new"
             added = true
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         let outer = base.get("outer").unwrap().as_table().unwrap();
         assert_eq!(outer["keep"].as_str(), Some("yes"));
@@ -2065,29 +2346,44 @@ model = "gpt-4"
 
     #[test]
     fn test_deep_merge_toml_overlay_adds_new_table() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             [a]
             x = 1
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             [b]
             y = 2
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
-        assert_eq!(base.get("a").unwrap().get("x").unwrap().as_integer(), Some(1));
-        assert_eq!(base.get("b").unwrap().get("y").unwrap().as_integer(), Some(2));
+        assert_eq!(
+            base.get("a").unwrap().get("x").unwrap().as_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            base.get("b").unwrap().get("y").unwrap().as_integer(),
+            Some(2)
+        );
     }
 
     // ── sanitize_project_config ─────────────────────────
 
     #[test]
     fn test_sanitize_project_config_only_allowed_keys() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [context]
             history_limit = 10
             [display]
             chat_color = "blue"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert!(t.contains_key("context"));
@@ -2097,12 +2393,15 @@ model = "gpt-4"
 
     #[test]
     fn test_sanitize_project_config_disallowed_removed() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [provider]
             default = "anthropic"
             [tools]
             run_command_allowlist = ["rm"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert!(!t.contains_key("provider"));
@@ -2112,7 +2411,8 @@ model = "gpt-4"
 
     #[test]
     fn test_sanitize_project_config_mixed() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [context]
             history_limit = 5
             [provider]
@@ -2121,7 +2421,9 @@ model = "gpt-4"
             chat_color = "green"
             [mcp]
             ignored = true
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert!(t.contains_key("context"));
@@ -2178,11 +2480,22 @@ model = "gpt-4"
         let config = Config::default();
         let xml = build_config_xml(&config, &[], &[]);
         for section in [
-            "provider", "context", "models", "tools", "web_search",
-            "display", "redaction", "capture", "execution", "db",
+            "provider",
+            "context",
+            "hints",
+            "models",
+            "tools",
+            "web_search",
+            "display",
+            "redaction",
+            "capture",
+            "execution",
+            "db",
         ] {
-            assert!(xml.contains(&format!("name=\"{section}\"")),
-                "missing section: {section}");
+            assert!(
+                xml.contains(&format!("name=\"{section}\"")),
+                "missing section: {section}"
+            );
         }
         assert!(xml.contains("<mcp_servers"));
         assert!(xml.contains("<installed_skills"));
@@ -2275,21 +2588,33 @@ timeout_seconds = 45
 
         assert_eq!(config.provider.default, "gemini");
         assert_eq!(config.provider.model, "gemini-pro");
-        assert_eq!(config.provider.fallback_model.as_deref(), Some("gemini-flash"));
+        assert_eq!(
+            config.provider.fallback_model.as_deref(),
+            Some("gemini-flash")
+        );
         assert_eq!(config.provider.timeout_seconds, 60);
         let gemini_auth = config.provider.gemini.as_ref().unwrap();
         assert_eq!(gemini_auth.api_key.as_deref(), Some("test-key"));
-        assert_eq!(gemini_auth.base_url.as_deref(), Some("https://custom.endpoint"));
+        assert_eq!(
+            gemini_auth.base_url.as_deref(),
+            Some("https://custom.endpoint")
+        );
 
         assert_eq!(config.context.scrollback_lines, 500);
         assert_eq!(config.context.history_limit, 10);
         assert_eq!(config.context.git_commits, 20);
         assert!(config.context.include_other_tty);
-        assert_eq!(config.context.custom_instructions.as_deref(), Some("Be concise"));
+        assert_eq!(
+            config.context.custom_instructions.as_deref(),
+            Some("Be concise")
+        );
         assert_eq!(config.context.project_files_limit, 200);
         assert_eq!(config.context.max_output_storage_bytes, 32768);
 
-        assert_eq!(config.tools.run_command_allowlist, vec!["echo", "ls", "cat"]);
+        assert_eq!(
+            config.tools.run_command_allowlist,
+            vec!["echo", "ls", "cat"]
+        );
 
         assert_eq!(config.models.main, vec!["model-a", "model-b"]);
         assert_eq!(config.models.fast, vec!["model-c"]);
@@ -2358,7 +2683,12 @@ timeout_seconds = 45
         };
         let result = auth.resolve_api_key("openrouter");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("api_key_cmd failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("api_key_cmd failed")
+        );
     }
 
     #[test]
@@ -2847,7 +3177,10 @@ key = "value"
         let p = ProviderConfig::default();
         assert_eq!(p.default, "openrouter");
         assert_eq!(p.model, "google/gemini-2.5-flash");
-        assert_eq!(p.fallback_model.as_deref(), Some("anthropic/claude-sonnet-4.5"));
+        assert_eq!(
+            p.fallback_model.as_deref(),
+            Some("anthropic/claude-sonnet-4.5")
+        );
         assert_eq!(p.web_search_model, "perplexity/sonar");
         assert!(p.openrouter.is_some());
         assert!(p.anthropic.is_none());
@@ -2861,12 +3194,18 @@ key = "value"
 
     #[test]
     fn test_deep_merge_toml_array_replaced_not_merged() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             arr = [1, 2, 3]
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             arr = [4, 5]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         let arr = base.get("arr").unwrap().as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -2876,12 +3215,18 @@ key = "value"
 
     #[test]
     fn test_deep_merge_toml_type_change() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             key = "string"
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             key = 42
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         assert_eq!(base.get("key").unwrap().as_integer(), Some(42));
     }
@@ -2898,14 +3243,17 @@ key = "value"
 
     #[test]
     fn test_sanitize_project_config_blocks_capture_db_mcp() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [capture]
             mode = "raw"
             [db]
             busy_timeout_ms = 1000
             [mcp.servers.evil]
             command = "evil-cmd"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert!(!t.contains_key("capture"));
@@ -2916,12 +3264,15 @@ key = "value"
 
     #[test]
     fn test_sanitize_project_config_blocks_web_search() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [web_search]
             provider = "evil_search"
             [models]
             main = ["evil-model"]
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert!(!t.contains_key("web_search"));
@@ -2965,7 +3316,13 @@ timeout_seconds = "fast"
     #[test]
     fn test_opt_escapes_special_characters() {
         let mut x = String::new();
-        opt(&mut x, "key", "value with <angle> & \"quotes\"", "desc with <html>", None);
+        opt(
+            &mut x,
+            "key",
+            "value with <angle> & \"quotes\"",
+            "desc with <html>",
+            None,
+        );
         assert!(!x.contains("<angle>"));
         assert!(!x.contains("& \""));
         assert!(x.contains("&amp;") || x.contains("&lt;") || x.contains("&quot;"));
@@ -3030,10 +3387,7 @@ timeout_seconds = "fast"
     #[test]
     fn test_all_tool_blocked_keys_are_protected() {
         for key in TOOL_BLOCKED_KEYS {
-            assert!(
-                is_setting_protected(key),
-                "{key} should be protected"
-            );
+            assert!(is_setting_protected(key), "{key} should be protected");
         }
     }
 
@@ -3105,12 +3459,36 @@ timeout_seconds = "fast"
     }
 
     #[test]
+    fn test_default_hints_config() {
+        let hints = HintsConfig::default();
+        assert_eq!(
+            hints.normalized_suppressed_exit_codes(),
+            vec![130, 137, 141, 143]
+        );
+    }
+
+    #[test]
+    fn test_hints_normalized_suppressed_exit_codes() {
+        let hints = HintsConfig {
+            suppressed_exit_codes: vec![141, 130, -1, 141, 999, 0, 143],
+        };
+        assert_eq!(
+            hints.normalized_suppressed_exit_codes(),
+            vec![130, 141, 143]
+        );
+    }
+
+    #[test]
     fn test_default_models_config() {
         let m = ModelsConfig::default();
         assert!(m.main.len() >= 2);
         assert!(!m.fast.is_empty());
         assert!(m.main.iter().any(|s| s.contains("gemini")));
-        assert!(m.fast.iter().any(|s| s.contains("lite") || s.contains("haiku")));
+        assert!(
+            m.fast
+                .iter()
+                .any(|s| s.contains("lite") || s.contains("haiku"))
+        );
     }
 
     #[test]
@@ -3219,9 +3597,12 @@ timeout_seconds = "fast"
 
     #[test]
     fn test_deep_merge_toml_empty_overlay_preserves_base() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             key = "value"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let overlay: toml::Value = toml::Value::Table(toml::map::Map::new());
         deep_merge_toml(&mut base, &overlay);
         assert_eq!(base.get("key").unwrap().as_str(), Some("value"));
@@ -3230,9 +3611,12 @@ timeout_seconds = "fast"
     #[test]
     fn test_deep_merge_toml_empty_base() {
         let mut base: toml::Value = toml::Value::Table(toml::map::Map::new());
-        let overlay: toml::Value = toml::from_str(r#"
+        let overlay: toml::Value = toml::from_str(
+            r#"
             new_key = "new_value"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         assert_eq!(base.get("new_key").unwrap().as_str(), Some("new_value"));
     }
@@ -3255,7 +3639,13 @@ timeout_seconds = "fast"
     #[test]
     fn test_opt_with_choices_xml() {
         let mut x = String::new();
-        opt(&mut x, "mode", "prefill", "execution mode", Some("prefill,confirm,autorun"));
+        opt(
+            &mut x,
+            "mode",
+            "prefill",
+            "execution mode",
+            Some("prefill,confirm,autorun"),
+        );
         assert!(x.contains("choices=\"prefill,confirm,autorun\""));
         assert!(x.contains("key=\"mode\""));
     }
@@ -3326,43 +3716,64 @@ timeout_seconds = "fast"
 
     #[test]
     fn test_deep_merge_toml_scalar_to_table() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             key = "scalar"
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             [key]
             nested = true
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         assert!(base.get("key").unwrap().is_table());
-        assert_eq!(base.get("key").unwrap().get("nested").unwrap().as_bool(), Some(true));
+        assert_eq!(
+            base.get("key").unwrap().get("nested").unwrap().as_bool(),
+            Some(true)
+        );
     }
 
     #[test]
     fn test_deep_merge_toml_table_to_scalar() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             [key]
             nested = true
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             key = "scalar"
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         assert_eq!(base.get("key").unwrap().as_str(), Some("scalar"));
     }
 
     #[test]
     fn test_deep_merge_toml_deeply_nested() {
-        let mut base: toml::Value = toml::from_str(r#"
+        let mut base: toml::Value = toml::from_str(
+            r#"
             [a.b.c]
             x = 1
             y = 2
-        "#).unwrap();
-        let overlay: toml::Value = toml::from_str(r#"
+        "#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
             [a.b.c]
             y = 99
             z = 3
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         deep_merge_toml(&mut base, &overlay);
         let c = base.get("a").unwrap().get("b").unwrap().get("c").unwrap();
         assert_eq!(c.get("x").unwrap().as_integer(), Some(1));
@@ -3372,10 +3783,13 @@ timeout_seconds = "fast"
 
     #[test]
     fn test_sanitize_project_config_only_context_passes() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [context]
             history_limit = 5
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert_eq!(t.len(), 1);
@@ -3384,12 +3798,15 @@ timeout_seconds = "fast"
 
     #[test]
     fn test_sanitize_project_config_execution_blocked() {
-        let mut value: toml::Value = toml::from_str(r#"
+        let mut value: toml::Value = toml::from_str(
+            r#"
             [execution]
             allow_unsafe_autorun = true
             [redaction]
             enabled = false
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         sanitize_project_config(&mut value);
         let t = value.as_table().unwrap();
         assert!(!t.contains_key("execution"));
@@ -3620,7 +4037,10 @@ model = "custom/model"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.default, "anthropic");
         assert_eq!(config.context.history_limit, 10);
-        assert_eq!(config.context.custom_instructions.as_deref(), Some("Be concise"));
+        assert_eq!(
+            config.context.custom_instructions.as_deref(),
+            Some("Be concise")
+        );
         assert!(!config.redaction.enabled);
         assert_eq!(config.redaction.replacement, "[HIDDEN]");
         assert!(config.redaction.disable_builtin);

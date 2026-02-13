@@ -72,7 +72,12 @@ pub fn start_background_import_process() -> anyhow::Result<bool> {
         Err(e) => return Err(e.into()),
     };
     use std::io::Write;
-    let _ = writeln!(lock, "{} {}", std::process::id(), chrono::Utc::now().to_rfc3339());
+    let _ = writeln!(
+        lock,
+        "{} {}",
+        std::process::id(),
+        chrono::Utc::now().to_rfc3339()
+    );
 
     let exe = std::env::current_exe()?;
     let mut cmd = std::process::Command::new(exe);

@@ -82,7 +82,9 @@ impl CaptureEngine {
             self.paused_until = Some(Instant::now() + Duration::from_secs(self.pause_seconds));
             if !self.suppressed {
                 self.suppressed = true;
-                self.push_history_line("[nsh: output capture suppressed (high output rate)]".into());
+                self.push_history_line(
+                    "[nsh: output capture suppressed (high output rate)]".into(),
+                );
             }
             return;
         }
@@ -407,7 +409,13 @@ pub fn pump_loop(
         use std::os::fd::AsRawFd;
         let flags = unsafe { libc::fcntl(pty_master.as_raw_fd(), libc::F_GETFL) };
         if flags >= 0 {
-            unsafe { libc::fcntl(pty_master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
+            unsafe {
+                libc::fcntl(
+                    pty_master.as_raw_fd(),
+                    libc::F_SETFL,
+                    flags | libc::O_NONBLOCK,
+                )
+            };
         }
     }
 
@@ -657,7 +665,9 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        tracing::warn!("Rejecting daemon connection: peer UID check not implemented for this platform");
+        tracing::warn!(
+            "Rejecting daemon connection: peer UID check not implemented for this platform"
+        );
         return false;
     }
     true
@@ -1014,8 +1024,14 @@ mod tests {
 
     #[test]
     fn test_detect_scrolled_lines_partial_overlap() {
-        let prev: Vec<String> = vec!["a", "b", "c", "d"].into_iter().map(String::from).collect();
-        let cur: Vec<String> = vec!["c", "d", "e", "f"].into_iter().map(String::from).collect();
+        let prev: Vec<String> = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let cur: Vec<String> = vec!["c", "d", "e", "f"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let scrolled = detect_scrolled_lines(&prev, &cur);
         assert_eq!(scrolled, vec!["a", "b"]);
     }
@@ -1236,8 +1252,7 @@ mod tests {
         eng.process(b"\x1b[?1049l");
         let vis_after_leave = eng.prev_visible.clone();
         assert!(
-            vis_after_leave.is_empty()
-                || !vis_after_leave.iter().any(|l| l.contains("something")),
+            vis_after_leave.is_empty() || !vis_after_leave.iter().any(|l| l.contains("something")),
         );
     }
 
@@ -1688,7 +1703,10 @@ mod tests {
         for i in 0..100 {
             eng.process(format!("line number {i}\r\n").as_bytes());
         }
-        assert!(eng.total_line_count() <= 20, "history should be capped at max_history_lines");
+        assert!(
+            eng.total_line_count() <= 20,
+            "history should be capped at max_history_lines"
+        );
     }
 
     #[test]
@@ -1726,7 +1744,10 @@ mod tests {
         let long_line = format!("{}\r\n", "A".repeat(500));
         eng.process(long_line.as_bytes());
         let captured = eng.capture_since_mark(50).unwrap();
-        assert!(captured.len() <= 100, "should be truncated to near max_bytes");
+        assert!(
+            captured.len() <= 100,
+            "should be truncated to near max_bytes"
+        );
     }
 
     #[test]
@@ -1762,7 +1783,10 @@ mod tests {
     #[test]
     fn test_detect_scrolled_lines_prev_subset_of_cur() {
         let prev: Vec<String> = vec!["a", "b", "c"].into_iter().map(String::from).collect();
-        let cur: Vec<String> = vec!["a", "b", "c", "d"].into_iter().map(String::from).collect();
+        let cur: Vec<String> = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let scrolled = detect_scrolled_lines(&prev, &cur);
         assert!(scrolled.is_empty());
     }
@@ -2106,7 +2130,9 @@ mod tests {
 
     #[test]
     fn test_truncate_for_storage_line_omission_then_byte_truncation() {
-        let lines: Vec<String> = (0..200).map(|i| format!("long line with data {i:05}")).collect();
+        let lines: Vec<String> = (0..200)
+            .map(|i| format!("long line with data {i:05}"))
+            .collect();
         let input = lines.join("\n");
         let result = truncate_for_storage(&input, 50);
         assert!(result.contains("[... truncated by nsh]"));
@@ -2157,11 +2183,9 @@ mod tests {
     #[test]
     fn test_sanitize_input_mixed_valid_invalid_control_chars() {
         let input = vec![
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
-            0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13,
-            0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
-            0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
+            0x1D, 0x1E, 0x1F,
         ];
         let result = sanitize_input(&input);
         assert_eq!(result, vec![0x08, 0x09, 0x0A, 0x0D, 0x1B]);
@@ -2210,8 +2234,14 @@ mod tests {
 
     #[test]
     fn test_detect_scrolled_lines_partial_content_change() {
-        let prev: Vec<String> = vec!["a", "b", "c", "d"].into_iter().map(String::from).collect();
-        let cur: Vec<String> = vec!["c", "d", "e", "f"].into_iter().map(String::from).collect();
+        let prev: Vec<String> = vec!["a", "b", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let cur: Vec<String> = vec!["c", "d", "e", "f"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         let scrolled = detect_scrolled_lines(&prev, &cur);
         assert_eq!(scrolled, vec!["a", "b"]);
     }
@@ -2400,7 +2430,9 @@ mod tests {
 
     #[test]
     fn test_truncate_for_storage_max_bytes_exceeded_with_many_lines() {
-        let lines: Vec<String> = (0..200).map(|i| "X".repeat(100) + &format!("{i}")).collect();
+        let lines: Vec<String> = (0..200)
+            .map(|i| "X".repeat(100) + &format!("{i}"))
+            .collect();
         let input = lines.join("\n");
         let result = truncate_for_storage(&input, 500);
         assert!(result.contains("[... truncated by nsh]"));
@@ -2431,7 +2463,10 @@ mod tests {
         eng.process(b"\x1b[?1049l");
         eng.process(b"line3\r\n");
         let hist_after = eng.total_line_count();
-        assert_eq!(hist_after, hist_before, "drop mode should not detect scrolled lines after alt screen exit");
+        assert_eq!(
+            hist_after, hist_before,
+            "drop mode should not detect scrolled lines after alt screen exit"
+        );
     }
 
     #[test]
@@ -2649,7 +2684,10 @@ mod tests {
         eng.rate_window_start = Instant::now() - Duration::from_secs(2);
         eng.process(&[b'B'; 100]);
         let new_hist_count = eng.history_lines.len();
-        assert_eq!(new_hist_count, hist_count, "suppressed message should not be added again");
+        assert_eq!(
+            new_hist_count, hist_count,
+            "suppressed message should not be added again"
+        );
     }
 
     #[test]
@@ -2707,8 +2745,14 @@ mod tests {
         eng.process(format!("{long_line}\r\n").as_bytes());
         let output = eng.get_lines(1000);
         let w_count = output.chars().filter(|&c| c == 'W').count();
-        assert!(w_count >= 80, "should contain at least a screen width of W chars");
-        assert!(eng.total_line_count() > 0, "long wrapped line should push lines into history");
+        assert!(
+            w_count >= 80,
+            "should contain at least a screen width of W chars"
+        );
+        assert!(
+            eng.total_line_count() > 0,
+            "long wrapped line should push lines into history"
+        );
     }
 
     #[test]
@@ -2776,7 +2820,13 @@ mod tests {
         listener.set_nonblocking(false).ok();
 
         let capture = Arc::new(Mutex::new(CaptureEngine::new(
-            24, 80, 0, 2, 10_000, "vt100".into(), "drop".into(),
+            24,
+            80,
+            0,
+            2,
+            10_000,
+            "vt100".into(),
+            "drop".into(),
         )));
         {
             let mut eng = capture.lock().unwrap();

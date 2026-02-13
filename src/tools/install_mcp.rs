@@ -1,16 +1,17 @@
 use std::io::{self, Write};
 
-pub fn execute(
-    input: &serde_json::Value,
-    _config: &crate::config::Config,
-) -> anyhow::Result<()> {
+pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> anyhow::Result<()> {
     let name = input["name"].as_str().unwrap_or("");
     let transport = input["transport"].as_str().unwrap_or("stdio");
     let command = input["command"].as_str();
     let url = input["url"].as_str();
     let args: Vec<String> = input["args"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let env: std::collections::HashMap<String, String> = input["env"]
         .as_object()
@@ -25,7 +26,10 @@ pub fn execute(
     if name.is_empty() {
         anyhow::bail!("install_mcp_server: 'name' is required");
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         anyhow::bail!("install_mcp_server: name must be alphanumeric with underscores/hyphens");
     }
     match transport {
@@ -199,7 +203,11 @@ mod tests {
         // but will fail on interactive prompt (which is fine for validation test)
         // This will try to read stdin and fail in test, but at least validates the name
         // Actually we can't easily test past the stdin read. Let's just test validation:
-        assert!("my-server".chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'));
+        assert!(
+            "my-server"
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        );
     }
 
     #[test]
@@ -207,12 +215,19 @@ mod tests {
         let valid = ["test", "my_server", "my-server", "server123"];
         let invalid = ["bad name", "bad!name", "bad.name", "bad/name"];
         for name in valid {
-            assert!(name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'), 
-                "Expected valid: {name}");
+            assert!(
+                name.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-'),
+                "Expected valid: {name}"
+            );
         }
         for name in invalid {
-            assert!(!name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'),
-                "Expected invalid: {name}");
+            assert!(
+                !name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-'),
+                "Expected invalid: {name}"
+            );
         }
     }
 
@@ -220,7 +235,10 @@ mod tests {
     fn test_name_with_numbers_and_underscores() {
         let input = json!({"name": "server_v2_test", "transport": "stdio", "command": "echo"});
         let result = super::execute(&input, &crate::config::Config::default());
-        assert!(result.is_ok(), "Name with numbers/underscores should pass validation");
+        assert!(
+            result.is_ok(),
+            "Name with numbers/underscores should pass validation"
+        );
     }
 
     #[test]
@@ -250,7 +268,10 @@ mod tests {
     fn test_transport_stdio_with_command_passes_validation() {
         let input = json!({"name": "valid", "transport": "stdio", "command": "node"});
         let result = super::execute(&input, &crate::config::Config::default());
-        assert!(result.is_ok(), "stdio with command should pass all validation");
+        assert!(
+            result.is_ok(),
+            "stdio with command should pass all validation"
+        );
     }
 
     #[test]
@@ -265,15 +286,20 @@ mod tests {
         let input = json!({"name": "test"});
         let result = super::execute(&input, &crate::config::Config::default());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("command"),
-            "Default transport should be stdio, requiring command");
+        assert!(
+            result.unwrap_err().to_string().contains("command"),
+            "Default transport should be stdio, requiring command"
+        );
     }
 
     #[test]
     fn test_name_with_leading_hyphen() {
         let input = json!({"name": "-leadinghyphen", "transport": "stdio", "command": "echo"});
         let result = super::execute(&input, &crate::config::Config::default());
-        assert!(result.is_ok(), "Leading hyphen should pass alphanumeric+hyphen validation");
+        assert!(
+            result.is_ok(),
+            "Leading hyphen should pass alphanumeric+hyphen validation"
+        );
     }
 
     #[test]
@@ -323,10 +349,15 @@ mod tests {
 
     #[test]
     fn test_args_parsing() {
-        let input = json!({"name": "srv", "command": "node", "args": ["--port", "3000", "--verbose"]});
+        let input =
+            json!({"name": "srv", "command": "node", "args": ["--port", "3000", "--verbose"]});
         let args: Vec<String> = input["args"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         assert_eq!(args, vec!["--port", "3000", "--verbose"]);
     }
@@ -336,14 +367,19 @@ mod tests {
         let input = json!({"name": "srv", "command": "node"});
         let args: Vec<String> = input["args"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         assert!(args.is_empty());
     }
 
     #[test]
     fn test_env_parsing() {
-        let input = json!({"name": "srv", "command": "node", "env": {"API_KEY": "abc", "PORT": "8080"}});
+        let input =
+            json!({"name": "srv", "command": "node", "env": {"API_KEY": "abc", "PORT": "8080"}});
         let env: std::collections::HashMap<String, String> = input["env"]
             .as_object()
             .map(|m| {
@@ -382,7 +418,10 @@ mod tests {
         server.insert("timeout_seconds", toml_edit::value(30_i64));
 
         let s = server.to_string();
-        assert!(!s.contains("transport"), "stdio transport should be omitted from TOML");
+        assert!(
+            !s.contains("transport"),
+            "stdio transport should be omitted from TOML"
+        );
         assert!(s.contains("command = \"node\""));
         assert!(s.contains("timeout_seconds = 30"));
     }
@@ -426,7 +465,10 @@ mod tests {
         let s = doc.to_string();
         assert!(s.contains("command = \"npx\""));
         assert!(s.contains("args = [\"-y\", \"@mcp/server\"]"));
-        assert!(s.contains("TOKEN = \"secret\""), "env should contain TOKEN=secret, got: {s}");
+        assert!(
+            s.contains("TOKEN = \"secret\""),
+            "env should contain TOKEN=secret, got: {s}"
+        );
         assert!(s.contains("timeout_seconds = 60"));
     }
 }

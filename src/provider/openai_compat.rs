@@ -301,9 +301,7 @@ mod tests {
     fn build_openai_messages_with_system() {
         let msgs = vec![Message {
             role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: "hi".into(),
-            }],
+            content: vec![ContentBlock::Text { text: "hi".into() }],
         }];
         let result = build_openai_messages(&msgs, "You are helpful");
         assert_eq!(result.len(), 2);
@@ -468,8 +466,12 @@ mod tests {
         let msgs = vec![Message {
             role: Role::User,
             content: vec![
-                ContentBlock::Text { text: "line1".into() },
-                ContentBlock::Text { text: "line2".into() },
+                ContentBlock::Text {
+                    text: "line1".into(),
+                },
+                ContentBlock::Text {
+                    text: "line2".into(),
+                },
             ],
         }];
         let result = build_openai_messages(&msgs, "");
@@ -482,7 +484,9 @@ mod tests {
         let msgs = vec![Message {
             role: Role::User,
             content: vec![
-                ContentBlock::Text { text: "hello".into() },
+                ContentBlock::Text {
+                    text: "hello".into(),
+                },
                 ContentBlock::ToolUse {
                     id: "x".into(),
                     name: "y".into(),
@@ -579,9 +583,7 @@ mod tests {
     fn build_openai_messages_system_role_ignored() {
         let msgs = vec![Message {
             role: Role::System,
-            content: vec![ContentBlock::Text {
-                text: "sys".into(),
-            }],
+            content: vec![ContentBlock::Text { text: "sys".into() }],
         }];
         let result = build_openai_messages(&msgs, "");
         assert!(result.is_empty());
@@ -726,9 +728,7 @@ mod tests {
             "Be helpful",
             vec![Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text {
-                    text: "hi".into(),
-                }],
+                content: vec![ContentBlock::Text { text: "hi".into() }],
             }],
             vec![],
             ToolChoice::Auto,
@@ -776,14 +776,7 @@ mod tests {
     #[test]
     fn build_request_body_tool_choice_none() {
         let provider = make_provider();
-        let req = make_chat_request(
-            "gpt-4",
-            "",
-            vec![],
-            vec![],
-            ToolChoice::None,
-            None,
-        );
+        let req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::None, None);
         let body = provider.build_request_body(&req);
         assert_eq!(body["tool_choice"], "none");
     }
@@ -865,14 +858,7 @@ mod tests {
     #[test]
     fn build_request_body_extra_body_none() {
         let provider = make_provider();
-        let req = make_chat_request(
-            "gpt-4",
-            "",
-            vec![],
-            vec![],
-            ToolChoice::Auto,
-            None,
-        );
+        let req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::Auto, None);
         let body = provider.build_request_body(&req);
         assert!(body.get("temperature").is_none());
     }
@@ -1029,7 +1015,10 @@ mod tests {
             }),
         }];
         let result = build_openai_tools(&tools);
-        assert_eq!(result[0]["function"]["parameters"]["properties"]["query"]["type"], "string");
+        assert_eq!(
+            result[0]["function"]["parameters"]["properties"]["query"]["type"],
+            "string"
+        );
         assert_eq!(result[0]["function"]["parameters"]["required"][0], "query");
     }
 
@@ -1041,9 +1030,7 @@ mod tests {
             "system prompt here",
             vec![Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text {
-                    text: "hi".into(),
-                }],
+                content: vec![ContentBlock::Text { text: "hi".into() }],
             }],
             vec![],
             ToolChoice::Auto,
@@ -1065,9 +1052,7 @@ mod tests {
             "system prompt",
             vec![Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text {
-                    text: "hi".into(),
-                }],
+                content: vec![ContentBlock::Text { text: "hi".into() }],
             }],
             vec![],
             ToolChoice::Auto,
@@ -1098,14 +1083,7 @@ mod tests {
     #[test]
     fn build_request_body_empty_tools_not_included() {
         let provider = make_provider();
-        let req = make_chat_request(
-            "gpt-4",
-            "",
-            vec![],
-            vec![],
-            ToolChoice::Auto,
-            None,
-        );
+        let req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::Auto, None);
         let body = provider.build_request_body(&req);
         assert!(body.get("tools").is_none());
     }
@@ -1216,8 +1194,14 @@ mod tests {
         assert_eq!(result[0]["function"]["name"], "tool_a");
         assert_eq!(result[1]["function"]["name"], "tool_b");
         assert_eq!(result[2]["function"]["name"], "tool_c");
-        assert_eq!(result[0]["function"]["parameters"]["properties"]["x"]["type"], "string");
-        assert_eq!(result[1]["function"]["parameters"]["properties"]["y"]["type"], "integer");
+        assert_eq!(
+            result[0]["function"]["parameters"]["properties"]["x"]["type"],
+            "string"
+        );
+        assert_eq!(
+            result[1]["function"]["parameters"]["properties"]["y"]["type"],
+            "integer"
+        );
     }
 
     #[test]
@@ -1304,12 +1288,10 @@ mod tests {
         let req = make_chat_request(
             "claude-3.5-sonnet",
             "sys prompt",
-            vec![
-                Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Text { text: "q".into() }],
-                },
-            ],
+            vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "q".into() }],
+            }],
             vec![],
             ToolChoice::Auto,
             None,
@@ -1346,9 +1328,21 @@ mod tests {
             "sys",
             vec![],
             vec![
-                ToolDefinition { name: "a".into(), description: "".into(), parameters: json!({}) },
-                ToolDefinition { name: "b".into(), description: "".into(), parameters: json!({}) },
-                ToolDefinition { name: "c".into(), description: "".into(), parameters: json!({}) },
+                ToolDefinition {
+                    name: "a".into(),
+                    description: "".into(),
+                    parameters: json!({}),
+                },
+                ToolDefinition {
+                    name: "b".into(),
+                    description: "".into(),
+                    parameters: json!({}),
+                },
+                ToolDefinition {
+                    name: "c".into(),
+                    description: "".into(),
+                    parameters: json!({}),
+                },
             ],
             ToolChoice::Auto,
             None,
@@ -1369,8 +1363,16 @@ mod tests {
             "",
             vec![],
             vec![
-                ToolDefinition { name: "a".into(), description: "".into(), parameters: json!({}) },
-                ToolDefinition { name: "b".into(), description: "".into(), parameters: json!({}) },
+                ToolDefinition {
+                    name: "a".into(),
+                    description: "".into(),
+                    parameters: json!({}),
+                },
+                ToolDefinition {
+                    name: "b".into(),
+                    description: "".into(),
+                    parameters: json!({}),
+                },
             ],
             ToolChoice::Auto,
             None,
@@ -1415,11 +1417,15 @@ mod tests {
         let msgs = vec![
             Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text { text: "first".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "first".into(),
+                }],
             },
             Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text { text: "second".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "second".into(),
+                }],
             },
         ];
         let result = build_openai_messages(&msgs, "");
@@ -1433,13 +1439,17 @@ mod tests {
         let msgs = vec![Message {
             role: Role::Tool,
             content: vec![
-                ContentBlock::Text { text: "ignored".into() },
+                ContentBlock::Text {
+                    text: "ignored".into(),
+                },
                 ContentBlock::ToolResult {
                     tool_use_id: "c1".into(),
                     content: "result".into(),
                     is_error: false,
                 },
-                ContentBlock::Text { text: "also ignored".into() },
+                ContentBlock::Text {
+                    text: "also ignored".into(),
+                },
             ],
         }];
         let result = build_openai_messages(&msgs, "");
@@ -1459,7 +1469,10 @@ mod tests {
 
     #[test]
     fn thinking_model_name_gemini_20_not_affected() {
-        assert_eq!(thinking_model_name("google/gemini-2.0-pro", true), "google/gemini-2.0-pro");
+        assert_eq!(
+            thinking_model_name("google/gemini-2.0-pro", true),
+            "google/gemini-2.0-pro"
+        );
     }
 
     #[test]
@@ -1481,7 +1494,12 @@ mod tests {
     #[test]
     fn build_request_body_model_field_matches_request() {
         let provider = make_provider();
-        for model in &["gpt-4", "claude-3.5-sonnet", "anthropic/claude-3-haiku", "google/gemini-3-pro"] {
+        for model in &[
+            "gpt-4",
+            "claude-3.5-sonnet",
+            "anthropic/claude-3-haiku",
+            "google/gemini-3-pro",
+        ] {
             let req = make_chat_request(model, "", vec![], vec![], ToolChoice::Auto, None);
             let body = provider.build_request_body(&req);
             assert_eq!(body["model"], *model);
@@ -1502,7 +1520,9 @@ mod tests {
         let msgs = vec![Message {
             role: Role::Assistant,
             content: vec![
-                ContentBlock::Text { text: "thinking".into() },
+                ContentBlock::Text {
+                    text: "thinking".into(),
+                },
                 ContentBlock::ToolResult {
                     tool_use_id: "tr1".into(),
                     content: "should be ignored".into(),
@@ -1588,7 +1608,9 @@ mod tests {
             "system text",
             vec![Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text { text: "hello".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                }],
             }],
             vec![ToolDefinition {
                 name: "my_tool".into(),
@@ -1928,7 +1950,13 @@ mod tests {
         let _ = rx.recv().await.unwrap(); // GenerationId
         let _ = rx.recv().await.unwrap(); // TextDelta "hi"
         let ev = rx.recv().await;
-        assert!(ev.is_none() || matches!(ev, Some(StreamEvent::Error(_)) | Some(StreamEvent::Done { .. })));
+        assert!(
+            ev.is_none()
+                || matches!(
+                    ev,
+                    Some(StreamEvent::Error(_)) | Some(StreamEvent::Done { .. })
+                )
+        );
     }
 
     #[test]

@@ -98,10 +98,9 @@ impl McpServer {
                 stdin.write_all(line.as_bytes()).await?;
                 stdin.flush().await?;
 
-                let response =
-                    tokio::time::timeout(self.timeout, read_stdio_response(stdout, id))
-                        .await
-                        .map_err(|_| anyhow::anyhow!("MCP stdio request '{method}' timed out"))??;
+                let response = tokio::time::timeout(self.timeout, read_stdio_response(stdout, id))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("MCP stdio request '{method}' timed out"))??;
 
                 if let Some(err) = response.error {
                     anyhow::bail!("MCP error {}: {}", err.code, err.message);
@@ -168,7 +167,10 @@ impl McpServer {
 
                                 let event_block = String::from_utf8_lossy(&event_bytes);
                                 for line in event_block.lines() {
-                                    if let Some(data) = line.strip_prefix("data:").map(|d| d.strip_prefix(' ').unwrap_or(d)) {
+                                    if let Some(data) = line
+                                        .strip_prefix("data:")
+                                        .map(|d| d.strip_prefix(' ').unwrap_or(d))
+                                    {
                                         let data = data.trim();
                                         if data.is_empty() {
                                             continue;
@@ -197,9 +199,7 @@ impl McpServer {
                     };
                     tokio::time::timeout(self.timeout, sse_fut)
                         .await
-                        .map_err(|_| {
-                            anyhow::anyhow!("MCP SSE response for '{method}' timed out")
-                        })?
+                        .map_err(|_| anyhow::anyhow!("MCP SSE response for '{method}' timed out"))?
                 } else {
                     let rpc_resp: JsonRpcResponse = resp.json().await?;
                     if let Some(err) = rpc_resp.error {
@@ -302,10 +302,7 @@ impl McpClient {
         }
     }
 
-    async fn start_server(
-        name: &str,
-        config: &McpServerConfig,
-    ) -> anyhow::Result<McpServer> {
+    async fn start_server(name: &str, config: &McpServerConfig) -> anyhow::Result<McpServer> {
         let timeout = Duration::from_secs(config.timeout_seconds);
         let transport_type = config.effective_transport();
 
@@ -314,11 +311,11 @@ impl McpClient {
                 let url = config
                     .url
                     .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("MCP server '{name}': url required for http transport"))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("MCP server '{name}': url required for http transport")
+                    })?
                     .clone();
-                let client = reqwest::Client::builder()
-                    .timeout(timeout)
-                    .build()?;
+                let client = reqwest::Client::builder().timeout(timeout).build()?;
                 let headers: Vec<(String, String)> = config
                     .headers
                     .iter()
@@ -344,9 +341,7 @@ impl McpClient {
                     .stderr(std::process::Stdio::null());
 
                 let mut child = cmd.spawn().map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to spawn MCP server '{name}' ({cmd_str}): {e}"
-                    )
+                    anyhow::anyhow!("Failed to spawn MCP server '{name}' ({cmd_str}): {e}")
                 })?;
 
                 let stdin = child.stdin.take().unwrap();
@@ -443,8 +438,9 @@ impl McpClient {
         let mut keys: Vec<&str> = self.servers.keys().map(|s| s.as_str()).collect();
         keys.sort_by_key(|name| std::cmp::Reverse(name.len()));
         for server_name in keys {
-            if let Some(tool_name) =
-                rest.strip_prefix(server_name).and_then(|s| s.strip_prefix('_'))
+            if let Some(tool_name) = rest
+                .strip_prefix(server_name)
+                .and_then(|s| s.strip_prefix('_'))
             {
                 return Some((server_name, tool_name));
             }
@@ -666,7 +662,10 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"mcp_myserver_search"));
         assert!(names.contains(&"mcp_myserver_read"));
-        let search_def = defs.iter().find(|d| d.name == "mcp_myserver_search").unwrap();
+        let search_def = defs
+            .iter()
+            .find(|d| d.name == "mcp_myserver_search")
+            .unwrap();
         assert_eq!(search_def.description, "Search files");
     }
 
@@ -744,7 +743,8 @@ mod tests {
 
     #[test]
     fn jsonrpc_response_deserializes_error() {
-        let json = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.id, Some(2));
         assert!(resp.result.is_none());
@@ -837,7 +837,10 @@ mod tests {
     fn tool_definitions_have_correct_schema() {
         let client = make_populated_client();
         let defs = client.tool_definitions();
-        let search_def = defs.iter().find(|d| d.name == "mcp_myserver_search").unwrap();
+        let search_def = defs
+            .iter()
+            .find(|d| d.name == "mcp_myserver_search")
+            .unwrap();
         assert_eq!(search_def.parameters["type"], "object");
         assert!(search_def.parameters["properties"]["q"].is_object());
     }
@@ -1055,8 +1058,9 @@ mod tests {
     #[test]
     fn jsonrpc_response_error_long_message() {
         let long_msg = "x".repeat(5000);
-        let json =
-            format!(r#"{{"jsonrpc":"2.0","id":99,"error":{{"code":-32000,"message":"{long_msg}"}}}}"#);
+        let json = format!(
+            r#"{{"jsonrpc":"2.0","id":99,"error":{{"code":-32000,"message":"{long_msg}"}}}}"#
+        );
         let resp: JsonRpcResponse = serde_json::from_str(&json).unwrap();
         let err = resp.error.unwrap();
         assert_eq!(err.code, -32000);
@@ -1073,7 +1077,13 @@ mod tests {
 
     #[test]
     fn jsonrpc_request_various_methods() {
-        for method in &["initialize", "tools/list", "tools/call", "shutdown", "custom/method"] {
+        for method in &[
+            "initialize",
+            "tools/list",
+            "tools/call",
+            "shutdown",
+            "custom/method",
+        ] {
             let req = JsonRpcRequest {
                 jsonrpc: "2.0",
                 id: 1,
@@ -1205,7 +1215,8 @@ mod tests {
 
     #[test]
     fn jsonrpc_response_both_result_and_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true},"error":{"code":-1,"message":"odd"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true},"error":{"code":-1,"message":"odd"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(resp.result.is_some());
         assert!(resp.error.is_some());
@@ -1288,7 +1299,9 @@ mod tests {
             timeout: Duration::from_secs(30),
         };
         client.servers.insert("ab".into(), make_server(vec!["x"]));
-        client.servers.insert("ab_cd".into(), make_server(vec!["x"]));
+        client
+            .servers
+            .insert("ab_cd".into(), make_server(vec!["x"]));
         let result = client.parse_tool_name("mcp_ab_cd_x");
         assert_eq!(result, Some(("ab_cd", "x")));
     }
@@ -1332,9 +1345,17 @@ mod tests {
         let client = make_multi_server_client();
         let defs = client.tool_definitions();
         for def in &defs {
-            assert!(def.name.starts_with("mcp_"), "tool '{}' missing mcp_ prefix", def.name);
+            assert!(
+                def.name.starts_with("mcp_"),
+                "tool '{}' missing mcp_ prefix",
+                def.name
+            );
             let rest = def.name.strip_prefix("mcp_").unwrap();
-            assert!(rest.contains('_'), "tool '{}' has no underscore after server prefix", def.name);
+            assert!(
+                rest.contains('_'),
+                "tool '{}' has no underscore after server prefix",
+                def.name
+            );
         }
     }
 
@@ -1430,6 +1451,9 @@ mod tests {
         );
         assert!(client.parse_tool_name("mcp_srvtool").is_none());
         assert!(client.parse_tool_name("mcp_srv").is_none());
-        assert_eq!(client.parse_tool_name("mcp_srv_tool"), Some(("srv", "tool")));
+        assert_eq!(
+            client.parse_tool_name("mcp_srv_tool"),
+            Some(("srv", "tool"))
+        );
     }
 }

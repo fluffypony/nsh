@@ -10,7 +10,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     }
 
     if crate::config::is_setting_protected(key) {
-        eprintln!("\x1b[1;31m✗ Setting '{key}' is security-sensitive and cannot be changed via AI tool call.\x1b[0m");
+        eprintln!(
+            "\x1b[1;31m✗ Setting '{key}' is security-sensitive and cannot be changed via AI tool call.\x1b[0m"
+        );
         eprintln!("\x1b[2m  Edit manually: nsh config edit\x1b[0m");
         return Ok(());
     }
@@ -300,7 +302,9 @@ mod tests {
         let doc: toml_edit::DocumentMut = r#"
 [provider]
 model = "test"
-"#.parse().unwrap();
+"#
+        .parse()
+        .unwrap();
         let val = get_toml_value(&doc, "provider.model");
         assert!(val.is_some());
         assert!(val.unwrap().contains("test"));
@@ -317,7 +321,9 @@ model = "test"
         let doc: toml_edit::DocumentMut = r#"
 [a.b]
 c = 42
-"#.parse().unwrap();
+"#
+        .parse()
+        .unwrap();
         let val = get_toml_value(&doc, "a.b.c");
         assert!(val.is_some());
         assert!(val.unwrap().contains("42"));
@@ -491,24 +497,40 @@ c = 42
 
     #[test]
     fn test_protected_setting_blocks_set() {
-        assert!(crate::config::is_setting_protected("execution.allow_unsafe_autorun"));
-        assert!(crate::config::is_setting_protected("tools.sensitive_file_access"));
-        assert!(crate::config::is_setting_protected("tools.run_command_allowlist"));
+        assert!(crate::config::is_setting_protected(
+            "execution.allow_unsafe_autorun"
+        ));
+        assert!(crate::config::is_setting_protected(
+            "tools.sensitive_file_access"
+        ));
+        assert!(crate::config::is_setting_protected(
+            "tools.run_command_allowlist"
+        ));
         assert!(crate::config::is_setting_protected("redaction.enabled"));
-        assert!(crate::config::is_setting_protected("redaction.disable_builtin"));
+        assert!(crate::config::is_setting_protected(
+            "redaction.disable_builtin"
+        ));
     }
 
     #[test]
     fn test_protected_setting_blocks_api_key_segment() {
-        assert!(crate::config::is_setting_protected("provider.openai.api_key"));
-        assert!(crate::config::is_setting_protected("provider.openrouter.api_key_cmd"));
-        assert!(crate::config::is_setting_protected("provider.custom.base_url"));
+        assert!(crate::config::is_setting_protected(
+            "provider.openai.api_key"
+        ));
+        assert!(crate::config::is_setting_protected(
+            "provider.openrouter.api_key_cmd"
+        ));
+        assert!(crate::config::is_setting_protected(
+            "provider.custom.base_url"
+        ));
     }
 
     #[test]
     fn test_non_protected_setting_allowed() {
         assert!(!crate::config::is_setting_protected("provider.model"));
-        assert!(!crate::config::is_setting_protected("context.history_limit"));
+        assert!(!crate::config::is_setting_protected(
+            "context.history_limit"
+        ));
     }
 
     #[test]

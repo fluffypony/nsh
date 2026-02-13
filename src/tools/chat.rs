@@ -62,7 +62,10 @@ mod tests {
         execute(&input, "test query", &db, "s1", true, &config, true).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
-        assert!(convos.is_empty(), "private=true should not insert conversations");
+        assert!(
+            convos.is_empty(),
+            "private=true should not insert conversations"
+        );
     }
 
     #[test]

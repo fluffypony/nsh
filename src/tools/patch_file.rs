@@ -607,7 +607,11 @@ mod tests {
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
         assert!(result.is_some());
-        assert!(result.unwrap().contains("search text contains redaction markers"));
+        assert!(
+            result
+                .unwrap()
+                .contains("search text contains redaction markers")
+        );
     }
 
     #[test]
@@ -621,7 +625,11 @@ mod tests {
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
         assert!(result.is_some());
-        assert!(result.unwrap().contains("replacement text contains redaction markers"));
+        assert!(
+            result
+                .unwrap()
+                .contains("replacement text contains redaction markers")
+        );
     }
 
     #[test]
@@ -719,7 +727,11 @@ mod tests {
             "replace": "x",
         });
         let result = execute(&input, "q", &db, "s", false, &config).unwrap();
-        assert!(result.unwrap().contains("search text contains redaction markers"));
+        assert!(
+            result
+                .unwrap()
+                .contains("search text contains redaction markers")
+        );
 
         let input = serde_json::json!({
             "path": "/tmp/test.txt",
@@ -727,7 +739,11 @@ mod tests {
             "replace": "[REDACTED:A]",
         });
         let result = execute(&input, "q", &db, "s", false, &config).unwrap();
-        assert!(result.unwrap().contains("replacement text contains redaction markers"));
+        assert!(
+            result
+                .unwrap()
+                .contains("replacement text contains redaction markers")
+        );
     }
 
     #[test]

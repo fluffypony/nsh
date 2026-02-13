@@ -13,7 +13,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     }
 
     if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        anyhow::bail!("install_skill: name must contain only alphanumeric characters and underscores");
+        anyhow::bail!(
+            "install_skill: name must contain only alphanumeric characters and underscores"
+        );
     }
 
     // Build TOML content
@@ -54,7 +56,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     eprintln!("{cyan}{toml_content}{reset}");
 
     if skill_path.exists() {
-        eprintln!("{bold_yellow}Warning: skill '{name}' already exists and will be overwritten.{reset}");
+        eprintln!(
+            "{bold_yellow}Warning: skill '{name}' already exists and will be overwritten.{reset}"
+        );
     }
 
     eprintln!();
@@ -69,7 +73,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     }
 
     std::fs::write(&skill_path, &toml_content)?;
-    eprintln!("{green}✓ skill '{name}' installed at {}{reset}", skill_path.display());
+    eprintln!(
+        "{green}✓ skill '{name}' installed at {}{reset}",
+        skill_path.display()
+    );
 
     Ok(())
 }
@@ -151,7 +158,10 @@ mod tests {
     fn test_name_leading_underscore_valid() {
         let input = json!({"name": "_private", "description": "test", "command": "echo"});
         let result = super::execute(&input);
-        assert!(result.is_ok(), "Leading underscore name should pass validation");
+        assert!(
+            result.is_ok(),
+            "Leading underscore name should pass validation"
+        );
     }
 
     #[test]
@@ -271,7 +281,10 @@ mod tests {
             }
         }
 
-        assert!(toml_content.is_empty(), "Empty params should produce no TOML output");
+        assert!(
+            toml_content.is_empty(),
+            "Empty params should produce no TOML output"
+        );
     }
 
     #[test]
@@ -294,8 +307,14 @@ mod tests {
         }
 
         assert!(toml_content.contains("[parameters.bare_param]"));
-        assert!(toml_content.contains("type = \"string\""), "Missing type should default to 'string'");
-        assert!(toml_content.contains("description = \"\""), "Missing description should default to empty");
+        assert!(
+            toml_content.contains("type = \"string\""),
+            "Missing type should default to 'string'"
+        );
+        assert!(
+            toml_content.contains("description = \"\""),
+            "Missing description should default to empty"
+        );
     }
 
     #[test]
@@ -320,6 +339,9 @@ mod tests {
             }
         }
 
-        assert!(toml_content.is_empty(), "No parameters key should produce no TOML parameter output");
+        assert!(
+            toml_content.is_empty(),
+            "No parameters key should produce no TOML parameter output"
+        );
     }
 }

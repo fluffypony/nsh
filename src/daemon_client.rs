@@ -50,7 +50,7 @@ pub fn is_daemon_running(session_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::{DaemonRequest, DaemonResponse, DAEMON_PROTOCOL_VERSION};
+    use crate::daemon::{DAEMON_PROTOCOL_VERSION, DaemonRequest, DaemonResponse};
     use std::os::unix::net::UnixListener;
 
     #[test]
@@ -409,7 +409,9 @@ mod tests {
             w.flush().unwrap();
         });
 
-        let req = DaemonRequest::Heartbeat { session: "mysess".into() };
+        let req = DaemonRequest::Heartbeat {
+            session: "mysess".into(),
+        };
         let result = send_request(&session_id, &req);
         let _ = std::fs::remove_file(&sock_path);
         handler.join().unwrap();

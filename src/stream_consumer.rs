@@ -142,8 +142,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::TextDelta("hello ".into())).await.unwrap();
-        tx.send(StreamEvent::TextDelta("world".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("hello ".into()))
+            .await
+            .unwrap();
+        tx.send(StreamEvent::TextDelta("world".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
 
@@ -162,8 +166,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::ToolUseStart { id: "t1".into(), name: "run_command".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"cmd":"ls"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "run_command".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"cmd":"ls"}"#.into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -185,17 +196,30 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::TextDelta("thinking...".into())).await.unwrap();
-        tx.send(StreamEvent::ToolUseStart { id: "t2".into(), name: "chat".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"response":"hi"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("thinking...".into()))
+            .await
+            .unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t2".into(),
+            name: "chat".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"response":"hi"}"#.into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
 
         let (msg, _) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
         assert_eq!(msg.content.len(), 2);
-        assert!(matches!(&msg.content[0], crate::provider::ContentBlock::Text { text } if text == "thinking..."));
-        assert!(matches!(&msg.content[1], crate::provider::ContentBlock::ToolUse { name, .. } if name == "chat"));
+        assert!(
+            matches!(&msg.content[0], crate::provider::ContentBlock::Text { text } if text == "thinking...")
+        );
+        assert!(
+            matches!(&msg.content[1], crate::provider::ContentBlock::ToolUse { name, .. } if name == "chat")
+        );
     }
 
     #[tokio::test]
@@ -204,7 +228,14 @@ mod tests {
         let cancel = not_cancelled();
 
         tx.send(StreamEvent::TextDelta("ok".into())).await.unwrap();
-        tx.send(StreamEvent::Done { usage: Some(Usage { input_tokens: 100, output_tokens: 50 }) }).await.unwrap();
+        tx.send(StreamEvent::Done {
+            usage: Some(Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+            }),
+        })
+        .await
+        .unwrap();
         drop(tx);
 
         let (_, usage) = consume_stream(&mut rx, &cancel, &mut |_| {}).await.unwrap();
@@ -218,7 +249,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::Error("connection lost".into())).await.unwrap();
+        tx.send(StreamEvent::Error("connection lost".into()))
+            .await
+            .unwrap();
         drop(tx);
 
         let result = consume_stream(&mut rx, &cancel, &mut |_| {}).await;
@@ -241,7 +274,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::GenerationId("gen-123".into())).await.unwrap();
+        tx.send(StreamEvent::GenerationId("gen-123".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::TextDelta("hi".into())).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -266,8 +301,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::ToolUseStart { id: "t3".into(), name: "test".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta("not valid json{{{".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t3".into(),
+            name: "test".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta("not valid json{{{".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -287,8 +329,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancel = not_cancelled();
 
-        tx.send(StreamEvent::ToolUseStart { id: "t4".into(), name: "cmd".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"x":1}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t4".into(),
+            name: "cmd".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"x":1}"#.into()))
+            .await
+            .unwrap();
         // No ToolUseEnd — channel just closes
         drop(tx);
 
@@ -310,20 +359,27 @@ mod tests {
         let mut event_names = vec![];
 
         tx.send(StreamEvent::TextDelta("hi".into())).await.unwrap();
-        tx.send(StreamEvent::ToolUseStart { id: "t5".into(), name: "search".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta("{}".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t5".into(),
+            name: "search".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta("{}".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
 
-        consume_stream(&mut rx, &cancel, &mut |e| {
-            match e {
-                DisplayEvent::TextChunk(_) => event_names.push("text"),
-                DisplayEvent::ToolStarted { .. } => event_names.push("tool_start"),
-                DisplayEvent::ToolFinished { .. } => event_names.push("tool_end"),
-                DisplayEvent::Done => event_names.push("done"),
-            }
-        }).await.unwrap();
+        consume_stream(&mut rx, &cancel, &mut |e| match e {
+            DisplayEvent::TextChunk(_) => event_names.push("text"),
+            DisplayEvent::ToolStarted { .. } => event_names.push("tool_start"),
+            DisplayEvent::ToolFinished { .. } => event_names.push("tool_end"),
+            DisplayEvent::Done => event_names.push("done"),
+        })
+        .await
+        .unwrap();
 
         assert!(event_names.contains(&"text"));
         assert!(event_names.contains(&"tool_start"));
@@ -338,7 +394,9 @@ mod tests {
         let cancel2 = cancel.clone();
         let mut got_done = false;
 
-        tx.send(StreamEvent::TextDelta("partial".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("partial".into()))
+            .await
+            .unwrap();
 
         let handle = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -349,11 +407,15 @@ mod tests {
             if matches!(e, DisplayEvent::Done) {
                 got_done = true;
             }
-        }).await;
+        })
+        .await;
 
         handle.await.unwrap();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("interrupted"));
-        assert!(got_done, "should emit Done when cancelled while streaming text");
+        assert!(
+            got_done,
+            "should emit Done when cancelled while streaming text"
+        );
     }
 }

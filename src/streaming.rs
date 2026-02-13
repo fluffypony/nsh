@@ -157,7 +157,8 @@ pub async fn consume_stream(
             }
             _ => {}
         }
-    }).await?;
+    })
+    .await?;
     Ok(msg)
 }
 
@@ -193,16 +194,19 @@ mod tests {
     }
 
     #[test]
-    fn test_spinner_guard_noop() {
-    }
+    fn test_spinner_guard_noop() {}
 
     #[tokio::test]
     async fn test_consume_stream_text() {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::TextDelta("hello ".to_string())).await.unwrap();
-        tx.send(StreamEvent::TextDelta("world".to_string())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("hello ".to_string()))
+            .await
+            .unwrap();
+        tx.send(StreamEvent::TextDelta("world".to_string()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
 
@@ -223,8 +227,12 @@ mod tests {
         tx.send(StreamEvent::ToolUseStart {
             id: "t1".into(),
             name: "command".into(),
-        }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"command":"ls"}"#.into())).await.unwrap();
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"command":"ls"}"#.into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -244,7 +252,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::Error("test error".into())).await.unwrap();
+        tx.send(StreamEvent::Error("test error".into()))
+            .await
+            .unwrap();
         drop(tx);
 
         let result = consume_stream(&mut rx, &cancelled).await;
@@ -256,7 +266,9 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::GenerationId("gen-123".into())).await.unwrap();
+        tx.send(StreamEvent::GenerationId("gen-123".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
 
@@ -269,12 +281,18 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::TextDelta("thinking...".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("thinking...".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseStart {
             id: "t1".into(),
             name: "chat".into(),
-        }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"response":"hi"}"#.into())).await.unwrap();
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"response":"hi"}"#.into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -337,8 +355,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::ToolUseStart { id: "t1".into(), name: "cmd".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"x":1}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "cmd".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"x":1}"#.into()))
+            .await
+            .unwrap();
         drop(tx);
 
         let msg = consume_stream(&mut rx, &cancelled).await.unwrap();
@@ -357,8 +382,15 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::ToolUseStart { id: "t2".into(), name: "test".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta("not json{{".into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t2".into(),
+            name: "test".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta("not json{{".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -375,11 +407,25 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::ToolUseStart { id: "t1".into(), name: "search".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"q":"test"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t1".into(),
+            name: "search".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"q":"test"}"#.into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
-        tx.send(StreamEvent::ToolUseStart { id: "t2".into(), name: "read".into() }).await.unwrap();
-        tx.send(StreamEvent::ToolUseDelta(r#"{"path":"/"}"#.into())).await.unwrap();
+        tx.send(StreamEvent::ToolUseStart {
+            id: "t2".into(),
+            name: "read".into(),
+        })
+        .await
+        .unwrap();
+        tx.send(StreamEvent::ToolUseDelta(r#"{"path":"/"}"#.into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::ToolUseEnd).await.unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
@@ -393,8 +439,12 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(8);
         let cancelled = Arc::new(AtomicBool::new(false));
 
-        tx.send(StreamEvent::TextDelta("chunk1".into())).await.unwrap();
-        tx.send(StreamEvent::TextDelta("chunk2".into())).await.unwrap();
+        tx.send(StreamEvent::TextDelta("chunk1".into()))
+            .await
+            .unwrap();
+        tx.send(StreamEvent::TextDelta("chunk2".into()))
+            .await
+            .unwrap();
         tx.send(StreamEvent::Done { usage: None }).await.unwrap();
         drop(tx);
 

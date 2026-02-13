@@ -1190,7 +1190,10 @@ mod extra_tests {
         let config = test_config();
         let input = "SK0123456789abcdef0123456789abcdef";
         let result = redact_secrets(input, &config);
-        assert!(result.contains("REDACTED"), "should redact Twilio key, got: {result}");
+        assert!(
+            result.contains("REDACTED"),
+            "should redact Twilio key, got: {result}"
+        );
     }
 
     #[test]

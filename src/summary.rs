@@ -94,14 +94,17 @@ pub fn extract_package_association(cmd: &str, exit_code: i32) -> Option<(String,
     if tokens.len() < 3 {
         return None;
     }
-    let manager = tokens[0].rsplit('/').next().unwrap_or(&tokens[0]).to_lowercase();
+    let manager = tokens[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tokens[0])
+        .to_lowercase();
     let (pkg_name, _action) = match manager.as_str() {
         "npm" | "npx" | "yarn" | "pnpm" => {
             let action = tokens.get(1)?.as_str();
             match action {
                 "install" | "update" | "add" | "upgrade" => {
-                    let pkg = tokens.iter().skip(2)
-                        .find(|t| !t.starts_with('-'))?;
+                    let pkg = tokens.iter().skip(2).find(|t| !t.starts_with('-'))?;
                     (pkg.clone(), action)
                 }
                 _ => return None,
@@ -109,37 +112,38 @@ pub fn extract_package_association(cmd: &str, exit_code: i32) -> Option<(String,
         }
         "pip" | "pip3" | "pipx" | "uv" => {
             if matches!(tokens.get(1)?.as_str(), "install" | "upgrade") {
-                let pkg = tokens.iter().skip(2)
-                    .find(|t| {
-                        !t.starts_with('-')
-                            && *t != "."
-                            && !t.starts_with("./")
-                            && !t.contains('/')
-                    })?;
+                let pkg = tokens.iter().skip(2).find(|t| {
+                    !t.starts_with('-') && *t != "." && !t.starts_with("./") && !t.contains('/')
+                })?;
                 (pkg.clone(), tokens[1].as_str())
-            } else { return None; }
+            } else {
+                return None;
+            }
         }
         "brew" => {
             let action = tokens.get(1)?.as_str();
             if matches!(action, "install" | "upgrade" | "reinstall") {
-                let pkg = tokens.iter().skip(2)
-                    .find(|t| !t.starts_with('-'))?;
+                let pkg = tokens.iter().skip(2).find(|t| !t.starts_with('-'))?;
                 (pkg.clone(), action)
-            } else { return None; }
+            } else {
+                return None;
+            }
         }
         "cargo" => {
             if tokens.get(1)?.as_str() == "install" {
-                let pkg = tokens.iter().skip(2)
-                    .find(|t| !t.starts_with('-'))?;
+                let pkg = tokens.iter().skip(2).find(|t| !t.starts_with('-'))?;
                 (pkg.clone(), "install")
-            } else { return None; }
+            } else {
+                return None;
+            }
         }
         "apt" | "apt-get" | "dnf" | "yum" => {
             if matches!(tokens.get(1)?.as_str(), "install") {
-                let pkg = tokens.iter().skip(2)
-                    .find(|t| !t.starts_with('-'))?;
+                let pkg = tokens.iter().skip(2).find(|t| !t.starts_with('-'))?;
                 (pkg.clone(), "install")
-            } else { return None; }
+            } else {
+                return None;
+            }
         }
         _ => return None,
     };
@@ -256,10 +260,7 @@ mod tests {
 
     #[test]
     fn test_trivial_summary_exit_logout() {
-        assert_eq!(
-            trivial_summary("exit", 0, ""),
-            Some("Exited shell".into())
-        );
+        assert_eq!(trivial_summary("exit", 0, ""), Some("Exited shell".into()));
         assert_eq!(
             trivial_summary("logout", 0, ""),
             Some("Exited shell".into())

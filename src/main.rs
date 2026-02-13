@@ -244,6 +244,34 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     println!("{cwd}");
                 }
             }
+            SessionAction::SuppressedExitCodes => {
+                let config = config::Config::load().unwrap_or_default();
+                let codes = config.hints.normalized_suppressed_exit_codes();
+                if !codes.is_empty() {
+                    println!(
+                        "{}",
+                        codes
+                            .iter()
+                            .map(std::string::ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                }
+            }
+            SessionAction::IgnoreExitCode { code } => {
+                let updated = config::add_suppressed_exit_code(code)?;
+                let codes = updated
+                    .codes
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if updated.added {
+                    eprintln!("nsh: suppressed exit code {code} for failure hints [{codes}]");
+                } else {
+                    eprintln!("nsh: exit code {code} is already suppressed [{codes}]");
+                }
+            }
         },
 
         Commands::History { action } => match action {
@@ -518,7 +546,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 "sha256": expected_sha,
                 "downloaded_at": chrono::Utc::now().to_rfc3339(),
             });
-            atomic_write(&pending_path, serde_json::to_string_pretty(&pending_info)?.as_bytes())?;
+            atomic_write(
+                &pending_path,
+                serde_json::to_string_pretty(&pending_info)?.as_bytes(),
+            )?;
 
             eprintln!("nsh: update v{version} downloaded and verified.");
             eprintln!("  It will be applied automatically on your next shell start.");
@@ -981,10 +1012,8 @@ fn background_update_check() -> anyhow::Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
 
     let records = resolve_update_txt_fallback()?;
-    let (latest_version, expected_sha) =
-        find_latest_for_target(&records, target).ok_or_else(|| {
-            anyhow::anyhow!("no DNS record for {target}")
-        })?;
+    let (latest_version, expected_sha) = find_latest_for_target(&records, target)
+        .ok_or_else(|| anyhow::anyhow!("no DNS record for {target}"))?;
 
     if util::compare_versions(&latest_version, current_version) != std::cmp::Ordering::Greater {
         let db = db::Db::open()?;
@@ -1010,7 +1039,10 @@ fn background_update_check() -> anyhow::Result<()> {
     let staging_dir = config::Config::nsh_dir().join("updates");
     std::fs::create_dir_all(&staging_dir)?;
     let staged_path = staging_dir.join(format!("nsh-{latest_version}-{target}"));
-    let tmp_staged = staging_dir.join(format!("nsh-{latest_version}-{target}.{}", std::process::id()));
+    let tmp_staged = staging_dir.join(format!(
+        "nsh-{latest_version}-{target}.{}",
+        std::process::id()
+    ));
 
     let decoder = flate2::read::GzDecoder::new(&output.stdout[..]);
     let mut archive = tar::Archive::new(decoder);
@@ -1054,7 +1086,10 @@ fn background_update_check() -> anyhow::Result<()> {
         "sha256": expected_sha,
         "downloaded_at": chrono::Utc::now().to_rfc3339(),
     });
-    atomic_write(&pending_path, serde_json::to_string_pretty(&pending_info)?.as_bytes())?;
+    atomic_write(
+        &pending_path,
+        serde_json::to_string_pretty(&pending_info)?.as_bytes(),
+    )?;
 
     let db = db::Db::open()?;
     db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())?;
@@ -1113,7 +1148,14 @@ fn redact_config_keys(val: &mut toml::Value) {
                     if let toml::Value::String(s) = v {
                         if s.chars().count() > 8 {
                             let prefix: String = s.chars().take(4).collect();
-                            let suffix: String = s.chars().rev().take(4).collect::<String>().chars().rev().collect();
+                            let suffix: String = s
+                                .chars()
+                                .rev()
+                                .take(4)
+                                .collect::<String>()
+                                .chars()
+                                .rev()
+                                .collect();
                             *s = format!("{prefix}...{suffix}");
                         } else {
                             *s = "****".into();
@@ -1226,9 +1268,17 @@ mod tests {
     fn find_latest_picks_highest_version() {
         let sha = valid_sha().to_string();
         let records = vec![
-            ("0.1.0".to_string(), "linux".to_string(), "sha_old".to_string()),
+            (
+                "0.1.0".to_string(),
+                "linux".to_string(),
+                "sha_old".to_string(),
+            ),
             ("0.3.0".to_string(), "linux".to_string(), sha.clone()),
-            ("0.2.0".to_string(), "linux".to_string(), "sha_mid".to_string()),
+            (
+                "0.2.0".to_string(),
+                "linux".to_string(),
+                "sha_mid".to_string(),
+            ),
         ];
         let result = find_latest_for_target(&records, "linux").unwrap();
         assert_eq!(result.0, "0.3.0");
@@ -1282,8 +1332,7 @@ mod tests {
 
     #[test]
     fn redact_long_api_key() {
-        let mut val: toml::Value =
-            toml::from_str(r#"api_key = "sk-1234567890abcdef""#).unwrap();
+        let mut val: toml::Value = toml::from_str(r#"api_key = "sk-1234567890abcdef""#).unwrap();
         redact_config_keys(&mut val);
         let s = val.get("api_key").unwrap().as_str().unwrap();
         assert_eq!(s, "sk-1...cdef");
@@ -1366,8 +1415,7 @@ mod tests {
     fn should_check_old_check() {
         let db = db::Db::open_in_memory().unwrap();
         let old = chrono::Utc::now() - chrono::Duration::hours(25);
-        db.set_meta("last_update_check", &old.to_rfc3339())
-            .unwrap();
+        db.set_meta("last_update_check", &old.to_rfc3339()).unwrap();
         assert!(should_check_for_updates(&db));
     }
 
@@ -1433,8 +1481,16 @@ mod tests {
         let records = vec![
             ("0.1.0".to_string(), "linux".to_string(), sha1.clone()),
             ("0.5.0".to_string(), "linux".to_string(), sha2.clone()),
-            ("0.3.0".to_string(), "linux".to_string(), "aaa0000000000000000000000000000000000000000000000000000000000000".to_string()),
-            ("0.2.0".to_string(), "linux".to_string(), "bbb0000000000000000000000000000000000000000000000000000000000000".to_string()),
+            (
+                "0.3.0".to_string(),
+                "linux".to_string(),
+                "aaa0000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            (
+                "0.2.0".to_string(),
+                "linux".to_string(),
+                "bbb0000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
         ];
         let result = find_latest_for_target(&records, "linux").unwrap();
         assert_eq!(result.0, "0.5.0");
@@ -1444,7 +1500,8 @@ mod tests {
     #[test]
     fn find_latest_same_version_different_targets() {
         let sha_linux = valid_sha().to_string();
-        let sha_macos = "1111111111111111111111111111111111111111111111111111111111111111".to_string();
+        let sha_macos =
+            "1111111111111111111111111111111111111111111111111111111111111111".to_string();
         let records = vec![
             ("0.2.0".to_string(), "linux".to_string(), sha_linux.clone()),
             ("0.2.0".to_string(), "macos".to_string(), sha_macos.clone()),
@@ -1610,10 +1667,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let updates_dir = dir.path().join("updates");
         std::fs::create_dir_all(&updates_dir).unwrap();
-        let entries: Vec<_> = std::fs::read_dir(&updates_dir)
-            .unwrap()
-            .flatten()
-            .collect();
+        let entries: Vec<_> = std::fs::read_dir(&updates_dir).unwrap().flatten().collect();
         assert!(entries.is_empty());
     }
 
@@ -1792,10 +1846,7 @@ mod tests {
 
     #[test]
     fn compare_versions_empty_string() {
-        assert_eq!(
-            util::compare_versions("", ""),
-            std::cmp::Ordering::Equal
-        );
+        assert_eq!(util::compare_versions("", ""), std::cmp::Ordering::Equal);
         assert_eq!(
             util::compare_versions("", "0.0.1"),
             std::cmp::Ordering::Less
@@ -1850,18 +1901,17 @@ mod tests {
         redact_config_keys(&mut val);
         assert!(val["api_key"].as_str().unwrap().contains("..."));
         assert_eq!(val["model"].as_str().unwrap(), "gpt-4");
-        assert_eq!(
-            val["base_url"].as_str().unwrap(),
-            "https://api.example.com"
-        );
+        assert_eq!(val["base_url"].as_str().unwrap(), "https://api.example.com");
         assert_eq!(val["api_key_cmd"].as_str().unwrap(), "echo secret");
     }
 
     #[test]
     fn find_latest_for_target_no_match() {
-        let records = vec![
-            ("1.0.0".to_string(), "linux".to_string(), valid_sha().to_string()),
-        ];
+        let records = vec![(
+            "1.0.0".to_string(),
+            "linux".to_string(),
+            valid_sha().to_string(),
+        )];
         let result = find_latest_for_target(&records, "macos");
         assert!(result.is_none());
     }
@@ -1882,7 +1932,8 @@ mod tests {
     fn parse_dns_multiple_lines() {
         let sha1 = valid_sha();
         let sha2 = "1111111111111111111111111111111111111111111111111111111111111111";
-        let input = format!("0.1.0:aarch64-apple-darwin:{sha1}\n0.2.0:x86_64-unknown-linux-gnu:{sha2}\n");
+        let input =
+            format!("0.1.0:aarch64-apple-darwin:{sha1}\n0.2.0:x86_64-unknown-linux-gnu:{sha2}\n");
         let records = parse_dns_txt_records(&input);
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].0, "0.1.0");

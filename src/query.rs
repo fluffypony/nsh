@@ -108,7 +108,14 @@ pub async fn handle_query(
         }
     }
 
-    let system = build_system_prompt(&ctx, &xml_context, &boundary, &config_xml, &memories_xml, &relevant_history_xml);
+    let system = build_system_prompt(
+        &ctx,
+        &xml_context,
+        &boundary,
+        &config_xml,
+        &memories_xml,
+        &relevant_history_xml,
+    );
     let mut messages: Vec<Message> = Vec::new();
 
     // Conversation history from this session
@@ -932,7 +939,8 @@ have pending=true.
 
 "#;
     let boundary_note = crate::security::boundary_system_prompt_addition(boundary);
-    let mut result = format!("{base}\n{boundary_note}\n\n{config_xml}\n\n{memories_xml}\n\n{xml_context}");
+    let mut result =
+        format!("{base}\n{boundary_note}\n\n{config_xml}\n\n{memories_xml}\n\n{xml_context}");
     if !relevant_history.is_empty() {
         result.push_str("\n\nI have automatically searched your command history for terms related to this query.\nCheck <relevant_history_from_db> before guessing package names or approaches.\n\n");
         result.push_str(relevant_history);
@@ -1189,7 +1197,8 @@ mod tests {
     fn test_build_system_prompt_contains_xml_context() {
         let ctx = make_test_ctx();
         let xml = "<context><env os=\"linux\"/></context>";
-        let result = build_system_prompt(&ctx, xml, "B", "<config/>", "<memories count=\"0\" />", "");
+        let result =
+            build_system_prompt(&ctx, xml, "B", "<config/>", "<memories count=\"0\" />", "");
         assert!(result.contains(xml));
     }
 
@@ -1716,8 +1725,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_tool_descriptions() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         for tool in &[
             "command",
             "chat",
@@ -1748,8 +1763,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_security_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Security"));
         assert!(result.contains("UNTRUSTED DATA"));
         assert!(result.contains("REDACTED"));
@@ -2183,8 +2204,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_response_rules() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Response Rules"));
         assert!(result.contains("tool call"));
     }
@@ -2192,8 +2219,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_error_recovery() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Error Recovery"));
     }
 
@@ -2433,8 +2466,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_multi_step_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Multi-step"));
         assert!(result.contains("pending=true"));
     }
@@ -2442,8 +2481,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_style_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Style"));
         assert!(result.contains("1-2 sentences"));
     }
@@ -2451,16 +2496,28 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_efficiency_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Efficiency"));
     }
 
     #[test]
     fn test_build_system_prompt_contains_project_context_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Project Context"));
         assert!(result.contains("Cargo.toml"));
     }
@@ -2468,8 +2525,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_memory_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Memory"));
         assert!(result.contains("persistent memory system"));
     }
@@ -2477,8 +2540,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_self_config_section() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Self-Configuration"));
         assert!(result.contains("manage_config"));
     }
@@ -2486,8 +2555,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_examples() {
         let ctx = make_test_ctx();
-        let result =
-            build_system_prompt(&ctx, "<ctx/>", "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            "<ctx/>",
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains("Examples"));
         assert!(result.contains("delete all .pyc files"));
         assert!(result.contains("what does tee do"));
@@ -2512,7 +2587,8 @@ mod tests {
     fn test_build_system_prompt_special_chars_in_config_xml() {
         let ctx = make_test_ctx();
         let config = "<config key=\"value\" special=\"<>&amp;\" />";
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", config, "<memories count=\"0\" />", "");
+        let result =
+            build_system_prompt(&ctx, "<ctx/>", "B", config, "<memories count=\"0\" />", "");
         assert!(result.contains(config));
     }
 
@@ -2520,8 +2596,14 @@ mod tests {
     fn test_build_system_prompt_special_chars_in_context() {
         let ctx = make_test_ctx();
         let xml_ctx = "<context os=\"macOS\" cwd=\"/tmp/dir with <special> & chars\" />";
-        let result =
-            build_system_prompt(&ctx, xml_ctx, "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(
+            &ctx,
+            xml_ctx,
+            "B",
+            "<config/>",
+            "<memories count=\"0\" />",
+            "",
+        );
         assert!(result.contains(xml_ctx));
     }
 
@@ -2902,7 +2984,8 @@ mod tests {
         let mut ctx = make_test_ctx();
         ctx.custom_instructions = Some("Always respond in French.".into());
         let xml = "<context custom_instructions=\"Always respond in French.\"/>";
-        let result = build_system_prompt(&ctx, xml, "B", "<config/>", "<memories count=\"0\" />", "");
+        let result =
+            build_system_prompt(&ctx, xml, "B", "<config/>", "<memories count=\"0\" />", "");
         assert!(result.contains("Always respond in French."));
     }
 

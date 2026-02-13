@@ -107,6 +107,7 @@ nsh init fish | source
 - `? ...`: normal mode
 - `?? ...`: reasoning mode (`--think`)
 - `?! ...`: private mode (`--private`, avoids query/response history writes)
+- `? ignore [exit_code]`: suppress failure hints for the last failed code (or a specific code)
 - `nsh query --json ...`: JSON event stream output
 
 Example JSON mode output includes event lines like:
@@ -211,6 +212,9 @@ scrollback_pause_seconds = 2
 include_other_tty = false
 restore_last_cwd_per_tty = true
 # custom_instructions = "..."
+
+[hints]
+suppressed_exit_codes = [130, 137, 141, 143]
 
 [models]
 main = [

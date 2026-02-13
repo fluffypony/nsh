@@ -9,11 +9,56 @@ __nsh_clear_pending_command() {
     __nsh_pending_cmd=""
 }
 
+__nsh_load_suppressed_exit_codes() {
+    local codes
+    if codes="$(command nsh session suppressed-exit-codes 2>/dev/null)"; then
+        export NSH_HINT_SUPPRESSED_EXIT_CODES="$codes"
+    else
+        export NSH_HINT_SUPPRESSED_EXIT_CODES="130 137 141 143"
+    fi
+}
+
+__nsh_is_suppressed_exit_code() {
+    local code="$1"
+    local c
+    for c in $NSH_HINT_SUPPRESSED_EXIT_CODES; do
+        [[ "$c" == "$code" ]] && return 0
+    done
+    return 1
+}
+
+__nsh_query_ignore_exit_code() {
+    local code=""
+    if [[ "${1:-}" == "ignore" ]]; then
+        if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+            code="$2"
+        else
+            code="${NSH_LAST_FAILED_EXIT_CODE:-}"
+        fi
+    else
+        return 1
+    fi
+
+    if [[ -z "$code" || "$code" == "0" ]]; then
+        printf '\x1b[2m  nsh: no recent failed exit code to ignore\x1b[0m\n' >&2
+        return 0
+    fi
+
+    if command nsh session ignore-exit-code --code "$code" >/dev/null 2>&1; then
+        __nsh_load_suppressed_exit_codes
+        printf '\x1b[2m  nsh: suppressed exit code %s for failure hints\x1b[0m\n' "$code" >&2
+    else
+        printf '\x1b[2m  nsh: failed to update suppressed exit codes\x1b[0m\n' >&2
+    fi
+    return 0
+}
+
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
-    nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; command nsh query -- "$@"; }
-    nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; command nsh query --think -- "$@"; }
-    nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; command nsh query --private -- "$@"; }
+    __nsh_load_suppressed_exit_codes
+    nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query -- "$@"; }
+    nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --think -- "$@"; }
+    nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --private -- "$@"; }
     alias '?'='nsh_query'
     alias '??'='nsh_query_think'
     alias '?!'='nsh_query_private'
@@ -29,6 +74,7 @@ fi
 export NSH_SESSION_ID="__SESSION_ID__"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"
+__nsh_load_suppressed_exit_codes
 
 __nsh_restore_last_cwd() {
     local restore_cwd
@@ -44,9 +90,9 @@ nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --
 disown 2>/dev/null
 
 # ── Aliases ─────────────────────────────────────────────
-nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; command nsh query -- "$@"; }
-nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; command nsh query --think -- "$@"; }
-nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; command nsh query --private -- "$@"; }
+nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query -- "$@"; }
+nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --think -- "$@"; }
+nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --private -- "$@"; }
 alias '?'='nsh_query'
 alias '??'='nsh_query_think'
 alias '?!'='nsh_query_private'
@@ -118,13 +164,14 @@ __nsh_prompt_command() {
 
         # Hint after failure
         if [[ $exit_code -ne 0 ]]; then
-            if [[ $exit_code -eq 130 || $exit_code -eq 143 || $exit_code -eq 137 ]]; then
+            export NSH_LAST_FAILED_EXIT_CODE="$exit_code"
+            if __nsh_is_suppressed_exit_code "$exit_code"; then
                 :
             else
                 case "$cmd" in
                     grep*|test*|"["*|diff*|cmp*|nsh*|ssh*|scp*|sftp*|rsync*|mosh*|ping*|curl*|wget*|ftp*|telnet*|nc*|exit*|logout*|fg*|bg*) ;;
                     *)
-                        printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix to diagnose\x1b[0m\n' "$exit_code" >&2
+                        printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix or ? ignore\x1b[0m\n' "$exit_code" >&2
                         ;;
                 esac
             fi

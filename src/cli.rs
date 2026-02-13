@@ -196,6 +196,15 @@ pub enum SessionAction {
         #[arg(long)]
         tty: String,
     },
+    /// Internal: print configured suppressed exit codes for shell hints
+    #[command(hide = true)]
+    SuppressedExitCodes,
+    /// Internal: add an exit code to suppressed shell failure hints
+    #[command(hide = true)]
+    IgnoreExitCode {
+        #[arg(long)]
+        code: i32,
+    },
 }
 
 #[derive(Subcommand)]
