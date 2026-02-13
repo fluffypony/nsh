@@ -93,6 +93,19 @@ __nsh_clear_pending_command() {
     __NSH_PENDING_CMD=""
 }
 
+__nsh_emit_iterm2_cwd() {
+    [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]] || return 0
+    local path="$PWD"
+    path="${path//%/%25}"
+    path="${path// /%20}"
+    path="${path//\#/%23}"
+    path="${path//\?/%3F}"
+    path="${path//;/%3B}"
+    local host="${HOST:-localhost}"
+    printf '\033]7;file://%s%s\007' "$host" "$path"
+    printf '\033]1337;CurrentDir=%s\007' "$PWD"
+}
+
 __nsh_load_suppressed_exit_codes() {
     local codes
     if codes="$(command nsh session suppressed-exit-codes 2>/dev/null)"; then
@@ -314,6 +327,8 @@ __nsh_precmd() {
             nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &!
         fi
     fi
+
+    __nsh_emit_iterm2_cwd
 }
 
 # ── Check for pending commands from nsh query ───────────

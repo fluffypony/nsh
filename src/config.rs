@@ -1,6 +1,8 @@
 use serde::Deserialize;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use zeroize::Zeroizing;
 
@@ -498,10 +500,15 @@ fn default_mcp_timeout() -> u64 {
 
 fn find_project_config() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
+    let global_config_path = Config::path();
     loop {
         for name in [".nsh.toml", ".nsh/config.toml"] {
             let candidate = dir.join(name);
             if candidate.exists() {
+                // Never treat the user-global config as a project override.
+                if !is_project_config_candidate_allowed(&candidate, &global_config_path) {
+                    continue;
+                }
                 return Some(candidate);
             }
         }
@@ -513,6 +520,10 @@ fn find_project_config() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn is_project_config_candidate_allowed(candidate: &Path, global_config_path: &Path) -> bool {
+    candidate != global_config_path
 }
 
 fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
@@ -532,7 +543,48 @@ fn deep_merge_toml(base: &mut toml::Value, overlay: &toml::Value) {
     }
 }
 
+#[cfg(test)]
 fn sanitize_project_config(value: &mut toml::Value) {
+    sanitize_project_config_for_path(value, None);
+}
+
+fn should_emit_project_config_warning_once(
+    project_path: Option<&Path>,
+    disallowed: &[String],
+) -> bool {
+    let session_id = match std::env::var("NSH_SESSION_ID") {
+        Ok(id) if !id.trim().is_empty() => id,
+        _ => return true,
+    };
+
+    let marker_dir = std::env::temp_dir().join("nsh-session-warnings");
+    if std::fs::create_dir_all(&marker_dir).is_err() {
+        return true;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    session_id.hash(&mut hasher);
+    if let Some(path) = project_path {
+        path.hash(&mut hasher);
+    }
+    for section in disallowed {
+        section.hash(&mut hasher);
+    }
+    let marker_name = format!("project-disallowed-sections-{:016x}", hasher.finish());
+    let marker_path = marker_dir.join(marker_name);
+
+    match std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(marker_path)
+    {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(_) => true,
+    }
+}
+
+fn sanitize_project_config_for_path(value: &mut toml::Value, project_path: Option<&Path>) {
     // Security: only context and display are allowed in project configs.
     // execution, tools, redaction, and provider sections are blocked to prevent
     // project-level configs from weakening security settings.
@@ -544,11 +596,15 @@ fn sanitize_project_config(value: &mut toml::Value) {
             .filter(|k| !ALLOWED_SECTIONS.contains(&k.as_str()))
             .cloned()
             .collect();
-        if !disallowed.is_empty() {
+        if !disallowed.is_empty()
+            && should_emit_project_config_warning_once(project_path, &disallowed)
+        {
             eprintln!(
                 "nsh: warning: project config contains disallowed sections ({}), ignoring them",
                 disallowed.join(", ")
             );
+        }
+        if !disallowed.is_empty() {
             for key in &disallowed {
                 table.remove(key);
             }
@@ -586,7 +642,10 @@ impl Config {
             match std::fs::read_to_string(&project_path) {
                 Ok(project_content) => match toml::from_str::<toml::Value>(&project_content) {
                     Ok(mut project_value) => {
-                        sanitize_project_config(&mut project_value);
+                        sanitize_project_config_for_path(
+                            &mut project_value,
+                            Some(project_path.as_path()),
+                        );
                         deep_merge_toml(&mut base_value, &project_value);
                     }
                     Err(e) => {
@@ -2242,6 +2301,19 @@ key = "overridden"
     fn test_find_project_config_returns_option() {
         let result = find_project_config();
         assert!(result.is_none() || result.unwrap().exists());
+    }
+
+    #[test]
+    fn test_project_config_candidate_rejects_global_config_path() {
+        let global = PathBuf::from("/Users/example/.nsh/config.toml");
+        assert!(!is_project_config_candidate_allowed(&global, &global));
+    }
+
+    #[test]
+    fn test_project_config_candidate_allows_distinct_path() {
+        let global = PathBuf::from("/Users/example/.nsh/config.toml");
+        let project = PathBuf::from("/Users/example/work/repo/.nsh.toml");
+        assert!(is_project_config_candidate_allowed(&project, &global));
     }
 
     #[test]

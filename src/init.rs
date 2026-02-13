@@ -294,4 +294,43 @@ mod tests {
             "fish init should restore last cwd when available"
         );
     }
+
+    #[test]
+    fn test_zsh_emits_iterm2_current_dir() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("__nsh_emit_iterm2_cwd"),
+            "zsh init should include iTerm2 cwd emitter"
+        );
+        assert!(
+            script.contains("CurrentDir"),
+            "zsh init should emit iTerm2 CurrentDir escape"
+        );
+    }
+
+    #[test]
+    fn test_bash_emits_iterm2_current_dir() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("__nsh_emit_iterm2_cwd"),
+            "bash init should include iTerm2 cwd emitter"
+        );
+        assert!(
+            script.contains("CurrentDir"),
+            "bash init should emit iTerm2 CurrentDir escape"
+        );
+    }
+
+    #[test]
+    fn test_fish_emits_iterm2_current_dir() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("__nsh_emit_iterm2_cwd"),
+            "fish init should include iTerm2 cwd emitter"
+        );
+        assert!(
+            script.contains("CurrentDir"),
+            "fish init should emit iTerm2 CurrentDir escape"
+        );
+    }
 }

@@ -53,6 +53,19 @@ __nsh_query_ignore_exit_code() {
     return 0
 }
 
+__nsh_emit_iterm2_cwd() {
+    [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]] || return 0
+    local path="$PWD"
+    path="${path//%/%25}"
+    path="${path// /%20}"
+    path="${path//#/%23}"
+    path="${path//\?/%3F}"
+    path="${path//;/%3B}"
+    local host="${HOSTNAME:-localhost}"
+    printf '\033]7;file://%s%s\007' "$host" "$path"
+    printf '\033]1337;CurrentDir=%s\007' "$PWD"
+}
+
 # ── Nested shell guard ──────────────────────────────────
 if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     __nsh_load_suppressed_exit_codes
@@ -209,6 +222,8 @@ __nsh_prompt_command() {
             disown 2>/dev/null
         fi
     fi
+
+    __nsh_emit_iterm2_cwd
 }
 
 # ── Check for pending commands from nsh query ───────────

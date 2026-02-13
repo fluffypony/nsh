@@ -59,6 +59,29 @@ function __nsh_query_ignore_exit_code
     return 0
 end
 
+function __nsh_emit_iterm2_cwd
+    if test "$TERM_PROGRAM" != "iTerm.app"
+        return
+    end
+
+    set -l path "$PWD"
+    set path (string replace -a "%" "%25" -- $path)
+    set path (string replace -a " " "%20" -- $path)
+    set path (string replace -a "#" "%23" -- $path)
+    set path (string replace -a "?" "%3F" -- $path)
+    set path (string replace -a ";" "%3B" -- $path)
+
+    set -l host localhost
+    if set -q hostname
+        set host $hostname
+    else if set -q HOSTNAME
+        set host $HOSTNAME
+    end
+
+    printf '\033]7;file://%s%s\007' $host $path
+    printf '\033]1337;CurrentDir=%s\007' "$PWD"
+end
+
 # ── Nested shell guard ──────────────────────────────────
 if set -q NSH_SESSION_ID
     __nsh_load_suppressed_exit_codes
@@ -232,6 +255,8 @@ function __nsh_postexec --on-event fish_postexec
             disown 2>/dev/null
         end
     end
+
+    __nsh_emit_iterm2_cwd
 end
 
 # ── Check for pending commands ──────────────────────────

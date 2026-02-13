@@ -1,59 +1,236 @@
 # nsh - Natural Shell
 
-AI-powered shell assistant for `zsh`, `bash`, and `fish`.
+**AI-powered shell assistant for `zsh`, `bash`, and `fish`.**
 
-`nsh` sits in your terminal loop: it records command history, understands your active
-project context, and turns natural-language requests into either:
+nsh lives in your terminal. It records command history, understands your project context, reads your scrollback, and turns natural-language requests into shell commands or direct answers - all without leaving your prompt.
 
-- a prefilled shell command for you to review, or
-- a direct chat response when no command is needed.
+```
+? why did my last command fail
+? set up a python virtualenv for this repo
+? fix
+```
 
-It can investigate with built-in tools (history search, file reads, safe command execution,
-web search, config editing, memory, MCP servers, and more) before deciding what to do.
+nsh prefills commands at your prompt for review before execution. It never runs anything blindly.
 
-## Highlights
+---
 
-- Natural-language aliases: `?`, `??`, and `?!`
-- Command prefill workflow (no blind auto-execution by default)
-- Multi-step agent loop with tool calling and follow-up actions
-- SQLite-backed command/session/conversation history with FTS5 search
-- Cross-session context from other active TTYs (optional)
-- PTY capture mode for scrollback-aware assistance
-- Secret redaction before model calls
-- Multiple providers: `openrouter`, `anthropic`, `openai`, `ollama`, `gemini`
-- Built-in self-update flow with SHA256 verification
+## How It Works
+
+nsh wraps your shell in a PTY, capturing scrollback and command history into a local SQLite database. When you ask a question with `?`, nsh builds a rich context - your OS, shell, working directory, recent terminal output, project structure, git state, and conversation history - then streams a response from your configured LLM provider.
+
+The assistant responds by calling **tools**: `command` to prefill a shell command, `chat` for text answers, or any of 16 other built-in tools for investigation, file editing, web search, and more. It can chain multiple tool calls in a single turn, investigating before acting.
+
+```
+you: ? install ripgrep
+nsh: [searches history] → [checks brew availability] → [prefills command]
+     $ brew install ripgrep
+     ↵ Enter to run · Edit first · Ctrl-C to cancel
+```
+
+---
+
+## Features
+
+### Natural Language Interface
+
+Three aliases, each a single character:
+
+- **`? ...`** - standard query
+- **`?? ...`** - reasoning/thinking mode (extended thinking for complex problems)
+- **`?! ...`** - private mode (query and response are not saved to history)
+
+Append `!!` to any query to auto-execute the suggested command without confirmation.
+
+### Command Prefill
+
+nsh writes suggested commands to your shell's editing buffer. You see the command at your prompt, can edit it, then press Enter to run it - or Ctrl-C to cancel. This is the default and safest mode.
+
+Two alternative modes are available via configuration: `confirm` (approve/reject without editing) and `autorun` (execute immediately for safe commands).
+
+### Context Awareness
+
+Every query includes rich context assembled automatically:
+
+- **Terminal scrollback** - recent output from your PTY session, including SSH sessions
+- **Command history** - past commands with exit codes, durations, and AI-generated summaries
+- **Project detection** - recognizes Rust, Node.js, Python, Go, Ruby, Java, C/C++, Nix, Docker, and Make projects
+- **Git state** - current branch, status, and recent commits
+- **Cross-TTY context** - optionally includes activity from other open terminal sessions
+- **Environment** - OS, architecture, installed package managers, development tools
+
+### Multi-Step Agent Loop
+
+nsh can chain up to 10 tool calls per query. It investigates before acting - searching history, reading files, running safe commands, or querying the web - then responds with a concrete action.
+
+The `pending` flag on command suggestions enables multi-step sequences: nsh prefills a command, waits for you to execute it, reads the output, then continues with the next step.
+
+### 18 Built-In Tools
+
+| Tool | Purpose |
+|---|---|
+| `command` | Prefill a shell command for review |
+| `chat` | Text response for knowledge questions |
+| `search_history` | FTS5 + regex search across all command history |
+| `grep_file` | Regex search within files with context lines |
+| `read_file` | Read file contents with line numbers |
+| `list_directory` | List directory contents with metadata |
+| `web_search` | Search the web via Perplexity/Sonar |
+| `run_command` | Execute safe, allowlisted commands silently |
+| `ask_user` | Request clarification or confirmation |
+| `write_file` | Create or overwrite files (with diff preview and trash backup) |
+| `patch_file` | Surgical find-and-replace in files (with diff preview) |
+| `man_page` | Retrieve man pages for commands |
+| `manage_config` | Modify nsh settings (with confirmation) |
+| `install_skill` | Create reusable custom tool templates |
+| `install_mcp_server` | Add MCP tool servers to configuration |
+| `remember` | Store persistent facts and preferences |
+| `forget_memory` | Delete a stored memory |
+| `update_memory` | Modify an existing memory |
+
+### Persistent Memory
+
+nsh maintains a key-value memory store that persists across sessions. Memories are included in every query context, enabling personalized responses:
+
+```
+you: ? remember that 192.168.3.55 is my home NAS
+nsh: ✓ Memory #1 stored: home NAS IP = 192.168.3.55
+
+you: ? ssh to my NAS
+nsh: $ ssh 192.168.3.55
+```
+
+nsh also proactively learns - when it discovers how you manage a package or service, it stores the association for future queries.
+
+### Entity-Aware History Search
+
+nsh extracts structured entities (hostnames, IPs) from commands and stores them in a searchable index. This enables queries like:
+
+```
+you: ? what servers have I ssh'd into recently
+nsh: Recent machine targets for `ssh` (most recent first):
+     - [2026-02-11T17:49:15Z] 135.181.128.145 (via ssh)
+     - [2026-02-11T17:47:15Z] ssh.phx.nearlyfreespeech.net (via ssh)
+```
+
+### Security
+
+- **Secret redaction** - over 60 built-in patterns detect and redact API keys, tokens, private keys, JWTs, database URLs, and more before sending context to the LLM. Custom patterns can be added.
+- **Command risk assessment** - every suggested command is classified as `safe`, `elevated`, or `dangerous`. Dangerous commands (recursive deletion of system paths, disk formatting, fork bombs, piping remote scripts to shell) always require explicit `yes` confirmation.
+- **Sensitive directory blocking** - reads and writes to `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, and similar directories are blocked by default.
+- **Tool output sandboxing** - tool results are delimited by random boundary tokens and treated as untrusted data. Prompt injection attempts in tool output are filtered.
+- **Protected settings** - security-critical configuration keys (API keys, allowlists, redaction settings) cannot be modified by the AI.
+- **Audit logging** - all tool calls are logged to `~/.nsh/audit.log` with automatic rotation.
+
+### Custom Skills
+
+Skills are reusable shell command templates with optional parameters, saved as TOML files:
+
+```toml
+# ~/.nsh/skills/deploy.toml
+name = "deploy"
+description = "Deploy to production"
+command = "kubectl apply -f deploy/{environment}.yaml"
+timeout_seconds = 60
+
+[parameters.environment]
+type = "string"
+description = "Target environment (staging, production)"
+```
+
+Skills appear as tools in the LLM's toolkit and can be invoked naturally:
+
+```
+you: ? deploy to staging
+nsh: [calls skill_deploy with environment=staging]
+```
+
+### MCP Server Support
+
+nsh supports the Model Context Protocol for extending its capabilities with external tool servers. Both stdio (local process) and HTTP (remote endpoint) transports are supported:
+
+```toml
+[mcp.servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+
+[mcp.servers.remote_api]
+transport = "http"
+url = "https://mcp.example.com"
+headers = { Authorization = "Bearer ..." }
+```
+
+### Multiple LLM Providers
+
+nsh works with any OpenAI-compatible API. Built-in provider support includes:
+
+- **OpenRouter** (default) - access to hundreds of models
+- **Anthropic** - Claude models with prompt caching
+- **OpenAI** - GPT models
+- **Google Gemini** - Gemini models
+- **Ollama** - local models
+
+Model chains with automatic fallback on rate limits or errors are configured via `[models]`:
+
+```toml
+[models]
+main = ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4.5"]
+fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
+```
+
+### Additional Features
+
+- **Interactive chat mode** - `nsh chat` for a REPL-style conversation
+- **Shell history import** - automatically imports existing bash, zsh, and fish history on first run
+- **Cost tracking** - `nsh cost` shows token usage and estimated costs by model
+- **JSON output mode** - `nsh query --json` for structured event stream output
+- **Conversation export** - `nsh export` in markdown or JSON format
+- **Self-update** - `nsh update` downloads and verifies new releases via DNS TXT records and SHA256
+- **Shell completions** - `nsh completions zsh|bash|fish` generates completion scripts
+- **Project-local config** - `.nsh.toml` or `.nsh/config.toml` for per-project overrides (restricted to `context` and `display` sections)
+- **Custom instructions** - global via config or per-project via `.nsh/instructions.md`
+- **Hot-reloading config** - changes to `config.toml` take effect on the next query
+
+---
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024)
-- macOS or Linux
-- `zsh`, `bash`, or `fish`
-- At least one model provider configured (OpenRouter is the default path)
+- **Rust 1.85+** (edition 2024) - for building from source
+- **macOS or Linux**
+- **zsh, bash, or fish**
+- At least one LLM provider API key (OpenRouter is the default)
+
+---
 
 ## Installation
 
-### Option 1: Install script
+### Option 1: Install Script (Recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fluffypony/nsh/main/install.sh | bash
+curl -fsSL https://nsh.tools/install.sh | bash
 ```
 
-### Option 2: Build/install from source
+The installer detects your platform, downloads a pre-built binary with SHA256 and DNS verification, creates a default config, and adds shell integration to your rc file. If no pre-built binary is available, it offers to build from source.
+
+### Option 2: Build from Source
 
 ```bash
+git clone https://github.com/fluffypony/nsh.git
+cd nsh
 cargo install --path . --locked
 ```
 
-### Option 3: Build local release binary
+### Option 3: Local Release Binary
 
 ```bash
 cargo build --release
-# target/release/nsh
+# Binary at target/release/nsh
 ```
+
+---
 
 ## Quick Start
 
-### 1) Configure a provider
+### 1. Configure a Provider
 
 Create `~/.nsh/config.toml`:
 
@@ -67,103 +244,93 @@ api_key = "sk-or-v1-..."
 # or: api_key_cmd = "op read 'op://Vault/OpenRouter/credential'"
 ```
 
-Environment variable fallback is also supported:
+Environment variable fallback is supported: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
 
-- `OPENROUTER_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
-- `GEMINI_API_KEY`
+### 2. Enable Shell Integration
 
-### 2) Enable shell integration
-
-Add one line to your shell rc file:
+Add to your shell rc file:
 
 ```bash
-# zsh
+# ~/.zshrc
 command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
 eval "$(nsh init zsh)"
 
-# bash
+# ~/.bashrc
 command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
 eval "$(nsh init bash)"
 
-# fish
+# fish: ~/.config/fish/conf.d/nsh.fish
 command -v nsh >/dev/null; and not set -q NSH_PTY_ACTIVE; and nsh wrap
 nsh init fish | source
 ```
 
-`nsh wrap` is optional but recommended for scrollback-aware behavior.
+`nsh wrap` runs your shell inside a PTY wrapper for scrollback capture. It's optional but recommended.
 
-### 3) Start using it
+### 3. Use It
 
 ```bash
 ? why did my last command fail
 ?? set up a python virtualenv for this repo
 ?! what is the safest way to clean docker images
+? install ripgrep
+? fix         # after a failed command
+? ignore      # suppress hint for the last exit code
 ```
+
+---
 
 ## Query Modes
 
-- `? ...`: normal mode
-- `?? ...`: reasoning mode (`--think`)
-- `?! ...`: private mode (`--private`, avoids query/response history writes)
-- `? ignore [exit_code]`: suppress failure hints for the last failed code (or a specific code)
-- `nsh query --json ...`: JSON event stream output
+| Alias | Mode | Description |
+|---|---|---|
+| `? ...` | Normal | Standard query |
+| `?? ...` | Reasoning | Extended thinking (`--think`) |
+| `?! ...` | Private | No query/response history writes |
+| `? ignore [code]` | Suppress | Disable failure hints for an exit code |
 
-Example JSON mode output includes event lines like:
-
-```json
-{"type":"private_mode","enabled":true}
-{"type":"tool_start","name":"chat"}
-{"type":"tool_end","name":"chat"}
-{"type":"done"}
-{"type":"chat","response":"..."}
-```
+---
 
 ## CLI Reference
 
-### User-facing commands
+### User Commands
 
 | Command | Purpose |
 |---|---|
-| `nsh init <shell>` | Print shell integration script (`zsh`, `bash`, `fish`) |
-| `nsh wrap [--shell <path>]` | Run your shell inside nsh PTY wrapper |
+| `nsh init <shell>` | Print shell integration script |
+| `nsh wrap [--shell <path>]` | Run shell inside PTY wrapper |
 | `nsh query [--think] [--private] [--json] <words...>` | Ask the assistant |
 | `nsh chat` | Interactive REPL chat mode |
-| `nsh history search <query> [--limit N]` | Search command history |
-| `nsh status` | Show current nsh runtime state |
-| `nsh doctor [--no-prune] [--no-vacuum] [--prune-days D]` | DB integrity and cleanup |
-| `nsh config [path|show|edit]` | Config path/view/edit |
-| `nsh reset` | Clear current session conversation context |
-| `nsh cost [today|week|month|all]` | Usage and cost summary |
-| `nsh export [--format markdown|json] [--session ID]` | Export conversation history |
+| `nsh history search <query> [--limit N]` | Full-text search command history |
+| `nsh status` | Show runtime state |
+| `nsh doctor [--no-prune] [--no-vacuum] [--prune-days D]` | DB integrity check and cleanup |
+| `nsh config [path\|show\|edit]` | View or edit configuration |
+| `nsh reset` | Clear session conversation context |
+| `nsh cost [today\|week\|month\|all]` | Usage and cost summary |
+| `nsh export [--format markdown\|json] [--session ID]` | Export conversation history |
 | `nsh provider list-local` | List local Ollama models |
-| `nsh update` | Download and stage latest verified binary update |
+| `nsh update` | Download and verify latest release |
 | `nsh redact-next` | Skip capture for the next command |
-| `nsh completions <shell>` | Emit shell completion script |
+| `nsh completions <shell>` | Generate shell completion script |
 
-### Hook/daemon/internal commands
+### Internal Commands
 
 | Command | Purpose |
 |---|---|
 | `nsh record ...` | Command capture hook endpoint |
-| `nsh session start|end|label ...` | Session lifecycle |
+| `nsh session start\|end\|label ...` | Session lifecycle management |
 | `nsh heartbeat --session ID` | Keep session alive |
 | `nsh daemon-send ...` | Send request to daemon |
 | `nsh daemon-read ...` | Read daemon capture/scrollback |
 
+---
+
 ## Configuration
 
-Main config file: `~/.nsh/config.toml`
+Main config: `~/.nsh/config.toml`
 
-Project-local overrides are supported from either:
+Project-local overrides: `.nsh.toml` or `.nsh/config.toml` (restricted to `context` and `display` sections).
 
-- `.nsh.toml`
-- `.nsh/config.toml`
-
-Project config is intentionally restricted to `context` and `display` sections only.
-
-### Full default config (reference)
+### Full Default Configuration
 
 ```toml
 [provider]
@@ -180,21 +347,15 @@ timeout_seconds = 120
 
 [provider.anthropic]
 # api_key = "..."
-# api_key_cmd = "..."
-# base_url = "..."
 
 [provider.openai]
 # api_key = "..."
-# api_key_cmd = "..."
-# base_url = "..."
 
 [provider.ollama]
 # base_url = "http://localhost:11434"
 
 [provider.gemini]
 # api_key = "..."
-# api_key_cmd = "..."
-# base_url = "..."
 
 [context]
 scrollback_lines = 1000
@@ -229,31 +390,13 @@ fast = [
 
 [tools]
 run_command_allowlist = [
-  "uname",
-  "which",
-  "wc",
-  "file",
-  "stat",
-  "ls",
-  "echo",
-  "whoami",
-  "hostname",
-  "date",
-  "env",
-  "printenv",
-  "id",
-  "df",
-  "free",
-  "python3 --version",
-  "node --version",
-  "git status",
-  "git branch",
-  "git log",
-  "git diff",
-  "pip list",
-  "cargo --version",
+  "uname", "which", "wc", "file", "stat", "ls", "echo",
+  "whoami", "hostname", "date", "env", "printenv", "id",
+  "df", "free", "python3 --version", "node --version",
+  "git status", "git branch", "git log", "git diff",
+  "pip list", "cargo --version",
 ]
-sensitive_file_access = "block" # block | ask | allow
+sensitive_file_access = "block"  # block | ask | allow
 
 [web_search]
 provider = "openrouter"
@@ -267,186 +410,107 @@ thinking_indicator = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 enabled = true
 replacement = "[REDACTED]"
 disable_builtin = false
-patterns = [] # add custom regex patterns if needed
+patterns = []  # custom regex patterns
 
 [capture]
 mode = "vt100"
-alt_screen = "drop" # drop | snapshot
+alt_screen = "drop"  # drop | snapshot
 
 [db]
 busy_timeout_ms = 10000
 
 [execution]
-mode = "prefill" # prefill | confirm | autorun
+mode = "prefill"  # prefill | confirm | autorun
 allow_unsafe_autorun = false
 
 [mcp]
 # [mcp.servers.example]
-# transport = "stdio" # or "http"
+# transport = "stdio"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # env = { EXAMPLE = "1" }
 # timeout_seconds = 30
-# or for http:
-# url = "https://mcp.example.com"
-# headers = { Authorization = "Bearer ..." }
 ```
 
-### Protected settings
+### Protected Settings
 
-The assistant cannot change these via `manage_config` tool:
+These cannot be modified by the AI via `manage_config`:
 
 - `execution.allow_unsafe_autorun`
 - `tools.sensitive_file_access`
 - `tools.run_command_allowlist`
-- `redaction.enabled`
-- `redaction.disable_builtin`
-- any key segment named `api_key`, `api_key_cmd`, or `base_url`
+- `redaction.enabled` / `redaction.disable_builtin`
+- Any `api_key`, `api_key_cmd`, or `base_url` field
 
-## Built-in Tool Catalog (LLM side)
-
-`nsh` exposes 18 built-in tools to the model:
-
-1. `command`
-2. `chat`
-3. `search_history`
-4. `grep_file`
-5. `read_file`
-6. `list_directory`
-7. `web_search`
-8. `run_command`
-9. `ask_user`
-10. `write_file`
-11. `patch_file`
-12. `man_page`
-13. `manage_config`
-14. `install_skill`
-15. `install_mcp_server`
-16. `remember`
-17. `forget_memory`
-18. `update_memory`
-
-Custom skills and MCP tools are added on top of these.
+---
 
 ## Data and Runtime Files
 
-Default location: `~/.nsh/`
+All data is stored in `~/.nsh/`:
 
-- `config.toml` - user config
-- `nsh.db` - SQLite database
-- `pending_cmd_<session>` - command prefill file
-- `pending_flag_<session>` - pending multi-step continuation marker
-- `scrollback_<session>` - scrollback/capture buffers
-- `update_pending` / `updates/` - staged self-update files
+| File | Purpose |
+|---|---|
+| `config.toml` | User configuration |
+| `nsh.db` | SQLite database (sessions, commands, conversations, usage, memories) |
+| `audit.log` | JSON-line audit log of tool calls |
+| `skills/*.toml` | Custom skill definitions |
+| `pending_cmd_<session>` | Command prefill buffer |
+| `pending_flag_<session>` | Multi-step continuation marker |
+| `scrollback_<session>` | Scrollback capture buffer |
+| `daemon_<session>.sock` | Daemon Unix socket |
+| `update_pending` | Staged self-update metadata |
 
-DB includes tables for `sessions`, `commands`, `commands_fts`, `conversations`,
-`usage`, `audit_log`, `memories`, and `meta`.
-
-## Live Smoke Test Checklist
-
-Useful pre-release checks in your real shell environment:
-
-```bash
-# status + DB health
-target/debug/nsh status
-target/debug/nsh doctor --no-prune --no-vacuum
-
-# session flow
-SESSION="release-smoke-$$"
-target/debug/nsh session start --session "$SESSION" --tty "$(tty)" --shell "$SHELL" --pid $$
-target/debug/nsh heartbeat --session "$SESSION"
-target/debug/nsh record --session "$SESSION" --command "echo release-smoke" --cwd "$PWD" --exit-code 0 --started-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --tty "$(tty)" --pid $$ --shell "$(basename "$SHELL")"
-target/debug/nsh history search "release-smoke" --limit 3
-target/debug/nsh session end --session "$SESSION"
-
-# provider reachability (private)
-target/debug/nsh query --private "respond with exactly release_smoke_ok"
-```
-
-## Release Builds and Cross-Compilation
-
-Use the release build helper:
-
-```bash
-# host artifact only
-scripts/release-builds.sh --host-only
-
-# default matrix (macOS x64/arm64, FreeBSD x86/x64, Linux x86/x64/arm64/riscv64)
-scripts/release-builds.sh
-
-# explicit targets
-scripts/release-builds.sh --targets x86_64-apple-darwin,aarch64-apple-darwin
-
-# force backend (auto | cargo | cross | zigbuild)
-scripts/release-builds.sh --backend cross
-```
-
-The script outputs:
-
-- `dist/nsh-<target>.tar.gz`
-- `dist/nsh-<target>.tar.gz.sha256`
-- `dist/update-records.txt` (lines: `<version>:<target>:<binary_sha256>`)
-
-`update-records.txt` is intended for `update.nsh.tools` DNS TXT entries used by
-`nsh update` verification.
-
-### Cross-build prerequisites on macOS
-
-For non-macOS targets from macOS, install one approach:
-
-1. `cross` backend:
-```bash
-cargo install cross --locked
-```
-2. `zigbuild` backend (recommended):
-```bash
-brew install zig
-cargo install cargo-zigbuild --locked
-```
-3. Native GNU cross toolchains (plain cargo backend, Linux targets only):
-```bash
-brew tap messense/macos-cross-toolchains
-brew install x86_64-unknown-linux-gnu
-brew install aarch64-unknown-linux-gnu
-# also install matching i686 and riscv64 GNU cross compilers (for example:
-# i686-linux-gnu-gcc and riscv64-linux-gnu-gcc) from your preferred toolchain source.
-```
+---
 
 ## Development
 
 ```bash
-# format check
-cargo fmt -- --check
-
-# lint (warnings are errors)
-cargo clippy --all-targets -- -D warnings
-
-# full tests
-cargo test
-
-# run local binary
-cargo run -- status
+cargo fmt -- --check        # format check
+cargo clippy --all-targets -- -D warnings  # lint
+cargo test                  # full test suite
+cargo run -- status         # run local binary
 ```
 
-`cargo-make` tasks are defined in `Makefile.toml`, including:
+`cargo-make` tasks are defined in `Makefile.toml`:
 
-- `cargo make test`
-- `cargo make quality`
-- `cargo make release-host`
-- `cargo make release-matrix`
+```bash
+cargo make test             # lint + test
+cargo make quality          # format + lint + test + audit
+cargo make quality-full     # + unsafe code audit (geiger)
+cargo make release-host     # build release for current platform
+cargo make release-matrix   # build for all supported targets
+```
+
+### Cross-Compilation
+
+```bash
+scripts/release-builds.sh --host-only
+scripts/release-builds.sh --targets x86_64-apple-darwin,aarch64-apple-darwin
+scripts/release-builds.sh --backend zigbuild
+```
+
+Supported targets: macOS (x64/arm64), Linux (x64/arm64/i686/riscv64), FreeBSD (x86/x64).
+
+---
 
 ## Troubleshooting
 
-- `nsh status` - inspect session/provider/db state
-- `nsh doctor` - integrity check + prune/vacuum maintenance
-- `nsh config show` - verify effective config file content
-- `RUST_LOG=debug nsh query ...` - debug logging
+```bash
+nsh status                    # inspect session/provider/db state
+nsh doctor                    # integrity check + cleanup
+nsh config show               # verify config
+RUST_LOG=debug nsh query ...  # debug logging
+```
 
-If API calls fail, verify key resolution order for your provider:
+API key resolution order: `api_key` in config → `api_key_cmd` → environment variable.
 
-1. `api_key` in config
-2. `api_key_cmd` in config
-3. provider env var fallback
+---
+
+## Contributing
+
+Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md) before submitting issues or pull requests. Human-authored PRs are prioritized, but AI-generated contributions that meet the quality bar are also accepted.
+
+---
 
 ## License
 
