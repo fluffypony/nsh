@@ -30,6 +30,15 @@ export NSH_SESSION_ID="__SESSION_ID__"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"
 
+__nsh_restore_last_cwd() {
+    local restore_cwd
+    restore_cwd="$(command nsh session last-cwd --tty "$NSH_TTY" 2>/dev/null)" || return 0
+    if [[ -n "$restore_cwd" && -d "$restore_cwd" && "$PWD" != "$restore_cwd" ]]; then
+        builtin cd -- "$restore_cwd" 2>/dev/null || true
+    fi
+}
+__nsh_restore_last_cwd
+
 # Start session asynchronously
 nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --pid "$$" >/dev/null 2>&1 &
 disown 2>/dev/null

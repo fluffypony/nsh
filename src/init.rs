@@ -253,4 +253,43 @@ mod tests {
             "fish init should route ? queries through wrapper functions"
         );
     }
+
+    #[test]
+    fn test_zsh_restores_last_cwd_from_tty() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("command nsh session last-cwd --tty \"$NSH_TTY\""),
+            "zsh init should query last cwd for current tty"
+        );
+        assert!(
+            script.contains("builtin cd -- \"$restore_cwd\""),
+            "zsh init should restore last cwd when available"
+        );
+    }
+
+    #[test]
+    fn test_bash_restores_last_cwd_from_tty() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("command nsh session last-cwd --tty \"$NSH_TTY\""),
+            "bash init should query last cwd for current tty"
+        );
+        assert!(
+            script.contains("builtin cd -- \"$restore_cwd\""),
+            "bash init should restore last cwd when available"
+        );
+    }
+
+    #[test]
+    fn test_fish_restores_last_cwd_from_tty() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("command nsh session last-cwd --tty \"$NSH_TTY\""),
+            "fish init should query last cwd for current tty"
+        );
+        assert!(
+            script.contains("builtin cd -- \"$restore_cwd\""),
+            "fish init should restore last cwd when available"
+        );
+    }
 }

@@ -180,6 +180,7 @@ pub struct ContextConfig {
     pub scrollback_rate_limit_bps: usize,
     pub scrollback_pause_seconds: u64,
     pub include_other_tty: bool,
+    pub restore_last_cwd_per_tty: bool,
     pub custom_instructions: Option<String>,
 }
 
@@ -199,6 +200,7 @@ impl Default for ContextConfig {
             scrollback_rate_limit_bps: 10_485_760,
             scrollback_pause_seconds: 2,
             include_other_tty: false,
+            restore_last_cwd_per_tty: true,
             custom_instructions: None,
         }
     }
@@ -660,6 +662,8 @@ pub fn build_config_xml(
         "Max bytes of output stored per command", None);
     opt(&mut x, "include_other_tty", &config.context.include_other_tty.to_string(),
         "Include other TTY sessions in context", None);
+    opt(&mut x, "restore_last_cwd_per_tty", &config.context.restore_last_cwd_per_tty.to_string(),
+        "Restore shell cwd to the last directory used on this TTY", None);
     let ci = config.context.custom_instructions.as_deref().unwrap_or("(none)");
     opt(&mut x, "custom_instructions", ci,
         "Custom instructions appended to system prompt", None);
@@ -1205,6 +1209,7 @@ base_url = "https://custom.api.example.com"
         assert_eq!(ctx.scrollback_rate_limit_bps, 10_485_760);
         assert_eq!(ctx.scrollback_pause_seconds, 2);
         assert!(!ctx.include_other_tty);
+        assert!(ctx.restore_last_cwd_per_tty);
         assert!(ctx.custom_instructions.is_none());
     }
 
@@ -3095,6 +3100,7 @@ timeout_seconds = "fast"
         assert_eq!(ctx.max_output_storage_bytes, 65536);
         assert_eq!(ctx.scrollback_rate_limit_bps, 10_485_760);
         assert_eq!(ctx.scrollback_pause_seconds, 2);
+        assert!(ctx.restore_last_cwd_per_tty);
         assert!(ctx.custom_instructions.is_none());
     }
 

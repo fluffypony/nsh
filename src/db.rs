@@ -435,6 +435,23 @@ impl Db {
             .or(Ok(None))
     }
 
+    pub fn latest_cwd_for_tty(&self, tty: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT c.cwd
+                 FROM commands c
+                 JOIN sessions s ON s.id = c.session_id
+                 WHERE s.tty = ?
+                   AND c.cwd IS NOT NULL
+                   AND c.cwd != ''
+                 ORDER BY c.started_at DESC, c.id DESC
+                 LIMIT 1",
+                params![tty],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
     // ── Command recording ──────────────────────────────────────────
 
     #[allow(clippy::too_many_arguments)]
@@ -7503,6 +7520,48 @@ mod tests {
         let db = test_db();
         assert!(!db.set_session_label("nope", "label").unwrap());
         assert!(db.get_session_label("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_latest_cwd_for_tty_returns_most_recent() {
+        let db = test_db();
+        db.insert_command(
+            "tty_s1",
+            "echo one",
+            "/tmp/one",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/42",
+            "zsh",
+            1001,
+        )
+        .unwrap();
+        db.insert_command(
+            "tty_s2",
+            "echo two",
+            "/tmp/two",
+            Some(0),
+            "2025-01-01T00:00:01Z",
+            None,
+            None,
+            "/dev/pts/42",
+            "zsh",
+            1002,
+        )
+        .unwrap();
+
+        let cwd = db.latest_cwd_for_tty("/dev/pts/42").unwrap();
+        assert_eq!(cwd.as_deref(), Some("/tmp/two"));
+    }
+
+    #[test]
+    fn test_latest_cwd_for_tty_none_when_no_commands() {
+        let db = test_db();
+        db.create_session("tty_only", "/dev/pts/99", "zsh", 1234)
+            .unwrap();
+        assert!(db.latest_cwd_for_tty("/dev/pts/99").unwrap().is_none());
     }
 
     #[test]

@@ -4,7 +4,8 @@ use clap_complete::Shell as ClapShell;
 #[derive(Parser)]
 #[command(
     name = "nsh",
-    version,
+    version = env!("NSH_BUILD_VERSION"),
+    long_version = env!("NSH_BUILD_LONG_VERSION"),
     about = "Natural Shell — AI-powered shell assistant"
 )]
 pub struct Cli {
@@ -188,6 +189,12 @@ pub enum SessionAction {
         /// Session ID (defaults to current)
         #[arg(long)]
         session: Option<String>,
+    },
+    /// Internal: print latest working directory for a TTY
+    #[command(hide = true)]
+    LastCwd {
+        #[arg(long)]
+        tty: String,
     },
 }
 

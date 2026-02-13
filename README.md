@@ -209,6 +209,7 @@ max_output_storage_bytes = 65536
 scrollback_rate_limit_bps = 10485760
 scrollback_pause_seconds = 2
 include_other_tty = false
+restore_last_cwd_per_tty = true
 # custom_instructions = "..."
 
 [models]

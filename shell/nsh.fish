@@ -42,6 +42,14 @@ else
 end
 set -gx NSH_HISTFILE ~/.local/share/fish/fish_history
 
+function __nsh_restore_last_cwd
+    set -l restore_cwd (command nsh session last-cwd --tty "$NSH_TTY" 2>/dev/null)
+    if test -n "$restore_cwd"; and test -d "$restore_cwd"; and test "$PWD" != "$restore_cwd"
+        builtin cd -- "$restore_cwd" 2>/dev/null
+    end
+end
+__nsh_restore_last_cwd
+
 # Start session asynchronously
 nsh session start --session $NSH_SESSION_ID --tty $NSH_TTY --shell fish --pid $fish_pid &>/dev/null &
 disown 2>/dev/null

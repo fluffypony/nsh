@@ -234,6 +234,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     eprintln!("nsh: session not found");
                 }
             }
+            SessionAction::LastCwd { tty } => {
+                let config = config::Config::load().unwrap_or_default();
+                if !config.context.restore_last_cwd_per_tty {
+                    return Ok(());
+                }
+                let db = db::Db::open()?;
+                if let Some(cwd) = db.latest_cwd_for_tty(&tty)? {
+                    println!("{cwd}");
+                }
+            }
         },
 
         Commands::History { action } => match action {
@@ -737,6 +747,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(not set)".into());
             let config = config::Config::load().unwrap_or_default();
             let db = db::Db::open()?;
+            let build_version = env!("NSH_BUILD_VERSION");
             let pty_active = std::env::var("NSH_TTY").is_ok();
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
             let db_path = config::Config::nsh_dir().join("nsh.db");
@@ -754,6 +765,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
 
             eprintln!("nsh status:");
+            eprintln!("  Version:    {build_version}");
             eprintln!("  Session:    {session_id}");
             if let Some(label) = session_label {
                 eprintln!("  Label:      {label}");
