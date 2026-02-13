@@ -124,6 +124,32 @@ mod tests {
     }
 
     #[test]
+    fn test_zsh_accept_line_wrapper_has_recursion_guard() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("if [[ \"$orig_widget\" == \"user:__nsh_accept_line\" ]]"),
+            "zsh accept-line wrapper should detect recursive widget chaining"
+        );
+        assert!(
+            script.contains("zle .accept-line"),
+            "zsh accept-line wrapper should fall back to builtin accept-line on recursion"
+        );
+    }
+
+    #[test]
+    fn test_zsh_accept_line_install_heals_corrupt_orig_widget() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("if [[ \"${widgets[__nsh_accept_line_orig]:-}\" == \"user:__nsh_accept_line\" ]]"),
+            "zsh init should repair corrupted __nsh_accept_line_orig bindings"
+        );
+        assert!(
+            script.contains("zle -N __nsh_accept_line_orig .accept-line"),
+            "zsh init should restore builtin accept-line as the orig widget when needed"
+        );
+    }
+
+    #[test]
     fn test_zsh_cleanup_uses_command_rm() {
         let script = generate_init_script("zsh");
         assert!(

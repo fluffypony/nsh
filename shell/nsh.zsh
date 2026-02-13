@@ -55,17 +55,34 @@ __nsh_accept_line() {
     if __nsh_handle_nl_query_line; then
         return 0
     fi
-    zle __nsh_accept_line_orig
+
+    # Safety guard: if wrapper chaining got corrupted, fall back to builtin.
+    local orig_widget="${widgets[__nsh_accept_line_orig]:-}"
+    if [[ "$orig_widget" == "user:__nsh_accept_line" ]]; then
+        zle .accept-line
+    else
+        zle __nsh_accept_line_orig
+    fi
 }
 
 __nsh_install_accept_line_widget() {
     # Non-interactive shells don't have ZLE widgets.
     zle -l >/dev/null 2>&1 || return 0
 
-    if [[ "${widgets[accept-line]:-}" != "user:__nsh_accept_line" ]]; then
-        zle -A accept-line __nsh_accept_line_orig
-        zle -N accept-line __nsh_accept_line
+    local current_widget="${widgets[accept-line]:-}"
+    if [[ "$current_widget" == "user:__nsh_accept_line" ]]; then
+        # Heal broken state where __nsh_accept_line_orig points to wrapper.
+        if [[ "${widgets[__nsh_accept_line_orig]:-}" == "user:__nsh_accept_line" ]]; then
+            zle -N __nsh_accept_line_orig .accept-line
+        fi
+        return 0
     fi
+
+    zle -A accept-line __nsh_accept_line_orig 2>/dev/null || zle -N __nsh_accept_line_orig .accept-line
+    if [[ "${widgets[__nsh_accept_line_orig]:-}" == "user:__nsh_accept_line" ]]; then
+        zle -N __nsh_accept_line_orig .accept-line
+    fi
+    zle -N accept-line __nsh_accept_line
 }
 
 __nsh_clear_pending_command() {
