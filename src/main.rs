@@ -885,8 +885,12 @@ fn current_target_triple() -> Option<&'static str> {
     match (os, arch) {
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
         ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("freebsd", "x86") => Some("i686-unknown-freebsd"),
+        ("freebsd", "x86_64") => Some("x86_64-unknown-freebsd"),
+        ("linux", "x86") => Some("i686-unknown-linux-gnu"),
         ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
         ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("linux", "riscv64") => Some("riscv64gc-unknown-linux-gnu"),
         _ => None,
     }
 }
@@ -1687,8 +1691,12 @@ mod tests {
             let known = [
                 "aarch64-apple-darwin",
                 "x86_64-apple-darwin",
+                "i686-unknown-freebsd",
+                "x86_64-unknown-freebsd",
+                "i686-unknown-linux-gnu",
                 "x86_64-unknown-linux-gnu",
                 "aarch64-unknown-linux-gnu",
+                "riscv64gc-unknown-linux-gnu",
             ];
             assert!(known.contains(&t), "unexpected triple: {t}");
         }

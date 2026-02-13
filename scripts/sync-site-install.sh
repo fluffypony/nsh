@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SOURCE_FILE="${ROOT_DIR}/install.sh"
+SITE_DIR="${NSH_SITE_DIR:-${ROOT_DIR}/../nsh-site}"
+WATCH_MODE=0
+
+usage() {
+  cat <<'USAGE'
+Sync install.sh into the nsh-site repo.
+
+Usage:
+  scripts/sync-site-install.sh [options]
+
+Options:
+  --site-dir <path>   Destination site repo path (default: ../nsh-site)
+  --watch             Watch install.sh and sync on changes
+  -h, --help          Show this help
+USAGE
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+sync_once() {
+  if [[ ! -f "${SOURCE_FILE}" ]]; then
+    echo "sync-site-install: source file not found: ${SOURCE_FILE}" >&2
+    exit 1
+  fi
+  if [[ ! -d "${SITE_DIR}" ]]; then
+    echo "sync-site-install: site dir not found: ${SITE_DIR}" >&2
+    exit 1
+  fi
+
+  cp "${SOURCE_FILE}" "${SITE_DIR}/install.sh"
+  chmod 755 "${SITE_DIR}/install.sh"
+  echo "synced: ${SOURCE_FILE} -> ${SITE_DIR}/install.sh"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --site-dir)
+      [[ $# -ge 2 ]] || { echo "sync-site-install: --site-dir requires a value" >&2; exit 1; }
+      SITE_DIR="$2"
+      shift 2
+      ;;
+    --watch)
+      WATCH_MODE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "sync-site-install: unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+sync_once
+
+if (( WATCH_MODE )); then
+  if have fswatch; then
+    echo "watching: ${SOURCE_FILE}"
+    fswatch -0 "${SOURCE_FILE}" | while IFS= read -r -d '' _; do
+      sync_once
+    done
+    exit 0
+  fi
+
+  if have entr; then
+    echo "watching with entr: ${SOURCE_FILE}"
+    while true; do
+      printf '%s\n' "${SOURCE_FILE}" | entr -n cp "${SOURCE_FILE}" "${SITE_DIR}/install.sh"
+      chmod 755 "${SITE_DIR}/install.sh"
+      echo "synced: ${SOURCE_FILE} -> ${SITE_DIR}/install.sh"
+    done
+  fi
+
+  echo "sync-site-install: watch mode requires fswatch or entr" >&2
+  exit 1
+fi

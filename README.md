@@ -10,7 +10,7 @@ nsh lives in your terminal. It records command history, understands your project
 ? fix
 ```
 
-nsh prefills commands at your prompt for review before execution. It never runs anything blindly.
+nsh prefills commands at your prompt for review before execution. It never runs anything blindly (unless you enable the autorun mode!)
 
 ---
 
@@ -195,7 +195,7 @@ fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
 ## Requirements
 
 - **Rust 1.85+** (edition 2024) - for building from source
-- **macOS or Linux**
+- **macOS, Linux, or FreeBSD**
 - **zsh, bash, or fish**
 - At least one LLM provider API key (OpenRouter is the default)
 
@@ -209,7 +209,7 @@ fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
 curl -fsSL https://nsh.tools/install.sh | bash
 ```
 
-The installer detects your platform, downloads a pre-built binary with SHA256 and DNS verification, creates a default config, and adds shell integration to your rc file. If no pre-built binary is available, it offers to build from source.
+The installer detects your platform, downloads a pre-built binary with SHA256 and DNS verification, creates a default config, and adds shell integration to your rc file. Pre-built binaries are published for macOS (x64/arm64), Linux (x64/arm64/i686/riscv64), and FreeBSD (x86/x64). If no pre-built binary is available, it offers to build from source.
 
 ### Option 2: Build from Source
 
@@ -479,6 +479,7 @@ cargo make quality          # format + lint + test + audit
 cargo make quality-full     # + unsafe code audit (geiger)
 cargo make release-host     # build release for current platform
 cargo make release-matrix   # build for all supported targets
+cargo make sync-site-install # copy install.sh -> ../nsh-site/install.sh
 ```
 
 ### Cross-Compilation
@@ -490,6 +491,38 @@ scripts/release-builds.sh --backend zigbuild
 ```
 
 Supported targets: macOS (x64/arm64), Linux (x64/arm64/i686/riscv64), FreeBSD (x86/x64).
+
+### Release Publishing
+
+1. Sync the installer script to the website repo:
+
+```bash
+cargo make sync-site-install
+# or: cargo make sync-site-install-watch
+```
+
+2. Build release artifacts:
+
+```bash
+scripts/release-builds.sh --version 1.0.0
+```
+
+3. Create a GitHub release and upload `dist/*` artifacts:
+
+```bash
+gh release create v1.0.0 dist/nsh-*.tar.gz dist/nsh-*.tar.gz.sha256 \
+  --title "nsh v1.0.0" --notes "nsh v1.0.0"
+```
+
+4. Publish updater DNS TXT records for `update.nsh.tools` from `dist/update-records.txt`:
+
+```text
+1.0.0:x86_64-unknown-linux-gnu:<sha256-of-binary>
+1.0.0:aarch64-unknown-linux-gnu:<sha256-of-binary>
+...
+```
+
+Use one TXT record per target line.
 
 ---
 

@@ -3,6 +3,16 @@ set -euo pipefail
 
 REPO="fluffypony/nsh"
 INSTALL_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+SUPPORTED_PREBUILT_TARGETS=(
+    "aarch64-apple-darwin"
+    "x86_64-apple-darwin"
+    "i686-unknown-freebsd"
+    "x86_64-unknown-freebsd"
+    "i686-unknown-linux-gnu"
+    "aarch64-unknown-linux-gnu"
+    "riscv64gc-unknown-linux-gnu"
+    "x86_64-unknown-linux-gnu"
+)
 
 BOLD='\033[1m' DIM='\033[2m' GREEN='\033[32m' CYAN='\033[36m'
 YELLOW='\033[33m' RED='\033[31m' RESET='\033[0m'
@@ -19,20 +29,37 @@ ARCH="$(uname -m)"
 case "$OS" in
     Linux)  PLATFORM="unknown-linux-gnu" ;;
     Darwin) PLATFORM="apple-darwin" ;;
-    *)      error "Unsupported OS: $OS. nsh requires Linux or macOS." ;;
+    FreeBSD) PLATFORM="unknown-freebsd" ;;
+    *)      error "Unsupported OS: $OS. nsh requires Linux, macOS, or FreeBSD." ;;
 esac
 
 case "$ARCH" in
     x86_64|amd64)   ARCH="x86_64" ;;
+    i386|i486|i586|i686|x86) ARCH="i686" ;;
     aarch64|arm64)  ARCH="aarch64" ;;
+    riscv64|riscv64gc) ARCH="riscv64gc" ;;
     *)              error "Unsupported architecture: $ARCH" ;;
 esac
 
 TARGET="${ARCH}-${PLATFORM}"
 info "Detected: $OS $ARCH"
 
+has_prebuilt_target() {
+    local target="$1"
+    for t in "${SUPPORTED_PREBUILT_TARGETS[@]}"; do
+        if [[ "$t" == "$target" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ── Try pre-built binary first ──────────────────────────
 install_from_release() {
+    if ! has_prebuilt_target "$TARGET"; then
+        return 1
+    fi
+
     info "Checking for pre-built release..."
     local LATEST
     LATEST="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
@@ -147,7 +174,7 @@ if ! install_from_release; then
         printf "  Build from source? This requires Rust and may take a few minutes. [y/N] "
         read -r ans
         if [[ "$ans" != "y" && "$ans" != "Y" ]]; then
-            error "Installation aborted. Pre-built binaries are available for: x86_64-linux, aarch64-linux, x86_64-macos, aarch64-macos"
+            error "Installation aborted. Pre-built binaries are available for: ${SUPPORTED_PREBUILT_TARGETS[*]}"
         fi
     fi
     install_from_source
