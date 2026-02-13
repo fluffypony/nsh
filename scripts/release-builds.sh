@@ -7,7 +7,11 @@ DIST_DIR="${ROOT_DIR}/dist"
 DEFAULT_TARGETS=(
   "aarch64-apple-darwin"
   "x86_64-apple-darwin"
+  "i686-unknown-freebsd"
+  "x86_64-unknown-freebsd"
+  "i686-unknown-linux-gnu"
   "aarch64-unknown-linux-gnu"
+  "riscv64gc-unknown-linux-gnu"
   "x86_64-unknown-linux-gnu"
 )
 
@@ -71,8 +75,10 @@ target_env_key() {
 
 cc_for_target() {
   case "$1" in
+    i686-unknown-linux-gnu) echo "i686-linux-gnu-gcc" ;;
     x86_64-unknown-linux-gnu) echo "x86_64-linux-gnu-gcc" ;;
     aarch64-unknown-linux-gnu) echo "aarch64-linux-gnu-gcc" ;;
+    riscv64gc-unknown-linux-gnu) echo "riscv64-linux-gnu-gcc" ;;
     x86_64-unknown-linux-musl) echo "x86_64-linux-musl-gcc" ;;
     aarch64-unknown-linux-musl) echo "aarch64-linux-musl-gcc" ;;
     *) echo "" ;;
@@ -92,13 +98,13 @@ choose_backend() {
     return
   fi
 
-  if have cross; then
-    echo "cross"
+  if have cargo-zigbuild; then
+    echo "zigbuild"
     return
   fi
 
-  if have cargo-zigbuild; then
-    echo "zigbuild"
+  if have cross; then
+    echo "cross"
     return
   fi
 

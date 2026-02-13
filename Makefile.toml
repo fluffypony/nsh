@@ -70,6 +70,6 @@ command = "bash"
 args = ["scripts/release-builds.sh", "--host-only"]
 
 [tasks.release-matrix]
-description = "Build release artifacts for macOS/Linux x86_64+aarch64"
+description = "Build release artifacts for standard macOS/FreeBSD/Linux matrix"
 command = "bash"
 args = ["scripts/release-builds.sh"]

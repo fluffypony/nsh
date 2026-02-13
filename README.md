@@ -367,7 +367,7 @@ Use the release build helper:
 # host artifact only
 scripts/release-builds.sh --host-only
 
-# default matrix (macOS + Linux, x86_64 + aarch64)
+# default matrix (macOS x64/arm64, FreeBSD x86/x64, Linux x86/x64/arm64/riscv64)
 scripts/release-builds.sh
 
 # explicit targets
@@ -386,24 +386,26 @@ The script outputs:
 `update-records.txt` is intended for `update.nsh.tools` DNS TXT entries used by
 `nsh update` verification.
 
-### Linux cross-build prerequisites on macOS
+### Cross-build prerequisites on macOS
 
-For Linux targets from macOS, install one approach:
+For non-macOS targets from macOS, install one approach:
 
 1. `cross` backend:
 ```bash
 cargo install cross --locked
 ```
-2. `zigbuild` backend:
+2. `zigbuild` backend (recommended):
 ```bash
 brew install zig
 cargo install cargo-zigbuild --locked
 ```
-3. Native GNU cross toolchains (plain cargo backend):
+3. Native GNU cross toolchains (plain cargo backend, Linux targets only):
 ```bash
 brew tap messense/macos-cross-toolchains
-brew install aarch64-unknown-linux-gnu
 brew install x86_64-unknown-linux-gnu
+brew install aarch64-unknown-linux-gnu
+# also install matching i686 and riscv64 GNU cross compilers (for example:
+# i686-linux-gnu-gcc and riscv64-linux-gnu-gcc) from your preferred toolchain source.
 ```
 
 ## Development
