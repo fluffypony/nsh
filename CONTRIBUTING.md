@@ -113,7 +113,7 @@ src/
 ├── skills.rs        # Custom skill loader and executor
 ├── streaming.rs     # Stream consumer, spinner, display
 ├── summary.rs       # Command output summarization
-└── shell/           # Shell integration scripts (zsh, bash, fish)
+└── shell/           # Shell integration scripts (zsh, bash, fish, powershell)
 ```
 
 ### Key Design Decisions
