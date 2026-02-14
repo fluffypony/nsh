@@ -107,6 +107,16 @@ pub fn execute(
     )?;
 
     if matches.is_empty() {
+        let query_lc = query.unwrap_or("").to_ascii_lowercase();
+        if query_lc.contains("ssh") && query_lc.contains("last") {
+            if let Ok(tty) = std::env::var("NSH_TTY") {
+                if let Some(target) = crate::fast_ssh::get_tty_ssh_target(&tty) {
+                    return Ok(format!(
+                        "Most recent SSH target for this tty: {target}\nYou can connect with: ssh {target}"
+                    ));
+                }
+            }
+        }
         return Ok("No matching commands found.".into());
     }
 
