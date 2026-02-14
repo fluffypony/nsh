@@ -1,6 +1,13 @@
 # nsh — Natural Shell integration for fish
 # Source this: nsh init fish | source
 
+# Auto-wrap once so init and daemon share the same session identity.
+if not set -q NSH_PTY_ACTIVE; and not set -q NSH_NO_WRAP; and status is-interactive
+    if test -t 0; and test -t 1
+        exec nsh wrap
+    end
+end
+
 function __nsh_clear_pending_command
     if not set -q NSH_SESSION_ID
         return

@@ -286,7 +286,6 @@ add_shell_integration() {
     {
         echo ""
         echo "# nsh — Natural Shell (https://github.com/${REPO})"
-        echo 'command -v nsh &>/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap'
         echo "$init_line"
     } >> "$rc_file"
     ok "Added nsh integration to $rc_file"
@@ -311,7 +310,6 @@ add_shell_integration_for() {
             if [[ ! -f "$FISH_DIR/conf.d/nsh.fish" ]]; then
                 cat > "$FISH_DIR/conf.d/nsh.fish" <<'FISHCONF'
 # nsh — Natural Shell integration
-command -v nsh >/dev/null; and not set -q NSH_PTY_ACTIVE; and nsh wrap
 nsh init fish | source
 FISHCONF
                 ok "Added nsh integration to $FISH_DIR/conf.d/nsh.fish"

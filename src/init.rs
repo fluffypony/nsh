@@ -24,6 +24,10 @@ mod tests {
     fn test_nested_shell_guard_zsh() {
         let script = generate_init_script("zsh");
         assert!(
+            script.contains("exec nsh wrap"),
+            "Zsh init script should auto-wrap when not already wrapped"
+        );
+        assert!(
             script.contains("if [[ -n \"${NSH_SESSION_ID:-}\" ]]"),
             "Zsh init script should contain NSH_SESSION_ID early-exit guard"
         );
@@ -39,6 +43,10 @@ mod tests {
     #[test]
     fn test_nested_shell_guard_bash() {
         let script = generate_init_script("bash");
+        assert!(
+            script.contains("exec nsh wrap"),
+            "Bash init script should auto-wrap when not already wrapped"
+        );
         assert!(
             script.contains("if [[ -n \"${NSH_SESSION_ID:-}\" ]]"),
             "Bash init script should contain NSH_SESSION_ID early-exit guard"
@@ -63,6 +71,10 @@ mod tests {
         let script = generate_init_script("powershell");
         assert!(!script.contains("__SESSION_ID__"));
         assert!(script.contains("NSH_SESSION_ID"));
+        assert!(
+            script.contains("& nsh wrap"),
+            "PowerShell init script should auto-wrap on non-Windows"
+        );
     }
 
     #[test]
@@ -73,6 +85,15 @@ mod tests {
             "Session ID placeholder should be replaced with a UUID"
         );
         assert!(script.contains("NSH_SESSION_ID="));
+    }
+
+    #[test]
+    fn test_fish_auto_wrap() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("exec nsh wrap"),
+            "fish init script should auto-wrap when not already wrapped"
+        );
     }
 
     #[test]

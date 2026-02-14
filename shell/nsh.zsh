@@ -1,6 +1,12 @@
 # nsh — Natural Shell integration for zsh
 # Eval this: eval "$(nsh init zsh)"
 
+# Auto-wrap once so init and daemon share the same session identity.
+if [[ -z "${NSH_PTY_ACTIVE:-}" && -z "${NSH_NO_WRAP:-}" && -o interactive && -t 0 && -t 1 ]]; then
+    exec nsh wrap
+    return 0
+fi
+
 # ── Raw `?` query handler (before shell parsing) ────────
 # Captures lines like `? what's up` before zsh treats punctuation as syntax.
 __nsh_handle_nl_query_line() {

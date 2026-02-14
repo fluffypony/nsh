@@ -1,6 +1,12 @@
 # nsh — Natural Shell integration for bash
 # Eval this: eval "$(nsh init bash)"
 
+# Auto-wrap once so init and daemon share the same session identity.
+if [[ -z "${NSH_PTY_ACTIVE:-}" && -z "${NSH_NO_WRAP:-}" ]] && [[ $- == *i* ]] && [[ -t 0 && -t 1 ]]; then
+    exec nsh wrap
+    return 0
+fi
+
 __nsh_clear_pending_command() {
     [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
     command rm -f \

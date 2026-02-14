@@ -1,6 +1,13 @@
 # nsh - Natural Shell integration for PowerShell
 # Invoke with: Invoke-Expression (nsh init powershell)
 
+# Auto-wrap once on non-Windows platforms so init and daemon share
+# the same session identity. Native Windows currently has no PTY wrap.
+if (-not $IsWindows -and -not $env:NSH_PTY_ACTIVE -and -not $env:NSH_NO_WRAP) {
+    & nsh wrap
+    return
+}
+
 if ($env:NSH_SESSION_ID) {
     return
 }
