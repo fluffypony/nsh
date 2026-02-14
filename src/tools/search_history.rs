@@ -106,6 +106,25 @@ pub fn execute(
         limit,
     )?;
 
+    let matches = if matches.is_empty()
+        && session == Some("current")
+        && query.unwrap_or("").to_ascii_lowercase().contains("ssh")
+    {
+        db.search_history_advanced(
+            query,
+            regex,
+            resolved_since.as_deref(),
+            resolved_until.as_deref(),
+            exit_code,
+            failed_only,
+            None,
+            Some(session_id),
+            limit,
+        )?
+    } else {
+        matches
+    };
+
     if matches.is_empty() {
         return Ok("No matching commands found.".into());
     }

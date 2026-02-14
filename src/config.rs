@@ -25,6 +25,8 @@ pub struct Config {
     pub capture: CaptureConfig,
     #[serde(default)]
     pub db: DbConfig,
+    #[serde(default)]
+    pub debug: DebugConfig,
     #[allow(dead_code)]
     #[serde(default)]
     pub mcp: McpConfig,
@@ -465,6 +467,18 @@ impl Default for DbConfig {
         Self {
             busy_timeout_ms: 5000,
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct DebugConfig {
+    pub llm_io: bool,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self { llm_io: false }
     }
 }
 
@@ -1107,6 +1121,17 @@ pub fn build_config_xml(
         &config.db.busy_timeout_ms.to_string(),
         "SQLite busy timeout in milliseconds",
         None,
+    );
+    x.push_str("  </section>\n");
+
+    // ── Debug ───────────────────────────────────────────
+    x.push_str("  <section name=\"debug\">\n");
+    opt(
+        &mut x,
+        "llm_io",
+        &config.debug.llm_io.to_string(),
+        "When true, saves raw LLM requests/responses under ~/.nsh/debug",
+        Some("true,false"),
     );
     x.push_str("  </section>\n");
 

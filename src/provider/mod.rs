@@ -117,6 +117,7 @@ pub fn create_provider(
                 None,
                 vec![],
                 config.provider.timeout_seconds,
+                "gemini".to_string(),
             )?))
         }
         "ollama" => {
@@ -133,6 +134,7 @@ pub fn create_provider(
                 config.provider.fallback_model.clone(),
                 vec![],
                 config.provider.timeout_seconds,
+                "ollama".to_string(),
             )?))
         }
         _ => anyhow::bail!("Unknown provider: {provider_name}"),

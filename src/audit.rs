@@ -2,6 +2,18 @@ use std::io::Write;
 use std::path::Path;
 
 pub fn audit_log(session_id: &str, query: &str, tool: &str, response: &str, risk: &str) {
+    if cfg!(test) {
+        return;
+    }
+
+    if std::env::var("NSH_TEST_MODE").is_ok() {
+        return;
+    }
+
+    if std::env::var("RUST_TEST_THREADS").is_ok() {
+        return;
+    }
+
     let dir = crate::config::Config::nsh_dir();
     audit_log_to_dir(&dir, session_id, query, tool, response, risk);
     rotate_audit_log();

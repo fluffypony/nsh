@@ -24,6 +24,7 @@ impl OpenRouterProvider {
                 ("X-Title".into(), "nsh".into()),
             ],
             config.provider.timeout_seconds,
+            "openrouter".to_string(),
         )?))
     }
 }

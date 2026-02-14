@@ -10,6 +10,7 @@ pub struct OpenAICompatProvider {
     base_url: String,
     fallback_model: Option<String>,
     extra_headers: Vec<(String, String)>,
+    debug_provider_name: String,
 }
 
 impl OpenAICompatProvider {
@@ -19,6 +20,7 @@ impl OpenAICompatProvider {
         fallback_model: Option<String>,
         extra_headers: Vec<(String, String)>,
         timeout_seconds: u64,
+        debug_provider_name: String,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             client: Client::builder()
@@ -28,6 +30,7 @@ impl OpenAICompatProvider {
             base_url,
             fallback_model,
             extra_headers,
+            debug_provider_name,
         })
     }
 
@@ -144,6 +147,7 @@ impl LlmProvider for OpenAICompatProvider {
         let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(false);
+        let debug_path = crate::debug_io::begin(&self.debug_provider_name, &body);
         let resp = self.build_http_request(&body, &model).send().await?;
         let status = resp.status();
 
@@ -157,16 +161,47 @@ impl LlmProvider for OpenAICompatProvider {
                     let status2 = resp2.status();
                     if !status2.is_success() {
                         let text = resp2.text().await.unwrap_or_default();
+                        if let Some(path) = &debug_path {
+                            crate::debug_io::append(
+                                path,
+                                "raw_provider_response",
+                                &format!("status={status2}\n{text}"),
+                            );
+                        }
                         anyhow::bail!("API error (fallback {status2}): {text}");
                     }
-                    return parse_openai_response(&resp2.json().await?);
+                    let response_json: serde_json::Value = resp2.json().await?;
+                    if let Some(path) = &debug_path {
+                        crate::debug_io::append(
+                            path,
+                            "raw_provider_response",
+                            &serde_json::to_string_pretty(&response_json)
+                                .unwrap_or_else(|_| response_json.to_string()),
+                        );
+                    }
+                    return parse_openai_response(&response_json);
                 }
             }
             let text = resp.text().await.unwrap_or_default();
+            if let Some(path) = &debug_path {
+                crate::debug_io::append(
+                    path,
+                    "raw_provider_response",
+                    &format!("status={status}\n{text}"),
+                );
+            }
             anyhow::bail!("API error ({status}): {text}");
         }
-
-        parse_openai_response(&resp.json().await?)
+        let response_json: serde_json::Value = resp.json().await?;
+        if let Some(path) = &debug_path {
+            crate::debug_io::append(
+                path,
+                "raw_provider_response",
+                &serde_json::to_string_pretty(&response_json)
+                    .unwrap_or_else(|_| response_json.to_string()),
+            );
+        }
+        parse_openai_response(&response_json)
     }
 
     async fn stream(
@@ -176,6 +211,7 @@ impl LlmProvider for OpenAICompatProvider {
         let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(true);
+        let debug_path = crate::debug_io::begin(&self.debug_provider_name, &body);
 
         let resp = self.build_http_request(&body, &model).send().await?;
         let status = resp.status();
@@ -190,15 +226,29 @@ impl LlmProvider for OpenAICompatProvider {
                     let status2 = resp2.status();
                     if !status2.is_success() {
                         let text = resp2.text().await.unwrap_or_default();
+                        if let Some(path) = &debug_path {
+                            crate::debug_io::append(
+                                path,
+                                "raw_provider_response",
+                                &format!("status={status2}\n{text}"),
+                            );
+                        }
                         anyhow::bail!("API error (fallback {status2}): {text}");
                     }
-                    return spawn_openai_stream(resp2);
+                    return spawn_openai_stream(resp2, debug_path);
                 }
             }
             let text = resp.text().await.unwrap_or_default();
+            if let Some(path) = &debug_path {
+                crate::debug_io::append(
+                    path,
+                    "raw_provider_response",
+                    &format!("status={status}\n{text}"),
+                );
+            }
             anyhow::bail!("API error ({status}): {text}");
         }
-        spawn_openai_stream(resp)
+        spawn_openai_stream(resp, debug_path)
     }
 }
 
@@ -696,6 +746,7 @@ mod tests {
             None,
             vec![],
             30,
+            "test".into(),
         )
         .unwrap()
     }
@@ -1266,6 +1317,7 @@ mod tests {
             Some("fallback-model".into()),
             vec![("X-Custom".into(), "val".into())],
             60,
+            "test".into(),
         );
         assert!(provider.is_ok());
     }
@@ -1278,6 +1330,7 @@ mod tests {
             None,
             vec![],
             0,
+            "test".into(),
         );
         assert!(provider.is_ok());
     }
@@ -1571,6 +1624,7 @@ mod tests {
                 ("HTTP-Referer".into(), "https://example.com".into()),
             ],
             120,
+            "test".into(),
         );
         assert!(provider.is_ok());
         let p = provider.unwrap();
@@ -1660,6 +1714,7 @@ mod tests {
             None,
             vec![("X-Custom".into(), "custom-val".into())],
             30,
+            "test".into(),
         )
         .unwrap();
         let body = json!({"model": "gpt-4"});
@@ -1682,6 +1737,7 @@ mod tests {
             None,
             vec![],
             30,
+            "test".into(),
         )
         .unwrap();
         let body = json!({"model": "claude-3.5-sonnet"});
@@ -1701,6 +1757,7 @@ mod tests {
             None,
             vec![],
             30,
+            "test".into(),
         )
         .unwrap();
         let body = json!({"model": "claude-3.5-sonnet"});
@@ -1717,6 +1774,7 @@ mod tests {
             None,
             vec![],
             30,
+            "test".into(),
         )
         .unwrap();
         let body = json!({"model": "gpt-4"});
@@ -1737,6 +1795,7 @@ mod tests {
                 ("X-Third".into(), "three".into()),
             ],
             30,
+            "test".into(),
         )
         .unwrap();
         let body = json!({"model": "gpt-4"});
@@ -1817,7 +1876,7 @@ mod tests {
         let sse = "data: {\"id\":\"gen-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"id\":\"gen-1\",\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n";
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let ev = rx.recv().await.unwrap();
         assert!(matches!(ev, StreamEvent::GenerationId(id) if id == "gen-1"));
         let ev = rx.recv().await.unwrap();
@@ -1836,7 +1895,7 @@ mod tests {
         );
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let ev = rx.recv().await.unwrap();
         assert!(matches!(ev, StreamEvent::ToolUseStart { name, .. } if name == "search"));
@@ -1859,7 +1918,7 @@ mod tests {
         );
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let ev = rx.recv().await.unwrap();
         assert!(matches!(ev, StreamEvent::ToolUseStart { ref name, .. } if name == "foo"));
@@ -1880,7 +1939,7 @@ mod tests {
         let sse = "data: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n";
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let _ = rx.recv().await.unwrap(); // TextDelta
         let ev = rx.recv().await.unwrap();
@@ -1896,7 +1955,7 @@ mod tests {
         );
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let ev = rx.recv().await.unwrap();
         assert!(matches!(ev, StreamEvent::TextDelta(t) if t == "real"));
@@ -1907,7 +1966,7 @@ mod tests {
         let sse = "data: not-json\n\ndata: {\"id\":\"g\",\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let ev = rx.recv().await.unwrap();
         assert!(matches!(ev, StreamEvent::TextDelta(t) if t == "ok"));
@@ -1921,7 +1980,7 @@ mod tests {
         );
         let (url, _handle) = start_sse_server(sse).await;
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let _ = rx.recv().await.unwrap(); // ToolUseStart
         let _ = rx.recv().await.unwrap(); // ToolUseDelta
@@ -1946,7 +2005,7 @@ mod tests {
             socket.shutdown().await.unwrap();
         });
         let resp = reqwest::get(&url).await.unwrap();
-        let mut rx = spawn_openai_stream(resp).unwrap();
+        let mut rx = spawn_openai_stream(resp, None).unwrap();
         let _ = rx.recv().await.unwrap(); // GenerationId
         let _ = rx.recv().await.unwrap(); // TextDelta "hi"
         let ev = rx.recv().await;
@@ -1983,6 +2042,7 @@ mod tests {
 
 pub fn spawn_openai_stream(
     resp: reqwest::Response,
+    debug_path: Option<std::path::PathBuf>,
 ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     tokio::spawn(async move {
@@ -1996,6 +2056,9 @@ pub fn spawn_openai_stream(
                 Ok(e) => e,
                 Err(e) => {
                     let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                    if let Some(path) = &debug_path {
+                        crate::debug_io::append(path, "raw_provider_response", &e.to_string());
+                    }
                     break;
                 }
             };
@@ -2010,6 +2073,9 @@ pub fn spawn_openai_stream(
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            if let Some(path) = &debug_path {
+                crate::debug_io::append(path, "raw_provider_response", &event.data);
+            }
 
             if generation_id.is_none() {
                 if let Some(id) = chunk["id"].as_str() {

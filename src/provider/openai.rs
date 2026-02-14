@@ -18,6 +18,7 @@ impl OpenAIProvider {
             config.provider.fallback_model.clone(),
             vec![],
             config.provider.timeout_seconds,
+            "openai".to_string(),
         )?))
     }
 }
