@@ -70,6 +70,16 @@ fn postprocess_recorded_command(
     }
 }
 
+fn send_to_global_or_fallback(request: &daemon::DaemonRequest) -> anyhow::Result<daemon::DaemonResponse> {
+    match daemon_client::send_to_global(request) {
+        Ok(resp) => Ok(resp),
+        Err(_) => {
+            let _ = daemon_client::ensure_global_daemon_running();
+            daemon_client::send_to_global(request)
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -222,25 +232,18 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             pid,
             shell,
         } => {
-            let db = db::Db::open()?;
-            let id = db.insert_command(
-                &session,
-                &command,
-                &cwd,
-                Some(exit_code),
-                &started_at,
-                duration_ms,
-                None,
-                &tty,
-                &shell,
-                pid,
-            )?;
-            postprocess_recorded_command(&db, id, &command, exit_code, None, false);
-
-            if let Ok(Some((conv_id, suggested_cmd))) = db.find_pending_conversation(&session) {
-                if command.trim() == suggested_cmd.trim() {
-                    let _ = db.update_conversation_result(conv_id, exit_code, None);
+            let request = daemon::DaemonRequest::Record {
+                session, command, cwd, exit_code, started_at,
+                tty, pid, shell, duration_ms, output: None,
+            };
+            match send_to_global_or_fallback(&request) {
+                Ok(daemon::DaemonResponse::Error { message }) => {
+                    eprintln!("nsh: record error: {message}");
                 }
+                Err(e) => {
+                    tracing::debug!("daemon unavailable for record: {e}");
+                }
+                _ => {}
             }
         }
 
@@ -251,23 +254,35 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 shell,
                 pid,
             } => {
-                let db = db::Db::open()?;
-                db.create_session(&session, &tty, &shell, pid as i64)?;
+                let request = daemon::DaemonRequest::CreateSession {
+                    session, tty, shell, pid: pid as i64,
+                };
+                if let Err(e) = send_to_global_or_fallback(&request) {
+                    tracing::debug!("daemon unavailable for session start: {e}");
+                }
             }
             SessionAction::End { session } => {
-                let db = db::Db::open()?;
-                db.end_session(&session)?;
+                let _ = send_to_global_or_fallback(&daemon::DaemonRequest::EndSession {
+                    session: session.clone(),
+                });
                 shell_hooks::cleanup_pending_files(&session);
             }
             SessionAction::Label { label, session } => {
                 let session_id = session.unwrap_or_else(|| {
                     std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
                 });
-                let db = db::Db::open()?;
-                if db.set_session_label(&session_id, &label)? {
-                    eprintln!("nsh: session labeled \"{label}\"");
-                } else {
-                    eprintln!("nsh: session not found");
+                let request = daemon::DaemonRequest::SetSessionLabel {
+                    session: session_id, label: label.clone(),
+                };
+                match send_to_global_or_fallback(&request) {
+                    Ok(daemon::DaemonResponse::Ok { data: Some(d) }) => {
+                        if d.get("updated").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            eprintln!("nsh: session labeled \"{label}\"");
+                        } else {
+                            eprintln!("nsh: session not found");
+                        }
+                    }
+                    _ => eprintln!("nsh: session not found"),
                 }
             }
             SessionAction::LastCwd { tty } => {
@@ -275,9 +290,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 if !config.context.restore_last_cwd_per_tty {
                     return Ok(());
                 }
-                let db = db::Db::open()?;
-                if let Some(cwd) = db.latest_cwd_for_tty(&tty)? {
-                    println!("{cwd}");
+                let request = daemon::DaemonRequest::LatestCwdForTty { tty };
+                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) = send_to_global_or_fallback(&request) {
+                    if let Some(cwd) = d.get("cwd").and_then(|v| v.as_str()) {
+                        println!("{cwd}");
+                    }
                 }
             }
             SessionAction::SuppressedExitCodes => {
@@ -312,29 +329,41 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
         Commands::History { action } => match action {
             HistoryAction::Search { query, limit } => {
-                let db = db::Db::open()?;
-                let results = db.search_history(&query, limit)?;
-                for r in &results {
-                    let code = r
-                        .exit_code
-                        .map(|c| format!(" (exit {c})"))
-                        .unwrap_or_default();
-                    println!("[{}]{} {}", r.started_at, code, r.cmd_highlight);
-                    if let Some(hl) = &r.output_highlight {
-                        let preview: String = hl.chars().take(200).collect();
-                        println!("  {preview}");
+                let request = daemon::DaemonRequest::SearchHistory { query, limit };
+                match send_to_global_or_fallback(&request) {
+                    Ok(daemon::DaemonResponse::Ok { data: Some(d) }) => {
+                        let results = d.get("results").and_then(|v| v.as_array());
+                        if let Some(results) = results {
+                            if results.is_empty() {
+                                eprintln!("No results found.");
+                            } else {
+                                for r in results {
+                                    let started = r.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+                                    let exit_code = r.get("exit_code").and_then(|v| v.as_i64());
+                                    let code = exit_code.map(|c| format!(" (exit {c})")).unwrap_or_default();
+                                    let cmd_hl = r.get("cmd_highlight").and_then(|v| v.as_str()).unwrap_or("");
+                                    println!("[{started}]{code} {cmd_hl}");
+                                    if let Some(hl) = r.get("output_highlight").and_then(|v| v.as_str()) {
+                                        let preview: String = hl.chars().take(200).collect();
+                                        println!("  {preview}");
+                                    }
+                                }
+                            }
+                        } else {
+                            eprintln!("No results found.");
+                        }
                     }
-                }
-                if results.is_empty() {
-                    eprintln!("No results found.");
+                    Ok(daemon::DaemonResponse::Error { message }) => eprintln!("nsh: {message}"),
+                    _ => eprintln!("No results found."),
                 }
             }
         },
 
         Commands::Reset => {
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
-            let db = db::Db::open()?;
-            db.clear_conversations(&session_id)?;
+            let _ = send_to_global_or_fallback(&daemon::DaemonRequest::ClearConversations {
+                session: session_id,
+            });
             eprintln!("nsh: conversation context cleared");
         }
 
@@ -372,15 +401,15 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         },
 
         Commands::Cost { period } => {
-            let db = db::Db::open()?;
-            let usage_period = match period.as_str() {
-                "today" => db::UsagePeriod::Today,
-                "week" => db::UsagePeriod::Week,
-                "month" => db::UsagePeriod::Month,
-                "all" => db::UsagePeriod::All,
-                _ => db::UsagePeriod::Month,
+            let request = daemon::DaemonRequest::GetUsageStats { period: period.clone() };
+            let stats_result = match send_to_global_or_fallback(&request) {
+                Ok(daemon::DaemonResponse::Ok { data: Some(d) }) => d,
+                _ => {
+                    eprintln!("No usage data recorded yet.");
+                    return Ok(());
+                }
             };
-            let stats = db.get_usage_stats(usage_period)?;
+            let stats = stats_result.get("stats").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             if stats.is_empty() {
                 eprintln!("No usage data recorded yet.");
             } else {
@@ -392,7 +421,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 );
                 let mut total_cost = 0.0_f64;
                 let mut total_calls = 0_i64;
-                for (model, calls, input_tok, output_tok, cost) in &stats {
+                for entry in &stats {
+                    let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("?");
+                    let calls = entry.get("calls").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let input_tok = entry.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let output_tok = entry.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let cost = entry.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
                     eprintln!(
                         "{model:<35} {calls:>5}  {input_tok:>9}  {output_tok:>10}  ${cost:.4}"
                     );
@@ -490,6 +524,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             } else {
                 let config = config::Config::load().unwrap_or_default();
+                let global_running = daemon_client::is_global_daemon_running();
+                eprintln!("  Global daemon: {}", if global_running { "running" } else { "not running" });
                 let db = db::Db::open()?;
                 let retention = prune_days.unwrap_or(config.context.retention_days);
                 db.run_doctor(retention, no_prune, no_vacuum, &config)?;
@@ -498,8 +534,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         Commands::Heartbeat { session } => {
-            let db = db::Db::open()?;
-            db.update_heartbeat(&session)?;
+            let _ = send_to_global_or_fallback(&daemon::DaemonRequest::Heartbeat { session });
         }
 
         Commands::RedactNext => {
@@ -687,42 +722,30 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         eprintln!("nsh: daemon error: {message}");
                     }
                 }
-                None => match action {
-                    DaemonSendAction::Record {
-                        session,
-                        command,
-                        cwd,
-                        exit_code,
-                        started_at,
-                        duration_ms,
-                        tty,
-                        pid,
-                        shell,
-                    } => {
-                        let db = db::Db::open()?;
-                        let id = db.insert_command(
-                            &session,
-                            &command,
-                            &cwd,
-                            Some(exit_code),
-                            &started_at,
-                            duration_ms,
-                            None,
-                            &tty,
-                            &shell,
-                            pid,
-                        )?;
-                        postprocess_recorded_command(&db, id, &command, exit_code, None, false);
+                None => {
+                    // Per-session daemon unavailable — try global daemon for DB ops
+                    match action {
+                        DaemonSendAction::Record {
+                            session, command, cwd, exit_code, started_at,
+                            duration_ms, tty, pid, shell,
+                        } => {
+                            let global_request = daemon::DaemonRequest::Record {
+                                session, command, cwd, exit_code, started_at,
+                                tty, pid, shell, duration_ms, output: None,
+                            };
+                            let _ = send_to_global_or_fallback(&global_request);
+                        }
+                        DaemonSendAction::Heartbeat { session } => {
+                            let _ = send_to_global_or_fallback(
+                                &daemon::DaemonRequest::Heartbeat { session },
+                            );
+                        }
+                        DaemonSendAction::CaptureMark { .. } => {}
+                        DaemonSendAction::Status => {
+                            eprintln!("nsh: daemon not running");
+                        }
                     }
-                    DaemonSendAction::Heartbeat { session } => {
-                        let db = db::Db::open()?;
-                        db.update_heartbeat(&session)?;
-                    }
-                    DaemonSendAction::CaptureMark { .. } => {}
-                    DaemonSendAction::Status => {
-                        eprintln!("nsh: daemon not running");
-                    }
-                },
+                }
             }
         }
 
@@ -869,7 +892,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::Status => {
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(not set)".into());
             let config = config::Config::load().unwrap_or_default();
-            let db = db::Db::open()?;
             let build_version = env!("NSH_BUILD_VERSION");
             let pty_active = std::env::var("NSH_TTY").is_ok();
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
@@ -882,10 +904,18 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
 
             let session_label = if session_id != "(not set)" {
-                db.get_session_label(&session_id).unwrap_or(None)
+                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) = send_to_global_or_fallback(
+                    &daemon::DaemonRequest::GetSessionLabel { session: session_id.clone() },
+                ) {
+                    d.get("label").and_then(|v| v.as_str()).map(String::from)
+                } else {
+                    None
+                }
             } else {
                 None
             };
+
+            let global_daemon_status = if daemon_client::is_global_daemon_running() { "running" } else { "not running" };
 
             eprintln!("nsh status:");
             eprintln!("  Version:    {build_version}");
@@ -895,6 +925,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
             eprintln!("  Shell:      {shell}");
             eprintln!("  PTY active: {}", if pty_active { "yes" } else { "no" });
+            eprintln!("  Global daemon: {global_daemon_status}");
             eprintln!("  Provider:   {}", config.provider.default);
             eprintln!("  Model:      {}", config.provider.model);
             eprintln!("  DB path:    {}", db_path.display());
