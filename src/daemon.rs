@@ -589,6 +589,10 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
     }
 }
 
+pub fn generate_summaries_sync_pub(db: &crate::db::Db) {
+    generate_summaries_sync(db);
+}
+
 fn generate_summaries_sync(db: &crate::db::Db) {
     let commands = match db.commands_needing_summary(5) {
         Ok(cmds) => cmds,

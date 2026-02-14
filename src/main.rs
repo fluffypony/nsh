@@ -6,6 +6,8 @@ mod context;
 mod daemon;
 mod daemon_client;
 mod db;
+#[cfg(unix)]
+mod global_daemon;
 mod display;
 mod history_import;
 mod init;
