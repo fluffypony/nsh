@@ -8,7 +8,6 @@ mod daemon_client;
 mod daemon_db;
 mod db;
 mod fast_cwd;
-mod fast_ssh;
 #[cfg(unix)]
 mod global_daemon;
 mod display;
@@ -236,11 +235,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
             if let daemon::DaemonRequest::Record { tty, cwd, .. } = &request {
                 let _ = fast_cwd::update_tty_cwd(tty, cwd);
-            }
-            if let daemon::DaemonRequest::Record { tty, command, .. } = &request {
-                if let Some(target) = fast_ssh::extract_ssh_target(command) {
-                    let _ = fast_ssh::update_tty_ssh_target(tty, &target);
-                }
             }
             match send_to_global_or_fallback(&request) {
                 Ok(daemon::DaemonResponse::Error { message }) => {
