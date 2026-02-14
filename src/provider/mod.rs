@@ -53,6 +53,7 @@ pub struct ChatRequest {
     pub extra_body: Option<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ToolChoice {
     Auto,

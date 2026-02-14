@@ -8,6 +8,7 @@ const SYNTHETIC_SESSION_ID: &str = "imported_shell_history";
 const IMPORT_LOCK_FILENAME: &str = "history_import.lock";
 const IMPORT_LOCK_STALE_SECS: u64 = 60 * 60;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Shell {
     Bash,

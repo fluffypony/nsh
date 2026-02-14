@@ -792,6 +792,7 @@ impl Db {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn command_count(&self) -> rusqlite::Result<usize> {
         self.conn
             .query_row("SELECT COUNT(*) FROM commands", [], |row| {
@@ -1729,6 +1730,7 @@ pub struct HistoryMatch {
     pub output_highlight: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CommandEntityMatch {
     pub command_id: i64,
