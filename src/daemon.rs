@@ -237,6 +237,16 @@ pub enum DbCommand {
 }
 
 pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
+    #[cfg(test)]
+    let db = match crate::db::Db::open_in_memory() {
+        Ok(db) => db,
+        Err(e) => {
+            tracing::error!("daemon: failed to open in-memory DB for tests: {e}");
+            return;
+        }
+    };
+
+    #[cfg(not(test))]
     let db = match crate::db::Db::open() {
         Ok(db) => db,
         Err(e) => {

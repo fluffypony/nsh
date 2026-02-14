@@ -124,6 +124,9 @@ pub enum Commands {
 
     /// Check and repair nsh database integrity
     Doctor {
+        /// Optional doctor diagnostic target
+        #[command(subcommand)]
+        action: Option<DoctorAction>,
         /// Skip pruning old data
         #[arg(long, default_value_t = false)]
         no_prune: bool,
@@ -288,4 +291,10 @@ pub enum DaemonReadAction {
         #[arg(long, default_value = "1000")]
         max_lines: usize,
     },
+}
+
+#[derive(Subcommand)]
+pub enum DoctorAction {
+    /// Check whether command output capture is active for this shell session
+    Capture,
 }

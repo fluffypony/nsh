@@ -253,6 +253,28 @@ fn test_doctor_succeeds() {
 }
 
 #[test]
+fn test_doctor_capture_succeeds() {
+    let tmp = std::env::temp_dir().join("nsh_test_doctor_capture");
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--", "doctor", "capture"])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh doctor capture");
+
+    assert!(
+        output.status.success(),
+        "nsh doctor capture should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("nsh doctor capture:"),
+        "expected capture diagnostic output, got: {}",
+        stderr
+    );
+}
+
+#[test]
 fn test_record_inserts_command() {
     let tmp = std::env::temp_dir().join("nsh_test_record");
     let output = std::process::Command::new("cargo")

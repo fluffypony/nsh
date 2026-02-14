@@ -29,10 +29,42 @@ mod util;
 
 use clap::Parser;
 use cli::{
-    Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, HistoryAction, ProviderAction,
-    SessionAction,
+    Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
+    ProviderAction, SessionAction,
 };
 use sha2::{Digest, Sha256};
+
+fn postprocess_recorded_command(
+    db: &db::Db,
+    id: i64,
+    command: &str,
+    exit_code: i32,
+    output: Option<&str>,
+    output_was_captured: bool,
+) {
+    let output_text = output.unwrap_or("");
+
+    if let Some(trivial) = summary::trivial_summary(command, exit_code, output_text) {
+        let _ = db.update_summary(id, &trivial);
+    } else if !output_was_captured {
+        let summary = if exit_code == 0 {
+            format!(
+                "Ran `{command}` successfully (output was not captured; daemon unavailable)"
+            )
+        } else {
+            format!(
+                "Ran `{command}` with exit code {exit_code} (output was not captured; daemon unavailable)"
+            )
+        };
+        let _ = db.update_summary(id, &summary);
+    }
+
+    if exit_code == 0 {
+        if let Some((key, value)) = summary::extract_package_association(command, exit_code) {
+            let _ = db.upsert_memory(&key, &value);
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -188,7 +220,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             shell,
         } => {
             let db = db::Db::open()?;
-            db.insert_command(
+            let id = db.insert_command(
                 &session,
                 &command,
                 &cwd,
@@ -200,6 +232,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 &shell,
                 pid,
             )?;
+            postprocess_recorded_command(&db, id, &command, exit_code, None, false);
 
             if let Ok(Some((conv_id, suggested_cmd))) = db.find_pending_conversation(&session) {
                 if command.trim() == suggested_cmd.trim() {
@@ -409,15 +442,51 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         },
 
         Commands::Doctor {
+            action,
             no_prune,
             no_vacuum,
             prune_days,
         } => {
-            let config = config::Config::load().unwrap_or_default();
-            let db = db::Db::open()?;
-            let retention = prune_days.unwrap_or(config.context.retention_days);
-            db.run_doctor(retention, no_prune, no_vacuum, &config)?;
-            cleanup_staged_updates();
+            if let Some(DoctorAction::Capture) = action {
+                let session_id =
+                    std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".to_string());
+                let daemon_socket = daemon::daemon_socket_path(&session_id);
+                let daemon_running = daemon_client::is_daemon_running(&session_id);
+                let wrapped = std::env::var("NSH_PTY_ACTIVE").is_ok();
+                let output_capture_active = daemon_running && wrapped;
+
+                if output_capture_active {
+                    eprintln!("nsh doctor capture: OK — command output capture is active");
+                } else {
+                    eprintln!(
+                        "nsh doctor capture: NOT ACTIVE — command rows may be recorded without output"
+                    );
+                }
+                eprintln!("  session: {session_id}");
+                eprintln!(
+                    "  daemon socket: {} ({})",
+                    daemon_socket.display(),
+                    if daemon_socket.exists() {
+                        "exists"
+                    } else {
+                        "missing"
+                    }
+                );
+                eprintln!("  daemon reachable: {}", if daemon_running { "yes" } else { "no" });
+                eprintln!("  wrapped shell: {}", if wrapped { "yes" } else { "no" });
+                if !wrapped {
+                    eprintln!("  hint: start your shell with `nsh wrap` (or keep it in your rc file)");
+                }
+                if wrapped && !daemon_running {
+                    eprintln!("  hint: restart the wrapped shell to recreate daemon socket");
+                }
+            } else {
+                let config = config::Config::load().unwrap_or_default();
+                let db = db::Db::open()?;
+                let retention = prune_days.unwrap_or(config.context.retention_days);
+                db.run_doctor(retention, no_prune, no_vacuum, &config)?;
+                cleanup_staged_updates();
+            }
         }
 
         Commands::Heartbeat { session } => {
@@ -616,7 +685,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         shell,
                     } => {
                         let db = db::Db::open()?;
-                        db.insert_command(
+                        let id = db.insert_command(
                             &session,
                             &command,
                             &cwd,
@@ -628,6 +697,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                             &shell,
                             pid,
                         )?;
+                        postprocess_recorded_command(&db, id, &command, exit_code, None, false);
                     }
                     DaemonSendAction::Heartbeat { session } => {
                         let db = db::Db::open()?;

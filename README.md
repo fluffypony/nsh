@@ -302,7 +302,7 @@ nsh init fish | source
 | `nsh chat` | Interactive REPL chat mode |
 | `nsh history search <query> [--limit N]` | Full-text search command history |
 | `nsh status` | Show runtime state |
-| `nsh doctor [--no-prune] [--no-vacuum] [--prune-days D]` | DB integrity check and cleanup |
+| `nsh doctor [capture] [--no-prune] [--no-vacuum] [--prune-days D]` | DB integrity check or capture-health diagnostic |
 | `nsh config [path\|show\|edit]` | View or edit configuration |
 | `nsh reset` | Clear session conversation context |
 | `nsh cost [today\|week\|month\|all]` | Usage and cost summary |
@@ -533,6 +533,7 @@ Use one TXT record per target line.
 ```bash
 nsh status                    # inspect session/provider/db state
 nsh doctor                    # integrity check + cleanup
+nsh doctor capture            # verify whether per-command output capture is active
 nsh config show               # verify config
 RUST_LOG=debug nsh query ...  # debug logging
 ```
