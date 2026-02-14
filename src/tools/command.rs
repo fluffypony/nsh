@@ -106,12 +106,25 @@ pub fn execute(
         && config.execution.confirm_intermediate_steps
         && !matches!(risk, RiskLevel::Dangerous)
     {
-        eprint!("\x1b[1;33mRun intermediate command now? [y/N]\x1b[0m ");
+        eprint!("\x1b[1;33mRun intermediate command now? [Y/n]\x1b[0m ");
         let _ = std::io::Write::flush(&mut std::io::stderr());
-        user_confirmed_intermediate = crate::tools::read_tty_confirmation();
+        user_confirmed_intermediate = read_tty_confirmation_default_yes();
     }
 
-    let should_execute_immediately = (force_autorun && can_autorun) || user_confirmed_intermediate;
+    let auto_execute_pending = pending
+        && !force_autorun
+        && !config.execution.confirm_intermediate_steps
+        && can_autorun;
+
+    if matches!(risk, RiskLevel::Safe)
+        && auto_execute_pending
+        && !crate::streaming::json_output_enabled()
+    {
+        eprintln!("\x1b[2m  $ {command}\x1b[0m");
+    }
+
+    let should_execute_immediately =
+        (force_autorun && can_autorun) || user_confirmed_intermediate || auto_execute_pending;
     if should_execute_immediately {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
         let output = std::process::Command::new("sh")
@@ -265,6 +278,32 @@ fn format_execution_output(
             (msg, true, -1)
         }
     }
+}
+
+fn read_tty_confirmation_default_yes() -> bool {
+    use std::io::{BufRead, IsTerminal};
+    let line = if std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            line
+        } else {
+            return true;
+        }
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(tty) => {
+                let mut reader = std::io::BufReader::new(tty);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() {
+                    line
+                } else {
+                    return true;
+                }
+            }
+            Err(_) => return false,
+        }
+    };
+    !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
 }
 
 pub(crate) fn reject_reason_for_generated_command(
@@ -850,7 +889,8 @@ mod tests {
     fn test_execute_pending_writes_flag() {
         let session = "test_pending_flag";
         let db = test_db_with_session(session);
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        config.execution.confirm_intermediate_steps = true;
         let input = serde_json::json!({
             "command": "echo hello",
             "explanation": "greeting",

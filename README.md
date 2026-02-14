@@ -60,23 +60,23 @@ Every query includes rich context assembled automatically:
 
 ### Multi-Step Agent Loop
 
-nsh can chain multiple tool calls per query (20 by default, configurable). It investigates before acting - searching history, reading files, running safe commands, or querying the web - then responds with a concrete action.
+nsh can chain multiple tool calls per query (30 by default, configurable). It investigates before acting - searching history, reading files, running safe commands, querying the web, and asking clarifying questions when needed - then executes and verifies results.
 
-The `pending` flag on command suggestions enables multi-step sequences. In `autorun` mode, pending intermediate commands execute immediately and their output is fed back into the same tool loop. Outside autorun, nsh can ask for `y/n` before running intermediate steps immediately (`execution.confirm_intermediate_steps = true`). If declined, it falls back to normal prompt prefill behavior.
+The `pending` flag on command suggestions enables autonomous multi-step sequences. Safe `pending=true` commands now auto-execute by default and feed their output back into the same tool loop, so nsh can continue investigating, fixing, and verifying without stopping. If you prefer explicit approval for each intermediate step, set `execution.confirm_intermediate_steps = true`.
 
 ### 18 Built-In Tools
 
 | Tool | Purpose |
 |---|---|
 | `command` | Prefill a shell command for review |
-| `chat` | Text response for knowledge questions |
+| `chat` | Final text response when work is complete or purely informational |
 | `search_history` | FTS5 + regex search across all command history |
 | `grep_file` | Regex search within files with context lines |
 | `read_file` | Read file contents with line numbers |
 | `list_directory` | List directory contents with metadata |
 | `web_search` | Search the web via Perplexity/Sonar |
 | `run_command` | Execute safe, allowlisted commands silently |
-| `ask_user` | Request clarification or confirmation |
+| `ask_user` | Clarify ambiguity or gather preferences while keeping the loop active |
 | `write_file` | Create or overwrite files (with diff preview and trash backup) |
 | `patch_file` | Surgical find-and-replace in files (with diff preview) |
 | `man_page` | Retrieve man pages for commands |
@@ -422,8 +422,8 @@ busy_timeout_ms = 10000
 [execution]
 mode = "prefill"  # prefill | confirm | autorun
 allow_unsafe_autorun = false
-max_tool_iterations = 20
-confirm_intermediate_steps = true
+max_tool_iterations = 30
+confirm_intermediate_steps = false
 
 [mcp]
 # [mcp.servers.example]

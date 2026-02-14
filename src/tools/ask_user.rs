@@ -4,7 +4,7 @@ pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<Str
     let color = "\x1b[1;33m"; // bold yellow
     let reset = "\x1b[0m";
 
-    eprint!("{color}nsh asks:{reset} {question}");
+    eprint!("{color}nsh needs input:{reset} {question}");
 
     if let Some(opts) = options {
         eprintln!();

@@ -160,13 +160,13 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "pending": {
                         "type": "boolean",
                         "description":
-                            "Set to true if this is part of a \
-                             multi-step sequence and you need to \
-                             see the output before continuing. In \
-                             autorun mode (or with y/n confirmation \
-                             when enabled), pending commands may run \
-                             immediately and return tool results in \
-                             the same query loop.",
+                            "Set to true to maintain control after execution. Use this to: \
+                             1) Verify the command succeeded (e.g. check version after install). \
+                             2) Chain multiple steps (download → extract → install → configure). \
+                             3) See error output and auto-fix it. \
+                             Only set to false for the very final command that completes the user's goal. \
+                             In autorun mode, pending commands execute immediately. In other modes, \
+                             the user confirms and you continue.",
                         "default": false
                     }
                 },
@@ -175,9 +175,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "chat".into(),
-            description: "Respond with text for pure knowledge \
-                          questions where no command execution is \
-                          needed."
+            description: "Final text response. Use ONLY when the task is fully complete, \
+                          you're answering a pure knowledge question, or the task is \
+                          genuinely impossible. This tool ends the autonomous loop — \
+                          never use it to ask questions or when more work remains."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -341,7 +342,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "web_search".into(),
-            description: "Search the web for current information.".into(),
+            description: "Search the web. Use this PROACTIVELY to resolve ambiguous \
+                          package names, find installation methods, debug errors, or \
+                          verify the canonical approach before acting."
+                .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -376,8 +380,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "ask_user".into(),
-            description: "Ask the user a question when you need \
-                          more information or confirmation."
+            description: "Ask the user a question to resolve ambiguity, get a preference, \
+                          or confirm a decision. Unlike 'chat', this tool keeps the agent \
+                          loop active — you receive the user's answer and can continue \
+                          working immediately. Use this PROACTIVELY for disambiguation \
+                          rather than guessing."
                 .into(),
             parameters: json!({
                 "type": "object",

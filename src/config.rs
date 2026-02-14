@@ -77,15 +77,15 @@ impl Default for ExecutionConfig {
         Self {
             mode: "prefill".into(),
             allow_unsafe_autorun: false,
-            max_tool_iterations: 20,
-            confirm_intermediate_steps: true,
+            max_tool_iterations: 30,
+            confirm_intermediate_steps: false,
         }
     }
 }
 
 impl ExecutionConfig {
     pub fn effective_max_tool_iterations(&self) -> usize {
-        self.max_tool_iterations.clamp(1, 100)
+        self.max_tool_iterations.clamp(1, 200)
     }
 }
 
@@ -1524,9 +1524,9 @@ base_url = "https://custom.api.example.com"
     fn test_execution_config_default() {
         let ec = ExecutionConfig::default();
         assert_eq!(ec.mode, "prefill");
-        assert_eq!(ec.max_tool_iterations, 20);
-        assert!(ec.confirm_intermediate_steps);
-        assert_eq!(ec.effective_max_tool_iterations(), 20);
+        assert_eq!(ec.max_tool_iterations, 30);
+        assert!(!ec.confirm_intermediate_steps);
+        assert_eq!(ec.effective_max_tool_iterations(), 30);
     }
 
     #[test]
@@ -1709,8 +1709,8 @@ mode = "autorun"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.execution.mode, "autorun");
-        assert_eq!(config.execution.max_tool_iterations, 20);
-        assert!(config.execution.confirm_intermediate_steps);
+        assert_eq!(config.execution.max_tool_iterations, 30);
+        assert!(!config.execution.confirm_intermediate_steps);
     }
 
     #[test]
@@ -1741,7 +1741,7 @@ confirm_intermediate_steps = false
         ec.max_tool_iterations = 0;
         assert_eq!(ec.effective_max_tool_iterations(), 1);
         ec.max_tool_iterations = 250;
-        assert_eq!(ec.effective_max_tool_iterations(), 100);
+        assert_eq!(ec.effective_max_tool_iterations(), 200);
     }
 
     #[test]
