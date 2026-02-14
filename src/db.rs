@@ -4,6 +4,8 @@ const SCHEMA_VERSION: i32 = 5;
 const COMMAND_ENTITY_BACKFILL_MAX_ID_KEY: &str = "command_entities_backfilled_max_id_v1";
 
 pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> {
+    conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
+
     conn.execute_batch(
         "
     PRAGMA journal_mode = WAL;
@@ -11,11 +13,12 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     PRAGMA foreign_keys = ON;
     PRAGMA auto_vacuum = INCREMENTAL;
     PRAGMA wal_autocheckpoint = 1000;
-    PRAGMA journal_size_limit = 67108864;
+    PRAGMA journal_size_limit = 6144000;
     PRAGMA temp_store = MEMORY;
+    PRAGMA cache_size = -2000;
+    PRAGMA mmap_size = 268435456;
 ",
     )?;
-    conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
 
     conn.create_scalar_function(
         "regexp",
@@ -165,8 +168,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     ",
     )?;
 
-    conn.execute_batch("BEGIN IMMEDIATE;")?;
-
+    // Read version WITHOUT a transaction (plain read, no lock needed in WAL mode)
     let current_version: i32 = conn
         .query_row(
             "SELECT COALESCE((SELECT value FROM meta WHERE key='schema_version'), '0')",
@@ -175,130 +177,161 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
         )
         .unwrap_or(0);
 
-    if current_version < 2 {
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN last_heartbeat TEXT;")
-            .ok();
-    }
-
-    if current_version < 3 {
-        conn.execute_batch("ALTER TABLE commands ADD COLUMN summary TEXT;")
-            .ok();
-        conn.execute_batch("ALTER TABLE commands ADD COLUMN summary_status TEXT DEFAULT NULL;")
-            .ok();
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN label TEXT;")
-            .ok();
-        conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_exit_code INTEGER;")
-            .ok();
-        conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_output_snippet TEXT;")
-            .ok();
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS usage (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id      TEXT NOT NULL,
-                query_text      TEXT,
-                model           TEXT NOT NULL,
-                provider        TEXT NOT NULL,
-                input_tokens    INTEGER,
-                output_tokens   INTEGER,
-                cost_usd        REAL,
-                generation_id   TEXT,
-                created_at      TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS audit_log (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id  TEXT NOT NULL,
-                query       TEXT NOT NULL,
-                suggested_command TEXT,
-                action      TEXT NOT NULL,
-                risk_level  TEXT,
-                created_at  TEXT NOT NULL
-            );",
-        )?;
-
-        conn.execute_batch(
-            "DROP TRIGGER IF EXISTS commands_ai;
-             DROP TRIGGER IF EXISTS commands_ad;
-             DROP TRIGGER IF EXISTS commands_au;
-             DROP TABLE IF EXISTS commands_fts;
-
-             CREATE VIRTUAL TABLE commands_fts USING fts5(
-                 command, output, summary, cwd,
-                 content='commands', content_rowid='id',
-                 tokenize='porter unicode61'
-             );
-
-             CREATE TRIGGER commands_ai AFTER INSERT ON commands BEGIN
-                 INSERT INTO commands_fts(rowid, command, output, summary, cwd)
-                 VALUES (new.id, new.command, new.output, new.summary, new.cwd);
-             END;
-
-             CREATE TRIGGER commands_ad AFTER DELETE ON commands BEGIN
-                 INSERT INTO commands_fts(commands_fts, rowid, command, output, summary, cwd)
-                 VALUES ('delete', old.id, old.command, old.output, old.summary, old.cwd);
-             END;
-
-             CREATE TRIGGER commands_au AFTER UPDATE ON commands BEGIN
-                 INSERT INTO commands_fts(commands_fts, rowid, command, output, summary, cwd)
-                 VALUES ('delete', old.id, old.command, old.output, old.summary, old.cwd);
-                 INSERT INTO commands_fts(rowid, command, output, summary, cwd)
-                 VALUES (new.id, new.command, new.output, new.summary, new.cwd);
-             END;
-
-             INSERT INTO commands_fts(commands_fts) VALUES('rebuild');",
-        )?;
-    }
-
-    if current_version < 4 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memories (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                key         TEXT NOT NULL COLLATE NOCASE,
-                value       TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL,
-                UNIQUE(key)
-            );
-            CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);",
-        )?;
-    }
-
-    if current_version < 5 {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS command_entities (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                command_id      INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
-                executable      TEXT NOT NULL,
-                entity          TEXT NOT NULL,
-                entity_norm     TEXT NOT NULL,
-                entity_type     TEXT NOT NULL,
-                UNIQUE(command_id, executable, entity_norm, entity_type)
-            );
-            CREATE INDEX IF NOT EXISTS idx_command_entities_executable
-                ON command_entities(executable, entity_type);
-            CREATE INDEX IF NOT EXISTS idx_command_entities_entity_norm
-                ON command_entities(entity_norm, entity_type);
-            CREATE INDEX IF NOT EXISTS idx_command_entities_command
-                ON command_entities(command_id);",
-        )?;
-    }
-
+    // Only take the write lock if migration is actually needed
     if current_version < SCHEMA_VERSION {
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
-            params![SCHEMA_VERSION],
-        )?;
-    }
+        let _lock_file = (|| -> Option<std::fs::File> {
+            let lock_path = crate::config::Config::nsh_dir().join("migrate.lock");
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&lock_path)
+                .ok()?;
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            }
+            Some(file)
+        })();
 
-    conn.execute_batch("COMMIT;")?;
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
 
-    if let Err(e) = conn.execute(
-        "SELECT count(*) FROM commands_fts WHERE commands_fts MATCH 'test'",
-        [],
-    ) {
-        tracing::warn!("FTS5 index may be corrupt, rebuilding: {e}");
-        conn.execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('rebuild')")?;
+        // Re-check inside the transaction (another process may have migrated)
+        let recheck: i32 = conn
+            .query_row(
+                "SELECT COALESCE((SELECT value FROM meta WHERE key='schema_version'), '0')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        if recheck < 2 {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN last_heartbeat TEXT;")
+                .ok();
+        }
+
+        if recheck < 3 {
+            conn.execute_batch("ALTER TABLE commands ADD COLUMN summary TEXT;")
+                .ok();
+            conn.execute_batch("ALTER TABLE commands ADD COLUMN summary_status TEXT DEFAULT NULL;")
+                .ok();
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN label TEXT;")
+                .ok();
+            conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_exit_code INTEGER;")
+                .ok();
+            conn.execute_batch("ALTER TABLE conversations ADD COLUMN result_output_snippet TEXT;")
+                .ok();
+
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS usage (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id      TEXT NOT NULL,
+                    query_text      TEXT,
+                    model           TEXT NOT NULL,
+                    provider        TEXT NOT NULL,
+                    input_tokens    INTEGER,
+                    output_tokens   INTEGER,
+                    cost_usd        REAL,
+                    generation_id   TEXT,
+                    created_at      TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id  TEXT NOT NULL,
+                    query       TEXT NOT NULL,
+                    suggested_command TEXT,
+                    action      TEXT NOT NULL,
+                    risk_level  TEXT,
+                    created_at  TEXT NOT NULL
+                );",
+            )?;
+
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS commands_ai;
+                 DROP TRIGGER IF EXISTS commands_ad;
+                 DROP TRIGGER IF EXISTS commands_au;
+                 DROP TABLE IF EXISTS commands_fts;
+
+                 CREATE VIRTUAL TABLE commands_fts USING fts5(
+                     command, output, summary, cwd,
+                     content='commands', content_rowid='id',
+                     tokenize='porter unicode61'
+                 );
+
+                 CREATE TRIGGER commands_ai AFTER INSERT ON commands BEGIN
+                     INSERT INTO commands_fts(rowid, command, output, summary, cwd)
+                     VALUES (new.id, new.command, new.output, new.summary, new.cwd);
+                 END;
+
+                 CREATE TRIGGER commands_ad AFTER DELETE ON commands BEGIN
+                     INSERT INTO commands_fts(commands_fts, rowid, command, output, summary, cwd)
+                     VALUES ('delete', old.id, old.command, old.output, old.summary, old.cwd);
+                 END;
+
+                 CREATE TRIGGER commands_au AFTER UPDATE ON commands BEGIN
+                     INSERT INTO commands_fts(commands_fts, rowid, command, output, summary, cwd)
+                     VALUES ('delete', old.id, old.command, old.output, old.summary, old.cwd);
+                     INSERT INTO commands_fts(rowid, command, output, summary, cwd)
+                     VALUES (new.id, new.command, new.output, new.summary, new.cwd);
+                 END;
+
+                 INSERT INTO commands_fts(commands_fts) VALUES('rebuild');",
+            )?;
+        }
+
+        if recheck < 4 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memories (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key         TEXT NOT NULL COLLATE NOCASE,
+                    value       TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    UNIQUE(key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);",
+            )?;
+        }
+
+        if recheck < 5 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS command_entities (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_id      INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
+                    executable      TEXT NOT NULL,
+                    entity          TEXT NOT NULL,
+                    entity_norm     TEXT NOT NULL,
+                    entity_type     TEXT NOT NULL,
+                    UNIQUE(command_id, executable, entity_norm, entity_type)
+                );
+                CREATE INDEX IF NOT EXISTS idx_command_entities_executable
+                    ON command_entities(executable, entity_type);
+                CREATE INDEX IF NOT EXISTS idx_command_entities_entity_norm
+                    ON command_entities(entity_norm, entity_type);
+                CREATE INDEX IF NOT EXISTS idx_command_entities_command
+                    ON command_entities(command_id);",
+            )?;
+        }
+
+        if recheck < SCHEMA_VERSION {
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+                params![SCHEMA_VERSION],
+            )?;
+        }
+
+        conn.execute_batch("COMMIT;")?;
+        // _lock_file drops here, releasing the flock
+    } else {
+        // Schema current — just validate FTS5 index integrity
+        if let Err(e) = conn.execute(
+            "SELECT count(*) FROM commands_fts WHERE commands_fts MATCH 'test'",
+            [],
+        ) {
+            tracing::warn!("FTS5 index may be corrupt, rebuilding: {e}");
+            conn.execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('rebuild')")?;
+        }
     }
 
     Ok(())
@@ -355,7 +388,7 @@ impl Db {
 
         let config = crate::config::Config::load().unwrap_or_default();
         let db_path = dir.join("nsh.db");
-        let mut conn = Connection::open(&db_path)?;
+        let conn = Connection::open(&db_path)?;
 
         #[cfg(unix)]
         {
@@ -363,8 +396,18 @@ impl Db {
             let _ = std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600));
         }
 
-        init_db(&conn, config.db.busy_timeout_ms)?;
-        conn.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+        let mut attempts = 0;
+        loop {
+            match init_db(&conn, config.db.busy_timeout_ms) {
+                Ok(()) => break,
+                Err(e) if attempts < 3 => {
+                    attempts += 1;
+                    tracing::debug!("Db::open init_db attempt {attempts}/3 failed: {e}, retrying...");
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         let db = Self {
             conn,
             max_output_bytes: config.context.max_output_storage_bytes,
@@ -529,7 +572,7 @@ impl Db {
 
     pub fn search_history(&self, query: &str, limit: usize) -> rusqlite::Result<Vec<HistoryMatch>> {
         let fts_query = Self::to_fts_literal_query(query);
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT c.id, c.session_id, c.command, c.cwd,
                     c.exit_code, c.started_at, c.output,
                     highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
@@ -630,7 +673,7 @@ impl Db {
         session_id: &str,
         limit: usize,
     ) -> rusqlite::Result<Vec<ConversationExchange>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT query, response_type, response, explanation, \
                     result_exit_code, result_output_snippet
              FROM conversations
@@ -1233,7 +1276,7 @@ impl Db {
         session_id: &str,
         limit: usize,
     ) -> rusqlite::Result<Vec<CommandWithSummary>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT c.command, c.cwd, c.exit_code, c.started_at,
                     c.duration_ms, c.summary
              FROM commands c
@@ -1700,6 +1743,61 @@ impl Db {
         eprintln!("\nnsh doctor: done");
 
         Ok(())
+    }
+
+    pub fn open_readonly() -> anyhow::Result<Self> {
+        let dir = crate::config::Config::nsh_dir();
+        let config = crate::config::Config::load().unwrap_or_default();
+        let db_path = dir.join("nsh.db");
+        let conn = Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_millis(config.db.busy_timeout_ms))?;
+        conn.execute_batch("
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA cache_size = -2000;
+            PRAGMA temp_store = MEMORY;
+            PRAGMA mmap_size = 268435456;
+            PRAGMA query_only = ON;
+        ")?;
+        conn.create_scalar_function(
+            "regexp",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+            |ctx| {
+                let pattern = ctx.get::<String>(0)?;
+                let text = ctx.get::<String>(1).unwrap_or_default();
+                let re = regex::Regex::new(&pattern)
+                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+                Ok(re.is_match(&text))
+            },
+        )?;
+        Ok(Self { conn, max_output_bytes: config.context.max_output_storage_bytes })
+    }
+
+    pub fn checkpoint_wal(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+    }
+
+    pub fn bulk_insert_history(&self, session_id: &str, entries_json: &str) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO commands (session_id, command, started_at, ended_at)
+             SELECT ?1, e.value ->> 'cmd', e.value ->> 'ts', e.value ->> 'ts'
+             FROM json_each(?2) AS e
+             WHERE length(trim(e.value ->> 'cmd')) > 0
+               AND e.value ->> 'cmd' NOT LIKE '#%'",
+            rusqlite::params![session_id, entries_json],
+        )?;
+        tx.commit()
+    }
+
+    pub fn conn_execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
+        self.conn.execute_batch(sql)
     }
 }
 

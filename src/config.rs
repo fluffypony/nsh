@@ -463,7 +463,7 @@ pub struct DbConfig {
 impl Default for DbConfig {
     fn default() -> Self {
         Self {
-            busy_timeout_ms: 10000,
+            busy_timeout_ms: 5000,
         }
     }
 }
@@ -1522,7 +1522,7 @@ base_url = "https://custom.api.example.com"
     #[test]
     fn test_db_config_default() {
         let db = DbConfig::default();
-        assert_eq!(db.busy_timeout_ms, 10000);
+        assert_eq!(db.busy_timeout_ms, 5000);
     }
 
     #[test]
@@ -3650,7 +3650,7 @@ timeout_seconds = "fast"
     #[test]
     fn test_default_db_config() {
         let d = DbConfig::default();
-        assert_eq!(d.busy_timeout_ms, 10000);
+        assert_eq!(d.busy_timeout_ms, 5000);
     }
 
     #[test]
