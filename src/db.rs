@@ -1786,8 +1786,8 @@ impl Db {
     pub fn bulk_insert_history(&self, session_id: &str, entries_json: &str) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
-            "INSERT OR IGNORE INTO commands (session_id, command, started_at, ended_at)
-             SELECT ?1, e.value ->> 'cmd', e.value ->> 'ts', e.value ->> 'ts'
+            "INSERT OR IGNORE INTO commands (session_id, command, started_at)
+             SELECT ?1, e.value ->> 'cmd', e.value ->> 'ts'
              FROM json_each(?2) AS e
              WHERE length(trim(e.value ->> 'cmd')) > 0
                AND e.value ->> 'cmd' NOT LIKE '#%'",

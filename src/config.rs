@@ -3500,7 +3500,7 @@ timeout_seconds = "fast"
         assert_eq!(config.display.chat_color, "\x1b[3;36m");
         assert!(config.redaction.enabled);
         assert_eq!(config.capture.mode, "vt100");
-        assert_eq!(config.db.busy_timeout_ms, 10000);
+        assert_eq!(config.db.busy_timeout_ms, 5000);
         assert!(config.mcp.servers.is_empty());
         assert_eq!(config.tools.sensitive_file_access, "block");
     }

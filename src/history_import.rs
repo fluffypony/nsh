@@ -139,29 +139,16 @@ pub fn import_if_needed(db: &crate::db::Db) {
 
         db.create_session(SYNTHETIC_SESSION_ID, "import", "import", 0)?;
 
-        let home_dir_str = dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
-
-        let mut n = 0usize;
-        for (cmd, ts) in &entries {
-            if cmd.trim().is_empty() || cmd.starts_with('#') {
-                continue;
-            }
-            db.insert_command(
-                SYNTHETIC_SESSION_ID,
-                cmd,
-                &home_dir_str,
-                None,
-                &ts.to_rfc3339(),
-                None,
-                None,
-                "",
-                "import",
-                0,
-            )?;
-            n += 1;
-        }
+        let payload: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(cmd, ts)| serde_json::json!({
+                "cmd": cmd,
+                "ts": ts.to_rfc3339(),
+            }))
+            .collect();
+        let entries_json = serde_json::to_string(&payload)?;
+        db.bulk_insert_history(SYNTHETIC_SESSION_ID, &entries_json)?;
+        let n = payload.len();
 
         db.end_session(SYNTHETIC_SESSION_ID)?;
         db.set_meta("shell_history_imported", "1")?;
