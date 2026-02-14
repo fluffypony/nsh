@@ -80,6 +80,18 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if let Commands::Nshd = cli.command {
+        #[cfg(unix)]
+        {
+            return global_daemon::run_global_daemon();
+        }
+        #[cfg(not(unix))]
+        {
+            eprintln!("nsh: global daemon is not supported on this platform");
+            return Ok(());
+        }
+    }
+
     if let Commands::Wrap { ref shell } = cli.command {
         #[cfg(not(unix))]
         {
@@ -92,14 +104,8 @@ fn main() -> anyhow::Result<()> {
         apply_pending_update();
 
         // Startup must stay snappy: kick heavy tasks to background.
-        let _ = history_import::start_background_import_process();
         std::thread::spawn(|| {
-            if let Ok(db) = db::Db::open() {
-                let _ = db.cleanup_orphaned_sessions();
-                if should_check_for_updates(&db) {
-                    let _ = background_update_check();
-                }
-            }
+            let _ = daemon_client::ensure_global_daemon_running();
         });
 
         if config::Config::nsh_dir().join("update_pending").exists() {
@@ -123,6 +129,7 @@ fn main() -> anyhow::Result<()> {
 async fn async_main(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Wrap { .. } => unreachable!(),
+        Commands::Nshd => unreachable!(),
 
         Commands::Init { shell } => {
             let script = init::generate_init_script(&shell);
@@ -136,11 +143,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             json,
         } => {
             if history_import::import_in_progress() {
-                eprintln!(
-                    "nsh: still loading your terminal history and isn't ready to answer yet."
-                );
-                eprintln!("nsh: try your query again in a few seconds.");
-                return Ok(());
+                eprintln!("\x1b[2m⏳ nsh is still indexing history; results may be incomplete.\x1b[0m");
             }
 
             if words.is_empty() {
@@ -173,19 +176,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
             let config = config::Config::load()?;
             let force_autorun = force_autorun || config.execution.mode == "autorun";
-            let mut db = db::Db::open()?;
-            if history_import::needs_import(&db).unwrap_or(false) {
-                drop(db);
-                let _ = history_import::start_background_import_process();
-                if history_import::import_in_progress() {
-                    eprintln!(
-                        "nsh: still loading your terminal history and isn't ready to answer yet."
-                    );
-                    eprintln!("nsh: try your query again in a few seconds.");
-                    return Ok(());
-                }
-                db = db::Db::open()?;
-            }
+            let db = db::Db::open()?;
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             if private {
                 if json {

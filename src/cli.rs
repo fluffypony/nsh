@@ -165,6 +165,10 @@ pub enum Commands {
     /// Internal: run shell history import in a detached worker process
     #[command(hide = true)]
     HistoryImportRun,
+
+    /// Internal: run the global nsh database daemon
+    #[command(name = "nshd", hide = true)]
+    Nshd,
 }
 
 #[derive(Subcommand)]

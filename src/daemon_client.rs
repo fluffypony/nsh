@@ -65,6 +65,87 @@ pub fn is_daemon_running(session_id: &str) -> bool {
     }
 }
 
+#[cfg(unix)]
+pub fn is_global_daemon_running() -> bool {
+    let socket_path = crate::daemon::global_daemon_socket_path();
+    if !socket_path.exists() {
+        return false;
+    }
+    if let Ok(pid_str) = std::fs::read_to_string(crate::daemon::global_daemon_pid_path()) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                let _ = std::fs::remove_file(&socket_path);
+                let _ = std::fs::remove_file(crate::daemon::global_daemon_pid_path());
+                return false;
+            }
+        }
+    }
+    UnixStream::connect(&socket_path)
+        .and_then(|s| {
+            s.set_write_timeout(Some(Duration::from_millis(100)))?;
+            Ok(())
+        })
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+pub fn is_global_daemon_running() -> bool {
+    false
+}
+
+#[cfg(unix)]
+pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let socket_path = crate::daemon::global_daemon_socket_path();
+    let mut stream = UnixStream::connect(&socket_path)?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let mut json_val = serde_json::to_value(request)?;
+    if let serde_json::Value::Object(ref mut map) = json_val {
+        map.insert(
+            "v".into(),
+            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
+        );
+    }
+    let mut json = serde_json::to_string(&json_val)?;
+    json.push('\n');
+    stream.write_all(json.as_bytes())?;
+    stream.flush()?;
+
+    let mut reader = BufReader::new(&stream);
+    let mut response_line = String::new();
+    reader.read_line(&mut response_line)?;
+
+    Ok(serde_json::from_str(&response_line)?)
+}
+
+#[cfg(not(unix))]
+pub fn send_to_global(_request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    anyhow::bail!("global daemon not available on this platform")
+}
+
+pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
+    if is_global_daemon_running() {
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe()?;
+    std::process::Command::new(exe)
+        .arg("nshd")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if is_global_daemon_running() {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(unix))]
