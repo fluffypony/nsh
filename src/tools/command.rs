@@ -2,6 +2,11 @@ use crate::db::Db;
 use crate::security::RiskLevel;
 use std::path::Path;
 
+pub enum CommandExecutionOutcome {
+    Terminal,
+    ContinueWithResult { content: String, is_error: bool },
+}
+
 /// Handle the `command` tool: display explanation, write command to
 /// pending file for shell hook to prefill.
 pub fn execute(
@@ -12,7 +17,7 @@ pub fn execute(
     private: bool,
     config: &crate::config::Config,
     force_autorun: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CommandExecutionOutcome> {
     let raw_command = input["command"].as_str().unwrap_or("");
     let explanation = input["explanation"].as_str().unwrap_or("");
     let pending = input["pending"].as_bool().unwrap_or(false);
@@ -20,7 +25,7 @@ pub fn execute(
 
     if let Some(reason) = reject_reason_for_generated_command(&command, original_query) {
         eprintln!("nsh: skipped invalid generated command ({reason})");
-        return Ok(());
+        return Ok(CommandExecutionOutcome::Terminal);
     }
 
     let (risk, reason) = crate::security::assess_command(&command);
@@ -49,14 +54,14 @@ pub fn execute(
                             eprintln!(
                                 "Cannot confirm — stdin is piped. Aborting dangerous command."
                             );
-                            return Ok(());
+                            return Ok(CommandExecutionOutcome::Terminal);
                         }
                     }
                 }
             };
             if input_line.trim() != "yes" {
                 eprintln!("Aborted.");
-                return Ok(());
+                return Ok(CommandExecutionOutcome::Terminal);
             }
         }
         RiskLevel::Elevated => {
@@ -95,16 +100,25 @@ pub fn execute(
         RiskLevel::Elevated => config.execution.allow_unsafe_autorun,
         RiskLevel::Dangerous => false,
     };
-    if force_autorun && can_autorun {
+    let mut user_confirmed_intermediate = false;
+    if pending
+        && !force_autorun
+        && config.execution.confirm_intermediate_steps
+        && !matches!(risk, RiskLevel::Dangerous)
+    {
+        eprint!("\x1b[1;33mRun intermediate command now? [y/N]\x1b[0m ");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        user_confirmed_intermediate = crate::tools::read_tty_confirmation();
+    }
+
+    let should_execute_immediately = (force_autorun && can_autorun) || user_confirmed_intermediate;
+    if should_execute_immediately {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
-        let status = std::process::Command::new("sh")
+        let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(command.as_str())
-            .status();
-        let exit_code = status
-            .as_ref()
-            .map(|s| s.code().unwrap_or(-1))
-            .unwrap_or(-1);
+            .output();
+        let (output_content, is_error, exit_code) = format_execution_output(output, config);
         if !private {
             let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
             let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
@@ -129,10 +143,16 @@ pub fn execute(
                 &risk.to_string(),
             );
         }
-        if !status.map(|s| s.success()).unwrap_or(false) {
+        if is_error {
             eprintln!("\x1b[33mcommand exited with code {exit_code}\x1b[0m");
         }
-        return Ok(());
+        if pending {
+            return Ok(CommandExecutionOutcome::ContinueWithResult {
+                content: output_content,
+                is_error,
+            });
+        }
+        return Ok(CommandExecutionOutcome::Terminal);
     }
 
     if config.execution.mode != "confirm" {
@@ -207,7 +227,44 @@ pub fn execute(
     eprint!("\x1b[0m");
     std::io::Write::flush(&mut std::io::stderr()).ok();
 
-    Ok(())
+    Ok(CommandExecutionOutcome::Terminal)
+}
+
+fn format_execution_output(
+    output: std::io::Result<std::process::Output>,
+    config: &crate::config::Config,
+) -> (String, bool, i32) {
+    match output {
+        Ok(out) => {
+            let exit_code = out.status.code().unwrap_or(-1);
+            let mut result = String::new();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if !stdout.trim().is_empty() {
+                result.push_str(&crate::util::truncate(&stdout, 4000));
+            }
+            if !stderr.trim().is_empty() {
+                if !result.is_empty() {
+                    result.push_str("\n\n");
+                }
+                result.push_str("[stderr]\n");
+                result.push_str(&crate::util::truncate(&stderr, 2000));
+            }
+            if !result.is_empty() {
+                result.push_str("\n\n");
+            }
+            result.push_str(&format!("[exit code: {exit_code}]"));
+            let redacted = crate::redact::redact_secrets(&result, &config.redaction);
+            (redacted, exit_code != 0, exit_code)
+        }
+        Err(err) => {
+            let msg = crate::redact::redact_secrets(
+                &format!("Failed to execute command: {err}"),
+                &config.redaction,
+            );
+            (msg, true, -1)
+        }
+    }
 }
 
 pub(crate) fn reject_reason_for_generated_command(
@@ -750,7 +807,8 @@ mod tests {
             "explanation": "no-op command",
             "pending": false,
         });
-        execute(&input, "test query", &db, session, false, &config, true).unwrap();
+        let outcome = execute(&input, "test query", &db, session, false, &config, true).unwrap();
+        assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
     }
 
     #[test]
@@ -763,7 +821,29 @@ mod tests {
             "explanation": "private command",
             "pending": false,
         });
-        execute(&input, "secret query", &db, session, true, &config, true).unwrap();
+        let outcome = execute(&input, "secret query", &db, session, true, &config, true).unwrap();
+        assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
+    }
+
+    #[test]
+    fn test_execute_autorun_pending_returns_continue() {
+        let session = "test_autorun_pending";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "echo hello",
+            "explanation": "intermediate step",
+            "pending": true,
+        });
+        let outcome = execute(&input, "test query", &db, session, false, &config, true).unwrap();
+        match outcome {
+            CommandExecutionOutcome::ContinueWithResult { content, is_error } => {
+                assert!(!is_error);
+                assert!(content.contains("hello"));
+                assert!(content.contains("[exit code: 0]"));
+            }
+            CommandExecutionOutcome::Terminal => panic!("expected ContinueWithResult"),
+        }
     }
 
     #[test]

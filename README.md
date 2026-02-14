@@ -60,9 +60,9 @@ Every query includes rich context assembled automatically:
 
 ### Multi-Step Agent Loop
 
-nsh can chain up to 10 tool calls per query. It investigates before acting - searching history, reading files, running safe commands, or querying the web - then responds with a concrete action.
+nsh can chain multiple tool calls per query (20 by default, configurable). It investigates before acting - searching history, reading files, running safe commands, or querying the web - then responds with a concrete action.
 
-The `pending` flag on command suggestions enables multi-step sequences: nsh prefills a command, waits for you to execute it, reads the output, then continues with the next step.
+The `pending` flag on command suggestions enables multi-step sequences. In `autorun` mode, pending intermediate commands execute immediately and their output is fed back into the same tool loop. Outside autorun, nsh can ask for `y/n` before running intermediate steps immediately (`execution.confirm_intermediate_steps = true`). If declined, it falls back to normal prompt prefill behavior.
 
 ### 18 Built-In Tools
 
@@ -422,6 +422,8 @@ busy_timeout_ms = 10000
 [execution]
 mode = "prefill"  # prefill | confirm | autorun
 allow_unsafe_autorun = false
+max_tool_iterations = 20
+confirm_intermediate_steps = true
 
 [mcp]
 # [mcp.servers.example]

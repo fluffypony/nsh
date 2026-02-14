@@ -140,7 +140,7 @@ pub async fn handle_query(
     });
 
     // ── Agentic tool loop ──────────────────────────────
-    let max_iterations = 10;
+    let max_iterations = config.execution.effective_max_tool_iterations();
     let mut force_json_next = false;
     let mut streamed_text_shown = false;
 
@@ -325,8 +325,7 @@ pub async fn handle_query(
                             });
                             continue;
                         }
-                        has_terminal_tool = true;
-                        tools::command::execute(
+                        match tools::command::execute(
                             input,
                             query,
                             db,
@@ -334,7 +333,26 @@ pub async fn handle_query(
                             opts.private,
                             config,
                             opts.force_autorun,
-                        )?;
+                        )? {
+                            tools::command::CommandExecutionOutcome::Terminal => {
+                                has_terminal_tool = true;
+                            }
+                            tools::command::CommandExecutionOutcome::ContinueWithResult {
+                                content,
+                                is_error,
+                            } => {
+                                let redacted =
+                                    crate::redact::redact_secrets(&content, &config.redaction);
+                                let sanitized = crate::security::sanitize_tool_output(&redacted);
+                                let wrapped =
+                                    crate::security::wrap_tool_result(name, &sanitized, &boundary);
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: wrapped,
+                                    is_error,
+                                });
+                            }
+                        }
                     }
                     "chat" => {
                         has_terminal_tool = true;
@@ -936,6 +954,11 @@ to the detected project type.
 When you set pending=true on a command, you'll receive a continuation
 message after the user executes it. The LAST command in a sequence must NOT
 have pending=true.
+
+When pending=true and execution mode is autorun (or when
+execution.confirm_intermediate_steps is enabled and the user answers yes),
+the command may execute immediately and its output is returned as a tool
+result in the same query loop.
 
 "#;
     let boundary_note = crate::security::boundary_system_prompt_addition(boundary);

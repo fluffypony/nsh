@@ -162,7 +162,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "description":
                             "Set to true if this is part of a \
                              multi-step sequence and you need to \
-                             see the output before continuing.",
+                             see the output before continuing. In \
+                             autorun mode (or with y/n confirmation \
+                             when enabled), pending commands may run \
+                             immediately and return tool results in \
+                             the same query loop.",
                         "default": false
                     }
                 },
