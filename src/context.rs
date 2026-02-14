@@ -2,7 +2,8 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::db::{CommandWithSummary, ConversationExchange, Db, OtherSessionSummary};
+use crate::daemon_db::DbAccess;
+use crate::db::{CommandWithSummary, ConversationExchange, OtherSessionSummary};
 
 #[derive(Clone)]
 struct CachedSystemInfo {
@@ -78,7 +79,11 @@ pub struct FileEntry {
     pub size: String,
 }
 
-pub fn build_context(db: &Db, session_id: &str, config: &Config) -> anyhow::Result<QueryContext> {
+pub fn build_context(
+    db: &dyn DbAccess,
+    session_id: &str,
+    config: &Config,
+) -> anyhow::Result<QueryContext> {
     let sys = get_cached_system_info();
 
     let shell = detect_shell();

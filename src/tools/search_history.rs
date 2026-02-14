@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::db::Db;
+use crate::daemon_db::DbAccess;
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -12,7 +12,7 @@ struct EntitySearchIntent {
 }
 
 pub fn execute(
-    db: &Db,
+    db: &dyn DbAccess,
     input: &serde_json::Value,
     config: &Config,
     session_id: &str,

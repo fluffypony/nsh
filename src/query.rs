@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{config::Config, context, db::Db, provider::*, streaming, tools};
+use crate::{config::Config, context, daemon_db::DbAccess, provider::*, streaming, tools};
 
 type ToolFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>>;
@@ -17,7 +17,7 @@ pub struct QueryOptions {
 pub async fn handle_query(
     query: &str,
     config: &Config,
-    db: &Db,
+    db: &dyn DbAccess,
     session_id: &str,
     opts: QueryOptions,
 ) -> anyhow::Result<()> {
@@ -1361,7 +1361,7 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
 }
 
 async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::Result<()> {
-    let db = crate::db::Db::open()?;
+    let db = crate::daemon_db::DaemonDb::new();
     let commands = db.commands_needing_llm_summary(3)?;
     for cmd in &commands {
         match crate::summary::generate_llm_summary(cmd, config).await {

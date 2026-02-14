@@ -1,4 +1,4 @@
-use crate::db::Db;
+use crate::daemon_db::DbAccess;
 use crate::security::RiskLevel;
 use std::path::Path;
 
@@ -12,7 +12,7 @@ pub enum CommandExecutionOutcome {
 pub fn execute(
     input: &serde_json::Value,
     original_query: &str,
-    db: &Db,
+    db: &dyn DbAccess,
     session_id: &str,
     private: bool,
     config: &crate::config::Config,
@@ -409,7 +409,7 @@ fn looks_like_natural_language_question(text: &str) -> bool {
 fn normalize_command_for_prefill(
     command: &str,
     original_query: &str,
-    db: &Db,
+    db: &dyn DbAccess,
     session_id: &str,
 ) -> String {
     let trimmed = command.trim();
@@ -430,7 +430,7 @@ fn normalize_command_for_prefill(
     trimmed.to_string()
 }
 
-fn normalize_cd_command(command: &str, db: &Db, session_id: &str) -> Option<String> {
+fn normalize_cd_command(command: &str, db: &dyn DbAccess, session_id: &str) -> Option<String> {
     let trimmed = command.trim();
     let rest = trimmed.strip_prefix("cd ")?;
     let rest = rest.trim();
@@ -511,7 +511,7 @@ fn cleanup_cd_target_phrase(raw: &str) -> String {
     }
 }
 
-fn resolve_cd_target(target: &str, db: &Db, session_id: &str) -> String {
+fn resolve_cd_target(target: &str, db: &dyn DbAccess, session_id: &str) -> String {
     if target.is_empty() || looks_explicit_cd_target(target) {
         return target.to_string();
     }
@@ -575,7 +575,7 @@ fn cwd_directory_candidates(target: &str) -> Vec<String> {
 
 fn choose_candidate_from_cd_history(
     candidates: &[String],
-    db: &Db,
+    db: &dyn DbAccess,
     session_id: &str,
 ) -> Option<String> {
     let try_filters = [Some("current"), None];

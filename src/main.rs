@@ -5,6 +5,7 @@ mod config;
 mod context;
 mod daemon;
 mod daemon_client;
+mod daemon_db;
 mod db;
 #[cfg(unix)]
 mod global_daemon;
@@ -38,7 +39,28 @@ use cli::{
     Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
     ProviderAction, SessionAction,
 };
+use crate::daemon_db::DbAccess;
 use sha2::{Digest, Sha256};
+
+fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
+    if daemon_client::is_global_daemon_running() {
+        return Ok(true);
+    }
+    let _ = daemon_client::ensure_global_daemon_running();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if daemon_client::is_global_daemon_running() {
+        return Ok(true);
+    }
+    if json {
+        eprintln!(
+            "{}",
+            serde_json::json!({"type": "error", "message": "nsh is still starting up"})
+        );
+    } else {
+        eprintln!("\x1b[2mnsh is still starting up, try again in a moment.\x1b[0m");
+    }
+    Ok(false)
+}
 
 fn postprocess_recorded_command(
     db: &db::Db,
@@ -152,6 +174,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             private,
             json,
         } => {
+            if !ensure_daemon_ready(json)? {
+                return Ok(());
+            }
+
             if history_import::import_in_progress() {
                 eprintln!("\x1b[2m⏳ nsh is still indexing history; results may be incomplete.\x1b[0m");
             }
@@ -186,7 +212,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
             let config = config::Config::load()?;
             let force_autorun = force_autorun || config.execution.mode == "autorun";
-            let db = db::Db::open()?;
+            let db = daemon_db::DaemonDb::new();
             let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
             if private {
                 if json {
@@ -526,9 +552,15 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 let config = config::Config::load().unwrap_or_default();
                 let global_running = daemon_client::is_global_daemon_running();
                 eprintln!("  Global daemon: {}", if global_running { "running" } else { "not running" });
-                let db = db::Db::open()?;
                 let retention = prune_days.unwrap_or(config.context.retention_days);
-                db.run_doctor(retention, no_prune, no_vacuum, &config)?;
+                let request = daemon::DaemonRequest::RunDoctor {
+                    retention_days: retention,
+                    no_prune,
+                    no_vacuum,
+                };
+                if let daemon::DaemonResponse::Error { message } = send_to_global_or_fallback(&request)? {
+                    anyhow::bail!(message);
+                }
                 cleanup_staged_updates();
             }
         }
@@ -794,9 +826,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
         Commands::Chat => {
             use std::io::Write;
+            if !ensure_daemon_ready(false)? {
+                return Ok(());
+            }
             let config = config::Config::load()?;
             streaming::configure_display(&config.display);
-            let db = db::Db::open()?;
+            let db = daemon_db::DaemonDb::new();
             let session_id = std::env::var("NSH_SESSION_ID")
                 .unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
             eprintln!("nsh chat (type 'exit' or Ctrl-D to quit, 'reset' to clear context)");
@@ -852,36 +887,46 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::Export { format, session } => {
             let session_id =
                 session.unwrap_or_else(|| std::env::var("NSH_SESSION_ID").unwrap_or_default());
-            let db = db::Db::open()?;
-            let convos = db.get_conversations(&session_id, 1000)?;
+            let request = daemon::DaemonRequest::GetConversations {
+                session: session_id.clone(),
+                limit: 1000,
+            };
+            let convos = match send_to_global_or_fallback(&request)? {
+                daemon::DaemonResponse::Ok { data: Some(d) } => d
+                    .get("conversations")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default(),
+                daemon::DaemonResponse::Error { message } => anyhow::bail!(message),
+                _ => Vec::new(),
+            };
             if convos.is_empty() {
                 eprintln!("No conversations found for session {session_id}");
             } else {
                 match format.as_deref().unwrap_or("markdown") {
                     "json" => {
-                        let json_convos: Vec<serde_json::Value> = convos
-                            .iter()
-                            .map(|c| {
-                                serde_json::json!({
-                                    "query": c.query,
-                                    "response_type": c.response_type,
-                                    "response": c.response,
-                                    "explanation": c.explanation,
-                                })
-                            })
-                            .collect();
-                        println!("{}", serde_json::to_string_pretty(&json_convos)?);
+                        println!("{}", serde_json::to_string_pretty(&convos)?);
                     }
                     _ => {
                         for c in &convos {
-                            println!("**Q:** {}\n", c.query);
-                            match c.response_type.as_str() {
+                            let query = c.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                            let response_type = c
+                                .get("response_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let response = c.get("response").and_then(|v| v.as_str()).unwrap_or("");
+                            let explanation = c
+                                .get("explanation")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            println!("**Q:** {}\n", query);
+                            match response_type {
                                 "command" => println!(
                                     "```bash\n{}\n```\n{}\n",
-                                    c.response,
-                                    c.explanation.as_deref().unwrap_or("")
+                                    response,
+                                    explanation
                                 ),
-                                _ => println!("{}\n", c.response),
+                                _ => println!("{}\n", response),
                             }
                         }
                     }
@@ -939,11 +984,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         Commands::HistoryImportRun => {
-            let result: anyhow::Result<()> = (|| {
-                let db = db::Db::open()?;
-                history_import::import_if_needed(&db);
-                Ok(())
-            })();
+            let result = daemon_client::ensure_global_daemon_running();
             history_import::clear_import_lock();
             if let Err(e) = result {
                 tracing::debug!("background history import failed: {e}");

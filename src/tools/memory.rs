@@ -1,7 +1,7 @@
 pub fn execute_remember(
     input: &serde_json::Value,
     query: &str,
-    db: &crate::db::Db,
+    db: &dyn crate::daemon_db::DbAccess,
     session_id: &str,
 ) -> anyhow::Result<()> {
     let key = input["key"].as_str().unwrap_or("");
@@ -32,7 +32,10 @@ pub fn execute_remember(
     Ok(())
 }
 
-pub fn execute_forget(input: &serde_json::Value, db: &crate::db::Db) -> anyhow::Result<()> {
+pub fn execute_forget(
+    input: &serde_json::Value,
+    db: &dyn crate::daemon_db::DbAccess,
+) -> anyhow::Result<()> {
     let id = input["id"]
         .as_i64()
         .ok_or_else(|| anyhow::anyhow!("forget_memory: 'id' is required"))?;
@@ -44,7 +47,10 @@ pub fn execute_forget(input: &serde_json::Value, db: &crate::db::Db) -> anyhow::
     Ok(())
 }
 
-pub fn execute_update(input: &serde_json::Value, db: &crate::db::Db) -> anyhow::Result<()> {
+pub fn execute_update(
+    input: &serde_json::Value,
+    db: &dyn crate::daemon_db::DbAccess,
+) -> anyhow::Result<()> {
     let id = input["id"]
         .as_i64()
         .ok_or_else(|| anyhow::anyhow!("update_memory: 'id' is required"))?;

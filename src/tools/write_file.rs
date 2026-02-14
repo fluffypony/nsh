@@ -1,4 +1,4 @@
-use crate::db::Db;
+use crate::daemon_db::DbAccess;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -214,7 +214,7 @@ fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
 pub fn execute(
     input: &serde_json::Value,
     original_query: &str,
-    db: &Db,
+    db: &dyn DbAccess,
     session_id: &str,
     private: bool,
     config: &crate::config::Config,
@@ -738,7 +738,7 @@ mod tests {
         let _ = std::fs::remove_file(&backup_path);
     }
 
-    fn test_db() -> Db {
+    fn test_db() -> crate::db::Db {
         crate::db::Db::open_in_memory().unwrap()
     }
 

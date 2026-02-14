@@ -1,10 +1,10 @@
-use crate::db::Db;
+use crate::daemon_db::DbAccess;
 
 /// Handle the `chat` tool: display the response text.
 pub fn execute(
     input: &serde_json::Value,
     original_query: &str,
-    db: &Db,
+    db: &dyn DbAccess,
     session_id: &str,
     private: bool,
     config: &crate::config::Config,
@@ -48,8 +48,8 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
-    fn test_db() -> Db {
-        Db::open_in_memory().expect("in-memory db")
+    fn test_db() -> crate::db::Db {
+        crate::db::Db::open_in_memory().expect("in-memory db")
     }
 
     #[test]
