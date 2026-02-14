@@ -12,6 +12,8 @@ SUPPORTED_PREBUILT_TARGETS=(
     "aarch64-unknown-linux-gnu"
     "riscv64gc-unknown-linux-gnu"
     "x86_64-unknown-linux-gnu"
+    "x86_64-pc-windows-msvc"
+    "x86_64-pc-windows-gnu"
 )
 
 BOLD='\033[1m' DIM='\033[2m' GREEN='\033[32m' CYAN='\033[36m'
@@ -26,10 +28,26 @@ error() { printf "${RED}✗${RESET} %s\n" "$*" >&2; exit 1; }
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
+IS_WSL=0
+if [ -f /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null; then
+    IS_WSL=1
+    info "Detected WSL (Windows Subsystem for Linux)"
+fi
+
 case "$OS" in
     Linux)  PLATFORM="unknown-linux-gnu" ;;
     Darwin) PLATFORM="apple-darwin" ;;
     FreeBSD) PLATFORM="unknown-freebsd" ;;
+    MINGW*|MSYS*|CYGWIN*)
+        echo ""
+        echo "Native Windows/MSYS2/Cygwin detected."
+        echo "For the full nsh experience (shell wrapping), please install inside WSL:"
+        echo "  wsl --install"
+        echo "  # Then inside WSL: curl -fsSL https://... | sh"
+        echo ""
+        echo "Attempting source build for experimental native support (query/chat only)..."
+        PLATFORM="pc-windows-gnu"
+        ;;
     *)      error "Unsupported OS: $OS. nsh requires Linux, macOS, or FreeBSD." ;;
 esac
 
@@ -67,24 +85,28 @@ install_from_release() {
 
     [[ -z "$LATEST" ]] && return 1
 
-    local URL="https://github.com/$REPO/releases/download/${LATEST}/nsh-${TARGET}.tar.gz"
+    local archive_ext="tar.gz"
+    if [[ "$TARGET" == *windows* ]]; then
+        archive_ext="zip"
+    fi
+    local URL="https://github.com/$REPO/releases/download/${LATEST}/nsh-${TARGET}.${archive_ext}"
     info "Downloading nsh $LATEST for $TARGET..."
 
     local TMP
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' RETURN
 
-    if curl -fsSL "$URL" -o "$TMP/nsh.tar.gz" 2>/dev/null; then
+    if curl -fsSL "$URL" -o "$TMP/nsh_archive" 2>/dev/null; then
         # Compute SHA256 of downloaded archive
         local actual_sha=""
         if command -v sha256sum &>/dev/null; then
-            actual_sha="$(sha256sum "$TMP/nsh.tar.gz" | awk '{print $1}')"
+            actual_sha="$(sha256sum "$TMP/nsh_archive" | awk '{print $1}')"
         elif command -v shasum &>/dev/null; then
-            actual_sha="$(shasum -a 256 "$TMP/nsh.tar.gz" | awk '{print $1}')"
+            actual_sha="$(shasum -a 256 "$TMP/nsh_archive" | awk '{print $1}')"
         fi
 
         # GitHub checksum verification
-        local SHA_URL="https://github.com/$REPO/releases/download/${LATEST}/nsh-${TARGET}.tar.gz.sha256"
+        local SHA_URL="https://github.com/$REPO/releases/download/${LATEST}/nsh-${TARGET}.${archive_ext}.sha256"
         local expected_sha=""
         if curl -fsSL "$SHA_URL" -o "$TMP/nsh.sha256" 2>/dev/null; then
             expected_sha="$(awk '{print $1}' "$TMP/nsh.sha256")"
@@ -101,15 +123,21 @@ install_from_release() {
             warn "No checksum file available, skipping verification"
         fi
 
-        tar xzf "$TMP/nsh.tar.gz" -C "$TMP"
+        if [[ "$archive_ext" == "zip" ]]; then
+            unzip -oq "$TMP/nsh_archive" -d "$TMP"
+        else
+            tar xzf "$TMP/nsh_archive" -C "$TMP"
+        fi
 
         # Compute SHA256 of extracted binary (used by DNS TXT update records)
         local binary_sha=""
-        if [[ -f "$TMP/nsh" ]]; then
+        if [[ -f "$TMP/nsh" || -f "$TMP/nsh.exe" ]]; then
+            local extracted_bin="$TMP/nsh"
+            [[ -f "$TMP/nsh.exe" ]] && extracted_bin="$TMP/nsh.exe"
             if command -v sha256sum &>/dev/null; then
-                binary_sha="$(sha256sum "$TMP/nsh" | awk '{print $1}')"
+                binary_sha="$(sha256sum "$extracted_bin" | awk '{print $1}')"
             elif command -v shasum &>/dev/null; then
-                binary_sha="$(shasum -a 256 "$TMP/nsh" | awk '{print $1}')"
+                binary_sha="$(shasum -a 256 "$extracted_bin" | awk '{print $1}')"
             fi
         fi
 
@@ -134,7 +162,11 @@ install_from_release() {
         fi
 
         mkdir -p "$INSTALL_DIR"
-        install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
+        if [[ "$TARGET" == *windows* ]]; then
+            install -m 755 "$TMP/nsh.exe" "$INSTALL_DIR/nsh.exe"
+        else
+            install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
+        fi
         return 0
     fi
     return 1

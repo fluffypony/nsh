@@ -14,6 +14,10 @@ mod json_extract;
 #[allow(dead_code)]
 mod mcp;
 mod provider;
+#[cfg(unix)]
+mod pty;
+#[cfg(windows)]
+#[path = "pty_windows.rs"]
 mod pty;
 mod pump;
 mod query;
@@ -48,9 +52,7 @@ fn postprocess_recorded_command(
         let _ = db.update_summary(id, &trivial);
     } else if !output_was_captured {
         let summary = if exit_code == 0 {
-            format!(
-                "Ran `{command}` successfully (output was not captured; daemon unavailable)"
-            )
+            format!("Ran `{command}` successfully (output was not captured; daemon unavailable)")
         } else {
             format!(
                 "Ran `{command}` with exit code {exit_code} (output was not captured; daemon unavailable)"
@@ -77,6 +79,14 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if let Commands::Wrap { ref shell } = cli.command {
+        #[cfg(not(unix))]
+        {
+            eprintln!("nsh: PTY wrapping is not available on this platform.");
+            eprintln!("  nsh query, history, and tools work without wrapping.");
+            eprintln!("  For full functionality, use WSL: wsl --install");
+            std::process::exit(0);
+        }
+
         apply_pending_update();
 
         // Startup must stay snappy: kick heavy tasks to background.
@@ -472,10 +482,15 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         "missing"
                     }
                 );
-                eprintln!("  daemon reachable: {}", if daemon_running { "yes" } else { "no" });
+                eprintln!(
+                    "  daemon reachable: {}",
+                    if daemon_running { "yes" } else { "no" }
+                );
                 eprintln!("  wrapped shell: {}", if wrapped { "yes" } else { "no" });
                 if !wrapped {
-                    eprintln!("  hint: start your shell with `nsh wrap` (or keep it in your rc file)");
+                    eprintln!(
+                        "  hint: start your shell with `nsh wrap` (or keep it in your rc file)"
+                    );
                 }
                 if wrapped && !daemon_running {
                     eprintln!("  hint: restart the wrapped shell to recreate daemon socket");
@@ -625,6 +640,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         Commands::DaemonSend { action } => {
+            #[cfg(not(unix))]
+            {
+                let _ = action;
+                eprintln!("Daemon is not supported on this platform.");
+                return Ok(());
+            }
+
             let session_id = match &action {
                 DaemonSendAction::Record { session, .. } => session.clone(),
                 DaemonSendAction::Heartbeat { session } => session.clone(),
@@ -712,6 +734,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         Commands::DaemonRead { action } => {
+            #[cfg(not(unix))]
+            {
+                let _ = action;
+                eprintln!("Daemon is not supported on this platform.");
+                return Ok(());
+            }
+
             let session_id = match &action {
                 DaemonReadAction::CaptureRead { session, .. } => session.clone(),
                 DaemonReadAction::Scrollback { .. } => {
@@ -961,6 +990,8 @@ fn current_target_triple() -> Option<&'static str> {
         ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
         ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
         ("linux", "riscv64") => Some("riscv64gc-unknown-linux-gnu"),
+        ("windows", "x86_64") => Some("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Some("aarch64-pc-windows-msvc"),
         _ => None,
     }
 }
@@ -1044,21 +1075,36 @@ fn apply_pending_update() {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755))?;
         }
+        #[cfg(unix)]
         std::fs::rename(&new_path, &current_exe)?;
+        #[cfg(windows)]
+        {
+            let old_path = current_exe.with_extension("old");
+            let _ = std::fs::remove_file(&old_path);
+            std::fs::rename(&current_exe, &old_path)?;
+            std::fs::rename(&new_path, &current_exe)?;
+            let _ = std::fs::remove_file(&old_path);
+        }
 
         let _ = std::fs::remove_file(&pending_path);
         let _ = std::fs::remove_file(&staged_path);
 
         eprintln!("nsh: updated to v{version}");
 
-        let exe_path = current_exe.to_string_lossy().to_string();
-        let args: Vec<String> = std::env::args().collect();
-        if !args.is_empty() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        #[cfg(unix)]
+        {
+            let exe_path = current_exe.to_string_lossy().to_string();
             let mut new_args = vec![exe_path.as_str()];
-            for a in args.iter().skip(1) {
+            for a in &args {
                 new_args.push(a.as_str());
             }
             let _err = pty::exec_execvp(&exe_path, &new_args);
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new(&current_exe).args(&args).spawn();
+            std::process::exit(0);
         }
         Ok(())
     })();

@@ -13,6 +13,7 @@ enum Shell {
     Bash,
     Zsh,
     Fish,
+    PowerShell,
 }
 
 fn import_lock_path() -> PathBuf {
@@ -120,6 +121,7 @@ pub fn import_if_needed(db: &crate::db::Db) {
                 Shell::Bash => parse_bash(path, file_mtime),
                 Shell::Zsh => parse_zsh(path, file_mtime),
                 Shell::Fish => parse_fish(path, file_mtime),
+                Shell::PowerShell => parse_powershell(path, file_mtime),
             };
             all_entries.extend(entries);
         }
@@ -236,6 +238,26 @@ fn discover_history_files() -> Vec<(PathBuf, Shell)> {
     let fish_hist = fish_data.join("fish").join("fish_history");
     if fish_hist.exists() {
         files.push((fish_hist, Shell::Fish));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let ps_hist = PathBuf::from(&appdata)
+                .join("Microsoft")
+                .join("Windows")
+                .join("PowerShell")
+                .join("PSReadLine")
+                .join("ConsoleHost_history.txt");
+            if ps_hist.exists() {
+                files.push((ps_hist, Shell::PowerShell));
+            }
+
+            let git_bash_hist = PathBuf::from(&appdata).join(".bash_history");
+            if git_bash_hist.exists() {
+                files.push((git_bash_hist, Shell::Bash));
+            }
+        }
     }
 
     let mut deduped: Vec<(PathBuf, Shell)> = Vec::new();
@@ -387,6 +409,24 @@ fn parse_fish(path: &Path, _file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<
     }
 
     results
+}
+
+fn parse_powershell(path: &Path, file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<Utc>)> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                None
+            } else {
+                Some((line.to_string(), file_mtime))
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

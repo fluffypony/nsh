@@ -10,7 +10,9 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_CMD_PREFIX}{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_FLAG_PREFIX}{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("scrollback_{session_id}")));
+    #[cfg(unix)]
     let _ = std::fs::remove_file(dir.join(format!("scrollback_{session_id}.sock")));
+    #[cfg(unix)]
     let _ = std::fs::remove_file(dir.join(format!("daemon_{session_id}.sock")));
     let _ = std::fs::remove_file(dir.join(format!("daemon_{session_id}.pid")));
     let _ = std::fs::remove_file(dir.join(format!("redact_next_{session_id}")));

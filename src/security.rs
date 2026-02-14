@@ -152,6 +152,20 @@ fn is_dangerous_target(arg: &str) -> bool {
     while arg.len() > 1 && arg.ends_with('/') {
         arg = &arg[..arg.len() - 1];
     }
+    while arg.len() > 1 && arg.ends_with('\\') {
+        arg = &arg[..arg.len() - 1];
+    }
+
+    let lower = arg.to_lowercase();
+    let windows_critical_paths = [
+        "c:\\windows",
+        "c:\\windows\\system32",
+        "c:\\users",
+        "c:\\program files",
+    ];
+    if windows_critical_paths.iter().any(|p| *p == lower) {
+        return true;
+    }
 
     let critical_paths = [
         "/", "/*", "~", "~/*", "*", "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot",
@@ -180,6 +194,9 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
     let rest = &argv[1..];
 
     match program.as_str() {
+        "cmd.exe" | "cmd" | "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh" => {
+            (RiskLevel::Elevated, Some("windows shell invocation"))
+        }
         "sudo" | "doas" | "su" => {
             if rest.is_empty() {
                 return (RiskLevel::Elevated, Some("elevated privileges"));
@@ -252,6 +269,24 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
         "shutdown" | "reboot" | "halt" | "poweroff" | "init" => {
             (RiskLevel::Dangerous, Some("system shutdown/reboot"))
         }
+        "format" | "diskpart" | "bcdedit" => (
+            RiskLevel::Dangerous,
+            Some("dangerous Windows system command"),
+        ),
+        "reg" => {
+            if rest
+                .first()
+                .is_some_and(|v| v.eq_ignore_ascii_case("delete"))
+            {
+                (RiskLevel::Dangerous, Some("registry deletion"))
+            } else {
+                (RiskLevel::Elevated, Some("registry modification"))
+            }
+        }
+        "takeown" | "icacls" => (RiskLevel::Elevated, Some("ownership/ACL change")),
+        "remove-item" | "format-volume" => {
+            (RiskLevel::Dangerous, Some("destructive PowerShell command"))
+        }
         "chmod" => {
             let flags = extract_flags(rest);
             let recursive = flags.contains(&'R') || flags.contains(&'r');
@@ -293,7 +328,18 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
 fn check_pipe_to_shell(sub_commands: &[Vec<String>]) -> Option<&'static str> {
     let downloaders = ["curl", "wget", "fetch"];
     let interpreters = [
-        "sh", "bash", "zsh", "dash", "fish", "python", "perl", "ruby", "node",
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "fish",
+        "python",
+        "perl",
+        "ruby",
+        "node",
+        "powershell",
+        "pwsh",
+        "cmd",
     ];
 
     let mut has_downloader_before = false;
@@ -306,6 +352,12 @@ fn check_pipe_to_shell(sub_commands: &[Vec<String>]) -> Option<&'static str> {
             if downloaders.contains(&prog.as_str()) {
                 has_downloader_before = true;
             }
+        }
+    }
+    for sub in sub_commands {
+        let joined = sub.join(" ").to_lowercase();
+        if joined.contains("irm") && joined.contains("iex") {
+            return Some("piping remote content to powershell interpreter");
         }
     }
     None

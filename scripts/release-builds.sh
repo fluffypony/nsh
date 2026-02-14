@@ -13,6 +13,9 @@ DEFAULT_TARGETS=(
   "aarch64-unknown-linux-gnu"
   "riscv64gc-unknown-linux-gnu"
   "x86_64-unknown-linux-gnu"
+  "x86_64-pc-windows-msvc"
+  "x86_64-pc-windows-gnu"
+  "aarch64-pc-windows-msvc"
 )
 
 TARGETS=()
@@ -81,6 +84,9 @@ cc_for_target() {
     riscv64gc-unknown-linux-gnu) echo "riscv64-linux-gnu-gcc" ;;
     x86_64-unknown-linux-musl) echo "x86_64-linux-musl-gcc" ;;
     aarch64-unknown-linux-musl) echo "aarch64-linux-musl-gcc" ;;
+    x86_64-pc-windows-msvc) echo "" ;;
+    x86_64-pc-windows-gnu) echo "" ;;
+    aarch64-pc-windows-msvc) echo "" ;;
     *) echo "" ;;
   esac
 }
@@ -94,6 +100,15 @@ choose_backend() {
 
   # Native macOS cross-arch builds are straightforward with cargo.
   if [[ "${target}" == *"apple-darwin" ]]; then
+    echo "cargo"
+    return
+  fi
+
+  if [[ "${target}" == *"windows"* ]]; then
+    if have cross; then
+      echo "cross"
+      return
+    fi
     echo "cargo"
     return
   fi
@@ -213,15 +228,27 @@ package_target() {
   local manifest="$4"
 
   local bin="${ROOT_DIR}/target/${target}/release/nsh"
+  if [[ "${target}" == *"windows"* ]]; then
+    bin="${ROOT_DIR}/target/${target}/release/nsh.exe"
+  fi
   [[ -x "${bin}" ]] || error "binary not found for ${target}: ${bin}"
 
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "${tmp}"' RETURN
-  cp "${bin}" "${tmp}/nsh"
+  local bin_name="nsh"
+  if [[ "${target}" == *"windows"* ]]; then
+    bin_name="nsh.exe"
+  fi
+  cp "${bin}" "${tmp}/${bin_name}"
 
   local archive="${out_dir}/nsh-${target}.tar.gz"
-  tar -C "${tmp}" -czf "${archive}" nsh
+  if [[ "${target}" == *"windows"* ]]; then
+    archive="${out_dir}/nsh-${target}.zip"
+    (cd "${tmp}" && zip -q "${archive}" "${bin_name}")
+  else
+    tar -C "${tmp}" -czf "${archive}" "${bin_name}"
+  fi
 
   local archive_sha
   archive_sha="$(sha256_file "${archive}")"

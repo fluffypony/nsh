@@ -1,9 +1,11 @@
-use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use signal_hook::iterator::Signals;
+#[cfg(unix)]
+use std::os::fd::BorrowedFd;
 
 pub struct CaptureEngine {
     parser: vt100::Parser,
@@ -251,6 +253,7 @@ fn sanitize_input(bytes: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+#[cfg(unix)]
 fn write_all(fd: &BorrowedFd, mut data: &[u8]) -> std::io::Result<()> {
     while !data.is_empty() {
         match rustix::io::write(fd, data) {
@@ -262,6 +265,7 @@ fn write_all(fd: &BorrowedFd, mut data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn child_exited(pid: rustix::process::Pid) -> bool {
     match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::NOHANG) {
         Ok(Some(_status)) => true,
@@ -271,13 +275,16 @@ fn child_exited(pid: rustix::process::Pid) -> bool {
     }
 }
 
+#[cfg(unix)]
 use signal_hook::iterator::backend::Handle as SignalHandle;
 
+#[cfg(unix)]
 struct SignalThread {
     handle: SignalHandle,
     join: std::thread::JoinHandle<()>,
 }
 
+#[cfg(unix)]
 impl SignalThread {
     fn close_and_join(self) {
         self.handle.close();
@@ -285,6 +292,7 @@ impl SignalThread {
     }
 }
 
+#[cfg(unix)]
 fn spawn_signal_thread(
     child_pid: rustix::process::Pid,
     stdin_fd: libc::c_int,
@@ -337,6 +345,7 @@ fn spawn_signal_thread(
     SignalThread { handle, join }
 }
 
+#[cfg(unix)]
 pub fn pump_loop(
     real_stdin: BorrowedFd,
     real_stdout: BorrowedFd,
@@ -537,6 +546,7 @@ pub fn pump_loop(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(unix)]
 fn handle_io(
     stdin_poll: &rustix::event::PollFd,
     pty_poll: &rustix::event::PollFd,
@@ -624,6 +634,7 @@ fn handle_io(
     false
 }
 
+#[cfg(unix)]
 fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -673,6 +684,7 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
     true
 }
 
+#[cfg(unix)]
 fn handle_socket_connection(
     listener: &std::os::unix::net::UnixListener,
     capture: &Mutex<CaptureEngine>,
@@ -691,6 +703,7 @@ fn handle_socket_connection(
     }
 }
 
+#[cfg(unix)]
 fn handle_daemon_connection(
     listener: &std::os::unix::net::UnixListener,
     capture: &Arc<Mutex<CaptureEngine>>,
@@ -730,6 +743,7 @@ fn handle_daemon_connection(
     }
 }
 
+#[cfg(unix)]
 fn handle_daemon_connection_inner(
     stream: std::os::unix::net::UnixStream,
     capture: &Mutex<CaptureEngine>,
@@ -795,6 +809,16 @@ fn handle_daemon_connection_inner(
             let _ = writer.flush();
         }
     }
+}
+
+#[cfg(not(unix))]
+pub fn pump_loop(
+    _real_stdin: (),
+    _real_stdout: (),
+    _pty_master: (),
+    _capture: Arc<Mutex<CaptureEngine>>,
+    _child_pid: (),
+) {
 }
 
 #[cfg(test)]

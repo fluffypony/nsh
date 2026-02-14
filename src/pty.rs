@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use rustix::pty::{grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{self, Termios};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};

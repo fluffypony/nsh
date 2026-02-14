@@ -5,7 +5,11 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/index");
 
     let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| "unknown-os".into());
+    let target_os = match std::env::var("CARGO_CFG_TARGET_OS") {
+        Ok(os) if os == "windows" => "windows".to_string(),
+        Ok(os) => os,
+        Err(_) => "unknown-os".into(),
+    };
     let target_arch =
         std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown-arch".into());
     let target = format!("{target_os}/{target_arch}");

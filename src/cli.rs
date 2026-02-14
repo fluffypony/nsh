@@ -17,7 +17,7 @@ pub struct Cli {
 pub enum Commands {
     /// Print shell integration code
     Init {
-        /// Shell type: zsh, bash, or fish
+        /// Shell type: zsh, bash, fish, powershell, pwsh, or cmd
         shell: String,
     },
 

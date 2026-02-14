@@ -29,6 +29,12 @@ command = "cargo"
 args = ["test"]
 dependencies = ["lint"]
 
+[tasks.test-windows]
+description = "Run tests on Windows (skip PTY tests)"
+command = "cargo"
+args = ["test", "--", "--skip", "pty", "--skip", "pump_loop"]
+condition = { platforms = ["windows"] }
+
 [tasks.audit]
 description = "Check dependencies for known vulnerabilities"
 install_crate = "cargo-audit"

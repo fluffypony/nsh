@@ -28,12 +28,6 @@ toml_edit = "0.22"
 # Database
 rusqlite = { version = "0.38", features = ["bundled", "modern_sqlite", "functions"] }
 
-# PTY (Rust POSIX APIs)
-rustix = { version = "1", features = ["termios", "pty", "process", "pipe", "event", "stdio", "fs"] }
-
-# POSIX FFI (fork, setsid, dup2, etc.)
-libc = "0.2"
-
 # Terminal
 crossterm = "0.29"
 termimad = "0.34"
@@ -43,9 +37,6 @@ dirs = "6"
 
 # Error handling
 anyhow = "1"
-
-# Signals
-signal-hook = { version = "0.3", features = ["iterator"] }
 
 # Async traits (needed for dyn dispatch)
 async-trait = "0.1"
@@ -74,6 +65,21 @@ shell-words = "1"
 flate2 = "1"
 hickory-resolver = "0.25"
 tar = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["termios", "pty", "process", "pipe", "event", "stdio", "fs"] }
+libc = "0.2"
+signal-hook = { version = "0.3", features = ["iterator"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_Pipes",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
 
 [profile.release]
 lto = true

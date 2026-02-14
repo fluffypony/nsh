@@ -176,7 +176,10 @@ impl ProviderAuth {
             }
         }
         if let Some(cmd) = &self.api_key_cmd {
+            #[cfg(unix)]
             let output = Command::new("sh").arg("-c").arg(cmd).output()?;
+            #[cfg(windows)]
+            let output = Command::new("cmd").args(["/C", cmd]).output()?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 anyhow::bail!(
@@ -302,6 +305,10 @@ impl Default for ToolsConfig {
                 "go version".into(),
                 "sw_vers".into(),
                 "type".into(),
+                "explorer.exe".into(),
+                "wslview".into(),
+                "clip.exe".into(),
+                "cmd.exe /c ver".into(),
             ],
             sensitive_file_access: "block".into(),
         }
@@ -686,6 +693,13 @@ impl Config {
     }
 
     pub fn path() -> PathBuf {
+        #[cfg(windows)]
+        {
+            return dirs::data_local_dir()
+                .unwrap_or_else(|| dirs::home_dir().expect("Could not determine home directory"))
+                .join("nsh")
+                .join("config.toml");
+        }
         dirs::home_dir()
             .expect("Could not determine home directory")
             .join(".nsh")
@@ -693,6 +707,12 @@ impl Config {
     }
 
     pub fn nsh_dir() -> PathBuf {
+        #[cfg(windows)]
+        {
+            return dirs::data_local_dir()
+                .unwrap_or_else(|| dirs::home_dir().expect("Could not determine home directory"))
+                .join("nsh");
+        }
         dirs::home_dir()
             .expect("Could not determine home directory")
             .join(".nsh")

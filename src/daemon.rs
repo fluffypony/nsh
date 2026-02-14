@@ -396,7 +396,14 @@ fn generate_summaries_sync(db: &crate::db::Db) {
 }
 
 pub fn daemon_socket_path(session_id: &str) -> std::path::PathBuf {
-    crate::config::Config::nsh_dir().join(format!("daemon_{session_id}.sock"))
+    #[cfg(unix)]
+    {
+        crate::config::Config::nsh_dir().join(format!("daemon_{session_id}.sock"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::path::PathBuf::from(format!(r"\\.\pipe\nsh-daemon-{session_id}"))
+    }
 }
 
 pub fn daemon_pid_path(session_id: &str) -> std::path::PathBuf {

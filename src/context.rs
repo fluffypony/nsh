@@ -81,15 +81,12 @@ pub struct FileEntry {
 pub fn build_context(db: &Db, session_id: &str, config: &Config) -> anyhow::Result<QueryContext> {
     let sys = get_cached_system_info();
 
-    let shell = std::env::var("SHELL")
-        .unwrap_or_else(|_| "bash".into())
-        .rsplit('/')
-        .next()
-        .unwrap_or("bash")
-        .to_string();
+    let shell = detect_shell();
 
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-    let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".into());
 
     let conversation_history = db
         .get_conversations(session_id, config.context.history_limit)
@@ -332,7 +329,12 @@ fn read_scrollback(session_id: &str, config: &Config) -> String {
 
     let max_lines = config.context.scrollback_pages * 24;
 
-    let raw_text = if daemon_socket.exists() {
+    #[cfg(unix)]
+    let daemon_available = daemon_socket.exists();
+    #[cfg(not(unix))]
+    let daemon_available = false;
+
+    let raw_text = if daemon_available {
         let request = crate::daemon::DaemonRequest::Scrollback { max_lines };
         match crate::daemon_client::send_request(session_id, &request) {
             Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) => {
@@ -784,22 +786,72 @@ fn detect_os() -> String {
     #[cfg(target_os = "linux")]
     {
         if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
-            let pretty = content
+            let mut pretty = content
                 .lines()
                 .find(|l| l.starts_with("PRETTY_NAME="))
                 .and_then(|l| l.strip_prefix("PRETTY_NAME="))
                 .map(|v| v.trim_matches('"').to_string())
                 .unwrap_or_else(|| "Linux".into());
+            if let Ok(version) = std::fs::read_to_string("/proc/version") {
+                let lower = version.to_lowercase();
+                if lower.contains("microsoft") || lower.contains("wsl") {
+                    pretty.push_str(" (WSL)");
+                }
+            }
+            if std::env::var("MSYSTEM").is_ok() {
+                pretty.push_str(" (MSYS2)");
+            }
             let arch = std::env::consts::ARCH;
             format!("{pretty} {arch}")
         } else {
             format!("Linux {}", std::env::consts::ARCH)
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        let arch = std::env::consts::ARCH;
+        let version = std::process::Command::new("cmd")
+            .args(["/C", "ver"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Windows".to_string());
+        format!("{version} {arch}")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
     }
+}
+
+fn detect_shell() -> String {
+    #[cfg(windows)]
+    {
+        if let Ok(comspec) = std::env::var("COMSPEC") {
+            let lower = comspec.to_lowercase();
+            if lower.contains("powershell") || lower.contains("pwsh") {
+                return "pwsh".into();
+            }
+            if lower.contains("cmd") {
+                return "cmd".into();
+            }
+        }
+        if which_exists("pwsh") {
+            return "pwsh".into();
+        }
+        if which_exists("powershell") {
+            return "powershell".into();
+        }
+        return "cmd".into();
+    }
+
+    std::env::var("SHELL")
+        .unwrap_or_else(|_| "bash".into())
+        .rsplit('/')
+        .next()
+        .unwrap_or("bash")
+        .to_string()
 }
 
 fn detect_hostname() -> String {
@@ -807,7 +859,11 @@ fn detect_hostname() -> String {
         .output()
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".into())
+        .unwrap_or_else(|| {
+            std::env::var("COMPUTERNAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .unwrap_or_else(|_| "unknown".into())
+        })
 }
 
 fn detect_machine_info() -> String {
@@ -846,7 +902,27 @@ fn detect_machine_info() -> String {
             .unwrap_or_default()
     };
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    let mem = {
+        std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)",
+            ])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .map(|gb| format!("{gb}GB RAM"))
+            .unwrap_or_default()
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let mem = String::new();
 
     let mut parts = vec![arch.to_string()];
@@ -857,7 +933,12 @@ fn detect_machine_info() -> String {
         parts.push(mem);
     }
 
-    let pkg_mgrs: Vec<&str> = ["brew", "apt", "dnf", "yum", "pacman", "nix", "apk"]
+    #[cfg(target_os = "windows")]
+    let pkg_mgr_candidates: &[&str] = &["winget", "choco", "scoop"];
+    #[cfg(not(target_os = "windows"))]
+    let pkg_mgr_candidates: &[&str] = &["brew", "apt", "dnf", "yum", "pacman", "nix", "apk"];
+
+    let pkg_mgrs: Vec<&str> = pkg_mgr_candidates
         .iter()
         .filter(|cmd| which_exists(cmd))
         .copied()
@@ -878,7 +959,12 @@ fn detect_machine_info() -> String {
         parts.push(format!("lang_pkg: {}", lang_pkg_mgrs.join(", ")));
     }
 
-    let dev_tools: Vec<&str> = ["node", "python3", "rustc", "ruby", "java"]
+    #[cfg(target_os = "windows")]
+    let dev_tool_candidates: &[&str] = &["node", "python", "rustc", "pwsh", "wsl"];
+    #[cfg(not(target_os = "windows"))]
+    let dev_tool_candidates: &[&str] = &["node", "python3", "rustc", "ruby", "java"];
+
+    let dev_tools: Vec<&str> = dev_tool_candidates
         .iter()
         .filter(|cmd| which_exists(cmd))
         .copied()
@@ -891,6 +977,17 @@ fn detect_machine_info() -> String {
 }
 
 fn which_exists(cmd: &str) -> bool {
+    #[cfg(windows)]
+    {
+        return std::process::Command::new("where.exe")
+            .arg(cmd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+    }
+
     std::process::Command::new("which")
         .arg(cmd)
         .stdout(std::process::Stdio::null())
@@ -901,6 +998,18 @@ fn which_exists(cmd: &str) -> bool {
 }
 
 fn detect_locale() -> String {
+    #[cfg(windows)]
+    {
+        if let Ok(output) = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "(Get-Culture).Name"])
+            .output()
+        {
+            let locale = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !locale.is_empty() {
+                return locale;
+            }
+        }
+    }
     std::env::var("LC_ALL")
         .or_else(|_| std::env::var("LANG"))
         .unwrap_or_else(|_| "en_US.UTF-8".into())
@@ -916,6 +1025,11 @@ fn detect_ssh_context() -> Option<String> {
 }
 
 fn detect_container() -> Option<String> {
+    #[cfg(not(unix))]
+    {
+        return None;
+    }
+
     if std::path::Path::new("/.dockerenv").exists() {
         return Some("<container type=\"docker\" />".into());
     }
@@ -928,6 +1042,22 @@ fn detect_container() -> Option<String> {
 }
 
 fn detect_timezone() -> String {
+    #[cfg(windows)]
+    {
+        if let Ok(tz) = std::env::var("TZ") {
+            if !tz.is_empty() {
+                return tz;
+            }
+        }
+        if let Ok(output) = std::process::Command::new("tzutil").arg("/g").output() {
+            let tz = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !tz.is_empty() {
+                return tz;
+            }
+        }
+        return "unknown".into();
+    }
+
     std::env::var("TZ").unwrap_or_else(|_| {
         std::fs::read_link("/etc/localtime")
             .ok()

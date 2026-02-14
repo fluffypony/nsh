@@ -4,9 +4,11 @@ pub fn generate_init_script(shell: &str) -> String {
         "zsh" => include_str!("../shell/nsh.zsh"),
         "bash" => include_str!("../shell/nsh.bash"),
         "fish" => include_str!("../shell/nsh.fish"),
+        "powershell" | "pwsh" => include_str!("../shell/nsh.ps1"),
+        "cmd" => "@echo off\r\nDOSKEY ?=nsh query -- $*\r\n",
         other => {
             return format!(
-                "# nsh: unsupported shell '{other}'. Supported: zsh, bash, fish\n\
+                "# nsh: unsupported shell '{other}'. Supported: zsh, bash, fish, powershell, pwsh, cmd\n\
                  echo 'nsh: unsupported shell' >&2"
             );
         }
@@ -52,6 +54,13 @@ mod tests {
     #[test]
     fn test_session_id_placeholder_replaced_fish() {
         let script = generate_init_script("fish");
+        assert!(!script.contains("__SESSION_ID__"));
+        assert!(script.contains("NSH_SESSION_ID"));
+    }
+
+    #[test]
+    fn test_session_id_placeholder_replaced_powershell() {
+        let script = generate_init_script("powershell");
         assert!(!script.contains("__SESSION_ID__"));
         assert!(script.contains("NSH_SESSION_ID"));
     }

@@ -84,6 +84,11 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     return 0
 fi
 
+# Detect WSL for any WSL-specific adjustments
+if [[ -f /proc/version ]] && grep -qi microsoft /proc/version 2>/dev/null; then
+    export NSH_IS_WSL=1
+fi
+
 export NSH_SESSION_ID="__SESSION_ID__"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"

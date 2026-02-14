@@ -185,9 +185,15 @@ pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result
         command = command.replace(&format!("{{{param_name}}}"), value);
     }
 
+    #[cfg(unix)]
     let output = std::process::Command::new("sh")
         .arg("-c")
         .arg(&command)
+        .output()?;
+
+    #[cfg(windows)]
+    let output = std::process::Command::new("cmd")
+        .args(["/C", &command])
         .output()?;
 
     let mut result = String::from_utf8_lossy(&output.stdout).into_owned();

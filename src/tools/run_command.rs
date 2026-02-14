@@ -25,13 +25,18 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
         return Ok("DENIED: command references a sensitive path".to_string());
     }
 
-    let argv =
-        shell_words::split(cmd).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
-    let (exe, args) = argv
-        .split_first()
-        .ok_or_else(|| anyhow::anyhow!("empty command"))?;
+    #[cfg(windows)]
+    let output = Command::new("cmd").args(["/C", cmd]).output()?;
 
-    let output = Command::new(exe).args(args).output()?;
+    #[cfg(not(windows))]
+    let output = {
+        let argv =
+            shell_words::split(cmd).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
+        let (exe, args) = argv
+            .split_first()
+            .ok_or_else(|| anyhow::anyhow!("empty command"))?;
+        Command::new(exe).args(args).output()?
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

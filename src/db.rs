@@ -707,16 +707,25 @@ impl Db {
             if *pid <= 0 {
                 continue;
             }
-            let alive = unsafe { libc::kill(*pid as i32, 0) };
-            if alive == -1 {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::ESRCH) {
-                    self.conn.execute(
-                        "UPDATE sessions SET ended_at = ? WHERE id = ?",
-                        params![now, id],
-                    )?;
-                    cleaned += 1;
+            #[cfg(unix)]
+            let process_missing = {
+                let alive = unsafe { libc::kill(*pid as i32, 0) };
+                if alive == -1 {
+                    let err = std::io::Error::last_os_error();
+                    err.raw_os_error() == Some(libc::ESRCH)
+                } else {
+                    false
                 }
+            };
+            #[cfg(windows)]
+            let process_missing = false;
+
+            if process_missing {
+                self.conn.execute(
+                    "UPDATE sessions SET ended_at = ? WHERE id = ?",
+                    params![now, id],
+                )?;
+                cleaned += 1;
             }
         }
         Ok(cleaned)

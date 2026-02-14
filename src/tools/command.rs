@@ -111,10 +111,8 @@ pub fn execute(
         user_confirmed_intermediate = read_tty_confirmation_default_yes();
     }
 
-    let auto_execute_pending = pending
-        && !force_autorun
-        && !config.execution.confirm_intermediate_steps
-        && can_autorun;
+    let auto_execute_pending =
+        pending && !force_autorun && !config.execution.confirm_intermediate_steps && can_autorun;
 
     if matches!(risk, RiskLevel::Safe)
         && auto_execute_pending
@@ -127,9 +125,14 @@ pub fn execute(
         (force_autorun && can_autorun) || user_confirmed_intermediate || auto_execute_pending;
     if should_execute_immediately {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
+        #[cfg(unix)]
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(command.as_str())
+            .output();
+        #[cfg(windows)]
+        let output = std::process::Command::new("cmd")
+            .args(["/C", command.as_str()])
             .output();
         let (output_content, is_error, exit_code) = format_execution_output(output, config);
         if !private {
@@ -176,13 +179,21 @@ pub fn execute(
         // Atomic write: temp file + rename, with 0o600 permissions
         {
             use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
             let tmp = cmd_file.with_extension("tmp");
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+            #[cfg(unix)]
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
+                .open(&tmp)?;
+            #[cfg(not(unix))]
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
                 .open(&tmp)?;
             f.write_all(command.as_bytes())?;
             std::fs::rename(&tmp, &cmd_file)?;
@@ -193,12 +204,20 @@ pub fn execute(
             let tmp = pending_file.with_extension("tmp");
             {
                 use std::io::Write;
+                #[cfg(unix)]
                 use std::os::unix::fs::OpenOptionsExt;
+                #[cfg(unix)]
                 let mut f = std::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
                     .truncate(true)
                     .mode(0o600)
+                    .open(&tmp)?;
+                #[cfg(not(unix))]
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
                     .open(&tmp)?;
                 f.write_all(b"1")?;
             }

@@ -9,6 +9,10 @@ fn trash_dir() -> PathBuf {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(target_os = "windows")]
+        {
+            return dirs::data_local_dir().unwrap().join("nsh").join("trash");
+        }
         dirs::data_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap().join(".local/share"))
             .join("Trash/files")
@@ -16,6 +20,10 @@ fn trash_dir() -> PathBuf {
 }
 
 fn is_root() -> bool {
+    #[cfg(windows)]
+    {
+        return false;
+    }
     unsafe { libc::geteuid() == 0 }
 }
 
@@ -68,6 +76,9 @@ fn validate_path_with_access(path: &Path, sensitive_file_access: &str) -> anyhow
         home.join(".kube"),
         home.join(".docker"),
         home.join(".nsh"),
+        home.join("AppData").join("Roaming").join("gnupg"),
+        std::path::PathBuf::from(r"C:\Windows"),
+        std::path::PathBuf::from(r"C:\Windows\System32"),
     ];
     if sensitive_file_access != "allow" {
         for dir in &sensitive_dirs {
