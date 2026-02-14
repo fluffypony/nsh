@@ -2,13 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_FILE="${ROOT_DIR}/install.sh"
+SOURCE_SH="${ROOT_DIR}/install.sh"
+SOURCE_PS1="${ROOT_DIR}/install.ps1"
 SITE_DIR="${NSH_SITE_DIR:-${ROOT_DIR}/../nsh-site}"
 WATCH_MODE=0
 
 usage() {
   cat <<'USAGE'
-Sync install.sh into the nsh-site repo.
+Sync installer scripts into the nsh-site repo.
 
 Usage:
   scripts/sync-site-install.sh [options]
@@ -25,8 +26,12 @@ have() {
 }
 
 sync_once() {
-  if [[ ! -f "${SOURCE_FILE}" ]]; then
-    echo "sync-site-install: source file not found: ${SOURCE_FILE}" >&2
+  if [[ ! -f "${SOURCE_SH}" ]]; then
+    echo "sync-site-install: source file not found: ${SOURCE_SH}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${SOURCE_PS1}" ]]; then
+    echo "sync-site-install: source file not found: ${SOURCE_PS1}" >&2
     exit 1
   fi
   if [[ ! -d "${SITE_DIR}" ]]; then
@@ -34,9 +39,11 @@ sync_once() {
     exit 1
   fi
 
-  cp "${SOURCE_FILE}" "${SITE_DIR}/install.sh"
+  cp "${SOURCE_SH}" "${SITE_DIR}/install.sh"
+  cp "${SOURCE_PS1}" "${SITE_DIR}/install.ps1"
   chmod 755 "${SITE_DIR}/install.sh"
-  echo "synced: ${SOURCE_FILE} -> ${SITE_DIR}/install.sh"
+  echo "synced: ${SOURCE_SH} -> ${SITE_DIR}/install.sh"
+  echo "synced: ${SOURCE_PS1} -> ${SITE_DIR}/install.ps1"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -66,19 +73,19 @@ sync_once
 
 if (( WATCH_MODE )); then
   if have fswatch; then
-    echo "watching: ${SOURCE_FILE}"
-    fswatch -0 "${SOURCE_FILE}" | while IFS= read -r -d '' _; do
+    echo "watching: ${SOURCE_SH} ${SOURCE_PS1}"
+    fswatch -0 "${SOURCE_SH}" "${SOURCE_PS1}" | while IFS= read -r -d '' _; do
       sync_once
     done
     exit 0
   fi
 
   if have entr; then
-    echo "watching with entr: ${SOURCE_FILE}"
+    echo "watching with entr: ${SOURCE_SH} ${SOURCE_PS1}"
     while true; do
-      printf '%s\n' "${SOURCE_FILE}" | entr -n cp "${SOURCE_FILE}" "${SITE_DIR}/install.sh"
-      chmod 755 "${SITE_DIR}/install.sh"
-      echo "synced: ${SOURCE_FILE} -> ${SITE_DIR}/install.sh"
+      printf '%s\n%s\n' "${SOURCE_SH}" "${SOURCE_PS1}" | entr -n bash -lc 'cp "$0" "$2/install.sh" && cp "$1" "$2/install.ps1" && chmod 755 "$2/install.sh"' "${SOURCE_SH}" "${SOURCE_PS1}" "${SITE_DIR}"
+      echo "synced: ${SOURCE_SH} -> ${SITE_DIR}/install.sh"
+      echo "synced: ${SOURCE_PS1} -> ${SITE_DIR}/install.ps1"
     done
   fi
 

@@ -1,6 +1,6 @@
 # nsh - Natural Shell
 
-**AI-powered shell assistant for `zsh`, `bash`, and `fish`.**
+**AI-powered shell assistant for `zsh`, `bash`, `fish`, and PowerShell.**
 
 nsh lives in your terminal. It records command history, understands your project context, reads your scrollback, and turns natural-language requests into shell commands or direct answers - all without leaving your prompt.
 
@@ -180,7 +180,7 @@ fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
 ### Additional Features
 
 - **Interactive chat mode** - `nsh chat` for a REPL-style conversation
-- **Shell history import** - automatically imports existing bash, zsh, and fish history on first run
+- **Shell history import** - automatically imports existing bash, zsh, fish, and PowerShell history on first run
 - **Cost tracking** - `nsh cost` shows token usage and estimated costs by model
 - **JSON output mode** - `nsh query --json` for structured event stream output
 - **Conversation export** - `nsh export` in markdown or JSON format
@@ -195,23 +195,31 @@ fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
 ## Requirements
 
 - **Rust 1.85+** (edition 2024) - for building from source
-- **macOS, Linux, or FreeBSD**
-- **zsh, bash, or fish**
+- **macOS, Linux, FreeBSD, or Windows**
+- **zsh, bash, fish, or PowerShell**
 - At least one LLM provider API key (OpenRouter is the default)
 
 ---
 
 ## Installation
 
-### Option 1: Install Script (Recommended)
+### Option 1: Unix / WSL / MSYS Installer
 
 ```bash
 curl -fsSL https://nsh.tools/install.sh | bash
 ```
 
-The installer detects your platform, downloads a pre-built binary with SHA256 and DNS verification, creates a default config, and adds shell integration to your rc file. Pre-built binaries are published for macOS (x64/arm64), Linux (x64/arm64/i686/riscv64), and FreeBSD (x86/x64). If no pre-built binary is available, it offers to build from source.
+Use this on macOS, Linux, FreeBSD, WSL, and MSYS/Git Bash environments.
 
-### Option 2: Build from Source
+### Option 2: Native Windows PowerShell Installer
+
+```powershell
+iwr -useb https://nsh.tools/install.ps1 | iex
+```
+
+Use this on native Windows PowerShell (not WSL/MSYS).
+
+### Option 3: Build from Source
 
 ```bash
 git clone https://github.com/fluffypony/nsh.git
@@ -219,7 +227,7 @@ cd nsh
 cargo install --path . --locked
 ```
 
-### Option 3: Local Release Binary
+### Option 4: Local Release Binary
 
 ```bash
 cargo build --release
@@ -252,17 +260,22 @@ Add to your shell rc file:
 
 ```bash
 # ~/.zshrc
+command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
 eval "$(nsh init zsh)"
 
 # ~/.bashrc
+command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
 eval "$(nsh init bash)"
 
 # fish: ~/.config/fish/conf.d/nsh.fish
+command -v nsh >/dev/null; and not set -q NSH_PTY_ACTIVE; and nsh wrap
 nsh init fish | source
+
+# PowerShell profile ($PROFILE)
+Invoke-Expression (nsh init powershell)
 ```
 
-`nsh init` now auto-wraps interactive shells when PTY capture is supported, so you only need the init line.
-Set `NSH_NO_WRAP=1` to opt out.
+`nsh wrap` runs your shell inside a PTY wrapper for scrollback capture. It's optional but recommended.
 
 ### 3. Use It
 
@@ -295,7 +308,7 @@ Set `NSH_NO_WRAP=1` to opt out.
 | Command | Purpose |
 |---|---|
 | `nsh init <shell>` | Print shell integration script |
-| `nsh wrap [--shell <path>]` | Manually run shell inside PTY wrapper |
+| `nsh wrap [--shell <path>]` | Run shell inside PTY wrapper |
 | `nsh query [--think] [--private] [--json] <words...>` | Ask the assistant |
 | `nsh chat` | Interactive REPL chat mode |
 | `nsh history search <query> [--limit N]` | Full-text search command history |
@@ -479,7 +492,7 @@ cargo make quality          # format + lint + test + audit
 cargo make quality-full     # + unsafe code audit (geiger)
 cargo make release-host     # build release for current platform
 cargo make release-matrix   # build for all supported targets
-cargo make sync-site-install # copy install.sh -> ../nsh-site/install.sh
+cargo make sync-site-install # copy install scripts -> ../nsh-site/
 ```
 
 ### Cross-Compilation
@@ -490,7 +503,7 @@ scripts/release-builds.sh --targets x86_64-apple-darwin,aarch64-apple-darwin
 scripts/release-builds.sh --backend zigbuild
 ```
 
-Supported targets: macOS (x64/arm64), Linux (x64/arm64/i686/riscv64), FreeBSD (x86/x64).
+Supported targets: macOS (x64/arm64), Linux (x64/arm64/i686/riscv64), FreeBSD (x86/x64), Windows (x64/aarch64).
 
 ### Release Publishing
 

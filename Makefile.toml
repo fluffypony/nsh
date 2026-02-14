@@ -81,11 +81,11 @@ command = "bash"
 args = ["scripts/release-builds.sh"]
 
 [tasks.sync-site-install]
-description = "Copy install.sh into ../nsh-site/install.sh"
+description = "Copy install.sh and install.ps1 into ../nsh-site"
 command = "bash"
 args = ["scripts/sync-site-install.sh"]
 
 [tasks.sync-site-install-watch]
-description = "Watch install.sh and mirror changes into ../nsh-site"
+description = "Watch installer scripts and mirror changes into ../nsh-site"
 command = "bash"
 args = ["scripts/sync-site-install.sh", "--watch"]
