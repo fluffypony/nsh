@@ -62,36 +62,6 @@ fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-fn postprocess_recorded_command(
-    db: &db::Db,
-    id: i64,
-    command: &str,
-    exit_code: i32,
-    output: Option<&str>,
-    output_was_captured: bool,
-) {
-    let output_text = output.unwrap_or("");
-
-    if let Some(trivial) = summary::trivial_summary(command, exit_code, output_text) {
-        let _ = db.update_summary(id, &trivial);
-    } else if !output_was_captured {
-        let summary = if exit_code == 0 {
-            format!("Ran `{command}` successfully (output was not captured; daemon unavailable)")
-        } else {
-            format!(
-                "Ran `{command}` with exit code {exit_code} (output was not captured; daemon unavailable)"
-            )
-        };
-        let _ = db.update_summary(id, &summary);
-    }
-
-    if exit_code == 0 {
-        if let Some((key, value)) = summary::extract_package_association(command, exit_code) {
-            let _ = db.upsert_memory(&key, &value);
-        }
-    }
-}
-
 fn send_to_global_or_fallback(request: &daemon::DaemonRequest) -> anyhow::Result<daemon::DaemonResponse> {
     match daemon_client::send_to_global(request) {
         Ok(resp) => Ok(resp),
@@ -1178,6 +1148,7 @@ fn apply_pending_update() {
     }
 }
 
+#[cfg(test)]
 fn should_check_for_updates(db: &db::Db) -> bool {
     match db.get_meta("last_update_check") {
         Ok(Some(ts)) => {
@@ -1192,6 +1163,8 @@ fn should_check_for_updates(db: &db::Db) -> bool {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn background_update_check() -> anyhow::Result<()> {
     let target = current_target_triple().ok_or_else(|| anyhow::anyhow!("unsupported platform"))?;
     let current_version = env!("CARGO_PKG_VERSION");

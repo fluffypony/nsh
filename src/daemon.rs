@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::sync::Mutex;
 
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
@@ -257,6 +258,7 @@ impl DaemonResponse {
     }
 }
 
+#[cfg(test)]
 pub fn handle_daemon_request(
     request: DaemonRequest,
     capture: &Mutex<crate::pump::CaptureEngine>,
@@ -412,6 +414,7 @@ pub fn handle_daemon_request(
     }
 }
 
+#[cfg(test)]
 pub enum DbCommand {
     Record {
         session: String,
@@ -451,6 +454,7 @@ pub enum DbCommand {
     Shutdown,
 }
 
+#[cfg(test)]
 pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
     #[cfg(test)]
     let db = match crate::db::Db::open_in_memory() {
