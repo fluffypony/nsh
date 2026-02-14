@@ -854,7 +854,9 @@ impl Db {
         current_session: Option<&str>,
         limit: usize,
     ) -> rusqlite::Result<Vec<CommandEntityMatch>> {
-        self.backfill_command_entities_if_needed()?;
+        if let Err(e) = self.backfill_command_entities_if_needed() {
+            tracing::debug!("search_command_entities backfill skipped: {e}");
+        }
 
         let mut sql = String::from(
             "SELECT ce.command_id, c.session_id, c.command, c.cwd, c.started_at,

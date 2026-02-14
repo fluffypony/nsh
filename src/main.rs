@@ -7,6 +7,7 @@ mod daemon;
 mod daemon_client;
 mod daemon_db;
 mod db;
+mod fast_cwd;
 #[cfg(unix)]
 mod global_daemon;
 mod display;
@@ -232,6 +233,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 session, command, cwd, exit_code, started_at,
                 tty, pid, shell, duration_ms, output: None,
             };
+            if let daemon::DaemonRequest::Record { tty, cwd, .. } = &request {
+                let _ = fast_cwd::update_tty_cwd(tty, cwd);
+            }
             match send_to_global_or_fallback(&request) {
                 Ok(daemon::DaemonResponse::Error { message }) => {
                     eprintln!("nsh: record error: {message}");
@@ -284,6 +288,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             SessionAction::LastCwd { tty } => {
                 let config = config::Config::load().unwrap_or_default();
                 if !config.context.restore_last_cwd_per_tty {
+                    return Ok(());
+                }
+                if let Some(cwd) = fast_cwd::get_tty_cwd(&tty) {
+                    println!("{cwd}");
                     return Ok(());
                 }
                 let request = daemon::DaemonRequest::LatestCwdForTty { tty };

@@ -413,7 +413,51 @@ impl DbAccess for DaemonDb {
     }
 
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>> {
-        self.search_history_advanced(Some(query), None, None, None, None, false, None, None, limit)
+        let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistory {
+            query: query.to_string(),
+            limit,
+        })?);
+        let arr = data
+            .get("results")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(arr
+            .into_iter()
+            .map(|v| HistoryMatch {
+                id: v.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
+                session_id: v
+                    .get("session_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                command: v
+                    .get("command")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
+                exit_code: v
+                    .get("exit_code")
+                    .and_then(|x| x.as_i64())
+                    .map(|n| n as i32),
+                started_at: v
+                    .get("started_at")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
+                cmd_highlight: v
+                    .get("cmd_highlight")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                output_highlight: v
+                    .get("output_highlight")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string),
+            })
+            .collect())
     }
 
     fn search_history_advanced(
