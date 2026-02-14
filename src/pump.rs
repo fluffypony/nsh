@@ -397,10 +397,8 @@ pub fn pump_loop(
         Err(_) => None,
     };
 
-    let (db_tx, db_rx) = std::sync::mpsc::channel();
-    let db_thread = std::thread::spawn(move || {
-        crate::daemon::run_db_thread(db_rx);
-    });
+    // Ensure global daemon is running for DB operations
+    let _ = crate::daemon_client::ensure_global_daemon_running();
 
     let pid_path = crate::daemon::daemon_pid_path(&session_id);
     let tmp_pid = pid_path.with_extension("tmp");
@@ -520,7 +518,6 @@ pub fn pump_loop(
                         handle_daemon_connection(
                             l,
                             &capture,
-                            &db_tx,
                             max_output_bytes,
                             &active_conns,
                         );
@@ -536,8 +533,6 @@ pub fn pump_loop(
         }
     }
 
-    let _ = db_tx.send(crate::daemon::DbCommand::Shutdown);
-    let _ = db_thread.join();
     signal_thread.close_and_join();
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&daemon_socket_path);
@@ -707,7 +702,6 @@ fn handle_socket_connection(
 fn handle_daemon_connection(
     listener: &std::os::unix::net::UnixListener,
     capture: &Arc<Mutex<CaptureEngine>>,
-    db_tx: &std::sync::mpsc::Sender<crate::daemon::DbCommand>,
     max_output_bytes: usize,
     active_conns: &Arc<AtomicUsize>,
 ) {
@@ -724,14 +718,13 @@ fn handle_daemon_connection(
         }
 
         let capture = Arc::clone(capture);
-        let db_tx = db_tx.clone();
         let active = Arc::clone(active_conns);
         active.fetch_add(1, Ordering::Relaxed);
 
         match std::thread::Builder::new()
             .name("nsh-daemon-conn".into())
             .spawn(move || {
-                handle_daemon_connection_inner(stream, &capture, &db_tx, max_output_bytes);
+                handle_daemon_connection_inner(stream, &capture, max_output_bytes);
                 active.fetch_sub(1, Ordering::Relaxed);
             }) {
             Ok(_) => {}
@@ -747,7 +740,6 @@ fn handle_daemon_connection(
 fn handle_daemon_connection_inner(
     stream: std::os::unix::net::UnixStream,
     capture: &Mutex<CaptureEngine>,
-    db_tx: &std::sync::mpsc::Sender<crate::daemon::DbCommand>,
     max_output_bytes: usize,
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
@@ -788,7 +780,26 @@ fn handle_daemon_connection_inner(
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
                 Ok(request) => {
-                    crate::daemon::handle_daemon_request(request, capture, db_tx, max_output_bytes)
+                    match &request {
+                        // Local capture operations — handle with CaptureEngine
+                        crate::daemon::DaemonRequest::Scrollback { .. }
+                        | crate::daemon::DaemonRequest::CaptureMark { .. }
+                        | crate::daemon::DaemonRequest::CaptureRead { .. }
+                        | crate::daemon::DaemonRequest::Status => {
+                            handle_local_capture_request(request, capture, max_output_bytes)
+                        }
+                        // Record needs special handling: capture output locally, then forward
+                        crate::daemon::DaemonRequest::Record { output, .. } if output.is_none() => {
+                            let captured = capture
+                                .lock()
+                                .ok()
+                                .and_then(|mut eng| eng.capture_since_mark(max_output_bytes));
+                            let enriched = enrich_record_with_output(request, captured);
+                            forward_to_global_daemon(&enriched)
+                        }
+                        // All other requests → forward to global daemon
+                        _ => forward_to_global_daemon(&request),
+                    }
                 }
                 Err(e) => crate::daemon::DaemonResponse::error(format!("invalid request: {e}")),
             }
@@ -808,6 +819,75 @@ fn handle_daemon_connection_inner(
             let _ = writer.write_all(b"\n");
             let _ = writer.flush();
         }
+    }
+}
+
+#[cfg(unix)]
+fn handle_local_capture_request(
+    request: crate::daemon::DaemonRequest,
+    capture: &Mutex<CaptureEngine>,
+    max_output_bytes: usize,
+) -> crate::daemon::DaemonResponse {
+    match request {
+        crate::daemon::DaemonRequest::Scrollback { max_lines } => match capture.lock() {
+            Ok(eng) => {
+                let text = eng.get_lines(max_lines);
+                crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({"scrollback": text}))
+            }
+            Err(_) => crate::daemon::DaemonResponse::error("capture lock poisoned"),
+        },
+        crate::daemon::DaemonRequest::CaptureMark { .. } => match capture.lock() {
+            Ok(mut eng) => {
+                eng.mark();
+                crate::daemon::DaemonResponse::ok()
+            }
+            Err(_) => crate::daemon::DaemonResponse::error("capture lock poisoned"),
+        },
+        crate::daemon::DaemonRequest::CaptureRead { max_lines, .. } => match capture.lock() {
+            Ok(mut eng) => {
+                let text = eng.capture_since_mark(max_output_bytes).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let start = lines.len().saturating_sub(max_lines);
+                let result = lines[start..].join("\n");
+                crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({"output": result}))
+            }
+            Err(_) => crate::daemon::DaemonResponse::error("capture lock poisoned"),
+        },
+        crate::daemon::DaemonRequest::Status => {
+            crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "pid": std::process::id(),
+                "daemon_type": "per_session",
+            }))
+        }
+        _ => crate::daemon::DaemonResponse::error("unexpected local request"),
+    }
+}
+
+#[cfg(unix)]
+fn enrich_record_with_output(
+    request: crate::daemon::DaemonRequest,
+    captured: Option<String>,
+) -> crate::daemon::DaemonRequest {
+    if let crate::daemon::DaemonRequest::Record {
+        session, command, cwd, exit_code, started_at,
+        tty, pid, shell, duration_ms, output,
+    } = request {
+        crate::daemon::DaemonRequest::Record {
+            session, command, cwd, exit_code, started_at,
+            tty, pid, shell, duration_ms,
+            output: output.or(captured),
+        }
+    } else {
+        request
+    }
+}
+
+#[cfg(unix)]
+fn forward_to_global_daemon(request: &crate::daemon::DaemonRequest) -> crate::daemon::DaemonResponse {
+    match crate::daemon_client::send_to_global(request) {
+        Ok(resp) => resp,
+        Err(e) => crate::daemon::DaemonResponse::error(format!("global daemon unavailable: {e}")),
     }
 }
 
