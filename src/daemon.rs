@@ -49,10 +49,184 @@ pub enum DaemonRequest {
     SummarizeCheck {
         session: String,
     },
+    CreateSession {
+        session: String,
+        tty: String,
+        shell: String,
+        pid: i64,
+    },
+    EndSession {
+        session: String,
+    },
+    SetSessionLabel {
+        session: String,
+        label: String,
+    },
+    LatestCwdForTty {
+        tty: String,
+    },
+    ClearConversations {
+        session: String,
+    },
+    GetConversations {
+        session: String,
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    SearchHistory {
+        query: String,
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    GetUsageStats {
+        period: String,
+    },
+    InsertConversation {
+        session_id: String,
+        query: String,
+        response_type: String,
+        response: String,
+        explanation: Option<String>,
+        #[serde(default)]
+        executed: bool,
+        #[serde(default)]
+        pending: bool,
+    },
+    InsertUsage {
+        session_id: String,
+        query_text: Option<String>,
+        model: String,
+        provider: String,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+        cost_usd: Option<f64>,
+        generation_id: Option<String>,
+    },
+    UpdateConversationResult {
+        conv_id: i64,
+        exit_code: i32,
+        output_snippet: Option<String>,
+    },
+    FindPendingConversation {
+        session: String,
+    },
+    GetMemories {
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    SearchMemories {
+        query: String,
+    },
+    UpsertMemory {
+        key: String,
+        value: String,
+    },
+    DeleteMemory {
+        id: i64,
+    },
+    UpdateMemory {
+        id: i64,
+        key: String,
+        value: String,
+    },
+    GetMeta {
+        key: String,
+    },
+    SetMeta {
+        key: String,
+        value: String,
+    },
+    GetSessionLabel {
+        session: String,
+    },
+    RecentCommandsWithSummaries {
+        session: String,
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    OtherSessionsWithSummaries {
+        session: String,
+        #[serde(default = "default_max_ttys")]
+        max_ttys: usize,
+        #[serde(default = "default_summaries_per_tty")]
+        summaries_per_tty: usize,
+    },
+    SearchHistoryAdvanced {
+        fts_query: Option<String>,
+        regex_pattern: Option<String>,
+        since: Option<String>,
+        until: Option<String>,
+        exit_code: Option<i32>,
+        #[serde(default)]
+        failed_only: bool,
+        session_filter: Option<String>,
+        current_session: Option<String>,
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    SearchCommandEntities {
+        executable: Option<String>,
+        entity: Option<String>,
+        entity_type: Option<String>,
+        since: Option<String>,
+        until: Option<String>,
+        session_filter: Option<String>,
+        current_session: Option<String>,
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    CommandCount,
+    CleanupOrphanedSessions,
+    Prune {
+        retention_days: u32,
+    },
+    RebuildFts,
+    RunDoctor {
+        retention_days: u32,
+        #[serde(default)]
+        no_prune: bool,
+        #[serde(default)]
+        no_vacuum: bool,
+    },
+    UpdateSummary {
+        id: i64,
+        summary: String,
+    },
+    MarkSummaryError {
+        id: i64,
+        error: String,
+    },
+    UpdateUsageCost {
+        generation_id: String,
+        cost: f64,
+    },
+    CommandsNeedingSummary {
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    CommandsNeedingLlmSummary {
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    MarkUnsummarizedForLlm,
+    BackfillEntities,
+    GenerateSummaries,
 }
 
 fn default_max_lines() -> usize {
     1000
+}
+
+fn default_limit() -> usize {
+    20
+}
+
+fn default_max_ttys() -> usize {
+    20
+}
+
+fn default_summaries_per_tty() -> usize {
+    10
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -193,6 +367,47 @@ pub fn handle_daemon_request(
 
         DaemonRequest::Context { .. } | DaemonRequest::McpToolCall { .. } => {
             DaemonResponse::error("not yet implemented")
+        }
+
+        // New DB operations - forwarded to global daemon, not handled per-session
+        DaemonRequest::CreateSession { .. }
+        | DaemonRequest::EndSession { .. }
+        | DaemonRequest::SetSessionLabel { .. }
+        | DaemonRequest::LatestCwdForTty { .. }
+        | DaemonRequest::ClearConversations { .. }
+        | DaemonRequest::GetConversations { .. }
+        | DaemonRequest::SearchHistory { .. }
+        | DaemonRequest::GetUsageStats { .. }
+        | DaemonRequest::InsertConversation { .. }
+        | DaemonRequest::InsertUsage { .. }
+        | DaemonRequest::UpdateConversationResult { .. }
+        | DaemonRequest::FindPendingConversation { .. }
+        | DaemonRequest::GetMemories { .. }
+        | DaemonRequest::SearchMemories { .. }
+        | DaemonRequest::UpsertMemory { .. }
+        | DaemonRequest::DeleteMemory { .. }
+        | DaemonRequest::UpdateMemory { .. }
+        | DaemonRequest::GetMeta { .. }
+        | DaemonRequest::SetMeta { .. }
+        | DaemonRequest::GetSessionLabel { .. }
+        | DaemonRequest::RecentCommandsWithSummaries { .. }
+        | DaemonRequest::OtherSessionsWithSummaries { .. }
+        | DaemonRequest::SearchHistoryAdvanced { .. }
+        | DaemonRequest::SearchCommandEntities { .. }
+        | DaemonRequest::CommandCount
+        | DaemonRequest::CleanupOrphanedSessions
+        | DaemonRequest::Prune { .. }
+        | DaemonRequest::RebuildFts
+        | DaemonRequest::RunDoctor { .. }
+        | DaemonRequest::UpdateSummary { .. }
+        | DaemonRequest::MarkSummaryError { .. }
+        | DaemonRequest::UpdateUsageCost { .. }
+        | DaemonRequest::CommandsNeedingSummary { .. }
+        | DaemonRequest::CommandsNeedingLlmSummary { .. }
+        | DaemonRequest::MarkUnsummarizedForLlm
+        | DaemonRequest::BackfillEntities
+        | DaemonRequest::GenerateSummaries => {
+            DaemonResponse::error("operation must be routed through global daemon")
         }
     }
 }
@@ -408,6 +623,18 @@ pub fn daemon_socket_path(session_id: &str) -> std::path::PathBuf {
 
 pub fn daemon_pid_path(session_id: &str) -> std::path::PathBuf {
     crate::config::Config::nsh_dir().join(format!("daemon_{session_id}.pid"))
+}
+
+pub fn global_daemon_socket_path() -> std::path::PathBuf {
+    crate::config::Config::nsh_dir().join("nshd.sock")
+}
+
+pub fn global_daemon_pid_path() -> std::path::PathBuf {
+    crate::config::Config::nsh_dir().join("nshd.pid")
+}
+
+pub fn global_daemon_lock_path() -> std::path::PathBuf {
+    crate::config::Config::nsh_dir().join("nshd.lock")
 }
 
 #[cfg(test)]
