@@ -184,6 +184,9 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                 duration_ms, output.as_deref(), &tty, &shell, pid,
             ) {
                 Ok(id) => {
+                    if command.starts_with("ssh ") || command == "ssh" {
+                        let _ = db.backfill_command_entities_if_needed();
+                    }
                     let output_text = output.as_deref().unwrap_or("");
                     if let Some(trivial) = crate::summary::trivial_summary(&command, exit_code, output_text) {
                         let _ = db.update_summary(id, &trivial);
