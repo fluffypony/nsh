@@ -2,12 +2,33 @@
 //!
 //! These require a built `nsh` binary. Run with `cargo test`.
 
+use std::path::Path;
+use std::process::{Command, Output};
+
+fn test_home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("failed to create temp HOME")
+}
+
+fn nsh_command(home: &Path) -> Command {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["run", "--"])
+        .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME");
+    cmd
+}
+
+fn run_nsh(home: &Path, args: &[&str]) -> Output {
+    nsh_command(home)
+        .args(args)
+        .output()
+        .expect("failed to run nsh command")
+}
+
 #[test]
 fn test_init_zsh_generates_session_id() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "zsh"])
-        .output()
-        .expect("failed to run nsh init zsh");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["init", "zsh"]);
 
     let script = String::from_utf8_lossy(&output.stdout);
     // Should NOT contain the placeholder
@@ -24,10 +45,8 @@ fn test_init_zsh_generates_session_id() {
 
 #[test]
 fn test_init_bash_generates_session_id() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "bash"])
-        .output()
-        .expect("failed to run nsh init bash");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["init", "bash"]);
 
     let script = String::from_utf8_lossy(&output.stdout);
     assert!(!script.contains("__SESSION_ID__"));
@@ -36,10 +55,8 @@ fn test_init_bash_generates_session_id() {
 
 #[test]
 fn test_init_unsupported_shell() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "tcsh"])
-        .output()
-        .expect("failed to run nsh init tcsh");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["init", "tcsh"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -51,10 +68,8 @@ fn test_init_unsupported_shell() {
 
 #[test]
 fn test_init_fish_generates_session_id() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "fish"])
-        .output()
-        .expect("failed to run nsh init fish");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["init", "fish"]);
 
     let script = String::from_utf8_lossy(&output.stdout);
     assert!(!script.contains("__SESSION_ID__"));
@@ -63,10 +78,8 @@ fn test_init_fish_generates_session_id() {
 
 #[test]
 fn test_config_path() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "config", "path"])
-        .output()
-        .expect("failed to run nsh config path");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["config", "path"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -78,10 +91,8 @@ fn test_config_path() {
 
 #[test]
 fn test_query_no_words() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "query"])
-        .output()
-        .expect("failed to run nsh query");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["query"]);
 
     assert_eq!(output.status.code(), Some(1), "Expected exit code 1");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -93,11 +104,8 @@ fn test_query_no_words() {
 
 #[test]
 fn test_history_search_empty_db() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "history", "search", "nonexistent_query_xyz"])
-        .env("HOME", std::env::temp_dir().join("nsh_test_history"))
-        .output()
-        .expect("failed to run nsh history search");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["history", "search", "nonexistent_query_xyz"]);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -108,10 +116,10 @@ fn test_history_search_empty_db() {
 
 #[test]
 fn test_reset_without_session() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "reset"])
+    let home = test_home();
+    let output = nsh_command(home.path())
+        .args(["reset"])
         .env_remove("NSH_SESSION_ID")
-        .env("HOME", std::env::temp_dir().join("nsh_test_reset"))
         .output()
         .expect("failed to run nsh reset");
 
@@ -128,10 +136,8 @@ fn test_reset_without_session() {
 
 #[test]
 fn test_version_flag() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "--version"])
-        .output()
-        .expect("failed to run nsh --version");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["--version"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -143,10 +149,8 @@ fn test_version_flag() {
 
 #[test]
 fn test_help_flag() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "--help"])
-        .output()
-        .expect("failed to run nsh --help");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["--help"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -162,10 +166,8 @@ fn test_help_flag() {
 
 #[test]
 fn test_config_show() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "config", "show"])
-        .output()
-        .expect("failed to run nsh config show");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["config", "show"]);
 
     assert!(
         output.status.success(),
@@ -176,10 +178,8 @@ fn test_config_show() {
 
 #[test]
 fn test_cost_subcommand() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "cost", "all"])
-        .output()
-        .expect("failed to run nsh cost");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["cost", "all"]);
 
     assert!(
         output.status.success(),
@@ -190,10 +190,8 @@ fn test_cost_subcommand() {
 
 #[test]
 fn test_status_subcommand() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "status"])
-        .output()
-        .expect("failed to run nsh status");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["status"]);
 
     assert!(
         output.status.success(),
@@ -204,10 +202,8 @@ fn test_status_subcommand() {
 
 #[test]
 fn test_completions_zsh() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "completions", "zsh"])
-        .output()
-        .expect("failed to run nsh completions zsh");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["completions", "zsh"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -216,10 +212,8 @@ fn test_completions_zsh() {
 
 #[test]
 fn test_completions_bash() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "completions", "bash"])
-        .output()
-        .expect("failed to run nsh completions bash");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["completions", "bash"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -228,10 +222,8 @@ fn test_completions_bash() {
 
 #[test]
 fn test_completions_fish() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "completions", "fish"])
-        .output()
-        .expect("failed to run nsh completions fish");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["completions", "fish"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -240,10 +232,8 @@ fn test_completions_fish() {
 
 #[test]
 fn test_doctor_succeeds() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "doctor", "--no-prune", "--no-vacuum"])
-        .output()
-        .expect("failed to run nsh doctor");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["doctor", "--no-prune", "--no-vacuum"]);
 
     assert!(
         output.status.success(),
@@ -254,12 +244,8 @@ fn test_doctor_succeeds() {
 
 #[test]
 fn test_doctor_capture_succeeds() {
-    let tmp = std::env::temp_dir().join("nsh_test_doctor_capture");
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "doctor", "capture"])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh doctor capture");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["doctor", "capture"]);
 
     assert!(
         output.status.success(),
@@ -276,12 +262,10 @@ fn test_doctor_capture_succeeds() {
 
 #[test]
 fn test_daemon_send_record_updates_fast_cwd_file() {
-    let tmp = std::env::temp_dir().join("nsh_test_fast_cwd_record");
-    let _ = std::fs::remove_dir_all(&tmp);
-    let output = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "--",
+    let home = test_home();
+    let output = run_nsh(
+        home.path(),
+        &[
             "daemon-send",
             "record",
             "--session",
@@ -302,10 +286,8 @@ fn test_daemon_send_record_updates_fast_cwd_file() {
             "1234",
             "--shell",
             "zsh",
-        ])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh daemon-send record");
+        ],
+    );
 
     assert!(
         output.status.success(),
@@ -313,18 +295,17 @@ fn test_daemon_send_record_updates_fast_cwd_file() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let index = tmp.join(".nsh").join("tty_last_cwd");
+    let index = home.path().join(".nsh").join("tty_last_cwd");
     let content = std::fs::read_to_string(index).expect("tty_last_cwd should exist");
     assert!(content.contains("/dev/ttys-test-fast-cwd\t/tmp/fast-cwd"));
 }
 
 #[test]
 fn test_record_inserts_command() {
-    let tmp = std::env::temp_dir().join("nsh_test_record");
-    let output = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "--",
+    let home = test_home();
+    let output = run_nsh(
+        home.path(),
+        &[
             "record",
             "--session",
             "test-integration-rec",
@@ -344,10 +325,8 @@ fn test_record_inserts_command() {
             "1234",
             "--shell",
             "zsh",
-        ])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh record");
+        ],
+    );
 
     assert!(
         output.status.success(),
@@ -358,13 +337,12 @@ fn test_record_inserts_command() {
 
 #[test]
 fn test_session_start_and_end() {
-    let tmp = std::env::temp_dir().join("nsh_test_session");
+    let home = test_home();
     let session_id = "integration-test-session";
 
-    let start = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "--",
+    let start = run_nsh(
+        home.path(),
+        &[
             "session",
             "start",
             "--session",
@@ -375,21 +353,15 @@ fn test_session_start_and_end() {
             "zsh",
             "--pid",
             "9999",
-        ])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh session start");
+        ],
+    );
     assert!(
         start.status.success(),
         "nsh session start should succeed, stderr: {}",
         String::from_utf8_lossy(&start.stderr)
     );
 
-    let end = std::process::Command::new("cargo")
-        .args(["run", "--", "session", "end", "--session", session_id])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh session end");
+    let end = run_nsh(home.path(), &["session", "end", "--session", session_id]);
     assert!(
         end.status.success(),
         "nsh session end should succeed, stderr: {}",
@@ -399,12 +371,8 @@ fn test_session_start_and_end() {
 
 #[test]
 fn test_heartbeat_succeeds() {
-    let tmp = std::env::temp_dir().join("nsh_test_heartbeat");
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "heartbeat", "--session", "hb-test-session"])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh heartbeat");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["heartbeat", "--session", "hb-test-session"]);
 
     assert!(
         output.status.success(),
@@ -415,11 +383,10 @@ fn test_heartbeat_succeeds() {
 
 #[test]
 fn test_redact_next_succeeds() {
-    let tmp = std::env::temp_dir().join("nsh_test_redact");
-    let _ = std::fs::create_dir_all(tmp.join(".nsh"));
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "redact-next"])
-        .env("HOME", &tmp)
+    let home = test_home();
+    let _ = std::fs::create_dir_all(home.path().join(".nsh"));
+    let output = nsh_command(home.path())
+        .args(["redact-next"])
         .env("NSH_SESSION_ID", "redact-test")
         .output()
         .expect("failed to run nsh redact-next");
@@ -438,10 +405,8 @@ fn test_redact_next_succeeds() {
 
 #[test]
 fn test_init_zsh_contains_hooks() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "zsh"])
-        .output()
-        .expect("failed to run nsh init zsh");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["init", "zsh"]);
 
     let script = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -458,10 +423,8 @@ fn test_init_zsh_contains_hooks() {
 
 #[test]
 fn test_init_bash_contains_hooks() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "init", "bash"])
-        .output()
-        .expect("failed to run nsh init bash");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["init", "bash"]);
 
     let script = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -478,10 +441,8 @@ fn test_init_bash_contains_hooks() {
 
 #[test]
 fn test_config_show_raw() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "config", "show", "--raw"])
-        .output()
-        .expect("failed to run nsh config show --raw");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["config", "show", "--raw"]);
 
     assert!(
         output.status.success(),
@@ -492,12 +453,8 @@ fn test_config_show_raw() {
 
 #[test]
 fn test_config_show_no_config_file() {
-    let tmp = std::env::temp_dir().join("nsh_test_config_show_nofile");
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "config", "show"])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh config show");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["config", "show"]);
 
     assert!(
         output.status.success(),
@@ -513,10 +470,8 @@ fn test_config_show_no_config_file() {
 
 #[test]
 fn test_cost_today() {
-    let output = std::process::Command::new("cargo")
-        .args(["run", "--", "cost", "today"])
-        .output()
-        .expect("failed to run nsh cost today");
+    let home = test_home();
+    let output = run_nsh(home.path(), &["cost", "today"]);
 
     assert!(
         output.status.success(),
@@ -527,20 +482,17 @@ fn test_cost_today() {
 
 #[test]
 fn test_session_label_missing_session() {
-    let tmp = std::env::temp_dir().join("nsh_test_session_label");
-    let output = std::process::Command::new("cargo")
-        .args([
-            "run",
-            "--",
+    let home = test_home();
+    let output = run_nsh(
+        home.path(),
+        &[
             "session",
             "label",
             "test-label",
             "--session",
             "nonexistent-session-id",
-        ])
-        .env("HOME", &tmp)
-        .output()
-        .expect("failed to run nsh session label");
+        ],
+    );
 
     assert!(
         output.status.success(),

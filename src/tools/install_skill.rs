@@ -41,7 +41,6 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     }
 
     let skills_dir = crate::config::Config::nsh_dir().join("skills");
-    std::fs::create_dir_all(&skills_dir)?;
     let skill_path = skills_dir.join(format!("{name}.toml"));
 
     let bold_yellow = "\x1b[1;33m";
@@ -72,6 +71,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    std::fs::create_dir_all(&skills_dir)?;
     std::fs::write(&skill_path, &toml_content)?;
     eprintln!(
         "{green}✓ skill '{name}' installed at {}{reset}",
@@ -85,8 +85,29 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
 mod tests {
     use serde_json::json;
 
+    fn with_nsh_test_mode() -> impl Drop {
+        struct Guard(Option<String>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if let Some(old) = &self.0 {
+                    // SAFETY: test-only env var handling.
+                    unsafe { std::env::set_var("NSH_TEST_MODE", old) };
+                } else {
+                    // SAFETY: test-only env var handling.
+                    unsafe { std::env::remove_var("NSH_TEST_MODE") };
+                }
+            }
+        }
+
+        let old = std::env::var("NSH_TEST_MODE").ok();
+        // SAFETY: test-only env var handling.
+        unsafe { std::env::set_var("NSH_TEST_MODE", "1") };
+        Guard(old)
+    }
+
     #[test]
     fn test_execute_missing_fields() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "test"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -95,6 +116,7 @@ mod tests {
 
     #[test]
     fn test_execute_invalid_name() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "bad name!", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -103,6 +125,7 @@ mod tests {
 
     #[test]
     fn test_execute_empty_name() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -111,6 +134,7 @@ mod tests {
 
     #[test]
     fn test_execute_empty_description() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -119,6 +143,7 @@ mod tests {
 
     #[test]
     fn test_execute_empty_command() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "test", "description": "test"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -127,6 +152,7 @@ mod tests {
 
     #[test]
     fn test_name_validation_with_special_chars() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "bad.name", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -135,6 +161,7 @@ mod tests {
 
     #[test]
     fn test_name_validation_with_spaces() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "bad name", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -142,6 +169,7 @@ mod tests {
 
     #[test]
     fn test_name_validation_with_hyphens_rejected() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "bad-name", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());
@@ -149,6 +177,7 @@ mod tests {
 
     #[test]
     fn test_name_numbers_only_valid() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "12345", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_ok(), "Numeric-only name should pass validation");
@@ -156,6 +185,7 @@ mod tests {
 
     #[test]
     fn test_name_leading_underscore_valid() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "_private", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(
@@ -166,6 +196,7 @@ mod tests {
 
     #[test]
     fn test_name_with_dash_rejected() {
+        let _guard = with_nsh_test_mode();
         let input = json!({"name": "my-skill", "description": "test", "command": "echo"});
         let result = super::execute(&input);
         assert!(result.is_err());

@@ -719,6 +719,7 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
 mod tests {
     use super::*;
     use crate::security::RiskLevel;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     struct CwdGuard {
@@ -737,6 +738,48 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.old);
         }
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn setup_temp_home() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        std::fs::create_dir_all(crate::config::Config::nsh_dir()).unwrap();
+        (home, home_guard, xdg_data_guard, xdg_config_guard)
     }
 
     #[test]
@@ -934,7 +977,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_autorun_cd_prefills_and_marks_shell_autorun() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = setup_temp_home();
         let session = "test_autorun_cd";
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();
@@ -958,7 +1003,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_pending_writes_flag() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = setup_temp_home();
         let session = "test_pending_flag";
         let db = test_db_with_session(session);
         let mut config = crate::config::Config::default();
@@ -981,7 +1028,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_not_pending_clears_stale_flag() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = setup_temp_home();
         let session = "test_clear_stale";
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();
@@ -1002,7 +1051,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_missing_fields_defaults() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = setup_temp_home();
         let session = "test_defaults";
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();
@@ -1110,7 +1161,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_skips_prefill_for_question_echo() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = setup_temp_home();
         let session = "test_question_echo";
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();

@@ -24,6 +24,33 @@ pub fn cleanup_pending_files(session_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only; this test is serialized.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                // SAFETY: test-only; this test is serialized.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: test-only; this test is serialized.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
 
     #[test]
     fn test_pending_cmd_prefix() {
@@ -41,7 +68,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_cleanup_pending_files_no_panic() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = EnvVarGuard::set("HOME", home.path());
         cleanup_pending_files("nonexistent-session-id-12345");
     }
 }

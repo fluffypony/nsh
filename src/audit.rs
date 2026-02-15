@@ -121,19 +121,67 @@ fn cleanup_old_archives_in_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only; this module's stateful tests are serialized.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only; this module's stateful tests are serialized.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                // SAFETY: test-only; this module's stateful tests are serialized.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: test-only; this module's stateful tests are serialized.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn with_temp_home() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        (home, home_guard, xdg_data_guard, xdg_config_guard)
+    }
 
     #[test]
+    #[serial_test::serial]
     fn test_cleanup_old_archives_limit() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         cleanup_old_archives();
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_audit_log_no_panic() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         audit_log("test-session", "test query", "command", "ls", "safe");
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_rotate_audit_log_no_panic() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         rotate_audit_log();
     }
 
@@ -153,7 +201,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_rotate_small_log_is_noop() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         rotate_audit_log();
     }
 
@@ -210,7 +260,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_audit_log_special_characters() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         audit_log(
             "sess-special",
             "query with \"quotes\" & <brackets> and\nnewlines",
@@ -221,19 +273,25 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_audit_log_very_long_strings() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         let long_query = "x".repeat(100_000);
         let long_response = "y".repeat(100_000);
         audit_log("sess-long", &long_query, "chat", &long_response, "safe");
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_audit_log_empty_strings() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         audit_log("", "", "", "", "");
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_audit_log_unicode() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         audit_log(
             "sess-uni",
             "こんにちは 🌍 émojis",
@@ -250,7 +308,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_rotate_nonexistent_log_is_noop() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         let path = crate::config::Config::nsh_dir().join("audit.log");
         let existed = path.exists();
         rotate_audit_log();
