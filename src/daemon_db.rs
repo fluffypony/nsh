@@ -62,8 +62,12 @@ pub trait DbAccess {
     fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()>;
     fn upsert_memory(&self, key: &str, value: &str) -> anyhow::Result<(i64, bool)>;
     fn delete_memory(&self, id: i64) -> anyhow::Result<bool>;
-    fn update_memory(&self, id: i64, key: Option<&str>, value: Option<&str>)
-        -> anyhow::Result<bool>;
+    fn update_memory(
+        &self,
+        id: i64,
+        key: Option<&str>,
+        value: Option<&str>,
+    ) -> anyhow::Result<bool>;
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>>;
     fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
@@ -284,10 +288,11 @@ impl DbAccess for DaemonDb {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<CommandWithSummary>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::RecentCommandsWithSummaries {
-            session: session_id.to_string(),
-            limit,
-        })?);
+        let data =
+            Self::data_or_empty(self.request(DaemonRequest::RecentCommandsWithSummaries {
+                session: session_id.to_string(),
+                limit,
+            })?);
         let arr = data
             .get("commands")
             .and_then(|v| v.as_array())
@@ -327,11 +332,12 @@ impl DbAccess for DaemonDb {
         max_ttys: usize,
         summaries_per_tty: usize,
     ) -> anyhow::Result<Vec<OtherSessionSummary>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::OtherSessionsWithSummaries {
-            session: session_id.to_string(),
-            max_ttys,
-            summaries_per_tty,
-        })?);
+        let data =
+            Self::data_or_empty(self.request(DaemonRequest::OtherSessionsWithSummaries {
+                session: session_id.to_string(),
+                max_ttys,
+                summaries_per_tty,
+            })?);
         let arr = data
             .get("commands")
             .and_then(|v| v.as_array())
@@ -700,9 +706,8 @@ impl DbAccess for DaemonDb {
     }
 
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::CommandsNeedingLlmSummary {
-            limit,
-        })?);
+        let data =
+            Self::data_or_empty(self.request(DaemonRequest::CommandsNeedingLlmSummary { limit })?);
         let arr = data
             .get("commands")
             .and_then(|v| v.as_array())

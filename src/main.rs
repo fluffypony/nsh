@@ -6,12 +6,12 @@ mod context;
 mod daemon;
 mod daemon_client;
 mod daemon_db;
-mod debug_io;
 mod db;
+mod debug_io;
+mod display;
 mod fast_cwd;
 #[cfg(unix)]
 mod global_daemon;
-mod display;
 mod history_import;
 mod init;
 mod json_display;
@@ -36,12 +36,12 @@ mod summary;
 mod tools;
 mod util;
 
+use crate::daemon_db::DbAccess;
 use clap::Parser;
 use cli::{
     Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
     ProviderAction, SessionAction,
 };
-use crate::daemon_db::DbAccess;
 use sha2::{Digest, Sha256};
 
 fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
@@ -64,7 +64,9 @@ fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-fn send_to_global_or_fallback(request: &daemon::DaemonRequest) -> anyhow::Result<daemon::DaemonResponse> {
+fn send_to_global_or_fallback(
+    request: &daemon::DaemonRequest,
+) -> anyhow::Result<daemon::DaemonResponse> {
     match daemon_client::send_to_global(request) {
         Ok(resp) => Ok(resp),
         Err(_) => {
@@ -153,7 +155,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
 
             if history_import::import_in_progress() {
-                eprintln!("\x1b[2m⏳ nsh is still indexing history; results may be incomplete.\x1b[0m");
+                eprintln!(
+                    "\x1b[2m⏳ nsh is still indexing history; results may be incomplete.\x1b[0m"
+                );
             }
 
             if words.is_empty() {
@@ -233,8 +237,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             shell,
         } => {
             let request = daemon::DaemonRequest::Record {
-                session, command, cwd, exit_code, started_at,
-                tty, pid, shell, duration_ms, output: None,
+                session,
+                command,
+                cwd,
+                exit_code,
+                started_at,
+                tty,
+                pid,
+                shell,
+                duration_ms,
+                output: None,
             };
             if let daemon::DaemonRequest::Record { tty, cwd, .. } = &request {
                 let _ = fast_cwd::update_tty_cwd(tty, cwd);
@@ -258,7 +270,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 pid,
             } => {
                 let request = daemon::DaemonRequest::CreateSession {
-                    session, tty, shell, pid: pid as i64,
+                    session,
+                    tty,
+                    shell,
+                    pid: pid as i64,
                 };
                 if let Err(e) = send_to_global_or_fallback(&request) {
                     tracing::debug!("daemon unavailable for session start: {e}");
@@ -275,7 +290,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
                 });
                 let request = daemon::DaemonRequest::SetSessionLabel {
-                    session: session_id, label: label.clone(),
+                    session: session_id,
+                    label: label.clone(),
                 };
                 match send_to_global_or_fallback(&request) {
                     Ok(daemon::DaemonResponse::Ok { data: Some(d) }) => {
@@ -298,7 +314,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     return Ok(());
                 }
                 let request = daemon::DaemonRequest::LatestCwdForTty { tty };
-                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) = send_to_global_or_fallback(&request) {
+                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) =
+                    send_to_global_or_fallback(&request)
+                {
                     if let Some(cwd) = d.get("cwd").and_then(|v| v.as_str()) {
                         println!("{cwd}");
                     }
@@ -345,12 +363,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                                 eprintln!("No results found.");
                             } else {
                                 for r in results {
-                                    let started = r.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+                                    let started =
+                                        r.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
                                     let exit_code = r.get("exit_code").and_then(|v| v.as_i64());
-                                    let code = exit_code.map(|c| format!(" (exit {c})")).unwrap_or_default();
-                                    let cmd_hl = r.get("cmd_highlight").and_then(|v| v.as_str()).unwrap_or("");
+                                    let code = exit_code
+                                        .map(|c| format!(" (exit {c})"))
+                                        .unwrap_or_default();
+                                    let cmd_hl = r
+                                        .get("cmd_highlight")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
                                     println!("[{started}]{code} {cmd_hl}");
-                                    if let Some(hl) = r.get("output_highlight").and_then(|v| v.as_str()) {
+                                    if let Some(hl) =
+                                        r.get("output_highlight").and_then(|v| v.as_str())
+                                    {
                                         let preview: String = hl.chars().take(200).collect();
                                         println!("  {preview}");
                                     }
@@ -408,7 +434,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         },
 
         Commands::Cost { period } => {
-            let request = daemon::DaemonRequest::GetUsageStats { period: period.clone() };
+            let request = daemon::DaemonRequest::GetUsageStats {
+                period: period.clone(),
+            };
             let stats_result = match send_to_global_or_fallback(&request) {
                 Ok(daemon::DaemonResponse::Ok { data: Some(d) }) => d,
                 _ => {
@@ -416,7 +444,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     return Ok(());
                 }
             };
-            let stats = stats_result.get("stats").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let stats = stats_result
+                .get("stats")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             if stats.is_empty() {
                 eprintln!("No usage data recorded yet.");
             } else {
@@ -431,9 +463,18 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 for entry in &stats {
                     let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("?");
                     let calls = entry.get("calls").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let input_tok = entry.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let output_tok = entry.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let cost = entry.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let input_tok = entry
+                        .get("input_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let output_tok = entry
+                        .get("output_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let cost = entry
+                        .get("cost_usd")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
                     eprintln!(
                         "{model:<35} {calls:>5}  {input_tok:>9}  {output_tok:>10}  ${cost:.4}"
                     );
@@ -532,14 +573,23 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             } else {
                 let config = config::Config::load().unwrap_or_default();
                 let global_running = daemon_client::is_global_daemon_running();
-                eprintln!("  Global daemon: {}", if global_running { "running" } else { "not running" });
+                eprintln!(
+                    "  Global daemon: {}",
+                    if global_running {
+                        "running"
+                    } else {
+                        "not running"
+                    }
+                );
                 let retention = prune_days.unwrap_or(config.context.retention_days);
                 let request = daemon::DaemonRequest::RunDoctor {
                     retention_days: retention,
                     no_prune,
                     no_vacuum,
                 };
-                if let daemon::DaemonResponse::Error { message } = send_to_global_or_fallback(&request)? {
+                if let daemon::DaemonResponse::Error { message } =
+                    send_to_global_or_fallback(&request)?
+                {
                     anyhow::bail!(message);
                 }
                 cleanup_staged_updates();
@@ -566,9 +616,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
             eprint!("nsh: starting daemon...");
             daemon_client::ensure_global_daemon_running()?;
-            eprintln!(" started (pid {})",
+            eprintln!(
+                " started (pid {})",
                 std::fs::read_to_string(daemon::global_daemon_pid_path())
-                    .unwrap_or_default().trim().to_string());
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            );
         }
 
         Commands::Update => {
@@ -753,19 +807,34 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     // Per-session daemon unavailable — try global daemon for DB ops
                     match action {
                         DaemonSendAction::Record {
-                            session, command, cwd, exit_code, started_at,
-                            duration_ms, tty, pid, shell,
+                            session,
+                            command,
+                            cwd,
+                            exit_code,
+                            started_at,
+                            duration_ms,
+                            tty,
+                            pid,
+                            shell,
                         } => {
                             let global_request = daemon::DaemonRequest::Record {
-                                session, command, cwd, exit_code, started_at,
-                                tty, pid, shell, duration_ms, output: None,
+                                session,
+                                command,
+                                cwd,
+                                exit_code,
+                                started_at,
+                                tty,
+                                pid,
+                                shell,
+                                duration_ms,
+                                output: None,
                             };
                             let _ = send_to_global_or_fallback(&global_request);
                         }
                         DaemonSendAction::Heartbeat { session } => {
-                            let _ = send_to_global_or_fallback(
-                                &daemon::DaemonRequest::Heartbeat { session },
-                            );
+                            let _ = send_to_global_or_fallback(&daemon::DaemonRequest::Heartbeat {
+                                session,
+                            });
                         }
                         DaemonSendAction::CaptureMark { .. } => {}
                         DaemonSendAction::Status => {
@@ -910,17 +979,13 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             let response = c.get("response").and_then(|v| v.as_str()).unwrap_or("");
-                            let explanation = c
-                                .get("explanation")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let explanation =
+                                c.get("explanation").and_then(|v| v.as_str()).unwrap_or("");
                             println!("**Q:** {}\n", query);
                             match response_type {
-                                "command" => println!(
-                                    "```bash\n{}\n```\n{}\n",
-                                    response,
-                                    explanation
-                                ),
+                                "command" => {
+                                    println!("```bash\n{}\n```\n{}\n", response, explanation)
+                                }
                                 _ => println!("{}\n", response),
                             }
                         }
@@ -944,9 +1009,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
 
             let session_label = if session_id != "(not set)" {
-                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) = send_to_global_or_fallback(
-                    &daemon::DaemonRequest::GetSessionLabel { session: session_id.clone() },
-                ) {
+                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) =
+                    send_to_global_or_fallback(&daemon::DaemonRequest::GetSessionLabel {
+                        session: session_id.clone(),
+                    })
+                {
                     d.get("label").and_then(|v| v.as_str()).map(String::from)
                 } else {
                     None
@@ -955,7 +1022,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 None
             };
 
-            let global_daemon_status = if daemon_client::is_global_daemon_running() { "running" } else { "not running" };
+            let global_daemon_status = if daemon_client::is_global_daemon_running() {
+                "running"
+            } else {
+                "not running"
+            };
 
             eprintln!("nsh status:");
             eprintln!("  Version:    {build_version}");

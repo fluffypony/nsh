@@ -91,10 +91,12 @@ pub fn import_if_needed(db: &crate::db::Db) {
 
         let payload: Vec<serde_json::Value> = entries
             .iter()
-            .map(|(cmd, ts)| serde_json::json!({
-                "cmd": cmd,
-                "ts": ts.to_rfc3339(),
-            }))
+            .map(|(cmd, ts)| {
+                serde_json::json!({
+                    "cmd": cmd,
+                    "ts": ts.to_rfc3339(),
+                })
+            })
             .collect();
         let entries_json = serde_json::to_string(&payload)?;
         db.bulk_insert_history(SYNTHETIC_SESSION_ID, &entries_json)?;

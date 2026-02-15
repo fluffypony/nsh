@@ -44,7 +44,10 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
         reader.read_line(&mut response_line)?;
         log_daemon_client(
             "client.send_request.response",
-            &format!("session={session_id}\nresponse={}", response_line.trim_end()),
+            &format!(
+                "session={session_id}\nresponse={}",
+                response_line.trim_end()
+            ),
         );
 
         Ok(serde_json::from_str(&response_line)?)
@@ -121,7 +124,10 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
     }
     let mut json = serde_json::to_string(&json_val)?;
     json.push('\n');
-    log_daemon_client("client.send_to_global", &format!("request={}", json.trim_end()));
+    log_daemon_client(
+        "client.send_to_global",
+        &format!("request={}", json.trim_end()),
+    );
     stream.write_all(json.as_bytes())?;
     stream.flush()?;
 
