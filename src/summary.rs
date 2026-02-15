@@ -18,14 +18,7 @@ pub fn trivial_summary(cmd: &str, exit_code: i32, output: &str) -> Option<String
 
 pub fn build_summary_prompt(cmd: &CommandForSummary) -> String {
     let output = cmd.output.as_deref().unwrap_or("");
-    let truncated = if output.lines().count() > 50 {
-        let lines: Vec<&str> = output.lines().collect();
-        let first = lines[..25].join("\n");
-        let last = lines[lines.len() - 25..].join("\n");
-        format!("{first}\n[...]\n{last}")
-    } else {
-        output.to_string()
-    };
+    let truncated = crate::util::truncate(output, 20000);
 
     format!(
         "Summarize this shell command and its output in 1-2 sentences. Focus on: what \
@@ -210,21 +203,17 @@ mod tests {
 
     #[test]
     fn test_build_summary_prompt_truncates_long_output() {
-        let lines: Vec<String> = (1..=60).map(|i| format!("line {i}")).collect();
-        let output = lines.join("\n");
+        let long_output = "x".repeat(25000);
         let cmd = CommandForSummary {
             id: 2,
             command: "long-cmd".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
-            output: Some(output),
+            output: Some(long_output),
         };
         let prompt = build_summary_prompt(&cmd);
-        assert!(prompt.contains("[...]"));
-        assert!(prompt.contains("line 1"));
-        assert!(prompt.contains("line 25"));
-        assert!(prompt.contains("line 60"));
-        assert!(!prompt.contains("line 26\n"));
+        assert!(prompt.len() < 25000);
+        assert!(prompt.contains("long-cmd"));
     }
 
     #[test]
@@ -239,7 +228,6 @@ mod tests {
             output: Some(output),
         };
         let prompt = build_summary_prompt(&cmd);
-        assert!(!prompt.contains("[...]"));
         assert!(prompt.contains("line 1"));
         assert!(prompt.contains("line 50"));
     }
@@ -331,7 +319,6 @@ mod tests {
             output: Some(output),
         };
         let prompt = build_summary_prompt(&cmd);
-        assert!(!prompt.contains("[...]"));
         assert!(prompt.contains("line 1"));
         assert!(prompt.contains("line 50"));
     }
@@ -379,11 +366,8 @@ mod tests {
             output: Some(output),
         };
         let prompt = build_summary_prompt(&cmd);
-        assert!(prompt.contains("[...]"));
         assert!(prompt.contains("line 1"));
-        assert!(prompt.contains("line 25"));
         assert!(prompt.contains("line 51"));
-        assert!(!prompt.contains("line 26\n"));
     }
 
     #[test]

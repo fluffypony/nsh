@@ -1,4 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,8 +38,10 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let socket_path = crate::daemon::global_daemon_socket_path();
     let _ = std::fs::remove_file(&socket_path);
 
+    #[cfg(unix)]
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+
     let write_db = crate::db::Db::open()?;
-    let _ = write_db.conn_execute_batch("PRAGMA wal_autocheckpoint = 0;");
 
     let _ = write_db.cleanup_orphaned_sessions();
     crate::history_import::import_if_needed(&write_db);
@@ -76,22 +79,13 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         })
         .collect();
 
-    let _checkpoint_thread = std::thread::Builder::new()
-        .name("nshd-checkpoint".into())
-        .spawn(move || {
-            if let Ok(db) = crate::db::Db::open_readonly() {
-                loop {
-                    std::thread::sleep(Duration::from_secs(60));
-                    let _ = db.checkpoint_wal();
-                }
-            }
-        })?;
+    let active_conns = Arc::new(AtomicUsize::new(0));
+    const MAX_GLOBAL_CONNS: usize = 32;
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
 
     #[cfg(unix)]
     {
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         listener.set_nonblocking(true)?;
 
         loop {
@@ -100,11 +94,20 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     if !check_peer_uid(&stream) {
                         continue;
                     }
+                    if active_conns.load(Ordering::Relaxed) >= MAX_GLOBAL_CONNS {
+                        let _ = write_response(&stream, &DaemonResponse::error("too many connections"));
+                        continue;
+                    }
+                    active_conns.fetch_add(1, Ordering::Relaxed);
                     *last_activity.lock().unwrap() = Instant::now();
                     let wt = write_tx.clone();
                     let rt = read_tx.clone();
+                    let ac = Arc::clone(&active_conns);
+                    let la = Arc::clone(&last_activity);
                     std::thread::spawn(move || {
                         handle_global_connection(stream, wt, rt);
+                        *la.lock().unwrap() = Instant::now();
+                        ac.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -156,24 +159,37 @@ fn run_write_thread(db: crate::db::Db, rx: mpsc::Receiver<WriteCommand>) {
         };
 
         let mut batch = vec![first];
-        let deadline = Instant::now() + Duration::from_millis(50);
-        while Instant::now() < deadline && batch.len() < 10 {
+        loop {
+            if batch.len() >= 10 { break; }
             match rx.try_recv() {
                 Ok(cmd) => batch.push(cmd),
-                Err(mpsc::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(_) => break,
             }
         }
 
         if batch.len() > 1 {
-            let _ = db.conn_execute_batch("BEGIN IMMEDIATE;");
-            for cmd in batch {
-                let resp = execute_write(&db, cmd.request);
-                let _ = cmd.reply.send(resp);
+            if let Ok(()) = db.conn_execute_batch("BEGIN IMMEDIATE;") {
+                let mut pending: Vec<(mpsc::Sender<DaemonResponse>, DaemonResponse)> = Vec::new();
+                for cmd in batch {
+                    let resp = execute_write(&db, cmd.request);
+                    pending.push((cmd.reply, resp));
+                }
+                if db.conn_execute_batch("COMMIT;").is_err() {
+                    let _ = db.conn_execute_batch("ROLLBACK;");
+                    for (reply, _) in pending {
+                        let _ = reply.send(DaemonResponse::error("transaction commit failed"));
+                    }
+                } else {
+                    for (reply, resp) in pending {
+                        let _ = reply.send(resp);
+                    }
+                }
+            } else {
+                for cmd in batch {
+                    let resp = execute_write(&db, cmd.request);
+                    let _ = cmd.reply.send(resp);
+                }
             }
-            let _ = db.conn_execute_batch("COMMIT;");
         } else {
             let cmd = batch.into_iter().next().unwrap();
             let resp = execute_write(&db, cmd.request);
@@ -224,7 +240,10 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
         }
         DaemonRequest::Heartbeat { session } => {
             match db.update_heartbeat(&session) {
-                Ok(()) => DaemonResponse::ok(),
+                Ok(()) => {
+                    crate::daemon::generate_summaries_sync_pub(db);
+                    DaemonResponse::ok()
+                }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -376,14 +395,15 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
 
 fn run_read_thread(db: crate::db::Db, rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>) {
     loop {
-        let cmd = {
-            let guard = match rx.lock() {
-                Ok(g) => g,
-                Err(_) => break,
+        let cmd = loop {
+            let maybe = {
+                let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+                guard.try_recv()
             };
-            match guard.recv() {
-                Ok(cmd) => cmd,
-                Err(_) => break,
+            match maybe {
+                Ok(cmd) => break cmd,
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(1)),
+                Err(mpsc::TryRecvError::Disconnected) => return,
             }
         };
         let resp = execute_read(&db, cmd.request);
@@ -499,6 +519,7 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                         serde_json::json!({
                             "command": c.command, "cwd": c.cwd, "exit_code": c.exit_code,
                             "started_at": c.started_at, "duration_ms": c.duration_ms, "summary": c.summary,
+                            "output": c.output,
                         })
                     }).collect();
                     DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
@@ -736,7 +757,7 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
             return false;
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
         use std::os::fd::AsRawFd;
         let mut euid: libc::uid_t = 0;
@@ -748,6 +769,12 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
         if euid != unsafe { libc::getuid() } {
             return false;
         }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    {
+        tracing::warn!(
+            "Peer UID check not implemented for this platform, relying on socket permissions"
+        );
     }
     true
 }

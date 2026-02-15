@@ -267,6 +267,16 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
                     &config.redaction
                 )),
             ));
+            if let Some(ref output) = cmd.output {
+                if !output.trim().is_empty() {
+                    let truncated = crate::util::truncate(output, config.context.max_output_context_chars);
+                    let redacted = crate::redact::redact_secrets(&truncated, &config.redaction);
+                    xml.push_str(&format!(
+                        "      <output>{}</output>\n",
+                        xml_escape(&redacted),
+                    ));
+                }
+            }
             if let Some(ref summary) = cmd.summary {
                 let redacted = crate::redact::redact_secrets(summary, &config.redaction);
                 xml.push_str(&format!(
@@ -1278,6 +1288,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: Some(50),
             summary: Some("listed files".into()),
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<session_history"));
@@ -1689,6 +1700,7 @@ mod tests {
                 started_at: "2025-01-01T00:00:00Z".into(),
                 duration_ms: Some(1234),
                 summary: Some("Compiled successfully".into()),
+                output: None,
             },
             CommandWithSummary {
                 command: "cargo test".into(),
@@ -1697,6 +1709,7 @@ mod tests {
                 started_at: "2025-01-01T00:01:00Z".into(),
                 duration_ms: None,
                 summary: None,
+                output: None,
             },
         ];
         let xml = build_xml_context(&ctx, &Config::default());
@@ -2102,6 +2115,7 @@ mod tests {
             started_at: "2025-06-01T12:00:00Z".into(),
             duration_ms: Some(10),
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<input>echo hello</input>"));
@@ -2123,6 +2137,7 @@ mod tests {
             started_at: "2025-06-01T12:00:00Z".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(
@@ -2171,6 +2186,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: Some(500),
             summary: Some("Build ok".into()),
+            output: None,
         }];
         ctx.other_sessions = vec![OtherSessionSummary {
             command: "htop".into(),
@@ -2475,6 +2491,7 @@ mod tests {
                 started_at: "2025-01-01T10:00:00Z".into(),
                 duration_ms: Some(1500),
                 summary: Some("all 42 tests passed".into()),
+                output: None,
             },
             CommandWithSummary {
                 command: "git status".into(),
@@ -2483,6 +2500,7 @@ mod tests {
                 started_at: "2025-01-01T10:01:00Z".into(),
                 duration_ms: None,
                 summary: None,
+                output: None,
             },
         ];
         let xml = build_xml_context(&ctx, &Config::default());
@@ -3489,6 +3507,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         let env_pos = xml.find("<environment").unwrap();
@@ -3595,6 +3614,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("&lt;hello&gt;"));
@@ -4201,6 +4221,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: Some(100),
             summary: Some("Error: <undefined> & \"missing\"".into()),
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("&lt;undefined&gt;"));
@@ -4241,6 +4262,7 @@ mod tests {
                 started_at: "t1".into(),
                 duration_ms: None,
                 summary: None,
+                output: None,
             },
             CommandWithSummary {
                 command: "segfault".into(),
@@ -4249,6 +4271,7 @@ mod tests {
                 started_at: "t2".into(),
                 duration_ms: None,
                 summary: None,
+                output: None,
             },
             CommandWithSummary {
                 command: "killed".into(),
@@ -4257,6 +4280,7 @@ mod tests {
                 started_at: "t3".into(),
                 duration_ms: None,
                 summary: None,
+                output: None,
             },
         ];
         let xml = build_xml_context(&ctx, &Config::default());
@@ -4299,6 +4323,7 @@ mod tests {
             started_at: "t1".into(),
             duration_ms: Some(3_600_000),
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("duration=\"3600000ms\""));
@@ -4500,6 +4525,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: Some(0),
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("duration=\"0ms\""));
@@ -4515,6 +4541,7 @@ mod tests {
             started_at: "2025-01-01T00:00:00Z".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("exit=\"-11\""));
@@ -4602,6 +4629,7 @@ mod tests {
             started_at: "t1".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("cwd=\"/path/&lt;with&gt;&amp;&quot;chars&quot;\""));
@@ -4617,6 +4645,7 @@ mod tests {
             started_at: "t1".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<input></input>"));
@@ -4652,6 +4681,7 @@ mod tests {
                 } else {
                     None
                 },
+                output: None,
             })
             .collect();
         let xml = build_xml_context(&ctx, &Config::default());
@@ -4787,6 +4817,7 @@ mod tests {
             started_at: "t1".into(),
             duration_ms: None,
             summary: None,
+            output: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<session_history tty="));

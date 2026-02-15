@@ -21,7 +21,7 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
         let socket_path = crate::daemon::daemon_socket_path(session_id);
         let mut stream = UnixStream::connect(&socket_path)?;
         stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
 
         let mut json_val = serde_json::to_value(request)?;
         if let serde_json::Value::Object(ref mut map) = json_val {

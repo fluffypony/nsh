@@ -226,6 +226,7 @@ pub struct ContextConfig {
     pub git_commits: usize,
     pub retention_days: u32,
     pub max_output_storage_bytes: usize,
+    pub max_output_context_chars: usize,
     pub scrollback_rate_limit_bps: usize,
     pub scrollback_pause_seconds: u64,
     pub include_other_tty: bool,
@@ -238,17 +239,18 @@ impl Default for ContextConfig {
         Self {
             scrollback_lines: 1000,
             scrollback_pages: 10,
-            history_summaries: 100,
+            history_summaries: 20,
             history_limit: 20,
-            other_tty_summaries: 10,
+            other_tty_summaries: 5,
             max_other_ttys: 20,
             project_files_limit: 100,
             git_commits: 10,
             retention_days: 1095,
             max_output_storage_bytes: 65536,
+            max_output_context_chars: 5000,
             scrollback_rate_limit_bps: 10_485_760,
             scrollback_pause_seconds: 2,
-            include_other_tty: false,
+            include_other_tty: true,
             restore_last_cwd_per_tty: true,
             custom_instructions: None,
         }
@@ -948,6 +950,13 @@ pub fn build_config_xml(
     );
     opt(
         &mut x,
+        "max_output_context_chars",
+        &config.context.max_output_context_chars.to_string(),
+        "Max characters of command output included in context",
+        None,
+    );
+    opt(
+        &mut x,
         "include_other_tty",
         &config.context.include_other_tty.to_string(),
         "Include other TTY sessions in context",
@@ -1209,9 +1218,9 @@ mod tests {
         );
         assert_eq!(config.context.history_limit, 20);
         assert_eq!(config.context.retention_days, 1095);
-        assert_eq!(config.context.history_summaries, 100);
+        assert_eq!(config.context.history_summaries, 20);
         assert_eq!(config.context.scrollback_pages, 10);
-        assert!(!config.context.include_other_tty);
+        assert!(config.context.include_other_tty);
         assert!(!config.tools.run_command_allowlist.is_empty());
     }
 
@@ -1253,8 +1262,8 @@ chat_color = "red"
         assert_eq!(config.provider.web_search_model, "perplexity/sonar-pro");
         assert_eq!(config.context.history_limit, 50);
         assert_eq!(config.context.retention_days, 180);
-        assert_eq!(config.context.history_summaries, 100);
-        assert!(!config.context.include_other_tty);
+        assert_eq!(config.context.history_summaries, 20);
+        assert!(config.context.include_other_tty);
         assert_eq!(config.tools.run_command_allowlist, vec!["echo", "ls"]);
     }
 
@@ -1595,17 +1604,18 @@ base_url = "https://custom.api.example.com"
         let ctx = ContextConfig::default();
         assert_eq!(ctx.scrollback_lines, 1000);
         assert_eq!(ctx.scrollback_pages, 10);
-        assert_eq!(ctx.history_summaries, 100);
+        assert_eq!(ctx.history_summaries, 20);
         assert_eq!(ctx.history_limit, 20);
-        assert_eq!(ctx.other_tty_summaries, 10);
+        assert_eq!(ctx.other_tty_summaries, 5);
         assert_eq!(ctx.max_other_ttys, 20);
         assert_eq!(ctx.project_files_limit, 100);
         assert_eq!(ctx.git_commits, 10);
         assert_eq!(ctx.retention_days, 1095);
         assert_eq!(ctx.max_output_storage_bytes, 65536);
+        assert_eq!(ctx.max_output_context_chars, 5000);
         assert_eq!(ctx.scrollback_rate_limit_bps, 10_485_760);
         assert_eq!(ctx.scrollback_pause_seconds, 2);
-        assert!(!ctx.include_other_tty);
+        assert!(ctx.include_other_tty);
         assert!(ctx.restore_last_cwd_per_tty);
         assert!(ctx.custom_instructions.is_none());
     }
@@ -3614,11 +3624,12 @@ timeout_seconds = "fast"
         let ctx = ContextConfig::default();
         assert_eq!(ctx.scrollback_lines, 1000);
         assert_eq!(ctx.scrollback_pages, 10);
-        assert_eq!(ctx.other_tty_summaries, 10);
+        assert_eq!(ctx.other_tty_summaries, 5);
         assert_eq!(ctx.max_other_ttys, 20);
         assert_eq!(ctx.project_files_limit, 100);
         assert_eq!(ctx.git_commits, 10);
         assert_eq!(ctx.max_output_storage_bytes, 65536);
+        assert_eq!(ctx.max_output_context_chars, 5000);
         assert_eq!(ctx.scrollback_rate_limit_bps, 10_485_760);
         assert_eq!(ctx.scrollback_pause_seconds, 2);
         assert!(ctx.restore_last_cwd_per_tty);

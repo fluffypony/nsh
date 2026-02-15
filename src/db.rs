@@ -1276,7 +1276,7 @@ impl Db {
     ) -> rusqlite::Result<Vec<CommandWithSummary>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.command, c.cwd, c.exit_code, c.started_at,
-                    c.duration_ms, c.summary
+                    c.duration_ms, c.summary, c.output
              FROM commands c
              WHERE c.session_id = ?
              ORDER BY c.started_at DESC
@@ -1290,6 +1290,7 @@ impl Db {
                 started_at: row.get(3)?,
                 duration_ms: row.get(4)?,
                 summary: row.get(5)?,
+                output: row.get(6)?,
             })
         })?;
         let mut results: Vec<CommandWithSummary> = rows.collect::<Result<_, _>>()?;
@@ -1867,6 +1868,7 @@ pub struct CommandWithSummary {
     pub started_at: String,
     pub duration_ms: Option<i64>,
     pub summary: Option<String>,
+    pub output: Option<String>,
 }
 
 #[derive(Debug)]

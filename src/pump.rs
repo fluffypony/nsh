@@ -654,7 +654,7 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
             return false;
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
         use std::os::fd::AsRawFd;
         let mut euid: libc::uid_t = 0;
@@ -669,12 +669,11 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
             return false;
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
         tracing::warn!(
-            "Rejecting daemon connection: peer UID check not implemented for this platform"
+            "Peer UID check not implemented for this platform, relying on socket permissions"
         );
-        return false;
     }
     true
 }

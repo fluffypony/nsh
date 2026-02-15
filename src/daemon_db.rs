@@ -316,6 +316,7 @@ impl DbAccess for DaemonDb {
                     .get("summary")
                     .and_then(|x| x.as_str())
                     .map(str::to_string),
+                output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
             })
             .collect())
     }
