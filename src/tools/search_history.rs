@@ -3,6 +3,8 @@ use crate::daemon_db::DbAccess;
 use regex::Regex;
 use std::collections::HashSet;
 
+const MAX_SEARCH_RESULTS: usize = 100;
+
 #[derive(Debug, Clone)]
 struct EntitySearchIntent {
     executable: Option<String>,
@@ -30,7 +32,8 @@ pub fn execute(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let session = input.get("session").and_then(|v| v.as_str());
-    let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let requested_limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let limit = requested_limit.clamp(1, MAX_SEARCH_RESULTS);
     let command_filter = input.get("command").and_then(|v| v.as_str());
     let entity_filter = input.get("entity").and_then(|v| v.as_str());
     let entity_type_filter = input.get("entity_type").and_then(|v| v.as_str());
@@ -74,7 +77,8 @@ pub fn execute(
             limit.saturating_mul(20).max(200)
         } else {
             limit.saturating_mul(10).max(100)
-        };
+        }
+        .min(MAX_SEARCH_RESULTS);
         let entity_matches = db.search_command_entities(
             intent.executable.as_deref(),
             intent.entity.as_deref(),
@@ -138,6 +142,8 @@ pub fn execute(
         matches
     };
 
+    let matches = dedupe_history_matches(matches, limit);
+
     if matches.is_empty() {
         return Ok("No matching commands found.".into());
     }
@@ -181,6 +187,24 @@ pub fn execute(
     }
 
     Ok(crate::redact::redact_secrets(&result, &config.redaction))
+}
+
+fn dedupe_history_matches(
+    matches: Vec<crate::db::HistoryMatch>,
+    limit: usize,
+) -> Vec<crate::db::HistoryMatch> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(limit.min(matches.len()));
+    for m in matches {
+        let dedupe_key = format!("{}\u{1f}{}", m.command, m.cwd.clone().unwrap_or_default());
+        if seen.insert(dedupe_key) {
+            out.push(m);
+            if out.len() >= limit {
+                break;
+            }
+        }
+    }
+    out
 }
 
 fn summarize_entity_matches(
@@ -760,6 +784,91 @@ mod tests {
         let input = serde_json::json!({"query": "cargo", "session": "current"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
         assert!(result.contains("cargo"));
+    }
+
+    #[test]
+    fn test_execute_dedupes_identical_commands() {
+        let db = test_db();
+        for i in 0..3 {
+            db.insert_command(
+                "test_sess",
+                "rsyncd root@135.181.128.145:\"/root/blink-browse/logs\" .",
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:00:0{i}Z"),
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        }
+        let config = Config::default();
+        let input = serde_json::json!({"query": "logs", "limit": 20});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert_eq!(result.lines().filter(|l| l.starts_with('[')).count(), 1);
+    }
+
+    #[test]
+    fn test_execute_keeps_same_command_across_different_cwds() {
+        let db = test_db();
+        db.insert_command(
+            "test_sess",
+            "rsyncd root@135.181.128.145:\"/root/blink-browse/logs\" .",
+            "/tmp/a",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
+            "test_sess",
+            "rsyncd root@135.181.128.145:\"/root/blink-browse/logs\" .",
+            "/tmp/b",
+            Some(0),
+            "2025-06-01T00:00:01Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({"query": "logs", "limit": 20});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert_eq!(result.lines().filter(|l| l.starts_with('[')).count(), 2);
+        assert!(result.contains("cwd: /tmp/a"));
+        assert!(result.contains("cwd: /tmp/b"));
+    }
+
+    #[test]
+    fn test_execute_clamps_limit_to_100() {
+        let db = test_db();
+        for i in 0..150 {
+            db.insert_command(
+                "test_sess",
+                &format!("echo unique_{i}"),
+                "/tmp",
+                Some(0),
+                &format!("2025-06-01T00:{:02}:00Z", i % 60),
+                None,
+                None,
+                "",
+                "",
+                0,
+            )
+            .unwrap();
+        }
+        let config = Config::default();
+        let input = serde_json::json!({"query": "echo", "limit": 500});
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.lines().filter(|l| l.starts_with('[')).count() <= 100);
     }
 
     #[test]

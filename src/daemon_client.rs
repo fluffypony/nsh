@@ -1,4 +1,6 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
+#[cfg(test)]
+use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -8,6 +10,20 @@ use crate::daemon::{DaemonRequest, DaemonResponse};
 
 fn log_daemon_client(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
+}
+
+fn read_daemon_response<R: Read>(reader: &mut R) -> anyhow::Result<String> {
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    if buf.is_empty() {
+        anyhow::bail!("empty daemon response");
+    }
+    let text = String::from_utf8(buf)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("empty daemon response");
+    }
+    Ok(trimmed.to_string())
 }
 
 pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
@@ -39,14 +55,12 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
         stream.write_all(json.as_bytes())?;
         stream.flush()?;
 
-        let mut reader = BufReader::new(&stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line)?;
+        let response_line = read_daemon_response(&mut stream)?;
         log_daemon_client(
             "client.send_request.response",
             &format!(
                 "session={session_id}\nresponse={}",
-                response_line.trim_end()
+                response_line
             ),
         );
 
@@ -131,12 +145,10 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
     stream.write_all(json.as_bytes())?;
     stream.flush()?;
 
-    let mut reader = BufReader::new(&stream);
-    let mut response_line = String::new();
-    reader.read_line(&mut response_line)?;
+    let response_line = read_daemon_response(&mut stream)?;
     log_daemon_client(
         "client.send_to_global.response",
-        &format!("response={}", response_line.trim_end()),
+        &format!("response={response_line}"),
     );
 
     Ok(serde_json::from_str(&response_line)?)
