@@ -31,6 +31,9 @@ fn read_map() -> HashMap<String, String> {
 
 fn write_map(map: &HashMap<String, String>) -> std::io::Result<()> {
     let path = index_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let tmp = path.with_extension("tmp");
     let mut lines: Vec<String> = map.iter().map(|(k, v)| format!("{k}\t{v}")).collect();
     lines.sort();

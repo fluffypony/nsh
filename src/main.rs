@@ -765,6 +765,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             };
 
+            if let DaemonSendAction::Record { tty, cwd, .. } = &action {
+                let _ = fast_cwd::update_tty_cwd(tty, cwd);
+            }
+
             let request = match &action {
                 DaemonSendAction::Record {
                     session,

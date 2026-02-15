@@ -275,6 +275,50 @@ fn test_doctor_capture_succeeds() {
 }
 
 #[test]
+fn test_daemon_send_record_updates_fast_cwd_file() {
+    let tmp = std::env::temp_dir().join("nsh_test_fast_cwd_record");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let output = std::process::Command::new("cargo")
+        .args([
+            "run",
+            "--",
+            "daemon-send",
+            "record",
+            "--session",
+            "s-fast-cwd",
+            "--command",
+            "pwd",
+            "--cwd",
+            "/tmp/fast-cwd",
+            "--exit-code",
+            "0",
+            "--started-at",
+            "2026-01-01T00:00:00Z",
+            "--duration-ms",
+            "1",
+            "--tty",
+            "/dev/ttys-test-fast-cwd",
+            "--pid",
+            "1234",
+            "--shell",
+            "zsh",
+        ])
+        .env("HOME", &tmp)
+        .output()
+        .expect("failed to run nsh daemon-send record");
+
+    assert!(
+        output.status.success(),
+        "daemon-send record should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let index = tmp.join(".nsh").join("tty_last_cwd");
+    let content = std::fs::read_to_string(index).expect("tty_last_cwd should exist");
+    assert!(content.contains("/dev/ttys-test-fast-cwd\t/tmp/fast-cwd"));
+}
+
+#[test]
 fn test_record_inserts_command() {
     let tmp = std::env::temp_dir().join("nsh_test_record");
     let output = std::process::Command::new("cargo")
