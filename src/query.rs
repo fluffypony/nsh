@@ -1441,6 +1441,7 @@ mod tests {
             datetime_info: "2025-01-01".into(),
             timezone_info: "UTC".into(),
             locale_info: "en_US.UTF-8".into(),
+            cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
             scrollback_text: String::new(),

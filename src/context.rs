@@ -49,6 +49,7 @@ pub struct QueryContext {
     pub datetime_info: String,
     pub timezone_info: String,
     pub locale_info: String,
+    pub cwd_listing: Vec<CwdListingEntry>,
     pub session_history: Vec<CommandWithSummary>,
     pub other_sessions: Vec<OtherSessionSummary>,
     pub scrollback_text: String,
@@ -79,6 +80,11 @@ pub struct FileEntry {
     pub size: String,
 }
 
+pub struct CwdListingEntry {
+    pub path: String,
+    pub kind: String,
+}
+
 pub fn build_context(
     db: &dyn DbAccess,
     session_id: &str,
@@ -96,6 +102,8 @@ pub fn build_context(
     let conversation_history = db
         .get_conversations(session_id, config.context.history_limit)
         .unwrap_or_default();
+
+    let cwd_listing = collect_cwd_listing(&cwd, 100);
 
     let session_history = db
         .recent_commands_with_summaries(session_id, config.context.history_summaries)
@@ -133,6 +141,7 @@ pub fn build_context(
             .to_string(),
         timezone_info: sys.timezone_info,
         locale_info: sys.locale_info,
+        cwd_listing,
         session_history,
         other_sessions,
         scrollback_text,
@@ -230,6 +239,21 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
 
         xml.push_str("  </project>\n");
     }
+
+    // CWD listing (hidden + recursive, capped)
+    xml.push_str(&format!(
+        "\n  <cwd_listing path=\"{}\" count=\"{}\" recursive=\"true\" max_entries=\"100\">\n",
+        xml_escape(&ctx.cwd),
+        ctx.cwd_listing.len(),
+    ));
+    for entry in &ctx.cwd_listing {
+        xml.push_str(&format!(
+            "    <entry path=\"{}\" type=\"{}\" />\n",
+            xml_escape(&entry.path),
+            xml_escape(&entry.kind),
+        ));
+    }
+    xml.push_str("  </cwd_listing>\n");
 
     // Scrollback
     if !ctx.scrollback_text.is_empty() {
@@ -785,6 +809,65 @@ fn list_project_files_fallback(cwd: &std::path::Path, max_files: usize) -> Vec<F
     entries
 }
 
+fn collect_cwd_listing(cwd: &str, max_entries: usize) -> Vec<CwdListingEntry> {
+    let root = std::path::Path::new(cwd);
+    let mut out = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(dir) = queue.pop_front() {
+        let read_dir = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+
+        let mut batch = Vec::new();
+        for entry in read_dir.flatten() {
+            batch.push(entry);
+        }
+        batch.sort_by_key(|entry| entry.file_name());
+
+        for entry in batch {
+            if out.len() >= max_entries {
+                return out;
+            }
+
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string());
+            if rel.is_empty() {
+                continue;
+            }
+
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let (kind, recurse) = if meta.is_dir() {
+                ("dir", true)
+            } else if meta.is_symlink() {
+                ("link", false)
+            } else {
+                ("file", false)
+            };
+
+            out.push(CwdListingEntry {
+                path: rel,
+                kind: kind.to_string(),
+            });
+
+            if recurse {
+                queue.push_back(path);
+            }
+        }
+    }
+
+    out
+}
+
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes}B")
@@ -1220,6 +1303,7 @@ mod tests {
             datetime_info: "2025-01-01 00:00:00 UTC".into(),
             timezone_info: "UTC".into(),
             locale_info: "en_US.UTF-8".into(),
+            cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
             scrollback_text: String::new(),
@@ -1580,6 +1664,7 @@ mod tests {
             datetime_info: "2025-01-01".into(),
             timezone_info: "UTC".into(),
             locale_info: "en_US.UTF-8".into(),
+            cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
             scrollback_text: String::new(),
@@ -4800,6 +4885,7 @@ mod tests {
             datetime_info: "2025-01-01".into(),
             timezone_info: "UTC".into(),
             locale_info: "C".into(),
+            cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
             scrollback_text: String::new(),
@@ -4818,7 +4904,8 @@ mod tests {
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.starts_with("<context>\n  <environment"));
         assert!(xml.ends_with("</context>"));
-        assert_eq!(xml.matches('\n').count(), 2);
+        assert!(xml.contains("<cwd_listing"));
+        assert!(xml.contains("count=\"0\""));
     }
 
     #[test]
