@@ -2,6 +2,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA_VERSION: i32 = 5;
 const COMMAND_ENTITY_BACKFILL_MAX_ID_KEY: &str = "command_entities_backfilled_max_id_v1";
+pub const IMPORT_SESSION_PREFIX: &str = "imported_";
+// Must stay in sync with IMPORT_SESSION_PREFIX above
+const INCLUDE_IMPORTED_SQL: &str = "c.session_id LIKE 'imported_%'";
 
 pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> {
     conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
@@ -726,6 +729,16 @@ impl Db {
         Ok(deleted)
     }
 
+    /// Deletes all imported history sessions and their commands.
+    /// FTS cleanup is handled by existing delete triggers; CASCADE handles command_entities.
+    pub fn cleanup_imported_history(&self) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM commands WHERE session_id LIKE 'imported_%'", [])?;
+        self.conn
+            .execute("DELETE FROM sessions WHERE id LIKE 'imported_%'", [])?;
+        Ok(())
+    }
+
     pub fn update_heartbeat(&self, session_id: &str) -> rusqlite::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -899,13 +912,16 @@ impl Db {
         }
         if let Some(sf) = session_filter {
             if sf == "current" {
-                sql.push_str(
-                    " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
-                     (SELECT tty FROM sessions WHERE id = ?))",
-                );
+                sql.push_str(&format!(
+                    " AND (c.session_id IN (SELECT id FROM sessions WHERE tty = \
+                     (SELECT tty FROM sessions WHERE id = ?)) \
+                     OR {INCLUDE_IMPORTED_SQL})"
+                ));
                 params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
             } else {
-                sql.push_str(" AND c.session_id = ?");
+                sql.push_str(&format!(
+                    " AND (c.session_id = ? OR {INCLUDE_IMPORTED_SQL})"
+                ));
                 params_vec.push(Box::new(sf.to_string()));
             }
         }
@@ -1438,11 +1454,14 @@ impl Db {
             if let Some(sf) = session_filter {
                 if sf == "current" {
                     conditions.push(format!(
-                        " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
-                         (SELECT tty FROM sessions WHERE id = ?{param_idx}))"
+                        " AND (c.session_id IN (SELECT id FROM sessions WHERE tty = \
+                         (SELECT tty FROM sessions WHERE id = ?{param_idx})) \
+                         OR {INCLUDE_IMPORTED_SQL})"
                     ));
                 } else {
-                    conditions.push(format!(" AND c.session_id = ?{param_idx}"));
+                    conditions.push(format!(
+                        " AND (c.session_id = ?{param_idx} OR {INCLUDE_IMPORTED_SQL})"
+                    ));
                 }
                 param_idx += 1;
             }
@@ -1538,13 +1557,16 @@ impl Db {
         }
         if let Some(sf) = session_filter {
             if sf == "current" {
-                sql.push_str(
-                    " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
-                     (SELECT tty FROM sessions WHERE id = ?))",
-                );
+                sql.push_str(&format!(
+                    " AND (c.session_id IN (SELECT id FROM sessions WHERE tty = \
+                     (SELECT tty FROM sessions WHERE id = ?)) \
+                     OR {INCLUDE_IMPORTED_SQL})"
+                ));
                 params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
             } else {
-                sql.push_str(" AND c.session_id = ?");
+                sql.push_str(&format!(
+                    " AND (c.session_id = ? OR {INCLUDE_IMPORTED_SQL})"
+                ));
                 params_vec.push(Box::new(sf.to_string()));
             }
         }
@@ -10995,6 +11017,182 @@ mod tests {
 
         let needing = db.commands_needing_llm_summary(2).unwrap();
         assert_eq!(needing.len(), 2);
+    }
+
+    #[test]
+    fn test_search_history_advanced_current_includes_imported() {
+        let db = test_db();
+        db.insert_command(
+            "real_sess",
+            "echo real",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "",
+            0,
+        )
+        .unwrap();
+        db.create_session("imported_bash_history", "import", "bash", 0)
+            .unwrap();
+        db.insert_command(
+            "imported_bash_history",
+            "ssh admin@10.0.0.1",
+            "/home",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "import",
+            "bash",
+            0,
+        )
+        .unwrap();
+        db.create_session("imported_zsh_pts1", "/dev/pts/1", "zsh", 0)
+            .unwrap();
+        db.insert_command(
+            "imported_zsh_pts1",
+            "git push",
+            "/project",
+            Some(0),
+            "2024-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "zsh",
+            0,
+        )
+        .unwrap();
+
+        let results = db
+            .search_history_advanced(
+                None,
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("current"),
+                Some("real_sess"),
+                100,
+            )
+            .unwrap();
+        let commands: Vec<&str> = results.iter().map(|r| r.command.as_str()).collect();
+        assert!(
+            commands.contains(&"echo real"),
+            "should include current TTY command"
+        );
+        assert!(
+            commands.contains(&"ssh admin@10.0.0.1"),
+            "should include generic imported"
+        );
+        assert!(
+            commands.contains(&"git push"),
+            "should include per-TTY imported (matches via TTY + LIKE)"
+        );
+    }
+
+    #[test]
+    fn test_search_history_advanced_literal_session_includes_imported() {
+        let db = test_db();
+        db.insert_command(
+            "my_sess",
+            "echo mine",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        db.create_session("imported_bash_history", "import", "bash", 0)
+            .unwrap();
+        db.insert_command(
+            "imported_bash_history",
+            "cargo build",
+            "/project",
+            Some(0),
+            "2025-01-01T00:00:00Z",
+            None,
+            None,
+            "import",
+            "bash",
+            0,
+        )
+        .unwrap();
+
+        let results = db
+            .search_history_advanced(
+                Some("cargo"),
+                None,
+                None,
+                None,
+                None,
+                false,
+                Some("my_sess"),
+                None,
+                100,
+            )
+            .unwrap();
+        assert!(
+            results.iter().any(|r| r.command.contains("cargo")),
+            "literal session filter should also include imported history"
+        );
+    }
+
+    #[test]
+    fn test_search_command_entities_current_includes_imported() {
+        let db = test_db();
+        db.insert_command(
+            "real_sess",
+            "echo hi",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "",
+            0,
+        )
+        .unwrap();
+        db.create_session("imported_bash_history", "import", "bash", 0)
+            .unwrap();
+        db.insert_command(
+            "imported_bash_history",
+            "ssh root@10.0.0.5",
+            "/home",
+            Some(0),
+            "2025-05-01T00:00:00Z",
+            None,
+            None,
+            "import",
+            "bash",
+            0,
+        )
+        .unwrap();
+
+        let entities = db
+            .search_command_entities(
+                Some("ssh"),
+                None,
+                Some("machine"),
+                None,
+                None,
+                Some("current"),
+                Some("real_sess"),
+                100,
+            )
+            .unwrap();
+        assert!(
+            entities.iter().any(|e| e.entity.contains("10.0.0.5")),
+            "entity search with 'current' should include imported history"
+        );
     }
 
     #[test]

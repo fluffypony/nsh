@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use regex::Regex;
 
+use crate::db::IMPORT_SESSION_PREFIX;
+
 const MAX_IMPORT_ENTRIES: usize = 10_000;
-const SYNTHETIC_SESSION_ID: &str = "imported_shell_history";
 const IMPORT_LOCK_FILENAME: &str = "history_import.lock";
 const IMPORT_LOCK_STALE_SECS: u64 = 60 * 60;
 
@@ -45,6 +46,57 @@ pub fn clear_import_lock() {
     let _ = std::fs::remove_file(import_lock_path());
 }
 
+/// Extracts the full TTY device path from a per-TTY zsh history filename.
+/// e.g. `.zsh_history_ttys007` -> Some("/dev/ttys007")
+///      `.zsh_history_pts3`   -> Some("/dev/pts3")
+///      `.zsh_history`        -> None
+///      `.bash_history`       -> None
+fn extract_tty_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let suffix = name.strip_prefix(".zsh_history_")?;
+    if !suffix.is_empty() && (suffix.starts_with("ttys") || suffix.starts_with("pts")) {
+        Some(format!("/dev/{suffix}"))
+    } else {
+        None
+    }
+}
+
+/// Returns (session_id, tty, shell_name) for an imported history file.
+///
+/// Per-TTY zsh files get the actual TTY path so they naturally match
+/// the `session: "current"` TTY subquery. Other files get tty="import"
+/// and are caught by the `LIKE 'imported_%'` fallback in all searches.
+///
+/// Examples:
+///   .zsh_history_ttys007 -> ("imported_zsh_ttys007",  "/dev/ttys007", "zsh")
+///   .bash_history        -> ("imported_bash_history",  "import",       "bash")
+///   .zsh_history         -> ("imported_zsh_history",   "import",       "zsh")
+///   .histfile            -> ("imported_histfile",      "import",       "zsh")
+///   fish_history         -> ("imported_fish_history",  "import",       "fish")
+fn import_session_info(path: &Path, shell: &Shell) -> (String, String, String) {
+    let shell_name = match shell {
+        Shell::Bash => "bash",
+        Shell::Zsh => "zsh",
+        Shell::Fish => "fish",
+        Shell::PowerShell => "powershell",
+    };
+
+    if let Some(tty) = extract_tty_from_path(path) {
+        let tty_short = tty.strip_prefix("/dev/").unwrap_or(&tty);
+        let session_id = format!("{IMPORT_SESSION_PREFIX}{shell_name}_{tty_short}");
+        return (session_id, tty, shell_name.to_string());
+    }
+
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .trim_start_matches('.')
+        .replace('.', "_");
+    let session_id = format!("{IMPORT_SESSION_PREFIX}{filename}");
+    (session_id, "import".to_string(), shell_name.to_string())
+}
+
 pub fn import_if_needed(db: &crate::db::Db) {
     let result: anyhow::Result<()> = (|| {
         let already_imported = db.get_meta("shell_history_imported")?.is_some();
@@ -58,7 +110,11 @@ pub fn import_if_needed(db: &crate::db::Db) {
         if already_imported && !per_tty_imported {
             files.retain(|(path, shell)| *shell == Shell::Zsh && is_per_tty_zsh_history(path));
         }
-        let mut all_entries: Vec<(String, DateTime<Utc>)> = Vec::new();
+
+        let mut entries_by_session: std::collections::HashMap<
+            String,
+            (String, String, Vec<(String, DateTime<Utc>)>),
+        > = std::collections::HashMap::new();
 
         for (path, shell) in &files {
             let file_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
@@ -74,38 +130,44 @@ pub fn import_if_needed(db: &crate::db::Db) {
                 Shell::Fish => parse_fish(path, file_mtime),
                 Shell::PowerShell => parse_powershell(path, file_mtime),
             };
-            all_entries.extend(entries);
+            if entries.is_empty() {
+                continue;
+            }
+
+            let (session_id, tty, shell_name) = import_session_info(path, shell);
+            entries_by_session
+                .entry(session_id)
+                .or_insert_with(|| (tty, shell_name, Vec::new()))
+                .2
+                .extend(entries);
         }
 
-        all_entries.sort_by_key(|(_, ts)| *ts);
-        let entries: Vec<_> = all_entries
-            .into_iter()
-            .rev()
-            .take(MAX_IMPORT_ENTRIES)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
+        let mut total_imported = 0usize;
 
-        db.create_session(SYNTHETIC_SESSION_ID, "import", "import", 0)?;
+        for (session_id, (tty, shell_name, mut entries)) in entries_by_session {
+            entries.sort_by_key(|(_, ts)| *ts);
+            if entries.len() > MAX_IMPORT_ENTRIES {
+                entries = entries.into_iter().rev().take(MAX_IMPORT_ENTRIES).collect();
+                entries.reverse();
+            }
 
-        let payload: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|(cmd, ts)| {
-                serde_json::json!({
-                    "cmd": cmd,
-                    "ts": ts.to_rfc3339(),
-                })
-            })
-            .collect();
-        let entries_json = serde_json::to_string(&payload)?;
-        db.bulk_insert_history(SYNTHETIC_SESSION_ID, &entries_json)?;
-        let n = payload.len();
+            db.create_session(&session_id, &tty, &shell_name, 0)?;
 
-        db.end_session(SYNTHETIC_SESSION_ID)?;
+            let payload: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|(cmd, ts)| serde_json::json!({ "cmd": cmd, "ts": ts.to_rfc3339() }))
+                .collect();
+            let n = payload.len();
+            let entries_json = serde_json::to_string(&payload)?;
+            db.bulk_insert_history(&session_id, &entries_json)?;
+            total_imported += n;
+
+            db.end_session(&session_id)?;
+        }
+
         db.set_meta("shell_history_imported", "1")?;
         db.set_meta("shell_history_imported_per_tty", "1")?;
-        tracing::info!("nsh: imported {n} commands from shell history");
+        tracing::info!("nsh: imported {total_imported} commands from shell history");
 
         Ok(())
     })();
@@ -428,6 +490,45 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_tty_from_path() {
+        assert_eq!(
+            extract_tty_from_path(Path::new("/home/user/.zsh_history_ttys007")),
+            Some("/dev/ttys007".to_string())
+        );
+        assert_eq!(
+            extract_tty_from_path(Path::new("/home/user/.zsh_history_pts3")),
+            Some("/dev/pts3".to_string())
+        );
+        assert_eq!(
+            extract_tty_from_path(Path::new("/home/user/.zsh_history")),
+            None
+        );
+        assert_eq!(
+            extract_tty_from_path(Path::new("/home/user/.bash_history")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_import_session_info() {
+        let (id, tty, shell) =
+            import_session_info(Path::new("/home/user/.zsh_history_ttys007"), &Shell::Zsh);
+        assert_eq!(id, "imported_zsh_ttys007");
+        assert_eq!(tty, "/dev/ttys007");
+        assert_eq!(shell, "zsh");
+
+        let (id, tty, shell) = import_session_info(Path::new("/home/user/.bash_history"), &Shell::Bash);
+        assert_eq!(id, "imported_bash_history");
+        assert_eq!(tty, "import");
+        assert_eq!(shell, "bash");
+
+        let (id, tty, shell) = import_session_info(Path::new("/home/user/.zsh_history"), &Shell::Zsh);
+        assert_eq!(id, "imported_zsh_history");
+        assert_eq!(tty, "import");
+        assert_eq!(shell, "zsh");
+    }
+
+    #[test]
     fn parse_bash_empty_file() {
         let f = write_temp("");
         let results = parse_bash(f.path(), fixed_mtime());
@@ -578,6 +679,51 @@ mod tests {
             db.command_count().unwrap(),
             0,
             "no additional import should happen when both import flags are set"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_import_creates_per_tty_sessions() {
+        let home = temp_home();
+        let tty_hist = home.path().join(".zsh_history_ttys042");
+        fs::write(&tty_hist, ": 1700000100:0;ssh root@10.0.0.1\n").unwrap();
+        let bash_hist = home.path().join(".bash_history");
+        fs::write(&bash_hist, "echo hello\n").unwrap();
+
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _histfile = EnvVarGuard::remove("HISTFILE");
+        let _xdg_data = EnvVarGuard::remove("XDG_DATA_HOME");
+
+        let db = crate::db::Db::open_in_memory().unwrap();
+        import_if_needed(&db);
+
+        let results = db
+            .search_history_advanced(Some("ssh"), None, None, None, None, false, None, None, 100)
+            .unwrap();
+        assert!(!results.is_empty());
+        assert!(
+            results.iter().any(|r| r.session_id == "imported_zsh_ttys042"),
+            "per-TTY file should create session with TTY-based ID"
+        );
+
+        let results = db
+            .search_history_advanced(Some("echo"), None, None, None, None, false, None, None, 100)
+            .unwrap();
+        assert!(
+            results.iter().any(|r| r.session_id == "imported_bash_history"),
+            "generic bash should create session with filename-based ID"
+        );
+
+        assert_eq!(
+            db.get_meta("shell_history_imported").unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            db.get_meta("shell_history_imported_per_tty")
+                .unwrap()
+                .as_deref(),
+            Some("1")
         );
     }
 
