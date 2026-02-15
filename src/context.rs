@@ -222,9 +222,13 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         }
 
         if !ctx.project_info.files.is_empty() {
+            let files_limit = config.context.project_files_limit;
+            let files_truncated = ctx.project_info.files.len() >= files_limit;
             xml.push_str(&format!(
-                "    <files count=\"{}\">\n",
+                "    <files count=\"{}\" limit=\"{}\" truncated=\"{}\">\n",
                 ctx.project_info.files.len(),
+                files_limit,
+                files_truncated,
             ));
             for f in &ctx.project_info.files {
                 xml.push_str(&format!(
@@ -241,10 +245,14 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
     }
 
     // CWD listing (hidden + recursive, capped)
+    let cwd_limit = 100;
+    let cwd_truncated = ctx.cwd_listing.len() >= cwd_limit;
     xml.push_str(&format!(
-        "\n  <cwd_listing path=\"{}\" count=\"{}\" recursive=\"true\" max_entries=\"100\">\n",
+        "\n  <cwd_listing path=\"{}\" count=\"{}\" recursive=\"true\" max_entries=\"{}\" truncated=\"{}\">\n",
         xml_escape(&ctx.cwd),
         ctx.cwd_listing.len(),
+        cwd_limit,
+        cwd_truncated,
     ));
     for entry in &ctx.cwd_listing {
         xml.push_str(&format!(
@@ -1454,7 +1462,7 @@ mod tests {
         assert!(xml.contains("status=\"clean\""));
         assert!(xml.contains("hash=\"abc123\""));
         assert!(xml.contains("initial commit"));
-        assert!(xml.contains("<files count=\"1\">"));
+        assert!(xml.contains("<files count=\"1\" limit=\"100\" truncated=\"false\">"));
         assert!(xml.contains("path=\"src/main.rs\""));
     }
 

@@ -260,7 +260,7 @@ pub async fn run_coding_agent(
                 "glob" => crate::tools::glob::execute(input),
                 "write_file" => execute_write_file_tool(input, &working_dir, &mut modified_files),
                 "patch_file" => execute_patch_file_tool(input, &working_dir, &mut modified_files),
-                "bash" => execute_bash(input, config, cancelled).await,
+                "bash" => execute_bash(input, config, cancelled, &working_dir).await,
                 "ask_user" => {
                     let q = input["question"].as_str().unwrap_or("");
                     let options = input["options"].as_array().map(|a| {
@@ -470,6 +470,7 @@ async fn execute_bash(
     input: &serde_json::Value,
     config: &Config,
     cancelled: &Arc<AtomicBool>,
+    working_dir: &Path,
 ) -> anyhow::Result<String> {
     let command = input["command"]
         .as_str()
@@ -507,12 +508,17 @@ async fn execute_bash(
         );
     }
 
-    eprintln!("  \x1b[2m↳ running: {command}\x1b[0m");
-
-    let timeout_seconds = input["timeout_seconds"]
-        .as_u64()
-        .unwrap_or(30)
-        .clamp(1, 120);
+    let explicit_timeout = input["timeout_seconds"].as_u64();
+    let timeout_seconds = explicit_timeout
+        .unwrap_or_else(|| estimate_timeout_seconds(command, working_dir))
+        .clamp(1, 1200);
+    if explicit_timeout.is_some() {
+        eprintln!("  \x1b[2m↳ running: {command} (timeout {timeout_seconds}s)\x1b[0m");
+    } else {
+        eprintln!(
+            "  \x1b[2m↳ running: {command} (timeout {timeout_seconds}s, estimated)\x1b[0m"
+        );
+    }
     #[cfg(unix)]
     let mut cmd = tokio::process::Command::new("sh");
     #[cfg(unix)]
@@ -569,6 +575,88 @@ async fn execute_bash(
         out.status.code().unwrap_or(-1),
         redacted.trim_end()
     ))
+}
+
+fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
+    let lower = command.to_lowercase();
+    let file_count = estimate_project_file_count(working_dir, 3000) as u64;
+    let t = if lower.starts_with("cargo test") {
+        180 + file_count / 4
+    } else if lower.starts_with("cargo build") || lower.starts_with("cargo check") {
+        120 + file_count / 5
+    } else if lower.starts_with("go test")
+        || lower.starts_with("pytest")
+        || lower.starts_with("jest")
+        || lower.contains(" test") && (lower.starts_with("npm") || lower.starts_with("pnpm") || lower.starts_with("yarn"))
+    {
+        120 + file_count / 5
+    } else if lower.starts_with("ruff")
+        || lower.starts_with("eslint")
+        || lower.starts_with("black")
+        || lower.starts_with("prettier")
+    {
+        60 + file_count / 10
+    } else if lower.starts_with("cargo ")
+        || lower.starts_with("npm ")
+        || lower.starts_with("pnpm ")
+        || lower.starts_with("yarn ")
+        || lower.starts_with("make")
+        || lower.starts_with("cmake")
+    {
+        90 + file_count / 8
+    } else if lower.starts_with("git ")
+        || lower.starts_with("ls")
+        || lower.starts_with("cat")
+        || lower.starts_with("head")
+        || lower.starts_with("tail")
+        || lower.starts_with("pwd")
+    {
+        20
+    } else {
+        60 + file_count / 12
+    };
+    t.clamp(15, 900)
+}
+
+fn estimate_project_file_count(root: &Path, max_entries: usize) -> usize {
+    let mut count = 0usize;
+    let mut queue = std::collections::VecDeque::from([root.to_path_buf()]);
+    let skip = [
+        ".git",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".next",
+        ".idea",
+        ".vscode",
+    ];
+
+    while let Some(dir) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if skip.iter().any(|s| s == &name) {
+                    continue;
+                }
+                queue.push_back(path);
+                continue;
+            }
+            count += 1;
+            if count >= max_entries {
+                return count;
+            }
+        }
+    }
+
+    count
 }
 
 async fn wait_for_cancel(cancelled: &Arc<AtomicBool>) {
@@ -695,5 +783,14 @@ mod tests {
     fn test_coding_system_prompt_discourages_root_list_directory() {
         let prompt = build_coding_system_prompt("/tmp", "<project_context />", "none", "none");
         assert!(prompt.contains("Do not call list_directory for initial exploration"));
+    }
+
+    #[test]
+    fn test_estimate_timeout_seconds_prefers_longer_for_cargo_test() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let test_t = estimate_timeout_seconds("cargo test", tmp.path());
+        let git_t = estimate_timeout_seconds("git status", tmp.path());
+        assert!(test_t > git_t);
     }
 }
