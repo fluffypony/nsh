@@ -165,6 +165,10 @@ pub fn import_if_needed(db: &crate::db::Db) {
             db.end_session(&session_id)?;
         }
 
+        // Imported entries are inserted via bulk JSON path; backfill entities so
+        // machine-target queries (e.g. recent ssh hosts) work for imported history.
+        db.backfill_command_entities_if_needed()?;
+
         db.set_meta("shell_history_imported", "1")?;
         db.set_meta("shell_history_imported_per_tty", "1")?;
         tracing::info!("nsh: imported {total_imported} commands from shell history");
@@ -713,6 +717,23 @@ mod tests {
         assert!(
             results.iter().any(|r| r.session_id == "imported_bash_history"),
             "generic bash should create session with filename-based ID"
+        );
+
+        let entities = db
+            .search_command_entities(
+                Some("ssh"),
+                None,
+                Some("machine"),
+                None,
+                None,
+                None,
+                None,
+                100,
+            )
+            .unwrap();
+        assert!(
+            entities.iter().any(|e| e.entity.contains("10.0.0.1")),
+            "import should backfill command entities for imported SSH commands"
         );
 
         assert_eq!(
