@@ -1276,7 +1276,7 @@ impl Db {
     ) -> rusqlite::Result<Vec<CommandWithSummary>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.command, c.cwd, c.exit_code, c.started_at,
-                    c.duration_ms, c.summary, c.output
+                    c.duration_ms, c.summary, SUBSTR(c.output, 1, 6000)
              FROM commands c
              WHERE c.session_id = ?
              ORDER BY c.started_at DESC
@@ -1349,7 +1349,7 @@ impl Db {
             let fts = Self::to_fts_literal_query(fts);
             let mut sql = String::from(
                 "SELECT c.id, c.session_id, c.command, c.cwd,
-                        c.exit_code, c.started_at, c.output,
+                        c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000),
                         highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
                         highlight(commands_fts, 1, '>>>', '<<<') as out_hl
                  FROM commands_fts f
@@ -1436,9 +1436,9 @@ impl Db {
         // No FTS query - use regex or plain scan
         let mut sql = String::from(
             "SELECT c.id, c.session_id, c.command, c.cwd,
-                    c.exit_code, c.started_at, c.output,
+                    c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000),
                     c.command as cmd_hl,
-                    c.output as out_hl
+                    SUBSTR(c.output, 1, 2000) as out_hl
              FROM commands c WHERE 1=1",
         );
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
