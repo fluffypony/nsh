@@ -61,7 +61,9 @@ impl CaptureEngine {
         if let Some(last) = self.history_lines.last() {
             let min_len = last.len().min(line.len());
             if min_len > 20 {
-                let common = last.as_bytes().iter()
+                let common = last
+                    .as_bytes()
+                    .iter()
                     .zip(line.as_bytes().iter())
                     .take_while(|(a, b)| a == b)
                     .count();
@@ -219,7 +221,9 @@ fn detect_scrolled_lines(prev: &[String], cur: &[String]) -> Vec<String> {
         &cur.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
     if overlap == 0 && !prev.is_empty() && !cur.is_empty() {
-        let common_prefix_len = prev.iter().zip(cur.iter())
+        let common_prefix_len = prev
+            .iter()
+            .zip(cur.iter())
             .take_while(|(a, b)| a == b)
             .count();
         if common_prefix_len > prev.len() / 2 {

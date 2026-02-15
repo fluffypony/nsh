@@ -99,7 +99,9 @@ fn collect_entries(
             }
 
             let size_str = human_size(size);
-            out.push(format!("{kind:<5} {size_str:>8}  {modified}  {rel_display}"));
+            out.push(format!(
+                "{kind:<5} {size_str:>8}  {modified}  {rel_display}"
+            ));
         }
 
         if out.len() >= max_entries {

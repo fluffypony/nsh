@@ -901,7 +901,7 @@ impl Db {
             if sf == "current" {
                 sql.push_str(
                     " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
-                     (SELECT tty FROM sessions WHERE id = ?))"
+                     (SELECT tty FROM sessions WHERE id = ?))",
                 );
                 params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
             } else {
@@ -1540,7 +1540,7 @@ impl Db {
             if sf == "current" {
                 sql.push_str(
                     " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
-                     (SELECT tty FROM sessions WHERE id = ?))"
+                     (SELECT tty FROM sessions WHERE id = ?))",
                 );
                 params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
             } else {
