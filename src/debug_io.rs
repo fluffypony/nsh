@@ -50,3 +50,32 @@ pub fn append(path: &Path, section: &str, content: &str) {
     let _ = writeln!(f, "{content}");
     let _ = writeln!(f);
 }
+
+pub fn daemon_log(path: &str, section: &str, content: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let dir = crate::config::Config::nsh_dir().join("debug");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let file = dir.join(path);
+    let mut f = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+    }
+    use std::io::Write;
+    let ts = chrono::Utc::now().to_rfc3339();
+    let _ = writeln!(f, "[{ts}] {section}");
+    let _ = writeln!(f, "{content}");
+    let _ = writeln!(f);
+}

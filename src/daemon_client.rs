@@ -6,6 +6,10 @@ use std::os::unix::net::UnixStream;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
 
+fn log_daemon_client(action: &str, payload: &str) {
+    crate::debug_io::daemon_log("daemon.log", action, payload);
+}
+
 pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
     #[cfg(not(unix))]
     {
@@ -28,12 +32,20 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
         }
         let mut json = serde_json::to_string(&json_val)?;
         json.push('\n');
+        log_daemon_client(
+            "client.send_request",
+            &format!("session={session_id}\nrequest={}", json.trim_end()),
+        );
         stream.write_all(json.as_bytes())?;
         stream.flush()?;
 
         let mut reader = BufReader::new(&stream);
         let mut response_line = String::new();
         reader.read_line(&mut response_line)?;
+        log_daemon_client(
+            "client.send_request.response",
+            &format!("session={session_id}\nresponse={}", response_line.trim_end()),
+        );
 
         Ok(serde_json::from_str(&response_line)?)
     }
@@ -109,12 +121,17 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
     }
     let mut json = serde_json::to_string(&json_val)?;
     json.push('\n');
+    log_daemon_client("client.send_to_global", &format!("request={}", json.trim_end()));
     stream.write_all(json.as_bytes())?;
     stream.flush()?;
 
     let mut reader = BufReader::new(&stream);
     let mut response_line = String::new();
     reader.read_line(&mut response_line)?;
+    log_daemon_client(
+        "client.send_to_global.response",
+        &format!("response={}", response_line.trim_end()),
+    );
 
     Ok(serde_json::from_str(&response_line)?)
 }

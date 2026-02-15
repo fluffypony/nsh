@@ -5,7 +5,12 @@ use std::time::{Duration, Instant};
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
 
+fn log_daemon(action: &str, payload: &str) {
+    crate::debug_io::daemon_log("daemon.log", action, payload);
+}
+
 pub fn run_global_daemon() -> anyhow::Result<()> {
+    log_daemon("server.lifecycle", "starting global daemon");
     let lock_path = crate::daemon::global_daemon_lock_path();
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
@@ -16,6 +21,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         use std::os::fd::AsRawFd;
         let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if ret != 0 {
+            log_daemon("server.lifecycle", "another daemon already holds lock; exiting");
             return Ok(());
         }
     }
@@ -105,12 +111,14 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     let idle = last_activity.lock().unwrap().elapsed();
                     if idle > Duration::from_secs(300) {
                         tracing::info!("nshd: idle timeout, shutting down");
+                        log_daemon("server.lifecycle", "idle timeout reached; shutting down");
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 Err(e) => {
                     tracing::warn!("nshd: accept error: {e}");
+                    log_daemon("server.accept.error", &e.to_string());
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
@@ -125,6 +133,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     }
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&pid_path);
+    log_daemon("server.lifecycle", "stopped global daemon");
     drop(lock_file);
     Ok(())
 }
@@ -174,6 +183,8 @@ fn run_write_thread(db: crate::db::Db, rx: mpsc::Receiver<WriteCommand>) {
 }
 
 fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
+    let req_dbg = format!("{request:?}");
+    log_daemon("server.execute_write.request", &req_dbg);
     match request {
         DaemonRequest::Record {
             session, command, cwd, exit_code, started_at,
@@ -356,7 +367,9 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
         }
         other => {
             let _ = other;
-            DaemonResponse::error("unexpected write request")
+            let resp = DaemonResponse::error("unexpected write request");
+            log_daemon("server.execute_write.response", &format!("{resp:?}"));
+            resp
         }
     }
 }
@@ -379,6 +392,8 @@ fn run_read_thread(db: crate::db::Db, rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>
 }
 
 fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
+    let req_dbg = format!("{request:?}");
+    log_daemon("server.execute_read.request", &req_dbg);
     match request {
         DaemonRequest::SearchHistory { query, limit } => {
             match db.search_history(&query, limit) {
@@ -594,7 +609,9 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
         }
         other => {
             let _ = other;
-            DaemonResponse::error("unexpected read request")
+            let resp = DaemonResponse::error("unexpected read request");
+            log_daemon("server.execute_read.response", &format!("{resp:?}"));
+            resp
         }
     }
 }
@@ -622,6 +639,7 @@ fn handle_global_connection(
             return;
         }
     };
+    log_daemon("server.connection.request", line.trim());
 
     let (reply_tx, reply_rx) = mpsc::channel();
 
@@ -643,6 +661,7 @@ fn handle_global_connection(
 
     match reply_rx.recv_timeout(Duration::from_secs(30)) {
         Ok(resp) => {
+            log_daemon("server.connection.response", &format!("{resp:?}"));
             let _ = write_response(&stream, &resp);
         }
         Err(_) => {
