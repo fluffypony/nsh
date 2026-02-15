@@ -1261,7 +1261,9 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
     match name {
         "search_history" => {
             if let Some(q) = input["query"].as_str() {
-                return format!("searching history for \"{q}\"");
+                if !q.trim().is_empty() {
+                    return format!("searching history for \"{q}\"");
+                }
             }
             if let Some(cmd) = input["command"].as_str() {
                 if let Some(entity) = input["entity"].as_str() {
@@ -2362,6 +2364,13 @@ mod tests {
         let input = json!({});
         let desc = describe_tool_action("search_history", &input);
         assert_eq!(desc, "searching history for \"...\"");
+    }
+
+    #[test]
+    fn test_describe_tool_action_search_history_empty_query_uses_command() {
+        let input = json!({"query": "", "command": "ssh"});
+        let desc = describe_tool_action("search_history", &input);
+        assert_eq!(desc, "searching history for `ssh` targets");
     }
 
     #[test]

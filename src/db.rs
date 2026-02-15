@@ -402,7 +402,9 @@ impl Db {
                 Ok(()) => break,
                 Err(e) if attempts < 3 => {
                     attempts += 1;
-                    tracing::debug!("Db::open init_db attempt {attempts}/3 failed: {e}, retrying...");
+                    tracing::debug!(
+                        "Db::open init_db attempt {attempts}/3 failed: {e}, retrying..."
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
                 Err(e) => return Err(e.into()),
@@ -1294,6 +1296,32 @@ impl Db {
             })
         })?;
         let mut results: Vec<CommandWithSummary> = rows.collect::<Result<_, _>>()?;
+        if results.is_empty() {
+            let mut fallback_stmt = self.conn.prepare_cached(
+                "SELECT c.command, c.cwd, c.exit_code, c.started_at,
+                        c.duration_ms, c.summary, SUBSTR(c.output, 1, 6000)
+                 FROM commands c
+                 JOIN sessions s ON s.id = c.session_id
+                 JOIN sessions cur ON cur.id = ?
+                 WHERE c.session_id != ?
+                   AND s.tty = cur.tty
+                 ORDER BY c.started_at DESC
+                 LIMIT ?",
+            )?;
+            let fallback_rows =
+                fallback_stmt.query_map(params![session_id, session_id, limit as i64], |row| {
+                    Ok(CommandWithSummary {
+                        command: row.get(0)?,
+                        cwd: row.get(1)?,
+                        exit_code: row.get(2)?,
+                        started_at: row.get(3)?,
+                        duration_ms: row.get(4)?,
+                        summary: row.get(5)?,
+                        output: row.get(6)?,
+                    })
+                })?;
+            results = fallback_rows.collect::<Result<_, _>>()?;
+        }
         results.reverse();
         Ok(results)
     }
@@ -1329,7 +1357,37 @@ impl Db {
                 session_id: row.get(7)?,
             })
         })?;
-        rows.collect()
+        let mut results: Vec<OtherSessionSummary> = rows.collect::<Result<_, _>>()?;
+        if results.is_empty() {
+            let mut fallback_stmt = self.conn.prepare(
+                "SELECT c.command, c.cwd, c.exit_code, c.started_at,
+                        c.summary, s.tty, s.shell, c.session_id
+                 FROM commands c
+                 JOIN sessions s ON s.id = c.session_id
+                 LEFT JOIN sessions cur ON cur.id = ?
+                 WHERE c.session_id != ?
+                   AND (cur.tty IS NULL OR s.tty != cur.tty)
+                 ORDER BY c.started_at DESC
+                 LIMIT ?",
+            )?;
+            let fallback_rows = fallback_stmt.query_map(
+                params![current_session, current_session, total_limit as i64],
+                |row| {
+                    Ok(OtherSessionSummary {
+                        command: row.get(0)?,
+                        cwd: row.get(1)?,
+                        exit_code: row.get(2)?,
+                        started_at: row.get(3)?,
+                        summary: row.get(4)?,
+                        tty: row.get(5)?,
+                        shell: row.get(6)?,
+                        session_id: row.get(7)?,
+                    })
+                },
+            )?;
+            results = fallback_rows.collect::<Result<_, _>>()?;
+        }
+        Ok(results)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1750,18 +1808,19 @@ impl Db {
         let db_path = dir.join("nsh.db");
         let conn = Connection::open_with_flags(
             &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(std::time::Duration::from_millis(config.db.busy_timeout_ms))?;
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
             PRAGMA cache_size = -2000;
             PRAGMA temp_store = MEMORY;
             PRAGMA mmap_size = 268435456;
             PRAGMA query_only = ON;
-        ")?;
+        ",
+        )?;
         conn.create_scalar_function(
             "regexp",
             2,
@@ -1775,10 +1834,17 @@ impl Db {
                 Ok(re.is_match(&text))
             },
         )?;
-        Ok(Self { conn, max_output_bytes: config.context.max_output_storage_bytes })
+        Ok(Self {
+            conn,
+            max_output_bytes: config.context.max_output_storage_bytes,
+        })
     }
 
-    pub fn bulk_insert_history(&self, session_id: &str, entries_json: &str) -> rusqlite::Result<()> {
+    pub fn bulk_insert_history(
+        &self,
+        session_id: &str,
+        entries_json: &str,
+    ) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
             "INSERT OR IGNORE INTO commands (session_id, command, started_at)
@@ -3263,6 +3329,36 @@ mod tests {
     }
 
     #[test]
+    fn test_recent_commands_with_summaries_falls_back_to_same_tty() {
+        let db = test_db();
+        db.create_session("current", "/dev/pts/0", "zsh", 1234)
+            .unwrap();
+        db.create_session("old_same_tty", "/dev/pts/0", "zsh", 5678)
+            .unwrap();
+
+        let id = db
+            .insert_command(
+                "old_same_tty",
+                "from_old_same_tty",
+                "/tmp",
+                Some(0),
+                "2025-06-01T00:01:00Z",
+                None,
+                Some("ok"),
+                "/dev/pts/0",
+                "zsh",
+                5678,
+            )
+            .unwrap();
+        db.update_summary(id, "same tty fallback").unwrap();
+
+        let cmds = db.recent_commands_with_summaries("current", 10).unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].command, "from_old_same_tty");
+        assert_eq!(cmds[0].summary.as_deref(), Some("same tty fallback"));
+    }
+
+    #[test]
     fn test_other_sessions_with_summaries() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
@@ -4469,6 +4565,8 @@ mod tests {
         db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
         db.create_session("ended", "/dev/pts/1", "bash", 5678)
             .unwrap();
+        db.create_session("active", "/dev/pts/2", "fish", 9012)
+            .unwrap();
         db.end_session("ended").unwrap();
 
         db.insert_command(
@@ -4484,9 +4582,51 @@ mod tests {
             5678,
         )
         .unwrap();
+        db.insert_command(
+            "active",
+            "active_cmd",
+            "/var",
+            Some(0),
+            "2025-06-01T00:01:00Z",
+            None,
+            None,
+            "/dev/pts/2",
+            "fish",
+            9012,
+        )
+        .unwrap();
 
         let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
-        assert!(others.is_empty());
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].command, "active_cmd");
+    }
+
+    #[test]
+    fn test_other_sessions_with_summaries_falls_back_to_recent_other_ttys() {
+        let db = test_db();
+        db.create_session("me", "/dev/pts/0", "zsh", 1234).unwrap();
+        db.create_session("ended_other", "/dev/pts/1", "bash", 5678)
+            .unwrap();
+        db.end_session("ended_other").unwrap();
+
+        db.insert_command(
+            "ended_other",
+            "ended_cmd",
+            "/tmp",
+            Some(0),
+            "2025-06-01T00:00:00Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "bash",
+            5678,
+        )
+        .unwrap();
+
+        let others = db.other_sessions_with_summaries("me", 5, 5).unwrap();
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].command, "ended_cmd");
+        assert_eq!(others[0].tty, "/dev/pts/1");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 # Auto-wrap once so init and daemon share the same session identity.
 if [[ -z "${NSH_PTY_ACTIVE:-}" && -z "${NSH_NO_WRAP:-}" ]] && [[ $- == *i* ]] && [[ -t 0 && -t 1 ]]; then
+    export NSH_WRAP_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
     exec nsh wrap
     return 0
 fi
@@ -95,7 +96,7 @@ if [[ -f /proc/version ]] && grep -qi microsoft /proc/version 2>/dev/null; then
     export NSH_IS_WSL=1
 fi
 
-export NSH_SESSION_ID="__SESSION_ID__"
+export NSH_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"
 __nsh_load_suppressed_exit_codes

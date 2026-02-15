@@ -269,7 +269,8 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             ));
             if let Some(ref output) = cmd.output {
                 if !output.trim().is_empty() {
-                    let truncated = crate::util::truncate(output, config.context.max_output_context_chars);
+                    let truncated =
+                        crate::util::truncate(output, config.context.max_output_context_chars);
                     let redacted = crate::redact::redact_secrets(&truncated, &config.redaction);
                     xml.push_str(&format!(
                         "      <output>{}</output>\n",
@@ -341,17 +342,30 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
 fn read_scrollback(session_id: &str, config: &Config) -> String {
     let nsh_dir = Config::nsh_dir();
     let daemon_socket = crate::daemon::daemon_socket_path(session_id);
+    let fallback_daemon_socket = crate::daemon::daemon_socket_path("default");
 
     let max_lines = config.context.scrollback_pages * 24;
 
     #[cfg(unix)]
     let daemon_available = daemon_socket.exists();
+    #[cfg(unix)]
+    let fallback_daemon_available = session_id != "default" && fallback_daemon_socket.exists();
     #[cfg(not(unix))]
     let daemon_available = false;
+    #[cfg(not(unix))]
+    let fallback_daemon_available = false;
 
     let raw_text = if daemon_available {
         let request = crate::daemon::DaemonRequest::Scrollback { max_lines };
         match crate::daemon_client::send_request(session_id, &request) {
+            Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) => {
+                d["scrollback"].as_str().unwrap_or("").to_string()
+            }
+            _ => read_scrollback_file(session_id, &nsh_dir),
+        }
+    } else if fallback_daemon_available {
+        let request = crate::daemon::DaemonRequest::Scrollback { max_lines };
+        match crate::daemon_client::send_request("default", &request) {
             Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) => {
                 d["scrollback"].as_str().unwrap_or("").to_string()
             }
@@ -375,6 +389,13 @@ fn read_scrollback_file(session_id: &str, nsh_dir: &std::path::Path) -> String {
     let file_path = nsh_dir.join(format!("scrollback_{session_id}"));
     if file_path.exists() {
         std::fs::read_to_string(&file_path).unwrap_or_default()
+    } else if session_id != "default" {
+        let fallback = nsh_dir.join("scrollback_default");
+        if fallback.exists() {
+            std::fs::read_to_string(fallback).unwrap_or_default()
+        } else {
+            String::new()
+        }
     } else {
         String::new()
     }
@@ -1474,6 +1495,17 @@ mod tests {
         let _ = std::fs::create_dir_all(&nsh_dir);
         let result = read_scrollback_file("nonexistent_session_xyz", &nsh_dir);
         assert!(result.is_empty());
+        let _ = std::fs::remove_dir_all(&nsh_dir);
+    }
+
+    #[test]
+    fn test_read_scrollback_file_falls_back_to_default_file() {
+        let nsh_dir = std::env::temp_dir().join("nsh_test_scrollback_fallback_default");
+        let _ = std::fs::remove_dir_all(&nsh_dir);
+        std::fs::create_dir_all(&nsh_dir).unwrap();
+        std::fs::write(nsh_dir.join("scrollback_default"), "fallback content").unwrap();
+        let result = read_scrollback_file("missing_session", &nsh_dir);
+        assert_eq!(result, "fallback content");
         let _ = std::fs::remove_dir_all(&nsh_dir);
     }
 

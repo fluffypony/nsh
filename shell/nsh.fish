@@ -4,6 +4,9 @@
 # Auto-wrap once so init and daemon share the same session identity.
 if not set -q NSH_PTY_ACTIVE; and not set -q NSH_NO_WRAP; and status is-interactive
     if test -t 0; and test -t 1
+        if not set -q NSH_WRAP_SESSION_ID
+            set -gx NSH_WRAP_SESSION_ID "__SESSION_ID__"
+        end
         exec nsh wrap
     end
 end
@@ -116,7 +119,11 @@ if set -q NSH_SESSION_ID
     return 0
 end
 
-set -gx NSH_SESSION_ID "__SESSION_ID__"
+if set -q NSH_WRAP_SESSION_ID
+    set -gx NSH_SESSION_ID "$NSH_WRAP_SESSION_ID"
+else
+    set -gx NSH_SESSION_ID "__SESSION_ID__"
+end
 if set -q NSH_ORIG_TTY
     set -gx NSH_TTY "$NSH_ORIG_TTY"
 else

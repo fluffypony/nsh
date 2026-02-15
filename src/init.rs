@@ -97,6 +97,58 @@ mod tests {
     }
 
     #[test]
+    fn test_zsh_wrap_sets_wrap_session_id() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("export NSH_WRAP_SESSION_ID="),
+            "zsh init should export NSH_WRAP_SESSION_ID before wrap"
+        );
+        assert!(
+            script.contains("export NSH_SESSION_ID=\"${NSH_WRAP_SESSION_ID:-"),
+            "zsh init should derive NSH_SESSION_ID from NSH_WRAP_SESSION_ID when present"
+        );
+    }
+
+    #[test]
+    fn test_bash_wrap_sets_wrap_session_id() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("export NSH_WRAP_SESSION_ID="),
+            "bash init should export NSH_WRAP_SESSION_ID before wrap"
+        );
+        assert!(
+            script.contains("export NSH_SESSION_ID=\"${NSH_WRAP_SESSION_ID:-"),
+            "bash init should derive NSH_SESSION_ID from NSH_WRAP_SESSION_ID when present"
+        );
+    }
+
+    #[test]
+    fn test_fish_wrap_sets_wrap_session_id() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("set -gx NSH_WRAP_SESSION_ID"),
+            "fish init should export NSH_WRAP_SESSION_ID before wrap"
+        );
+        assert!(
+            script.contains("if set -q NSH_WRAP_SESSION_ID"),
+            "fish init should derive NSH_SESSION_ID from NSH_WRAP_SESSION_ID when present"
+        );
+    }
+
+    #[test]
+    fn test_powershell_wrap_sets_wrap_session_id() {
+        let script = generate_init_script("powershell");
+        assert!(
+            script.contains("$env:NSH_WRAP_SESSION_ID"),
+            "PowerShell init should set NSH_WRAP_SESSION_ID before wrap"
+        );
+        assert!(
+            script.contains("$env:NSH_SESSION_ID = if ($env:NSH_WRAP_SESSION_ID)"),
+            "PowerShell init should derive NSH_SESSION_ID from NSH_WRAP_SESSION_ID when present"
+        );
+    }
+
+    #[test]
     fn test_zsh_prefers_original_tty_when_wrapped() {
         let script = generate_init_script("zsh");
         assert!(

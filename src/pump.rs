@@ -372,7 +372,9 @@ pub fn pump_loop(
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
     }
 
-    let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
+    let session_id = std::env::var("NSH_WRAP_SESSION_ID")
+        .or_else(|_| std::env::var("NSH_SESSION_ID"))
+        .unwrap_or_else(|_| "default".into());
 
     let nsh_dir = crate::config::Config::nsh_dir();
     let _ = std::fs::create_dir_all(&nsh_dir);
@@ -515,12 +517,7 @@ pub fn pump_loop(
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
                     if poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_daemon_connection(
-                            l,
-                            &capture,
-                            max_output_bytes,
-                            &active_conns,
-                        );
+                        handle_daemon_connection(l, &capture, max_output_bytes, &active_conns);
                     }
                 }
             }
@@ -869,12 +866,28 @@ fn enrich_record_with_output(
     captured: Option<String>,
 ) -> crate::daemon::DaemonRequest {
     if let crate::daemon::DaemonRequest::Record {
-        session, command, cwd, exit_code, started_at,
-        tty, pid, shell, duration_ms, output,
-    } = request {
+        session,
+        command,
+        cwd,
+        exit_code,
+        started_at,
+        tty,
+        pid,
+        shell,
+        duration_ms,
+        output,
+    } = request
+    {
         crate::daemon::DaemonRequest::Record {
-            session, command, cwd, exit_code, started_at,
-            tty, pid, shell, duration_ms,
+            session,
+            command,
+            cwd,
+            exit_code,
+            started_at,
+            tty,
+            pid,
+            shell,
+            duration_ms,
             output: output.or(captured),
         }
     } else {
@@ -883,7 +896,9 @@ fn enrich_record_with_output(
 }
 
 #[cfg(unix)]
-fn forward_to_global_daemon(request: &crate::daemon::DaemonRequest) -> crate::daemon::DaemonResponse {
+fn forward_to_global_daemon(
+    request: &crate::daemon::DaemonRequest,
+) -> crate::daemon::DaemonResponse {
     match crate::daemon_client::send_to_global(request) {
         Ok(resp) => resp,
         Err(e) => crate::daemon::DaemonResponse::error(format!("global daemon unavailable: {e}")),

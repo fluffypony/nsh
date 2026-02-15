@@ -4,6 +4,9 @@
 # Auto-wrap once on non-Windows platforms so init and daemon share
 # the same session identity. Native Windows currently has no PTY wrap.
 if (-not $IsWindows -and -not $env:NSH_PTY_ACTIVE -and -not $env:NSH_NO_WRAP) {
+    if (-not $env:NSH_WRAP_SESSION_ID) {
+        $env:NSH_WRAP_SESSION_ID = "__SESSION_ID__"
+    }
     & nsh wrap
     return
 }
@@ -12,7 +15,7 @@ if ($env:NSH_SESSION_ID) {
     return
 }
 
-$env:NSH_SESSION_ID = "__SESSION_ID__"
+$env:NSH_SESSION_ID = if ($env:NSH_WRAP_SESSION_ID) { $env:NSH_WRAP_SESSION_ID } else { "__SESSION_ID__" }
 $env:NSH_PTY_ACTIVE = "0"
 
 function global:? {

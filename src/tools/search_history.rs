@@ -106,12 +106,25 @@ pub fn execute(
         limit,
     )?;
 
+    let query_mentions_ssh = query.unwrap_or("").to_ascii_lowercase().contains("ssh");
+    let command_mentions_ssh = command_filter
+        .map(|cmd| {
+            let normalized = cmd.trim().to_ascii_lowercase();
+            normalized == "ssh" || normalized.ends_with("/ssh")
+        })
+        .unwrap_or(false);
+
     let matches = if matches.is_empty()
         && session == Some("current")
-        && query.unwrap_or("").to_ascii_lowercase().contains("ssh")
+        && (query_mentions_ssh || command_mentions_ssh)
     {
+        let fallback_query = if query.unwrap_or("").trim().is_empty() {
+            command_filter
+        } else {
+            query
+        };
         db.search_history_advanced(
-            query,
+            fallback_query,
             regex,
             resolved_since.as_deref(),
             resolved_until.as_deref(),
@@ -1166,5 +1179,32 @@ mod tests {
         let input = serde_json::json!({"query": "what servers have I sshd into recently"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
         assert!(result.contains("203.0.113.11"));
+    }
+
+    #[test]
+    fn test_execute_current_session_ssh_fallback_with_empty_query_and_command_filter() {
+        let db = test_db();
+        db.insert_command(
+            "other_sess",
+            "ssh admin@203.0.113.22",
+            "/project",
+            Some(0),
+            "2026-02-11T17:59:15Z",
+            None,
+            None,
+            "",
+            "",
+            0,
+        )
+        .unwrap();
+        let config = Config::default();
+        let input = serde_json::json!({
+            "command": "ssh",
+            "session": "current",
+            "query": "",
+            "latest_only": true
+        });
+        let result = execute(&db, &input, &config, "test_sess").unwrap();
+        assert!(result.contains("203.0.113.22"));
     }
 }
