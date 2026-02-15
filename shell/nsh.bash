@@ -12,7 +12,8 @@ __nsh_clear_pending_command() {
     [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
     command rm -f \
         "$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}" \
-        "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" 2>/dev/null
+        "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" \
+        "$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}" 2>/dev/null
     __nsh_pending_cmd=""
 }
 
@@ -241,12 +242,19 @@ __nsh_prompt_command() {
 # ── Check for pending commands from nsh query ───────────
 __nsh_check_pending() {
     local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
+    local autorun_file="$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}"
     if [[ -f "$cmd_file" ]]; then
         local cmd
         cmd="$(command cat "$cmd_file")"
         command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __nsh_pending_cmd="$cmd"
+            if [[ -f "$autorun_file" ]]; then
+                command rm -f "$autorun_file"
+                history -s -- "$cmd"
+                builtin eval -- "$cmd"
+                return
+            fi
             # Method 1: READLINE_LINE (bash 5.1+)
             READLINE_LINE="$cmd"
             READLINE_POINT=${#cmd}

@@ -123,11 +123,8 @@ pub fn execute(
 
     let should_execute_immediately =
         (force_autorun && can_autorun) || user_confirmed_intermediate || auto_execute_pending;
-    if should_execute_immediately && command_requires_shell_state(&command) {
-        eprintln!(
-            "\x1b[2m(auto-run skipped: command requires shell state; queued for prompt)\x1b[0m"
-        );
-    } else if should_execute_immediately {
+    let execute_via_shell_autorun = should_execute_immediately && !pending;
+    if should_execute_immediately && pending {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
         #[cfg(unix)]
         let output = std::process::Command::new("sh")
@@ -175,7 +172,7 @@ pub fn execute(
         return Ok(CommandExecutionOutcome::Terminal);
     }
 
-    if config.execution.mode != "confirm" {
+    if config.execution.mode != "confirm" || execute_via_shell_autorun {
         // Write command to pending file for shell hook to pick up
         let nsh_dir = crate::config::Config::nsh_dir();
         let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
@@ -232,6 +229,34 @@ pub fn execute(
             // Clear any stale pending_flag from a previous sequence
             let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
             let _ = std::fs::remove_file(&stale_flag);
+        }
+
+        let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
+        if execute_via_shell_autorun {
+            let tmp = autorun_file.with_extension("tmp");
+            {
+                use std::io::Write;
+                #[cfg(unix)]
+                use std::os::unix::fs::OpenOptionsExt;
+                #[cfg(unix)]
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp)?;
+                #[cfg(not(unix))]
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&tmp)?;
+                f.write_all(b"1")?;
+            }
+            std::fs::rename(&tmp, &autorun_file)?;
+            eprintln!("\x1b[2m(auto-running)\x1b[0m");
+        } else {
+            let _ = std::fs::remove_file(&autorun_file);
         }
     }
 
@@ -658,23 +683,6 @@ fn shell_quote_if_needed(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-fn command_requires_shell_state(command: &str) -> bool {
-    let head = command.split_whitespace().next().unwrap_or("");
-    matches!(
-        head,
-        "cd"
-            | "pushd"
-            | "popd"
-            | "alias"
-            | "unalias"
-            | "export"
-            | "unset"
-            | "source"
-            | "."
-            | "set"
-    )
-}
-
 fn display_command_preview(command: &str, explanation: &str, risk: &crate::security::RiskLevel) {
     let color = match risk {
         RiskLevel::Dangerous => "\x1b[1;31m",
@@ -926,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_autorun_cd_prefills_instead_of_subprocess_execution() {
+    fn test_execute_autorun_cd_prefills_and_marks_shell_autorun() {
         let session = "test_autorun_cd";
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();
@@ -941,9 +949,12 @@ mod tests {
 
         let nsh_dir = crate::config::Config::nsh_dir();
         let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
+        let autorun_file = nsh_dir.join(format!("pending_autorun_{session}"));
         assert!(cmd_file.exists());
+        assert!(autorun_file.exists());
         assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "cd /tmp");
         let _ = std::fs::remove_file(&cmd_file);
+        let _ = std::fs::remove_file(&autorun_file);
     }
 
     #[test]

@@ -1763,12 +1763,14 @@ impl Db {
                     || name.starts_with("scrollback_") && !name.ends_with(".sock")
                     || name.starts_with("pending_cmd_")
                     || name.starts_with("pending_flag_")
+                    || name.starts_with("pending_autorun_")
                 {
                     let session_id = name
                         .trim_start_matches("daemon_")
                         .trim_start_matches("scrollback_")
                         .trim_start_matches("pending_cmd_")
                         .trim_start_matches("pending_flag_")
+                        .trim_start_matches("pending_autorun_")
                         .trim_end_matches(".sock")
                         .trim_end_matches(".pid")
                         .trim_end_matches(".tmp");

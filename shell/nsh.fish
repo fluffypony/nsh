@@ -17,7 +17,8 @@ function __nsh_clear_pending_command
     end
     command rm -f \
         "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID" \
-        "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" 2>/dev/null
+        "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" \
+        "$HOME/.nsh/pending_autorun_$NSH_SESSION_ID" 2>/dev/null
     set -g __nsh_pending_cmd ""
 end
 
@@ -276,11 +277,18 @@ end
 # ── Check for pending commands ──────────────────────────
 function __nsh_check_pending --on-event fish_prompt
     set -l cmd_file "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID"
+    set -l autorun_file "$HOME/.nsh/pending_autorun_$NSH_SESSION_ID"
     if test -f $cmd_file
         set -l cmd (command cat $cmd_file)
         command rm -f $cmd_file
         if test -n "$cmd"
             set -g __nsh_pending_cmd $cmd
+            if test -f $autorun_file
+                command rm -f $autorun_file
+                builtin history append -- "$cmd" 2>/dev/null
+                builtin eval -- "$cmd"
+                return
+            end
             commandline -r -- "$cmd"
             commandline -f repaint
         end

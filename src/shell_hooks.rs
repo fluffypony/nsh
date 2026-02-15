@@ -3,12 +3,14 @@
 /// Marker used to identify nsh-generated pending commands.
 pub const PENDING_CMD_PREFIX: &str = "pending_cmd_";
 pub const PENDING_FLAG_PREFIX: &str = "pending_flag_";
+pub const PENDING_AUTORUN_PREFIX: &str = "pending_autorun_";
 
 /// Clean up pending files for a session.
 pub fn cleanup_pending_files(session_id: &str) {
     let dir = crate::config::Config::nsh_dir();
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_CMD_PREFIX}{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_FLAG_PREFIX}{session_id}")));
+    let _ = std::fs::remove_file(dir.join(format!("{PENDING_AUTORUN_PREFIX}{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("scrollback_{session_id}")));
     #[cfg(unix)]
     let _ = std::fs::remove_file(dir.join(format!("scrollback_{session_id}.sock")));
@@ -31,6 +33,11 @@ mod tests {
     #[test]
     fn test_pending_flag_prefix() {
         assert_eq!(PENDING_FLAG_PREFIX, "pending_flag_");
+    }
+
+    #[test]
+    fn test_pending_autorun_prefix() {
+        assert_eq!(PENDING_AUTORUN_PREFIX, "pending_autorun_");
     }
 
     #[test]
