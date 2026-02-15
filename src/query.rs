@@ -460,7 +460,6 @@ pub async fn handle_query(
                     "code" => {
                         let task = input["task"].as_str().unwrap_or("");
                         let extra_context = input["context"].as_str().unwrap_or("");
-                        eprintln!("\x1b[1;36m⚡ Delegating to coding agent...\x1b[0m");
 
                         let approved = if opts.force_autorun {
                             true
