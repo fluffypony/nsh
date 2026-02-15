@@ -801,7 +801,10 @@ start_line and end_line parameters. Use this for quick file reads.
 
 **grep_file** — To search within a file using regex patterns.
 
-**list_directory** — To see what files exist at a path.
+**list_directory** — To inspect what files/directories exist at a path.
+When exploring cwd to resolve vague directory targets ("cd into the X folder"),
+you should usually set `show_hidden=true`, `recursive=true`, and
+`max_entries=100` to gather enough candidate paths without flooding output.
 
 **web_search** — For up-to-date information and canonical approaches.
 Use this PROACTIVELY to resolve ambiguous package names, verify installation
@@ -899,6 +902,18 @@ things, your first tool call should be investigation (run_command, web_search,
 search_history), followed by ask_user for disambiguation. Never jump straight
 to the command tool when the user's intent could be interpreted multiple ways.
 
+### Directory navigation strategy (`cd` requests)
+For non-explicit navigation requests (example: "cd into the blink-browse folder")
+you MUST follow narrow-to-broad resolution before emitting `command`:
+1. Check `<session_history>` and optionally `search_history` for prior `cd` into
+   matching names from this TTY first.
+2. Inspect current location with `list_directory` using hidden+recursive scan:
+   `show_hidden=true`, `recursive=true`, `max_entries=100`.
+3. If unresolved, expand search outward (project/root/home) with additional
+   discovery tools before picking a path.
+4. Only then emit a concrete `cd <resolved-path>` command.
+Do not guess ambiguous targets. Prefer matching prior user navigation patterns.
+
 ## Examples
 
 User: "delete all .pyc files"
@@ -930,6 +945,13 @@ User: "ssh into the last server I was connected to in this tty"
   If "ssh root@135.181.128.145" appears repeatedly:
 → command: ssh root@135.181.128.145
   explanation: "Connecting to 135.181.128.145 — your most recent SSH target in this terminal."
+
+User: "cd into the blink-browse folder"
+→ search_history: command="cd", entity="blink", session="current", latest_only=true
+→ list_directory: path=".", show_hidden=true, recursive=true, max_entries=100
+→ [if found: ./projects/blink-browse]
+→ command: cd ./projects/blink-browse
+  explanation: "Switching to ./projects/blink-browse found from recent navigation + cwd scan."
 
 User: "add serde to my Cargo.toml"
 → read_file: path="Cargo.toml"

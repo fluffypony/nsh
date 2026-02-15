@@ -335,6 +335,16 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "type": "boolean",
                         "description": "Include dotfiles",
                         "default": false
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "Recurse into subdirectories",
+                        "default": false
+                    },
+                    "max_entries": {
+                        "type": "integer",
+                        "description": "Maximum number of entries to return",
+                        "default": 100
                     }
                 },
                 "required": []
@@ -1202,6 +1212,8 @@ mod tests {
         let props = ld.parameters["properties"].as_object().unwrap();
         assert_eq!(props["path"]["default"], ".");
         assert_eq!(props["show_hidden"]["default"], false);
+        assert_eq!(props["recursive"]["default"], false);
+        assert_eq!(props["max_entries"]["default"], 100);
         let required = ld.parameters["required"].as_array().unwrap();
         assert!(required.is_empty());
     }

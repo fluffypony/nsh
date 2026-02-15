@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
@@ -11,6 +12,11 @@ pub fn execute_with_access(
 ) -> anyhow::Result<String> {
     let path_str = input["path"].as_str().unwrap_or(".");
     let show_hidden = input["show_hidden"].as_bool().unwrap_or(false);
+    let recursive = input["recursive"].as_bool().unwrap_or(false);
+    let max_entries = input["max_entries"]
+        .as_u64()
+        .map(|v| v.clamp(1, 1000) as usize)
+        .unwrap_or(100);
 
     let path = match crate::tools::validate_read_path_with_access(path_str, sensitive_file_access) {
         Ok(p) => p,
@@ -24,60 +30,101 @@ pub fn execute_with_access(
         return Ok(format!("Not a directory: {path_str}"));
     }
 
-    let mut entries: Vec<String> = Vec::new();
-
-    let read_dir = match fs::read_dir(path) {
-        Ok(rd) => rd,
+    let entries = match collect_entries(path.as_path(), show_hidden, recursive, max_entries) {
+        Ok(entries) => entries,
         Err(e) => return Ok(format!("Error reading directory: {e}")),
     };
-
-    for entry in read_dir {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        let name = entry.file_name().to_string_lossy().to_string();
-
-        if !show_hidden && name.starts_with('.') {
-            continue;
-        }
-
-        let meta = std::fs::symlink_metadata(entry.path());
-        let (size, modified, kind) = match &meta {
-            Ok(m) => {
-                let size = m.len();
-                let modified = m
-                    .modified()
-                    .ok()
-                    .map(|t| {
-                        let dt: chrono::DateTime<chrono::Utc> = t.into();
-                        dt.format("%Y-%m-%d %H:%M").to_string()
-                    })
-                    .unwrap_or_else(|| "?".into());
-                let kind = if m.is_dir() {
-                    "dir"
-                } else if m.is_symlink() {
-                    "link"
-                } else {
-                    "file"
-                };
-                (size, modified, kind)
-            }
-            Err(_) => (0, "?".into(), "?"),
-        };
-
-        let size_str = human_size(size);
-        entries.push(format!("{kind:<5} {size_str:>8}  {modified}  {name}"));
-    }
-
-    entries.sort();
 
     if entries.is_empty() {
         Ok(format!("Empty directory: {path_str}"))
     } else {
         Ok(entries.join("\n"))
     }
+}
+
+fn collect_entries(
+    root: &Path,
+    show_hidden: bool,
+    recursive: bool,
+    max_entries: usize,
+) -> std::io::Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+
+    while let Some(dir) = queue.pop_front() {
+        let read_dir = fs::read_dir(&dir)?;
+        for entry in read_dir {
+            if out.len() >= max_entries {
+                break;
+            }
+
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !show_hidden && name.starts_with('.') {
+                continue;
+            }
+
+            let rel_display = relative_display(root, &path, recursive);
+            let meta = std::fs::symlink_metadata(&path);
+            let (size, modified, kind, enqueue_child) = match &meta {
+                Ok(m) => {
+                    let size = m.len();
+                    let modified = m
+                        .modified()
+                        .ok()
+                        .map(|t| {
+                            let dt: chrono::DateTime<chrono::Utc> = t.into();
+                            dt.format("%Y-%m-%d %H:%M").to_string()
+                        })
+                        .unwrap_or_else(|| "?".into());
+                    let (kind, enqueue_child) = if m.is_dir() {
+                        ("dir", recursive)
+                    } else if m.is_symlink() {
+                        ("link", false)
+                    } else {
+                        ("file", false)
+                    };
+                    (size, modified, kind, enqueue_child)
+                }
+                Err(_) => (0, "?".into(), "?", false),
+            };
+
+            if enqueue_child {
+                queue.push_back(path.clone());
+            }
+
+            let size_str = human_size(size);
+            out.push(format!("{kind:<5} {size_str:>8}  {modified}  {rel_display}"));
+        }
+
+        if out.len() >= max_entries {
+            break;
+        }
+    }
+
+    out.sort();
+    Ok(out)
+}
+
+fn relative_display(root: &Path, entry_path: &Path, recursive: bool) -> String {
+    if !recursive {
+        return entry_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| entry_path.to_string_lossy().to_string());
+    }
+
+    entry_path
+        .strip_prefix(root)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| entry_path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
 }
 
 fn human_size(bytes: u64) -> String {
@@ -170,6 +217,39 @@ mod tests {
         assert!(result.contains("subdir"));
         assert!(result.contains("file.txt"));
         assert!(result.contains("dir"));
+    }
+
+    #[test]
+    fn test_list_directory_recursive_with_max_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/c.txt"), "content").unwrap();
+        std::fs::write(dir.path().join("top.txt"), "content").unwrap();
+        let path = dir.path().to_str().unwrap();
+        let input = json!({
+            "path": path,
+            "recursive": true,
+            "max_entries": 2
+        });
+        let result = execute(&input).unwrap();
+        let lines = result.lines().count();
+        assert_eq!(lines, 2);
+    }
+
+    #[test]
+    fn test_list_directory_recursive_includes_relative_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("a/b")).unwrap();
+        std::fs::write(dir.path().join("a/b/c.txt"), "content").unwrap();
+        let path = dir.path().to_str().unwrap();
+        let input = json!({
+            "path": path,
+            "recursive": true,
+            "show_hidden": true,
+            "max_entries": 20
+        });
+        let result = execute(&input).unwrap();
+        assert!(result.contains("a/b/c.txt"));
     }
 
     #[test]
