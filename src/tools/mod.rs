@@ -251,7 +251,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "session": {
                         "type": "string",
                         "description":
-                            "'current', 'all', or specific session ID"
+                            "'current' (all sessions on this TTY/terminal window), 'all' (every session globally), or a specific session ID"
                     },
                     "limit": {
                         "type": "integer",

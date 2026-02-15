@@ -778,6 +778,13 @@ more work remains.
 or you need to find past commands. Supports FTS5, regex, date ranges,
 exit code filters, session scoping, and entity-aware filters via
 command/entity/entity_type/latest_only (for host/IP target lookups).
+IMPORTANT: The <session_history> block in your context already contains
+recent commands from the current TTY across ALL shell sessions on this
+terminal. For questions like "last server I ssh'd into", "last command
+I ran", etc., CHECK SESSION_HISTORY IN CONTEXT FIRST — the answer is
+usually already there. Only use search_history if the context doesn't
+contain enough data. The 'current' session filter searches ALL sessions
+on this terminal (TTY), not just the active shell process.
 
 **write_file** — Write content to a file on disk. The user will see a
 diff (for existing files) or preview (for new files) and must confirm.
@@ -917,6 +924,12 @@ User: "what servers did I ping recently"
 → search_history: command="ping", entity_type="machine"
 → [gets deduped machine targets with timestamps]
 → chat: "You recently pinged ..."
+
+User: "ssh into the last server I was connected to in this tty"
+→ First, check <session_history> in context for recent SSH commands.
+  If "ssh root@135.181.128.145" appears repeatedly:
+→ command: ssh root@135.181.128.145
+  explanation: "Connecting to 135.181.128.145 — your most recent SSH target in this terminal."
 
 User: "add serde to my Cargo.toml"
 → read_file: path="Cargo.toml"
@@ -1091,6 +1104,16 @@ get it right next time.
   Err on the side of being thorough.
 - Prefer parallel tool calls when possible — call search_history, run_command,
   and web_search simultaneously for maximum throughput.
+- The <session_history> block contains recent commands from this terminal
+  (TTY) across all shell sessions. For "last time I did X", "last server",
+  or reconnection requests, check session_history in your context FIRST.
+  Only call search_history if the context doesn't have enough information.
+- When searching history, prefer fetching multiple results (limit=10 or 20)
+  rather than limit=1 or latest_only=true, so you have alternatives if the
+  top result isn't what the user wants.
+- When a user rejects a search result, BROADEN the next search: remove
+  session filters, increase limits, try different query terms, or use
+  session='all'. Never repeat the same search parameters after a rejection.
 - For package management commands, ALWAYS search history first — even if the
   command seems obvious. The user may use a non-standard package manager or
   specific workflow.

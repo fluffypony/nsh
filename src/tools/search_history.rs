@@ -42,7 +42,7 @@ pub fn execute(
 
     // Resolve session filter
     let session_filter = session.and_then(|s| match s {
-        "current" => Some(session_id.to_string()),
+        "current" => Some("current".to_string()),
         "all" | "" => None,
         other => Some(other.to_string()),
     });
@@ -1185,6 +1185,19 @@ mod tests {
     fn test_execute_current_session_ssh_fallback_with_empty_query_and_command_filter() {
         let db = test_db();
         db.insert_command(
+            "test_sess",
+            "echo hello",
+            "/project",
+            Some(0),
+            "2026-02-11T17:58:15Z",
+            None,
+            None,
+            "/dev/pts/1",
+            "",
+            0,
+        )
+        .unwrap();
+        db.insert_command(
             "other_sess",
             "ssh admin@203.0.113.22",
             "/project",
@@ -1192,7 +1205,7 @@ mod tests {
             "2026-02-11T17:59:15Z",
             None,
             None,
-            "",
+            "/dev/pts/1",
             "",
             0,
         )
@@ -1201,7 +1214,6 @@ mod tests {
         let input = serde_json::json!({
             "command": "ssh",
             "session": "current",
-            "query": "",
             "latest_only": true
         });
         let result = execute(&db, &input, &config, "test_sess").unwrap();

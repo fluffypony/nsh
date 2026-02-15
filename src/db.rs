@@ -898,13 +898,16 @@ impl Db {
             params_vec.push(Box::new(u.to_string()));
         }
         if let Some(sf) = session_filter {
-            let resolved = if sf == "current" {
-                current_session.unwrap_or("default")
+            if sf == "current" {
+                sql.push_str(
+                    " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
+                     (SELECT tty FROM sessions WHERE id = ?))"
+                );
+                params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
             } else {
-                sf
-            };
-            sql.push_str(" AND c.session_id = ?");
-            params_vec.push(Box::new(resolved.to_string()));
+                sql.push_str(" AND c.session_id = ?");
+                params_vec.push(Box::new(sf.to_string()));
+            }
         }
 
         sql.push_str(" ORDER BY c.started_at DESC, ce.entity_norm ASC LIMIT ?");
@@ -1432,8 +1435,15 @@ impl Db {
             if failed_only {
                 conditions.push(" AND c.exit_code != 0".to_string());
             }
-            if session_filter.is_some() {
-                conditions.push(format!(" AND c.session_id = ?{param_idx}"));
+            if let Some(sf) = session_filter {
+                if sf == "current" {
+                    conditions.push(format!(
+                        " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
+                         (SELECT tty FROM sessions WHERE id = ?{param_idx}))"
+                    ));
+                } else {
+                    conditions.push(format!(" AND c.session_id = ?{param_idx}"));
+                }
                 param_idx += 1;
             }
             let _ = param_idx;
@@ -1456,7 +1466,11 @@ impl Db {
                 params_vec.push(Box::new(ec));
             }
             if let Some(sf) = session_filter {
-                params_vec.push(Box::new(sf.to_string()));
+                if sf == "current" {
+                    params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
+                } else {
+                    params_vec.push(Box::new(sf.to_string()));
+                }
             }
             params_vec.push(Box::new(limit as i64));
 
@@ -1523,13 +1537,16 @@ impl Db {
             sql.push_str(" AND c.exit_code != 0");
         }
         if let Some(sf) = session_filter {
-            let resolved = if sf == "current" {
-                current_session.unwrap_or("default")
+            if sf == "current" {
+                sql.push_str(
+                    " AND c.session_id IN (SELECT id FROM sessions WHERE tty = \
+                     (SELECT tty FROM sessions WHERE id = ?))"
+                );
+                params_vec.push(Box::new(current_session.unwrap_or("default").to_string()));
             } else {
-                sf
-            };
-            sql.push_str(" AND c.session_id = ?");
-            params_vec.push(Box::new(resolved.to_string()));
+                sql.push_str(" AND c.session_id = ?");
+                params_vec.push(Box::new(sf.to_string()));
+            }
         }
         sql.push_str(" ORDER BY c.started_at DESC LIMIT ?");
         params_vec.push(Box::new(limit as i64));
@@ -3853,7 +3870,7 @@ mod tests {
             "2025-06-01T00:00:00Z",
             None,
             None,
-            "",
+            "/dev/pts/1",
             "",
             0,
         )
@@ -3866,7 +3883,7 @@ mod tests {
             "2025-06-01T00:01:00Z",
             None,
             None,
-            "",
+            "/dev/pts/2",
             "",
             0,
         )
@@ -8326,7 +8343,7 @@ mod tests {
             "2025-06-01T00:00:00Z",
             None,
             None,
-            "",
+            "/dev/pts/1",
             "",
             0,
         )
@@ -8339,7 +8356,7 @@ mod tests {
             "2025-06-01T00:01:00Z",
             None,
             None,
-            "",
+            "/dev/pts/2",
             "",
             0,
         )
@@ -8939,7 +8956,7 @@ mod tests {
             "2025-06-01T00:00:00Z",
             None,
             None,
-            "",
+            "/dev/pts/1",
             "",
             0,
         )
@@ -8952,7 +8969,7 @@ mod tests {
             "2025-06-01T00:01:00Z",
             None,
             None,
-            "",
+            "/dev/pts/2",
             "",
             0,
         )
@@ -9301,7 +9318,7 @@ mod tests {
             "2025-06-01T00:00:00Z",
             None,
             None,
-            "",
+            "/dev/pts/1",
             "",
             0,
         )
@@ -9314,7 +9331,7 @@ mod tests {
             "2025-06-01T00:01:00Z",
             None,
             None,
-            "",
+            "/dev/pts/2",
             "",
             0,
         )
@@ -9333,10 +9350,12 @@ mod tests {
                 100,
             )
             .unwrap();
-        assert!(
-            results.is_empty(),
-            "FTS path passes 'current' literally, not resolved"
+        assert_eq!(
+            results.len(),
+            1,
+            "FTS path resolves 'current' via TTY subquery"
         );
+        assert!(results[0].command.contains("alpha"));
     }
 
     #[test]
@@ -9350,7 +9369,7 @@ mod tests {
             "2025-06-01T00:00:00Z",
             None,
             None,
-            "",
+            "/dev/pts/1",
             "",
             0,
         )
@@ -9363,7 +9382,7 @@ mod tests {
             "2025-06-01T00:01:00Z",
             None,
             None,
-            "",
+            "/dev/pts/2",
             "",
             0,
         )

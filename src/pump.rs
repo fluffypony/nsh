@@ -57,6 +57,21 @@ impl CaptureEngine {
         if line.trim().is_empty() {
             return;
         }
+
+        if let Some(last) = self.history_lines.last() {
+            let min_len = last.len().min(line.len());
+            if min_len > 20 {
+                let common = last.as_bytes().iter()
+                    .zip(line.as_bytes().iter())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                if common > min_len * 4 / 5 {
+                    *self.history_lines.last_mut().unwrap() = line;
+                    return;
+                }
+            }
+        }
+
         self.history_lines.push(line);
         if self.max_history_lines > 0 && self.history_lines.len() > self.max_history_lines {
             let excess = self.history_lines.len() - self.max_history_lines;
@@ -204,6 +219,12 @@ fn detect_scrolled_lines(prev: &[String], cur: &[String]) -> Vec<String> {
         &cur.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
     );
     if overlap == 0 && !prev.is_empty() && !cur.is_empty() {
+        let common_prefix_len = prev.iter().zip(cur.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        if common_prefix_len > prev.len() / 2 {
+            return Vec::new();
+        }
         return prev.to_vec();
     }
     let scrolled_count = prev.len().saturating_sub(overlap);
