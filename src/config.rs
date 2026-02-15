@@ -96,6 +96,7 @@ impl ExecutionConfig {
 pub struct ModelsConfig {
     pub main: Vec<String>,
     pub fast: Vec<String>,
+    pub coding: Vec<String>,
 }
 
 impl Default for ModelsConfig {
@@ -109,6 +110,10 @@ impl Default for ModelsConfig {
             fast: vec![
                 "google/gemini-2.5-flash-lite".into(),
                 "anthropic/claude-haiku-4.5".into(),
+            ],
+            coding: vec![
+                "anthropic/claude-opus-4.6".into(),
+                "anthropic/claude-sonnet-4.5".into(),
             ],
         }
     }
@@ -1009,6 +1014,10 @@ pub fn build_config_xml(
         "    <option key=\"fast\" value=\"{}\" description=\"Model chain for summaries and lightweight tasks\" />\n",
         xml_escape(&config.models.fast.join(", "))
     ));
+    x.push_str(&format!(
+        "    <option key=\"coding\" value=\"{}\" description=\"Model chain for coding sub-agent tasks\" />\n",
+        xml_escape(&config.models.coding.join(", "))
+    ));
     x.push_str("  </section>\n");
 
     // ── Tools ───────────────────────────────────────────
@@ -1588,6 +1597,7 @@ base_url = "https://custom.api.example.com"
         let mc = ModelsConfig::default();
         assert!(!mc.main.is_empty());
         assert!(!mc.fast.is_empty());
+        assert!(!mc.coding.is_empty());
         assert!(mc.main.iter().any(|m| m.contains("gemini")));
         assert!(mc.main.iter().any(|m| m.contains("claude")));
     }
@@ -2041,10 +2051,12 @@ model = "primary"
 [models]
 main = ["model-x", "model-y"]
 fast = ["model-z"]
+coding = ["model-c1", "model-c2"]
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.models.main, vec!["model-x", "model-y"]);
         assert_eq!(config.models.fast, vec!["model-z"]);
+        assert_eq!(config.models.coding, vec!["model-c1", "model-c2"]);
     }
 
     #[test]
@@ -2795,6 +2807,7 @@ timeout_seconds = 45
 
         assert_eq!(config.models.main, vec!["model-a", "model-b"]);
         assert_eq!(config.models.fast, vec!["model-c"]);
+        assert_eq!(config.models.coding, ModelsConfig::default().coding);
 
         assert_eq!(config.web_search.provider, "brave");
         assert_eq!(config.web_search.model, "brave/search");
@@ -3115,10 +3128,12 @@ model = "custom/model"
 [models]
 main = ["single-model"]
 fast = []
+coding = ["single-coding-model"]
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.models.main, vec!["single-model"]);
         assert!(config.models.fast.is_empty());
+        assert_eq!(config.models.coding, vec!["single-coding-model"]);
     }
 
     #[test]
@@ -3528,6 +3543,7 @@ timeout_seconds = "fast"
         let config = Config::default();
         assert!(!config.models.main.is_empty());
         assert!(!config.models.fast.is_empty());
+        assert!(!config.models.coding.is_empty());
         assert_eq!(config.web_search.provider, "openrouter");
         assert_eq!(config.web_search.model, "perplexity/sonar");
         assert_eq!(config.execution.mode, "prefill");
@@ -3661,6 +3677,7 @@ timeout_seconds = "fast"
         let m = ModelsConfig::default();
         assert!(m.main.len() >= 2);
         assert!(!m.fast.is_empty());
+        assert!(!m.coding.is_empty());
         assert!(m.main.iter().any(|s| s.contains("gemini")));
         assert!(
             m.fast
@@ -4119,9 +4136,11 @@ command = "cmd2"
         let mut config = Config::default();
         config.models.main = vec!["model-a".into(), "model-b".into()];
         config.models.fast = vec!["model-fast".into()];
+        config.models.coding = vec!["model-code".into()];
         let xml = build_config_xml(&config, &[], &[]);
         assert!(xml.contains("model-a, model-b"));
         assert!(xml.contains("model-fast"));
+        assert!(xml.contains("model-code"));
     }
 
     #[test]

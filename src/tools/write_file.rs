@@ -27,7 +27,7 @@ fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-fn expand_tilde(p: &str) -> PathBuf {
+pub(crate) fn expand_tilde(p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
         dirs::home_dir().unwrap().join(rest)
     } else if p == "~" {
@@ -42,7 +42,10 @@ fn validate_path(path: &Path) -> anyhow::Result<()> {
     validate_path_with_access(path, "block")
 }
 
-fn validate_path_with_access(path: &Path, sensitive_file_access: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_path_with_access(
+    path: &Path,
+    sensitive_file_access: &str,
+) -> anyhow::Result<()> {
     let s = path.to_string_lossy();
 
     if s.as_bytes().contains(&0) {
@@ -126,7 +129,7 @@ fn validate_path_with_access(path: &Path, sensitive_file_access: &str) -> anyhow
     Ok(())
 }
 
-fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
+pub(crate) fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
     let trash = trash_dir();
     std::fs::create_dir_all(&trash)?;
 
@@ -139,7 +142,7 @@ fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(dest)
 }
 
-fn print_diff(old: &str, new: &str) {
+pub(crate) fn print_diff(old: &str, new: &str) {
     let red = "\x1b[31m";
     let green = "\x1b[32m";
     let reset = "\x1b[0m";
@@ -191,7 +194,7 @@ fn print_preview(content: &str) {
 }
 
 #[cfg(unix)]
-fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
+pub(crate) fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -206,7 +209,7 @@ fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
+pub(crate) fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
     std::fs::write(path, content)?;
     Ok(())
 }

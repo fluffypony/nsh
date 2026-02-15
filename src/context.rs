@@ -437,28 +437,112 @@ fn find_git_root(cwd: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-fn gather_custom_instructions(config: &Config, cwd: &str) -> Option<String> {
-    let global = config.context.custom_instructions.clone();
+fn instruction_candidates() -> &'static [&'static str] {
+    &[
+        "AGENTS.md",
+        "AGENT.md",
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        ".claude/instructions.md",
+        "GEMINI.md",
+        "COPILOT.md",
+        ".github/copilot-instructions.md",
+        ".cursorrules",
+        ".cursor/rules",
+        ".clinerules/rules",
+        ".roorules/rules",
+        "CONVENTIONS.md",
+        "AI.md",
+        "LLM.md",
+        ".ai/instructions.md",
+        ".nsh/instructions.md",
+    ]
+}
 
-    let project_instructions = find_git_root(cwd).and_then(|root| {
-        let path = root.join(".nsh").join("instructions.md");
-        if path.exists() {
-            std::fs::read_to_string(&path)
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        } else {
-            None
+fn gather_instruction_file_contents(base_dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for rel in instruction_candidates() {
+        let candidate = base_dir.join(rel);
+        if !candidate.exists() {
+            continue;
         }
-    });
 
-    match (global, project_instructions) {
-        (Some(g), Some(p)) => Some(format!(
-            "{g}\n\n--- Project-specific instructions ---\n\n{p}"
-        )),
-        (Some(g), None) => Some(g),
-        (None, Some(p)) => Some(p),
-        (None, None) => None,
+        if candidate.is_file() {
+            if let Ok(raw) = std::fs::read_to_string(&candidate) {
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() {
+                    out.push((candidate.to_string_lossy().to_string(), trimmed.to_string()));
+                }
+            }
+            continue;
+        }
+
+        if candidate.is_dir() {
+            let mut files = Vec::new();
+            let walker = ignore::WalkBuilder::new(&candidate)
+                .hidden(false)
+                .git_ignore(false)
+                .git_global(false)
+                .max_depth(Some(4))
+                .sort_by_file_name(|a, b| a.cmp(b))
+                .build();
+            for entry in walker.flatten() {
+                if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    files.push(entry.into_path());
+                }
+            }
+            files.sort();
+            for path in files {
+                if let Ok(raw) = std::fs::read_to_string(&path) {
+                    let trimmed = raw.trim();
+                    if !trimmed.is_empty() {
+                        out.push((path.to_string_lossy().to_string(), trimmed.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn gather_custom_instructions(config: &Config, cwd: &str) -> Option<String> {
+    let mut chunks = Vec::new();
+
+    if let Some(global) = config.context.custom_instructions.clone() {
+        chunks.push(global);
+    }
+
+    let mut scan_roots = Vec::new();
+    if let Some(root) = find_git_root(cwd) {
+        scan_roots.push(root);
+    }
+    let cwd_path = std::path::PathBuf::from(cwd);
+    if !scan_roots.iter().any(|p| p == &cwd_path) {
+        scan_roots.push(cwd_path);
+    }
+
+    let mut seen_paths = std::collections::HashSet::new();
+    for root in scan_roots {
+        for (path, content) in gather_instruction_file_contents(&root) {
+            if !seen_paths.insert(path.clone()) {
+                continue;
+            }
+            chunks.push(format!("--- {path} ---\n{content}"));
+        }
+    }
+
+    if chunks.is_empty() {
+        return None;
+    }
+
+    let joined = chunks.join("\n\n");
+    if joined.chars().count() <= 8192 {
+        Some(joined)
+    } else {
+        let truncated: String = joined.chars().take(8192).collect();
+        Some(format!(
+            "{truncated}\n\n[custom instructions truncated to 8192 characters]"
+        ))
     }
 }
 
@@ -2103,7 +2187,7 @@ mod tests {
         let text = result.unwrap();
         assert!(text.contains("Global rule: be concise"));
         assert!(text.contains("Project rule: use tabs"));
-        assert!(text.contains("Project-specific instructions"));
+        assert!(text.contains("instructions.md"));
     }
 
     #[test]
@@ -3935,6 +4019,42 @@ mod tests {
         let config = Config::default();
         let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap());
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_detects_agent_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "root agent rules").unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "claude rules").unwrap();
+        std::fs::create_dir_all(tmp.path().join("subdir")).unwrap();
+        std::fs::write(
+            tmp.path().join("subdir").join("AGENT.md"),
+            "cwd agent rules",
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let result =
+            gather_custom_instructions(&config, tmp.path().join("subdir").to_str().unwrap())
+                .unwrap();
+        assert!(result.contains("root agent rules"));
+        assert!(result.contains("claude rules"));
+        assert!(result.contains("cwd agent rules"));
+        assert!(result.contains("AGENTS.md"));
+    }
+
+    #[test]
+    fn test_gather_custom_instructions_truncates_to_limit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let huge = "x".repeat(9000);
+        std::fs::write(tmp.path().join("AGENTS.md"), huge).unwrap();
+
+        let config = Config::default();
+        let result = gather_custom_instructions(&config, tmp.path().to_str().unwrap()).unwrap();
+        assert!(result.contains("truncated"));
+        assert!(result.chars().count() > 8192);
     }
 
     #[test]

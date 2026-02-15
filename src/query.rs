@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -456,6 +457,75 @@ pub async fn handle_query(
                     "ask_user" => {
                         ask_user_calls.push((id.clone(), name.clone(), input.clone()));
                     }
+                    "code" => {
+                        let task = input["task"].as_str().unwrap_or("");
+                        let extra_context = input["context"].as_str().unwrap_or("");
+                        eprintln!("\x1b[1;36m⚡ Delegating to coding agent...\x1b[0m");
+
+                        let approved = if opts.force_autorun {
+                            true
+                        } else {
+                            eprint!("\x1b[1;33mAllow coding agent to work on this? [y/N]\x1b[0m ");
+                            std::io::stderr().flush().ok();
+                            crate::tools::read_tty_confirmation()
+                        };
+
+                        if !approved {
+                            let msg = "User declined coding agent delegation.";
+                            let wrapped = crate::security::wrap_tool_result(name, msg, &boundary);
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: wrapped,
+                                is_error: true,
+                            });
+                        } else {
+                            let result = crate::coding_agent::run_coding_agent(
+                                task,
+                                extra_context,
+                                config,
+                                db,
+                                session_id,
+                                &xml_context,
+                                &cancelled,
+                            )
+                            .await;
+                            let (content, is_error) = match result {
+                                Ok(summary) => {
+                                    if !opts.private {
+                                        let redacted_query = crate::redact::redact_secrets(
+                                            original_query,
+                                            &config.redaction,
+                                        );
+                                        let redacted_summary = crate::redact::redact_secrets(
+                                            &summary,
+                                            &config.redaction,
+                                        );
+                                        db.insert_conversation(
+                                            session_id,
+                                            &redacted_query,
+                                            "code_agent",
+                                            &redacted_summary,
+                                            None,
+                                            true,
+                                            false,
+                                        )?;
+                                    }
+                                    (summary, false)
+                                }
+                                Err(e) => (format!("Coding agent error: {e}"), true),
+                            };
+                            let redacted =
+                                crate::redact::redact_secrets(&content, &config.redaction);
+                            let sanitized = crate::security::sanitize_tool_output(&redacted);
+                            let wrapped =
+                                crate::security::wrap_tool_result(name, &sanitized, &boundary);
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: wrapped,
+                                is_error,
+                            });
+                        }
+                    }
                     _ => {
                         // Check for terminal skills
                         let is_terminal_skill = name.starts_with("skill_") && {
@@ -806,6 +876,16 @@ When exploring cwd to resolve vague directory targets ("cd into the X folder"),
 you should usually set `show_hidden=true`, `recursive=true`, and
 `max_entries=100` to gather enough candidate paths without flooding output.
 
+**glob** — Find files matching a glob pattern (for example `**/*.rs` or
+`src/**/*.ts`). Respects `.gitignore` and is ideal for fast file discovery
+before reading/editing.
+
+**code** — Delegate coding tasks to a specialized sub-agent that can read and
+edit files, run tests/builds, and return a completion summary. Use this for
+feature work, bug fixes, refactors, code explanations/reviews, and "run tests
+and fix failures" requests. Prefer `code` over direct `write_file`/`patch_file`
+for complex multi-file coding tasks.
+
 **web_search** — For up-to-date information and canonical approaches.
 Use this PROACTIVELY to resolve ambiguous package names, verify installation
 methods, and debug errors after local checks.
@@ -956,6 +1036,12 @@ User: "cd into the blink-browse folder"
 User: "add serde to my Cargo.toml"
 → read_file: path="Cargo.toml"
 → patch_file: path="Cargo.toml", search="[dependencies]", replace="[dependencies]\nserde = ..."
+
+User: "write a Python script that converts CSV to JSON"
+→ code: task="Write a Python script that reads CSV from stdin and outputs JSON to stdout. Include error handling and a --pretty flag."
+
+User: "the tests in src/db.rs are failing, fix them"
+→ code: task="Fix failing tests in src/db.rs. Run cargo test for that module first, then fix and re-run."
 
 User: "switch to claude sonnet"
 → manage_config: action="set", key="provider.model", value="anthropic/claude-sonnet-4.5"
@@ -1289,6 +1375,7 @@ fn execute_sync_tool(
         "grep_file" => tools::grep_file::execute_with_access(input, sfa),
         "read_file" => tools::read_file::execute_with_access(input, sfa),
         "list_directory" => tools::list_directory::execute_with_access(input, sfa),
+        "glob" => tools::glob::execute(input),
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("");
             tools::run_command::execute(cmd, config)
@@ -1336,6 +1423,15 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
         "list_directory" => {
             let path = input["path"].as_str().unwrap_or(".");
             format!("listing {path}")
+        }
+        "glob" => {
+            let pattern = input["pattern"].as_str().unwrap_or("*");
+            format!("glob: {pattern}")
+        }
+        "code" => {
+            let task = input["task"].as_str().unwrap_or("...");
+            let preview: String = task.chars().take(60).collect();
+            format!("coding: {preview}")
         }
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("...");
@@ -1385,6 +1481,8 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "grep_file" | "read_file" => &["path"],
         "write_file" => &["path", "content", "reason"],
         "patch_file" => &["path", "search", "replace", "reason"],
+        "glob" => &["pattern"],
+        "code" => &["task"],
         "run_command" => &["command", "reason"],
         "web_search" => &["query"],
         "ask_user" => &["question"],
@@ -2057,6 +2155,8 @@ mod tests {
             "read_file",
             "grep_file",
             "list_directory",
+            "glob",
+            "code",
             "web_search",
             "run_command",
             "ask_user",

@@ -49,6 +49,7 @@ zeroize = { version = "1", features = ["derive"] }
 
 # File walking (.gitignore-aware)
 ignore = "0.4"
+glob = "0.3"
 
 # SHA-256
 sha2 = "0.10"

@@ -1,7 +1,13 @@
 use crate::daemon_db::DbAccess;
+use crate::tools::write_file::{
+    backup_to_trash, expand_tilde, validate_path_with_access, write_nofollow,
+};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 
+#[cfg(test)]
 fn trash_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -19,6 +25,7 @@ fn trash_dir() -> PathBuf {
     }
 }
 
+#[cfg(test)]
 fn is_root() -> bool {
     #[cfg(windows)]
     {
@@ -27,137 +34,47 @@ fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        dirs::home_dir().unwrap().join(rest)
-    } else if p == "~" {
-        dirs::home_dir().unwrap()
-    } else {
-        PathBuf::from(p)
-    }
-}
-
 #[cfg(test)]
 fn validate_path(path: &Path) -> anyhow::Result<()> {
     validate_path_with_access(path, "block")
 }
 
-fn validate_path_with_access(path: &Path, sensitive_file_access: &str) -> anyhow::Result<()> {
-    let s = path.to_string_lossy();
-
-    if s.as_bytes().contains(&0) {
-        anyhow::bail!("path contains NUL byte");
-    }
-
-    if path
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        anyhow::bail!("path traversal (..) not allowed");
-    }
-
-    let home = dirs::home_dir().unwrap();
-    // Note: TOCTOU race between validation and open is acknowledged but
-    // impractical to fix without openat-style path resolution, and is
-    // also impractical to abuse or attack.
-    let canonical_target = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-
-    let sensitive_dirs = [
-        home.join(".ssh"),
-        home.join(".gnupg"),
-        home.join(".gpg"),
-        home.join(".aws"),
-        home.join(".config/gcloud"),
-        home.join(".azure"),
-        home.join(".kube"),
-        home.join(".docker"),
-        home.join(".nsh"),
-        home.join("AppData").join("Roaming").join("gnupg"),
-        std::path::PathBuf::from(r"C:\Windows"),
-        std::path::PathBuf::from(r"C:\Windows\System32"),
-    ];
-    if sensitive_file_access != "allow" {
-        for dir in &sensitive_dirs {
-            if canonical_target.starts_with(dir) {
-                if sensitive_file_access == "ask" {
-                    eprintln!(
-                        "\x1b[1;33m⚠ '{}' is in a sensitive directory\x1b[0m",
-                        path.display()
-                    );
-                    eprint!("\x1b[1;33mAllow write? [y/N]\x1b[0m ");
-                    let _ = std::io::Write::flush(&mut std::io::stderr());
-                    if crate::tools::read_tty_confirmation() {
-                        break;
-                    }
-                }
-                anyhow::bail!("writes to {} are blocked", dir.display());
-            }
-        }
-    }
-    if canonical_target.starts_with("/etc") && !is_root() {
-        anyhow::bail!("writes to /etc/ require root");
-    }
-
-    if path.exists() {
-        let meta = std::fs::symlink_metadata(path)?;
-        if !meta.file_type().is_file() {
-            anyhow::bail!("target exists but is not a regular file");
-        }
-    }
-
-    if let Some(parent) = canonical_target.parent() {
-        if parent.exists() {
-            let real_parent = parent.canonicalize()?;
-            if sensitive_file_access != "allow"
-                && sensitive_dirs.iter().any(|d| real_parent.starts_with(d))
-            {
-                anyhow::bail!("symlink resolves to a blocked directory");
-            }
-            if real_parent.starts_with("/etc") && !is_root() {
-                anyhow::bail!("symlink resolves to /etc/ (requires root)");
-            }
-        }
-    }
-
-    Ok(())
+#[derive(Debug, Clone)]
+pub(crate) struct PatchApplication {
+    pub path: PathBuf,
+    pub original: String,
+    pub modified: String,
+    pub occurrences: usize,
 }
 
-fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
-    let trash = trash_dir();
-    std::fs::create_dir_all(&trash)?;
+pub(crate) fn apply_patch_with_access(
+    raw_path: &str,
+    search: &str,
+    replace: &str,
+    sensitive_file_access: &str,
+) -> anyhow::Result<PatchApplication> {
+    if raw_path.is_empty() {
+        anyhow::bail!("path is required");
+    }
+    if search.is_empty() {
+        anyhow::bail!("search is required");
+    }
 
-    let filename = path.file_name().unwrap_or_default().to_string_lossy();
-    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    let backup_name = format!("{filename}.{stamp}.nsh_backup");
-    let dest = trash.join(&backup_name);
-
-    std::fs::copy(path, &dest)?;
-    Ok(dest)
-}
-
-#[cfg(unix)]
-fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    f.write_all(content.as_bytes())?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
-    std::fs::write(path, content)?;
-    Ok(())
+    let path = expand_tilde(raw_path);
+    validate_path_with_access(&path, sensitive_file_access)?;
+    let original = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("cannot read '{}': {e}", path.display()))?;
+    if !original.contains(search) {
+        anyhow::bail!("search text not found in '{}'", path.display());
+    }
+    let occurrences = original.matches(search).count();
+    let modified = original.replacen(search, replace, 1);
+    Ok(PatchApplication {
+        path,
+        original,
+        modified,
+        occurrences,
+    })
 }
 
 pub fn execute(
@@ -190,35 +107,18 @@ pub fn execute(
 
     let reason = input["reason"].as_str().unwrap_or("");
 
-    if raw_path.is_empty() {
-        return Ok(Some("path is required".into()));
-    }
-    if search.is_empty() {
-        return Ok(Some("search is required".into()));
-    }
-
-    let path = expand_tilde(raw_path);
-
-    if let Err(e) = validate_path_with_access(&path, &config.tools.sensitive_file_access) {
-        return Ok(Some(format!("{e}")));
-    }
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => {
-            return Ok(Some(format!("cannot read '{}': {e}", path.display())));
-        }
+    let prepared = match apply_patch_with_access(
+        raw_path,
+        search,
+        replace,
+        &config.tools.sensitive_file_access,
+    ) {
+        Ok(p) => p,
+        Err(e) => return Ok(Some(e.to_string())),
     };
-
-    if !content.contains(search) {
-        return Ok(Some(format!(
-            "search text not found in '{}'",
-            path.display()
-        )));
-    }
-
-    let occurrences = content.matches(search).count();
-    let modified = content.replacen(search, replace, 1);
+    let path = prepared.path;
+    let occurrences = prepared.occurrences;
+    let modified = prepared.modified;
 
     let cyan_italic = "\x1b[3;36m";
     let red = "\x1b[31m";

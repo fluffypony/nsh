@@ -1,6 +1,7 @@
 pub mod ask_user;
 pub mod chat;
 pub mod command;
+pub mod glob;
 pub mod grep_file;
 pub mod install_mcp;
 pub mod install_skill;
@@ -351,6 +352,30 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "glob".into(),
+            description: "Find files matching a glob pattern in the project tree \
+                          (respects .gitignore). Use for quick file discovery."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern (e.g. '**/*.rs', 'src/**/*.ts', '*.toml')"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Root directory to search from (default: current directory)"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default: 200)"
+                    }
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolDefinition {
             name: "web_search".into(),
             description: "Search the web. Use this PROACTIVELY to resolve ambiguous \
                           package names, find installation methods, debug errors, or \
@@ -411,6 +436,32 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["question"]
+            }),
+        },
+        ToolDefinition {
+            name: "code".into(),
+            description: "Delegate a task to a specialized coding sub-agent that uses a more \
+                          capable model optimized for code. The sub-agent can autonomously \
+                          read files, write/edit code, search the codebase, and run shell \
+                          commands (build, test, lint) to verify its work. Use this when the \
+                          user asks to: write/create code, modify/refactor existing code, add \
+                          features, fix bugs or failing tests, debug code issues, explain code, \
+                          advise on architecture, run tests and fix failures, do code reviews, \
+                          or other programming tasks."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "Detailed coding task with requirements and expected behavior"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Additional context like paths, errors, constraints, and preferences"
+                    }
+                },
+                "required": ["task"]
             }),
         },
         ToolDefinition {
@@ -717,7 +768,7 @@ mod tests {
     #[test]
     fn test_all_tool_definitions_returns_all_tools() {
         let tools = all_tool_definitions();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 20);
         for tool in &tools {
             assert!(!tool.name.is_empty());
             assert!(!tool.description.is_empty());
@@ -760,9 +811,11 @@ mod tests {
             "grep_file",
             "read_file",
             "list_directory",
+            "glob",
             "web_search",
             "run_command",
             "ask_user",
+            "code",
             "write_file",
             "patch_file",
             "man_page",
@@ -1262,7 +1315,7 @@ mod tests {
     fn test_tool_count_matches_expected_names() {
         let tools = all_tool_definitions();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names.len(), 18);
+        assert_eq!(names.len(), 20);
         assert_eq!(
             names,
             vec![
@@ -1272,9 +1325,11 @@ mod tests {
                 "grep_file",
                 "read_file",
                 "list_directory",
+                "glob",
                 "web_search",
                 "run_command",
                 "ask_user",
+                "code",
                 "write_file",
                 "patch_file",
                 "man_page",

@@ -1,6 +1,7 @@
 mod ansi;
 mod audit;
 mod cli;
+mod coding_agent;
 mod config;
 mod context;
 mod daemon;
