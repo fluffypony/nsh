@@ -199,7 +199,7 @@ function __nsh_postexec --on-event fish_postexec
     set -l exit_code $status
     set -l cmd $__nsh_cmd
     set -l start $__nsh_cmd_start
-    set -l cwd $__nsh_cwd
+    set -l cwd $PWD
     set -g __nsh_cmd ""
     set -g __nsh_cmd_start ""
     set -g __nsh_cwd ""

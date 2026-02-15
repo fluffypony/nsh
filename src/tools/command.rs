@@ -123,7 +123,11 @@ pub fn execute(
 
     let should_execute_immediately =
         (force_autorun && can_autorun) || user_confirmed_intermediate || auto_execute_pending;
-    if should_execute_immediately {
+    if should_execute_immediately && command_requires_shell_state(&command) {
+        eprintln!(
+            "\x1b[2m(auto-run skipped: command requires shell state; queued for prompt)\x1b[0m"
+        );
+    } else if should_execute_immediately {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
         #[cfg(unix)]
         let output = std::process::Command::new("sh")
@@ -654,6 +658,23 @@ fn shell_quote_if_needed(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
+fn command_requires_shell_state(command: &str) -> bool {
+    let head = command.split_whitespace().next().unwrap_or("");
+    matches!(
+        head,
+        "cd"
+            | "pushd"
+            | "popd"
+            | "alias"
+            | "unalias"
+            | "export"
+            | "unset"
+            | "source"
+            | "."
+            | "set"
+    )
+}
+
 fn display_command_preview(command: &str, explanation: &str, risk: &crate::security::RiskLevel) {
     let color = match risk {
         RiskLevel::Dangerous => "\x1b[1;31m",
@@ -902,6 +923,27 @@ mod tests {
             }
             CommandExecutionOutcome::Terminal => panic!("expected ContinueWithResult"),
         }
+    }
+
+    #[test]
+    fn test_execute_autorun_cd_prefills_instead_of_subprocess_execution() {
+        let session = "test_autorun_cd";
+        let db = test_db_with_session(session);
+        let config = crate::config::Config::default();
+        let input = serde_json::json!({
+            "command": "cd /tmp",
+            "explanation": "switch directory",
+            "pending": false,
+        });
+
+        let outcome = execute(&input, "cd /tmp", &db, session, false, &config, true).unwrap();
+        assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
+
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
+        assert!(cmd_file.exists());
+        assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "cd /tmp");
+        let _ = std::fs::remove_file(&cmd_file);
     }
 
     #[test]

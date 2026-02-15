@@ -253,7 +253,7 @@ __nsh_precmd() {
     # Capture and clear state immediately
     local cmd="$__NSH_CMD"
     local start="$__NSH_CMD_START"
-    local cwd="$__NSH_CWD"
+    local cwd="$PWD"
     __NSH_CMD=""
     __NSH_CMD_START=""
     __NSH_CWD=""
