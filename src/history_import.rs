@@ -165,10 +165,6 @@ pub fn import_if_needed(db: &crate::db::Db) {
             db.end_session(&session_id)?;
         }
 
-        // Imported entries are inserted via bulk JSON path; backfill entities so
-        // machine-target queries (e.g. recent ssh hosts) work for imported history.
-        db.backfill_command_entities_if_needed()?;
-
         db.set_meta("shell_history_imported", "1")?;
         db.set_meta("shell_history_imported_per_tty", "1")?;
         tracing::info!("nsh: imported {total_imported} commands from shell history");

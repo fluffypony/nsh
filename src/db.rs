@@ -1888,14 +1888,44 @@ impl Db {
         entries_json: &str,
     ) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO commands (session_id, command, started_at)
-             SELECT ?1, e.value ->> 'cmd', e.value ->> 'ts'
-             FROM json_each(?2) AS e
-             WHERE length(trim(e.value ->> 'cmd')) > 0
-               AND e.value ->> 'cmd' NOT LIKE '#%'",
-            rusqlite::params![session_id, entries_json],
-        )?;
+        let entries: serde_json::Value = serde_json::from_str(entries_json).unwrap_or_default();
+        if let Some(array) = entries.as_array() {
+            for entry in array {
+                let command = entry
+                    .get("cmd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                let started_at = entry
+                    .get("ts")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+
+                if command.is_empty() || command.starts_with('#') || started_at.is_empty() {
+                    continue;
+                }
+
+                tx.execute(
+                    "INSERT OR IGNORE INTO commands (session_id, command, started_at)
+                     VALUES (?, ?, ?)",
+                    params![session_id, command, started_at],
+                )?;
+                let rowid = tx.last_insert_rowid();
+                if rowid == 0 {
+                    continue;
+                }
+
+                for e in extract_command_entities(command) {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO command_entities \
+                         (command_id, executable, entity, entity_norm, entity_type) \
+                         VALUES (?, ?, ?, ?, ?)",
+                        params![rowid, e.executable, e.entity, e.entity_norm, e.entity_type],
+                    )?;
+                }
+            }
+        }
         tx.commit()
     }
 
