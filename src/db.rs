@@ -731,6 +731,7 @@ impl Db {
 
     /// Deletes all imported history sessions and their commands.
     /// FTS cleanup is handled by existing delete triggers; CASCADE handles command_entities.
+    #[allow(dead_code)]
     pub fn cleanup_imported_history(&self) -> rusqlite::Result<()> {
         self.conn
             .execute("DELETE FROM commands WHERE session_id LIKE 'imported_%'", [])?;
