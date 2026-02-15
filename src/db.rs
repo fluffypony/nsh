@@ -1778,10 +1778,6 @@ impl Db {
         Ok(Self { conn, max_output_bytes: config.context.max_output_storage_bytes })
     }
 
-    pub fn checkpoint_wal(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
-    }
-
     pub fn bulk_insert_history(&self, session_id: &str, entries_json: &str) -> rusqlite::Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         self.conn.execute(
