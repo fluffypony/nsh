@@ -102,7 +102,7 @@ pub fn coding_tool_definitions() -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "default": 30}
+                    "timeout_seconds": {"type": "integer"}
                 },
                 "required": ["command"]
             }),
@@ -375,6 +375,7 @@ You complete delegated coding tasks end-to-end by exploring, editing, and verify
 - Never write [REDACTED:...] markers to files.
 - Do not install dependencies unless explicitly requested.
 - Use built-in file tools over bash equivalents for code discovery.
+- For bash, omit timeout_seconds unless a fixed timeout is specifically needed.
 - The project context already includes the root file/folder list (up to 200 entries).
   Do not call list_directory for initial exploration; only use it for a specific nested path
   when glob/read_file/grep_file are insufficient.
@@ -533,30 +534,53 @@ async fn execute_bash(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
-    let wait_output = cmd.spawn()?.wait_with_output();
-    tokio::pin!(wait_output);
+    let mut child = cmd.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stderr"))?;
+
+    eprintln!("  \x1b[2m↳ output (live):\x1b[0m");
+    let stdout_task = tokio::spawn(read_output_stream(stdout));
+    let stderr_task = tokio::spawn(read_output_stream(stderr));
+
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds));
     tokio::pin!(timeout);
 
-    let out = tokio::select! {
-        res = &mut wait_output => {
+    let status = tokio::select! {
+        res = child.wait() => {
             res?
         }
         _ = &mut timeout => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
             anyhow::bail!("command timed out after {timeout_seconds}s");
         }
         _ = wait_for_cancel(cancelled) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
             anyhow::bail!("command interrupted");
         }
     };
 
+    let stdout_text = stdout_task
+        .await
+        .map_err(|e| anyhow::anyhow!("stdout task failed: {e}"))??;
+    let stderr_text = stderr_task
+        .await
+        .map_err(|e| anyhow::anyhow!("stderr task failed: {e}"))??;
+
     let mut combined = String::new();
-    combined.push_str(&String::from_utf8_lossy(&out.stdout));
-    if !out.stderr.is_empty() {
+    combined.push_str(&stdout_text);
+    if !stderr_text.is_empty() {
         if !combined.ends_with('\n') && !combined.is_empty() {
             combined.push('\n');
         }
-        combined.push_str(&String::from_utf8_lossy(&out.stderr));
+        combined.push_str(&stderr_text);
     }
     if combined.chars().count() > 8000 {
         combined = combined.chars().take(8000).collect::<String>() + "\n...[truncated]";
@@ -564,17 +588,34 @@ async fn execute_bash(
 
     if combined.trim().is_empty() {
         eprintln!("  \x1b[2m↳ output: (no output)\x1b[0m");
-    } else {
-        eprintln!("  \x1b[2m↳ output:\x1b[0m");
-        eprintln!("{combined}");
     }
 
     let redacted = crate::redact::redact_secrets(&combined, &config.redaction);
     Ok(format!(
         "exit_code={}\n{}",
-        out.status.code().unwrap_or(-1),
+        status.code().unwrap_or(-1),
         redacted.trim_end()
     ))
+}
+
+async fn read_output_stream<R>(mut reader: R) -> std::io::Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut out = String::new();
+    let mut buf = [0_u8; 2048];
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+        eprint!("{chunk}");
+        out.push_str(&chunk);
+    }
+    Ok(out)
 }
 
 fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
