@@ -141,6 +141,27 @@ pub fn send_to_global(_request: &DaemonRequest) -> anyhow::Result<DaemonResponse
     anyhow::bail!("global daemon not available on this platform")
 }
 
+pub fn stop_global_daemon() -> bool {
+    #[cfg(unix)]
+    {
+        let pid_path = crate::daemon::global_daemon_pid_path();
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                for _ in 0..20 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if unsafe { libc::kill(pid, 0) } != 0 {
+                        return true;
+                    }
+                }
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
     if is_global_daemon_running() {
         return Ok(());

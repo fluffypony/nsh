@@ -147,6 +147,9 @@ pub enum Commands {
     /// Skip capturing the next command's output
     RedactNext,
 
+    /// Restart the nsh daemon
+    Restart,
+
     /// Self-update nsh to the latest version
     Update,
 

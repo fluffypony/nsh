@@ -557,6 +557,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             eprintln!("nsh: next command output will not be captured");
         }
 
+        Commands::Restart => {
+            eprint!("nsh: stopping daemon...");
+            if daemon_client::stop_global_daemon() {
+                eprintln!(" stopped");
+            } else {
+                eprintln!(" not running");
+            }
+            eprint!("nsh: starting daemon...");
+            daemon_client::ensure_global_daemon_running()?;
+            eprintln!(" started (pid {})",
+                std::fs::read_to_string(daemon::global_daemon_pid_path())
+                    .unwrap_or_default().trim().to_string());
+        }
+
         Commands::Update => {
             eprintln!("nsh: checking for updates...");
 
