@@ -987,6 +987,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_normalize_cd_command_resolves_single_directory_match() {
         let db = crate::db::Db::open_in_memory().expect("in-memory db");
         let tmp = tempfile::tempdir().unwrap();
@@ -998,6 +999,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_normalize_cd_command_prefers_recent_history_on_ambiguous_match() {
         let session = "test_cd_history";
         let db = crate::db::Db::open_in_memory().expect("in-memory db");
