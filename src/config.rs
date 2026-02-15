@@ -1214,6 +1214,48 @@ fn opt(x: &mut String, key: &str, value: &str, description: &str, choices: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only env changes guarded by serial tests.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only env changes guarded by serial tests.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                // SAFETY: test-only env changes guarded by serial tests.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: test-only env changes guarded by serial tests.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        (home, home_guard, xdg_data_guard, xdg_config_guard)
+    }
 
     #[test]
     fn test_config_default_values() {
@@ -3044,27 +3086,35 @@ sensitive_file_access = "allow"
     // ── Config::path() and Config::nsh_dir() ────────────
 
     #[test]
+    #[serial_test::serial]
     fn test_config_path_is_inside_nsh_dir() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = temp_home_env();
         let path = Config::path();
         let dir = Config::nsh_dir();
         assert!(path.starts_with(&dir));
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_nsh_dir_is_under_home() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = temp_home_env();
         let dir = Config::nsh_dir();
         let home = dirs::home_dir().unwrap();
         assert!(dir.starts_with(&home));
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_config_path_file_name() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = temp_home_env();
         let path = Config::path();
         assert_eq!(path.file_name().unwrap().to_str().unwrap(), "config.toml");
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_nsh_dir_last_component() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = temp_home_env();
         let dir = Config::nsh_dir();
         assert_eq!(dir.file_name().unwrap().to_str().unwrap(), ".nsh");
     }

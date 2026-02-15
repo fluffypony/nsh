@@ -2360,6 +2360,7 @@ fn is_hostname_like(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     type UsageRow = (
         String,
@@ -2373,6 +2374,47 @@ mod tests {
 
     fn test_db() -> Db {
         Db::open_in_memory().expect("in-memory db")
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only env changes guarded by serial tests.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            // SAFETY: test-only env changes guarded by serial tests.
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(old) = &self.old {
+                // SAFETY: test-only env changes guarded by serial tests.
+                unsafe { std::env::set_var(self.key, old) };
+            } else {
+                // SAFETY: test-only env changes guarded by serial tests.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        (home, home_guard, xdg_data_guard, xdg_config_guard)
     }
 
     #[test]
@@ -10762,7 +10804,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_run_doctor_no_prune_no_vacuum() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = temp_home_env();
         let db = test_db();
         db.create_session("doc_s1", "/dev/pts/0", "zsh", 1234)
             .unwrap();
@@ -10786,7 +10830,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_run_doctor_with_prune_and_vacuum() {
+        let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = temp_home_env();
         let db = test_db();
         db.insert_command(
             "doc_s2",
