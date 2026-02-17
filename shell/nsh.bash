@@ -180,6 +180,12 @@ __nsh_prompt_command() {
     # Remove redact_active flag
     command rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
 
+    # Synchronous CWD persist (no subprocess, no lock)
+    if [[ -n "$NSH_TTY" ]]; then
+        local _tty_safe="${NSH_TTY//\//_}"
+        printf '%s' "$PWD" >| "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+    fi
+
     if [[ -n "$cmd" ]]; then
         # Deduplication guard
         if [[ "$cmd" == "$__nsh_last_recorded_cmd" && "$start" == "$__nsh_last_recorded_start" ]]; then
@@ -237,12 +243,6 @@ __nsh_prompt_command() {
     fi
 
     __nsh_emit_iterm2_cwd
-
-    # Synchronous CWD persist (no subprocess, no lock)
-    if [[ -n "$NSH_TTY" ]]; then
-        local _tty_safe="${NSH_TTY//\//_}"
-        printf '%s' "$PWD" > "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
-    fi
 }
 
 # ── Check for pending commands from nsh query ───────────

@@ -20,9 +20,13 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("redact_next_{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("redact_active_{session_id}")));
 
-    // Clean up per-TTY CWD file
-    if let Ok(tty) = std::env::var("NSH_TTY") {
-        crate::fast_cwd::remove_tty_cwd(&tty);
+    // Clean up per-TTY CWD file (only if this process owns the session)
+    if let Ok(env_session) = std::env::var("NSH_SESSION_ID") {
+        if env_session == session_id {
+            if let Ok(tty) = std::env::var("NSH_TTY") {
+                crate::fast_cwd::remove_tty_cwd(&tty);
+            }
+        }
     }
 }
 

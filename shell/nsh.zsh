@@ -269,6 +269,12 @@ __nsh_precmd() {
     # Remove redact_active flag
     command rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
 
+    # Synchronous CWD persist (no subprocess, no lock)
+    if [[ -n "$NSH_TTY" ]]; then
+        local _tty_safe="${NSH_TTY//\//_}"
+        printf '%s' "$PWD" >| "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+    fi
+
     # Skip if no command was recorded
     [[ -z "${cmd:-}" ]] && return
 
@@ -337,12 +343,6 @@ __nsh_precmd() {
     fi
 
     __nsh_emit_iterm2_cwd
-
-    # Synchronous CWD persist (no subprocess, no lock)
-    if [[ -n "$NSH_TTY" ]]; then
-        local _tty_safe="${NSH_TTY//\//_}"
-        printf '%s' "$PWD" >| "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
-    fi
 }
 
 # ── Check for pending commands from nsh query ───────────
