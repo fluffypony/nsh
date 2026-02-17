@@ -180,10 +180,12 @@ __nsh_prompt_command() {
     # Remove redact_active flag
     command rm -f "$HOME/.nsh/redact_active_${NSH_SESSION_ID}" 2>/dev/null
 
-    # Synchronous CWD persist (no subprocess, no lock)
+    # Synchronous CWD persist — atomic tmp+mv, no subprocess
     if [[ -n "$NSH_TTY" ]]; then
         local _tty_safe="${NSH_TTY//\//_}"
-        printf '%s' "$PWD" >| "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+        local _cwd_tmp="$HOME/.nsh/cwd_${_tty_safe}.tmp"
+        printf '%s' "$PWD" >| "$_cwd_tmp" 2>/dev/null && \
+            command mv -f "$_cwd_tmp" "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
     fi
 
     if [[ -n "$cmd" ]]; then

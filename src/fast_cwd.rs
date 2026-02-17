@@ -17,6 +17,9 @@ pub fn update_tty_cwd(tty: &str, cwd: &str) -> std::io::Result<()> {
     }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, cwd)?;
+    // On Windows, rename fails if target exists; remove it first.
+    #[cfg(windows)]
+    let _ = std::fs::remove_file(&path);
     std::fs::rename(tmp, path)
 }
 

@@ -214,10 +214,12 @@ function __nsh_postexec --on-event fish_postexec
     # Remove redact_active flag
     command rm -f "$HOME/.nsh/redact_active_$NSH_SESSION_ID" 2>/dev/null
 
-    # Synchronous CWD persist (no subprocess, no lock)
+    # Synchronous CWD persist — atomic tmp+mv, no subprocess
     if set -q NSH_TTY
         set -l _tty_safe (string replace -a '/' '_' "$NSH_TTY")
-        printf '%s' "$PWD" > "$HOME/.nsh/cwd_$_tty_safe" 2>/dev/null
+        set -l _cwd_tmp "$HOME/.nsh/cwd_$_tty_safe.tmp"
+        printf '%s' "$PWD" > "$_cwd_tmp" 2>/dev/null
+        and command mv -f "$_cwd_tmp" "$HOME/.nsh/cwd_$_tty_safe" 2>/dev/null
     end
 
     if test -z "$cmd"
