@@ -272,6 +272,12 @@ function __nsh_postexec --on-event fish_postexec
     end
 
     __nsh_emit_iterm2_cwd
+
+    # Synchronous CWD persist (no subprocess, no lock)
+    if set -q NSH_TTY
+        set -l _tty_safe (string replace -a '/' '_' "$NSH_TTY")
+        printf '%s' "$PWD" > "$HOME/.nsh/cwd_$_tty_safe" 2>/dev/null
+    end
 end
 
 # ── Check for pending commands ──────────────────────────
@@ -298,4 +304,9 @@ end
 # ── Cleanup on exit ─────────────────────────────────────
 function __nsh_cleanup --on-event fish_exit
     nsh session end --session $NSH_SESSION_ID 2>/dev/null
+    # Remove per-TTY CWD file
+    if set -q NSH_TTY
+        set -l _tty_safe (string replace -a '/' '_' "$NSH_TTY")
+        command rm -f "$HOME/.nsh/cwd_$_tty_safe" 2>/dev/null
+    end
 end

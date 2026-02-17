@@ -19,6 +19,11 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("daemon_{session_id}.pid")));
     let _ = std::fs::remove_file(dir.join(format!("redact_next_{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("redact_active_{session_id}")));
+
+    // Clean up per-TTY CWD file
+    if let Ok(tty) = std::env::var("NSH_TTY") {
+        crate::fast_cwd::remove_tty_cwd(&tty);
+    }
 }
 
 #[cfg(test)]

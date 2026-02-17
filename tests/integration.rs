@@ -295,9 +295,9 @@ fn test_daemon_send_record_updates_fast_cwd_file() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let index = home.path().join(".nsh").join("tty_last_cwd");
-    let content = std::fs::read_to_string(index).expect("tty_last_cwd should exist");
-    assert!(content.contains("/dev/ttys-test-fast-cwd\t/tmp/fast-cwd"));
+    let cwd_file = home.path().join(".nsh").join("cwd__dev_ttys-test-fast-cwd");
+    let content = std::fs::read_to_string(cwd_file).expect("per-TTY CWD file should exist");
+    assert_eq!(content, "/tmp/fast-cwd");
 }
 
 #[test]

@@ -237,6 +237,12 @@ __nsh_prompt_command() {
     fi
 
     __nsh_emit_iterm2_cwd
+
+    # Synchronous CWD persist (no subprocess, no lock)
+    if [[ -n "$NSH_TTY" ]]; then
+        local _tty_safe="${NSH_TTY//\//_}"
+        printf '%s' "$PWD" > "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+    fi
 }
 
 # ── Check for pending commands from nsh query ───────────
@@ -269,5 +275,10 @@ PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROM
 
 __nsh_cleanup() {
     nsh session end --session "$NSH_SESSION_ID" 2>/dev/null
+    # Remove per-TTY CWD file
+    if [[ -n "$NSH_TTY" ]]; then
+        local _tty_safe="${NSH_TTY//\//_}"
+        command rm -f "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+    fi
 }
 trap '__nsh_cleanup' EXIT
