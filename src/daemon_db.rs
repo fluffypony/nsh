@@ -279,6 +279,10 @@ impl DbAccess for DaemonDb {
                     .get("result_output_snippet")
                     .and_then(|x| x.as_str())
                     .map(str::to_string),
+                created_at: v
+                    .get("created_at")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string),
             })
             .collect())
     }
@@ -454,6 +458,7 @@ impl DbAccess for DaemonDb {
                     .unwrap_or_default()
                     .to_string(),
                 output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
+                summary: v.get("summary").and_then(|x| x.as_str()).map(str::to_string),
                 cmd_highlight: v
                     .get("cmd_highlight")
                     .and_then(|x| x.as_str())
@@ -520,6 +525,7 @@ impl DbAccess for DaemonDb {
                     .unwrap_or_default()
                     .to_string(),
                 output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
+                summary: v.get("summary").and_then(|x| x.as_str()).map(str::to_string),
                 cmd_highlight: v
                     .get("cmd_highlight")
                     .and_then(|x| x.as_str())

@@ -301,6 +301,20 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
             }
             (RiskLevel::Elevated, Some("permission change"))
         }
+        "git" => {
+            let has_force_delete = rest.iter().any(|&a| a == "-D");
+            let has_delete = rest.iter().any(|&a| a == "-d" || a == "--delete");
+            let is_branch = rest.first().is_some_and(|&c| c == "branch");
+            let is_push = rest.first().is_some_and(|&c| c == "push");
+
+            if is_branch && has_force_delete {
+                (RiskLevel::Elevated, Some("force delete branch"))
+            } else if is_push && has_delete {
+                (RiskLevel::Elevated, Some("remote delete"))
+            } else {
+                (RiskLevel::Safe, None)
+            }
+        }
         "chown" => (RiskLevel::Elevated, Some("ownership change")),
         "kill" | "pkill" | "killall" => (RiskLevel::Elevated, Some("process termination")),
         "systemctl" => {

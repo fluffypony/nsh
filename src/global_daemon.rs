@@ -474,7 +474,8 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                         serde_json::json!({
                             "id": r.id, "session_id": r.session_id, "command": r.command,
                             "cwd": r.cwd, "exit_code": r.exit_code, "started_at": r.started_at,
-                            "output": r.output, "cmd_highlight": r.cmd_highlight,
+                            "output": r.output, "summary": r.summary,
+                            "cmd_highlight": r.cmd_highlight,
                             "output_highlight": r.output_highlight,
                         })
                     })
@@ -494,6 +495,7 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                                 "response": c.response, "explanation": c.explanation,
                                 "result_exit_code": c.result_exit_code,
                                 "result_output_snippet": c.result_output_snippet,
+                                "created_at": c.created_at,
                             })
                         })
                         .collect();
@@ -623,7 +625,8 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                             serde_json::json!({
                                 "id": r.id, "session_id": r.session_id, "command": r.command,
                                 "cwd": r.cwd, "exit_code": r.exit_code, "started_at": r.started_at,
-                                "output": r.output, "cmd_highlight": r.cmd_highlight,
+                                "output": r.output, "summary": r.summary,
+                                "cmd_highlight": r.cmd_highlight,
                                 "output_highlight": r.output_highlight,
                             })
                         })

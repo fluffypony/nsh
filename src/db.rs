@@ -579,7 +579,7 @@ impl Db {
         let fts_query = Self::to_fts_literal_query(query);
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.id, c.session_id, c.command, c.cwd,
-                    c.exit_code, c.started_at, c.output,
+                    c.exit_code, c.started_at, c.output, c.summary,
                     highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
                     highlight(commands_fts, 1, '>>>', '<<<') as out_hl
              FROM commands_fts f
@@ -597,8 +597,9 @@ impl Db {
                 exit_code: row.get(4)?,
                 started_at: row.get(5)?,
                 output: row.get(6)?,
-                cmd_highlight: row.get(7)?,
-                output_highlight: row.get(8)?,
+                summary: row.get(7)?,
+                cmd_highlight: row.get(8)?,
+                output_highlight: row.get(9)?,
             })
         })?;
         rows.collect()
@@ -680,7 +681,7 @@ impl Db {
     ) -> rusqlite::Result<Vec<ConversationExchange>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT query, response_type, response, explanation, \
-                    result_exit_code, result_output_snippet
+                    result_exit_code, result_output_snippet, created_at
              FROM conversations
              WHERE session_id = ?
              ORDER BY created_at DESC
@@ -694,6 +695,7 @@ impl Db {
                 explanation: row.get(3)?,
                 result_exit_code: row.get(4)?,
                 result_output_snippet: row.get(5)?,
+                created_at: row.get(6)?,
             })
         })?;
         let mut results: Vec<ConversationExchange> = rows.collect::<Result<_, _>>()?;
@@ -1427,7 +1429,7 @@ impl Db {
             let fts = Self::to_fts_literal_query(fts);
             let mut sql = String::from(
                 "SELECT c.id, c.session_id, c.command, c.cwd,
-                        c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000),
+                        c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000), c.summary,
                         highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
                         highlight(commands_fts, 1, '>>>', '<<<') as out_hl
                  FROM commands_fts f
@@ -1507,8 +1509,9 @@ impl Db {
                     exit_code: row.get(4)?,
                     started_at: row.get(5)?,
                     output: row.get(6)?,
-                    cmd_highlight: row.get(7)?,
-                    output_highlight: row.get(8)?,
+                    summary: row.get(7)?,
+                    cmd_highlight: row.get(8)?,
+                    output_highlight: row.get(9)?,
                 })
             })?;
             let mut results: Vec<HistoryMatch> = rows.collect::<Result<_, _>>()?;
@@ -1528,7 +1531,7 @@ impl Db {
         // No FTS query - use regex or plain scan
         let mut sql = String::from(
             "SELECT c.id, c.session_id, c.command, c.cwd,
-                    c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000),
+                    c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000), c.summary,
                     c.command as cmd_hl,
                     SUBSTR(c.output, 1, 2000) as out_hl
              FROM commands c WHERE 1=1",
@@ -1586,8 +1589,9 @@ impl Db {
                 exit_code: row.get(4)?,
                 started_at: row.get(5)?,
                 output: row.get(6)?,
-                cmd_highlight: row.get(7)?,
-                output_highlight: row.get(8)?,
+                summary: row.get(7)?,
+                cmd_highlight: row.get(8)?,
+                output_highlight: row.get(9)?,
             })
         })?;
         rows.collect()
@@ -1972,6 +1976,7 @@ pub struct HistoryMatch {
     pub exit_code: Option<i32>,
     pub started_at: String,
     pub output: Option<String>,
+    pub summary: Option<String>,
     pub cmd_highlight: String,
     pub output_highlight: Option<String>,
 }
@@ -2042,6 +2047,7 @@ pub struct ConversationExchange {
     pub explanation: Option<String>,
     pub result_exit_code: Option<i32>,
     pub result_output_snippet: Option<String>,
+    pub created_at: Option<String>,
 }
 
 impl ConversationExchange {
@@ -5894,6 +5900,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_user_message();
         assert!(matches!(msg.role, crate::provider::Role::User));
@@ -5914,6 +5921,7 @@ mod tests {
             explanation: Some("builds the project".to_string()),
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_assistant_message("tool_1");
         assert!(matches!(msg.role, crate::provider::Role::Assistant));
@@ -5937,6 +5945,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_assistant_message("tool_2");
         match &msg.content[0] {
@@ -5957,6 +5966,7 @@ mod tests {
             explanation: None,
             result_exit_code: Some(0),
             result_output_snippet: Some("all passed".to_string()),
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("tool_3");
         assert!(matches!(msg.role, crate::provider::Role::Tool));
@@ -5986,6 +5996,7 @@ mod tests {
             explanation: None,
             result_exit_code: Some(1),
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("tool_4");
         match &msg.content[0] {
@@ -6006,6 +6017,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("tool_5");
         match &msg.content[0] {
@@ -6026,6 +6038,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_assistant_message("t1");
         match &msg.content[0] {

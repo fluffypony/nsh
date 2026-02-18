@@ -1695,6 +1695,7 @@ mod tests {
             explanation: Some("List all files".into()),
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.starts_with("<context>"));
@@ -2773,6 +2774,7 @@ mod tests {
                 explanation: Some("lists all files with details".into()),
                 result_exit_code: Some(0),
                 result_output_snippet: Some("total 42".into()),
+                created_at: None,
             },
             ConversationExchange {
                 query: "what is my IP?".into(),
@@ -2781,6 +2783,7 @@ mod tests {
                 explanation: None,
                 result_exit_code: None,
                 result_output_snippet: None,
+                created_at: None,
             },
         ];
         let xml = build_xml_context(&ctx, &Config::default());
@@ -5046,11 +5049,12 @@ mod tests {
             explanation: Some("unique_explanation_marker".into()),
             result_exit_code: Some(0),
             result_output_snippet: Some("unique_snippet".into()),
+            created_at: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(
-            !xml.contains("unique_query_marker_12345"),
-            "conversation history should not be rendered directly in XML context"
+            xml.contains("unique_query_marker_12345"),
+            "conversation history should be rendered in recent_nsh_queries XML"
         );
     }
 
@@ -5183,11 +5187,12 @@ mod tests {
             explanation: Some("list all files".into()),
             result_exit_code: Some(0),
             result_output_snippet: Some("total 42".into()),
+            created_at: None,
         }];
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(
-            !xml.contains("list files"),
-            "conversation history is replayed as messages, not in XML context"
+            xml.contains("list files"),
+            "conversation history should be rendered in recent_nsh_queries XML"
         );
         assert_eq!(ctx.conversation_history.len(), 1);
         assert_eq!(ctx.conversation_history[0].query, "list files");
