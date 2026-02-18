@@ -887,3 +887,121 @@ fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
     }
     true
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    fn send_request_and_read_response(
+        request_line: &str,
+        write_tx: mpsc::Sender<WriteCommand>,
+        read_tx: mpsc::Sender<ReadCommand>,
+        write_rx: mpsc::Receiver<WriteCommand>,
+        read_rx: mpsc::Receiver<ReadCommand>,
+    ) -> (String, Option<WriteCommand>, Option<ReadCommand>) {
+        let (server, mut client) = UnixStream::pair().expect("unix stream pair");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set read timeout");
+
+        let handler = std::thread::spawn(move || {
+            handle_global_connection(server, write_tx, read_tx);
+        });
+
+        let mut line = request_line.to_string();
+        if !line.ends_with('\n') {
+            line.push('\n');
+        }
+        client
+            .write_all(line.as_bytes())
+            .expect("write request to daemon conn");
+        client.flush().expect("flush request");
+
+        let write_cmd = write_rx.recv_timeout(Duration::from_millis(300)).ok();
+        let read_cmd = read_rx.recv_timeout(Duration::from_millis(300)).ok();
+
+        if let Some(cmd) = &write_cmd {
+            let _ = cmd.reply.send(DaemonResponse::ok_with_data(serde_json::json!({
+                "routed": "write"
+            })));
+        }
+        if let Some(cmd) = &read_cmd {
+            let _ = cmd.reply.send(DaemonResponse::ok_with_data(serde_json::json!({
+                "routed": "read"
+            })));
+        }
+
+        let mut response = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response)
+            .expect("read daemon response");
+
+        handler.join().expect("join daemon connection handler");
+        (response, write_cmd, read_cmd)
+    }
+
+    #[test]
+    fn is_write_request_classifies_representative_variants() {
+        assert!(is_write_request(&DaemonRequest::Heartbeat {
+            session: "s".into()
+        }));
+        assert!(is_write_request(&DaemonRequest::RunDoctor {
+            retention_days: 30,
+            no_prune: false,
+            no_vacuum: false,
+        }));
+        assert!(!is_write_request(&DaemonRequest::Status));
+        assert!(!is_write_request(&DaemonRequest::SearchHistory {
+            query: "ls".into(),
+            limit: 5,
+        }));
+    }
+
+    #[test]
+    fn handle_global_connection_routes_write_request_to_write_channel() {
+        let request = serde_json::to_string(&DaemonRequest::Heartbeat {
+            session: "sess-write".into(),
+        })
+        .expect("serialize request");
+
+        let (write_tx, write_rx) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::channel();
+        let (response, write_cmd, read_cmd) =
+            send_request_and_read_response(&request, write_tx, read_tx, write_rx, read_rx);
+
+        assert!(write_cmd.is_some(), "expected write command to be routed");
+        assert!(read_cmd.is_none(), "did not expect read command");
+        assert!(response.contains("routed"));
+        assert!(response.contains("write"));
+    }
+
+    #[test]
+    fn handle_global_connection_routes_read_request_to_read_channel() {
+        let request = serde_json::to_string(&DaemonRequest::Status).expect("serialize request");
+
+        let (write_tx, write_rx) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::channel();
+        let (response, write_cmd, read_cmd) =
+            send_request_and_read_response(&request, write_tx, read_tx, write_rx, read_rx);
+
+        assert!(write_cmd.is_none(), "did not expect write command");
+        assert!(read_cmd.is_some(), "expected read command to be routed");
+        assert!(response.contains("routed"));
+        assert!(response.contains("read"));
+    }
+
+    #[test]
+    fn handle_global_connection_returns_parse_error_for_invalid_json() {
+        let (write_tx, write_rx) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::channel();
+        let (response, write_cmd, read_cmd) =
+            send_request_and_read_response("{not-json", write_tx, read_tx, write_rx, read_rx);
+
+        assert!(write_cmd.is_none());
+        assert!(read_cmd.is_none());
+        assert!(response.contains("parse error"), "unexpected response: {response}");
+    }
+}

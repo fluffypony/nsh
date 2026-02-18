@@ -763,3 +763,305 @@ impl DbAccess for DaemonDb {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::path::Path;
+
+    struct EnvVarGuard {
+        key: String,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set<K: Into<String>, V: AsRef<str>>(key: K, value: V) -> Self {
+            let key = key.into();
+            let original = std::env::var(&key).ok();
+            unsafe {
+                std::env::set_var(&key, value.as_ref());
+            }
+            Self { key, original }
+        }
+
+        fn remove<K: Into<String>>(key: K) -> Self {
+            let key = key.into();
+            let original = std::env::var(&key).ok();
+            unsafe {
+                std::env::remove_var(&key);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                unsafe {
+                    std::env::set_var(&self.key, value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(&self.key);
+                }
+            }
+        }
+    }
+
+    fn setup_isolated_home() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().expect("temp home");
+        let home_guard = EnvVarGuard::set("HOME", home.path().to_string_lossy());
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        (home, home_guard, xdg_config_guard, xdg_data_guard)
+    }
+
+    fn spawn_mock_global_daemon(
+        home_path: &Path,
+        response: DaemonResponse,
+    ) -> (std::sync::mpsc::Receiver<serde_json::Value>, std::thread::JoinHandle<()>) {
+        let nsh_dir = home_path.join(".nsh");
+        std::fs::create_dir_all(&nsh_dir).expect("create ~/.nsh");
+        let socket_path = nsh_dir.join("nshd.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = UnixListener::bind(&socket_path).expect("bind mock daemon socket");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut line = String::new();
+            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+            reader.read_line(&mut line).expect("read request line");
+            let request_json: serde_json::Value =
+                serde_json::from_str(line.trim()).expect("parse request json");
+            tx.send(request_json).expect("send captured request");
+            let mut response_json = serde_json::to_string(&response).expect("serialize response");
+            response_json.push('\n');
+            stream
+                .write_all(response_json.as_bytes())
+                .expect("write response");
+            stream.flush().expect("flush response");
+        });
+
+        (rx, handle)
+    }
+
+    #[test]
+    #[serial]
+    fn get_conversations_maps_response_and_defaults_missing_fields() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "conversations": [
+                    {
+                        "query": "why did this fail?",
+                        "response_type": "chat",
+                        "response": "check logs",
+                        "explanation": "context",
+                        "result_exit_code": 2,
+                        "result_output_snippet": "permission denied",
+                        "created_at": "2026-02-01T10:00:00Z"
+                    },
+                    {
+                        "query": "minimal"
+                    }
+                ]
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let rows = db
+            .get_conversations("sess-1", 5)
+            .expect("get_conversations should succeed");
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].query, "why did this fail?");
+        assert_eq!(rows[0].response_type, "chat");
+        assert_eq!(rows[0].response, "check logs");
+        assert_eq!(rows[0].result_exit_code, Some(2));
+        assert_eq!(rows[1].query, "minimal");
+        assert_eq!(rows[1].response_type, "");
+        assert_eq!(rows[1].response, "");
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "get_conversations");
+        assert_eq!(request["session"], "sess-1");
+        assert_eq!(request["limit"], 5);
+        assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn search_history_advanced_sends_filters_and_maps_results() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "results": [
+                    {
+                        "id": 42,
+                        "session_id": "sess-9",
+                        "command": "ssh root@example.com",
+                        "cwd": "/tmp",
+                        "exit_code": 255,
+                        "started_at": "2026-02-01T10:00:00Z",
+                        "output": "Permission denied",
+                        "summary": "failed ssh",
+                        "cmd_highlight": "ssh <b>root@example.com</b>",
+                        "output_highlight": "<b>Permission denied</b>"
+                    }
+                ]
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let rows = db
+            .search_history_advanced(
+                Some("ssh"),
+                Some("root@"),
+                Some("2h"),
+                Some("now"),
+                Some(255),
+                true,
+                Some("current"),
+                Some("sess-9"),
+                17,
+            )
+            .expect("search_history_advanced should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 42);
+        assert_eq!(rows[0].session_id, "sess-9");
+        assert_eq!(rows[0].command, "ssh root@example.com");
+        assert_eq!(rows[0].exit_code, Some(255));
+        assert_eq!(rows[0].output.as_deref(), Some("Permission denied"));
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "search_history_advanced");
+        assert_eq!(request["fts_query"], "ssh");
+        assert_eq!(request["regex_pattern"], "root@");
+        assert_eq!(request["failed_only"], true);
+        assert_eq!(request["session_filter"], "current");
+        assert_eq!(request["current_session"], "sess-9");
+        assert_eq!(request["limit"], 17);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn daemon_error_response_is_propagated() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (_request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::error("database temporarily unavailable"),
+        );
+
+        let db = DaemonDb::new();
+        let err = db
+            .get_memories(10)
+            .expect_err("error response should propagate as anyhow error");
+        assert!(
+            err.to_string().contains("database temporarily unavailable"),
+            "unexpected error: {err}"
+        );
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn search_command_entities_maps_rows_and_forwards_filters() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "results": [
+                    {
+                        "command_id": 11,
+                        "session_id": "sess-entity",
+                        "command": "ssh admin@host",
+                        "cwd": "/srv",
+                        "started_at": "2026-02-02T00:00:00Z",
+                        "executable": "ssh",
+                        "entity": "admin@host",
+                        "entity_type": "ssh_target"
+                    }
+                ]
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let rows = db
+            .search_command_entities(
+                Some("ssh"),
+                Some("host"),
+                Some("ssh_target"),
+                Some("1d"),
+                Some("now"),
+                Some("current"),
+                Some("sess-entity"),
+                12,
+            )
+            .expect("search_command_entities should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].command_id, 11);
+        assert_eq!(rows[0].session_id, "sess-entity");
+        assert_eq!(rows[0].executable, "ssh");
+        assert_eq!(rows[0].entity, "admin@host");
+        assert_eq!(rows[0].entity_type, "ssh_target");
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "search_command_entities");
+        assert_eq!(request["executable"], "ssh");
+        assert_eq!(request["entity"], "host");
+        assert_eq!(request["entity_type"], "ssh_target");
+        assert_eq!(request["session_filter"], "current");
+        assert_eq!(request["current_session"], "sess-entity");
+        assert_eq!(request["limit"], 12);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn upsert_and_update_memory_default_missing_fields_safely() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "id": 0
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let (id, updated) = db
+            .upsert_memory("key", "value")
+            .expect("upsert_memory should succeed");
+        assert_eq!(id, 0);
+        assert!(!updated);
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "upsert_memory");
+        assert_eq!(request["key"], "key");
+        assert_eq!(request["value"], "value");
+        handle.join().expect("join daemon thread");
+
+        let (request_rx2, handle2) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({})),
+        );
+        let was_updated = db
+            .update_memory(7, None, None)
+            .expect("update_memory should succeed");
+        assert!(!was_updated);
+        let request2 = request_rx2.recv().expect("captured request 2");
+        assert_eq!(request2["type"], "update_memory");
+        assert_eq!(request2["id"], 7);
+        assert_eq!(request2["key"], "");
+        assert_eq!(request2["value"], "");
+        handle2.join().expect("join daemon thread 2");
+    }
+}

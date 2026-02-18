@@ -76,3 +76,90 @@ fn human_size(bytes: u64) -> String {
     }
     format!("{size:.0}PB")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn execute_matches_files_and_respects_max_results() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(root.path().join("a.rs"), "fn main() {}\n").expect("write a.rs");
+        std::fs::create_dir_all(root.path().join("nested")).expect("mkdir nested");
+        std::fs::write(root.path().join("nested").join("b.rs"), "pub fn f() {}\n")
+            .expect("write b.rs");
+        std::fs::write(root.path().join("nested").join("c.txt"), "ignored\n")
+            .expect("write c.txt");
+
+        let output = execute(&json!({
+            "pattern": "**/*.rs",
+            "path": root.path(),
+            "max_results": 1,
+        }))
+        .expect("glob execute");
+
+        assert!(output.contains("a.rs") || output.contains("nested/b.rs"));
+        assert!(
+            output.contains("... and 1 more"),
+            "expected truncation indicator, got: {output}"
+        );
+    }
+
+    #[test]
+    fn execute_returns_no_matches_when_gitignored() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join(".git")).expect("create .git dir");
+        std::fs::write(root.path().join(".gitignore"), "ignored.txt\n").expect("write .gitignore");
+        std::fs::write(root.path().join("ignored.txt"), "secret\n").expect("write ignored");
+
+        let output = execute(&json!({
+            "pattern": "*.txt",
+            "path": root.path(),
+        }))
+        .expect("glob execute");
+
+        assert_eq!(output, "No matches found");
+    }
+
+    #[test]
+    fn execute_errors_for_invalid_pattern_and_bad_paths() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let file_path = root.path().join("single-file");
+        std::fs::write(&file_path, "x").expect("write file");
+
+        let invalid_pattern_err = execute(&json!({
+            "pattern": "[",
+            "path": root.path(),
+        }))
+        .expect_err("expected invalid pattern error");
+        assert!(
+            invalid_pattern_err
+                .to_string()
+                .contains("invalid glob pattern"),
+            "unexpected error: {invalid_pattern_err}"
+        );
+
+        let not_dir_err = execute(&json!({
+            "pattern": "*",
+            "path": file_path,
+        }))
+        .expect_err("expected non-directory error");
+        assert!(not_dir_err.to_string().contains("not a directory"));
+
+        let missing_err = execute(&json!({
+            "pattern": "*",
+            "path": root.path().join("missing-dir"),
+        }))
+        .expect_err("expected missing path error");
+        assert!(missing_err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn human_size_formats_boundaries() {
+        assert_eq!(human_size(0), "0B");
+        assert_eq!(human_size(1023), "1023B");
+        assert_eq!(human_size(1024), "1KB");
+        assert_eq!(human_size(1024 * 1024), "1MB");
+    }
+}

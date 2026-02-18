@@ -305,3 +305,106 @@ pub enum DoctorAction {
     /// Check whether command output capture is active for this shell session
     Capture,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_export_with_format_and_session() {
+        let cli = Cli::try_parse_from([
+            "nsh",
+            "export",
+            "--format",
+            "json",
+            "--session",
+            "sess-123",
+        ])
+        .expect("export should parse");
+
+        match cli.command {
+            Commands::Export { format, session } => {
+                assert_eq!(format.as_deref(), Some("json"));
+                assert_eq!(session.as_deref(), Some("sess-123"));
+            }
+            _ => panic!("expected export command"),
+        }
+    }
+
+    #[test]
+    fn parses_query_flags_and_trailing_words() {
+        let cli = Cli::try_parse_from([
+            "nsh",
+            "query",
+            "--think",
+            "--private",
+            "--json",
+            "find",
+            "latest",
+            "release",
+        ])
+        .expect("query should parse");
+
+        match cli.command {
+            Commands::Query {
+                think,
+                private,
+                json,
+                words,
+            } => {
+                assert!(think);
+                assert!(private);
+                assert!(json);
+                assert_eq!(words, vec!["find", "latest", "release"]);
+            }
+            _ => panic!("expected query command"),
+        }
+    }
+
+    #[test]
+    fn parses_provider_list_local() {
+        let cli = Cli::try_parse_from(["nsh", "provider", "list-local"])
+            .expect("provider list-local should parse");
+
+        match cli.command {
+            Commands::Provider {
+                action: ProviderAction::ListLocal,
+            } => {}
+            _ => panic!("expected provider list-local command"),
+        }
+    }
+
+    #[test]
+    fn parses_daemon_read_scrollback_with_default() {
+        let cli = Cli::try_parse_from(["nsh", "daemon-read", "scrollback"])
+            .expect("daemon-read scrollback should parse");
+
+        match cli.command {
+            Commands::DaemonRead {
+                action: DaemonReadAction::Scrollback { max_lines },
+            } => assert_eq!(max_lines, 1000),
+            _ => panic!("expected daemon-read scrollback command"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_provider_subcommand() {
+        let text = match Cli::try_parse_from(["nsh", "provider", "bogus"]) {
+            Ok(_) => panic!("expected parser error"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            text.contains("unrecognized subcommand") || text.contains("invalid subcommand"),
+            "unexpected error text: {text}"
+        );
+    }
+
+    #[test]
+    fn parses_hidden_nshd_command() {
+        let cli = Cli::try_parse_from(["nsh", "nshd"]).expect("nshd should parse");
+        match cli.command {
+            Commands::Nshd => {}
+            _ => panic!("expected hidden nshd command"),
+        }
+    }
+}

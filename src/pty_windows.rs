@@ -18,3 +18,23 @@ pub mod exec {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_wrapped_shell_returns_actionable_error_message() {
+        let err = run_wrapped_shell("pwsh").expect_err("run_wrapped_shell should fail on windows shim");
+        let text = err.to_string();
+        assert!(text.contains("not supported on native Windows"));
+        assert!(text.contains("use WSL"));
+    }
+
+    #[test]
+    fn exec_execvp_reports_unsupported_kind() {
+        let err = exec_execvp("cmd", &["/c", "echo hello"]);
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(err.to_string().contains("not available on Windows"));
+    }
+}
