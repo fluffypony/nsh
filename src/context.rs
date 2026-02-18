@@ -322,6 +322,34 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         xml.push_str("  </session_history>\n");
     }
 
+    // Recent nsh queries (conversation exchanges in this session)
+    if !ctx.conversation_history.is_empty() {
+        xml.push_str(&format!(
+            "\n  <recent_nsh_queries session=\"current\" count=\"{}\" note=\"These are recent AI assistant interactions in this session. Use for conversational continuity and self-correction.\">\n",
+            ctx.conversation_history.len(),
+        ));
+        // Show oldest to newest for logical chronological flow
+        for exchange in ctx.conversation_history.iter().rev() {
+            let ts_attr = exchange.created_at.as_ref()
+                .map(|t| format!(" ts=\"{}\"", xml_escape(t)))
+                .unwrap_or_default();
+            let result_attr = exchange.result_exit_code
+                .map(|c| format!(" result_exit_code=\"{c}\""))
+                .unwrap_or_default();
+            let response_preview = crate::util::truncate(
+                &crate::redact::redact_secrets(&exchange.response, &config.redaction),
+                500,
+            );
+            xml.push_str(&format!(
+                "    <exchange type=\"{}\"{ts_attr}{result_attr}>\n      <user_query>{}</user_query>\n      <assistant_response>{}</assistant_response>\n    </exchange>\n",
+                xml_escape(&exchange.response_type),
+                xml_escape(&crate::redact::redact_secrets(&exchange.query, &config.redaction)),
+                xml_escape(&response_preview),
+            ));
+        }
+        xml.push_str("  </recent_nsh_queries>\n");
+    }
+
     // Other sessions
     if !ctx.other_sessions.is_empty() {
         xml.push_str("\n  <other_sessions>\n");

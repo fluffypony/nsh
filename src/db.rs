@@ -8661,6 +8661,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("t1");
         match &msg.content[0] {
@@ -8681,6 +8682,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("t2");
         match &msg.content[0] {
@@ -9058,6 +9060,7 @@ mod tests {
             explanation: None,
             result_exit_code: Some(1),
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("t_id");
         match &msg.content[0] {
@@ -9420,6 +9423,7 @@ mod tests {
             explanation: None,
             result_exit_code: Some(0),
             result_output_snippet: Some("output text".to_string()),
+            created_at: None,
         };
         let msg = exchange.to_tool_result_message("t_chat");
         match &msg.content[0] {
@@ -10484,6 +10488,7 @@ mod tests {
             explanation: None,
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_user_message();
         match &msg.content[0] {
@@ -10503,6 +10508,7 @@ mod tests {
             explanation: Some("".to_string()),
             result_exit_code: None,
             result_output_snippet: None,
+            created_at: None,
         };
         let msg = exchange.to_assistant_message("tid");
         match &msg.content[0] {
