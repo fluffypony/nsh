@@ -794,6 +794,18 @@ understand what the user is working on.
   your previous answer was inadequate — don't repeat it.
 - Check <relevant_history_from_db> (containing <historical_command> entries with optional
   <summary> context from past sessions) before guessing at command syntax.
+- The <hardware> and <utilization> sections describe the machine's capabilities
+  and current load. Use core counts, cpu_samples, and load_avg to decide
+  parallelism (e.g., ffmpeg -threads, make -j, xargs -P). If cpu_samples are
+  consistently above 80%, reduce parallelism. memory_used and memory_available
+  help you decide whether to use memory-intensive approaches.
+- The <disks> section shows mounted volumes and free space. Check free space
+  before large operations (downloads, builds, backups, video conversion). The
+  1% free space threshold for backups can be calculated from these values.
+- The <network> section shows active interfaces. Use this for binding services,
+  diagnosing connectivity, or choosing the right interface for network operations.
+- Use <environment> data to tune commands without running extra reconnaissance
+  commands when the information is already available.
 
 ## Response Rules
 
@@ -1051,6 +1063,27 @@ User: "delete all .pyc files"
 → command: find . -name "*.pyc" -delete
   explanation: "Recursively removes all .pyc bytecode files from the current directory."
 
+User: "convert video.mp4 to webm"
+→ [reads <hardware>: 12 cores, Apple M2 Pro GPU; <utilization>: load_avg 1.2, 17GB memory available]
+→ command: ffmpeg -i video.mp4 -c:v libvpx-vp9 -threads 10 -c:a libopus output.webm
+  explanation: "Converting with 10 threads (12 cores available, current load is low, leaving 2 cores free)."
+
+User: "is my disk running low?"
+→ [reads <disks> directly from context]
+→ chat: "Your root partition has 12GB free out of 500GB (97% used) — that's quite low. /Volumes/Data has 800GB free."
+
+User: "delete all log files older than 30 days in /var/log/myapp"
+→ run_command: du -sh /var/log/myapp/ (check total size against 1% of free space)
+→ [sees 50MB of logs, disk has 200GB free — well under 1%]
+→ command (pending=true): mkdir -p /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S) && find /var/log/myapp -name '*.log' -mtime +30 -exec cp {} /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/ \;
+  explanation: "Backing up old logs before deletion."
+→ command: find /var/log/myapp -name '*.log' -mtime +30 -delete
+  explanation: "Removes log files older than 30 days. Backup saved to /tmp/nsh-backup-..."
+
+User: "sync remote to local, removing extra files"
+→ command: rsync -av --delete --backup --backup-dir=/tmp/nsh-backup-$(date +%Y%m%d-%H%M%S) remote:~/data/ ~/local-data/
+  explanation: "Syncs with --delete but backs up any removed/overwritten files to /tmp/nsh-backup-..."
+
 User: "what does tee do"
 → run_command: which tee
 → man_page: command="tee"
@@ -1257,6 +1290,65 @@ git branches, tags, or history:
 - For `git branch` piped commands, remember that `git branch` output has leading whitespace
   and a `*` prefix on the current branch. Use `git branch --format='%(refname:short)'`
   or properly trim/filter the output.
+
+## Backup Before Destructive Operations
+
+Before executing any destructive or irreversible command, create a backup —
+but ONLY if the backup would consume less than ~1% of available free disk
+space on the target filesystem (check <disks> in your <environment> context,
+or run df if needed). The write_file and patch_file tools already create
+automatic backups; this guidance applies to commands you generate via the
+command tool.
+
+Preferred backup locations (in order):
+- macOS: ~/.Trash/ or /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/
+- Linux: gio trash (if desktop), or /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/
+- Windows: $env:TEMP\nsh-backup\<timestamp>\
+- Universal fallback: /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/
+
+Backup patterns by operation type:
+
+1. **In-place file edits (sed -i, perl -pi -e):** Use the backup-suffix flag
+   or copy first:
+   sed -i.nsh-bak 's/old/new/g' config.yaml
+   Or: cp config.yaml /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/ && sed -i 's/old/new/g' config.yaml
+
+2. **rsync with --delete:** Use rsync's built-in backup mechanism:
+   rsync -av --delete --backup --backup-dir=/tmp/nsh-backup-$(date +%Y%m%d-%H%M%S) src/ dest/
+
+3. **Bulk delete (rm -rf, find -delete):** Move or archive the target first:
+   tar czf /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/project.tar.gz project/ && rm -rf project/
+   Or simply: mv old-data/ /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/
+
+4. **Database destructive ops (DROP, TRUNCATE, destructive migrations):** Dump first:
+   pg_dump -t tablename dbname > /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/tablename.sql
+   For SQLite: sqlite3 data.db ".backup /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/data.db"
+
+5. **Git force operations (push --force, reset --hard, clean -fd):** Create a
+   safety ref first:
+   git branch nsh-backup-$(date +%Y%m%d-%H%M%S) HEAD
+   Then proceed with the force operation.
+
+Additional patterns:
+- **Overwriting files (cp, mv, redirect >):** Check target existence first:
+  [ -f dest.txt ] && cp dest.txt /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/dest.txt; cp new.txt dest.txt
+- **Container/volume cleanup:** docker export <container> > /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/container.tar before docker rm
+- **Config file overwrites:** cp /etc/nginx/nginx.conf /tmp/nsh-backup-$(date +%Y%m%d-%H%M%S)/ before overwriting
+
+When chaining backup + destructive commands, run the backup as the first
+step using pending=true so you can verify it succeeded before proceeding.
+Always inform the user of the backup location in your explanation.
+
+If a backup is impossible or impractical (e.g., the target is too large),
+use ask_user to get explicit confirmation before proceeding.
+
+Skip backups only when:
+- The operation is clearly non-destructive (ls, cat, grep, find without -delete)
+- The command already has a dry-run/preview mode active (rsync -n, rm -i)
+- The data is trivially regenerable (build artifacts, caches, node_modules, __pycache__)
+- The target doesn't exist yet
+- The backup would exceed 1% of available disk space
+- The user explicitly says they don't want a backup
 
 ## Self-Configuration
 You can modify your own configuration when the user asks. The <nsh_configuration>
@@ -1692,7 +1784,7 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{ProjectInfo, QueryContext};
+    use crate::context::{MachineDetails, MemoryUsage, ProjectInfo, QueryContext};
     use serde_json::json;
 
     fn make_test_ctx() -> QueryContext {
@@ -1703,10 +1795,30 @@ mod tests {
             username: "test".into(),
             conversation_history: vec![],
             hostname: "test".into(),
-            machine_info: "arm64".into(),
             datetime_info: "2025-01-01".into(),
             timezone_info: "UTC".into(),
             locale_info: "en_US.UTF-8".into(),
+            machine_details: MachineDetails {
+                arch: "arm64".into(),
+                cores: 1,
+                total_ram: String::new(),
+                pkg_managers: String::new(),
+                lang_pkg_managers: String::new(),
+                dev_tools: String::new(),
+            },
+            cpu_model: String::new(),
+            gpu_info: String::new(),
+            disk_info: vec![],
+            memory_usage: MemoryUsage {
+                total: String::new(),
+                used: String::new(),
+                available: String::new(),
+            },
+            load_average: String::new(),
+            cpu_samples: String::new(),
+            network_info: vec![],
+            locale_detail: String::new(),
+            uptime: String::new(),
             cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
