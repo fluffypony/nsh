@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -748,7 +748,8 @@ fn handle_global_connection(
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
-    let mut reader = BufReader::new(&stream);
+    let limited_stream = (&stream).take(1024 * 1024);
+    let mut reader = BufReader::new(limited_stream);
     let mut line = String::new();
     if reader.read_line(&mut line).is_err() {
         return;

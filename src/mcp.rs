@@ -8,6 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
+const MAX_MCP_BUFFER_SIZE: usize = 10 * 1024 * 1024;
 
 #[derive(Serialize)]
 struct JsonRpcRequest {
@@ -160,6 +161,12 @@ impl McpServer {
                         while let Some(chunk) = body_stream.next().await {
                             let chunk = chunk?;
                             raw_buffer.extend_from_slice(&chunk);
+                            if raw_buffer.len() > MAX_MCP_BUFFER_SIZE {
+                                anyhow::bail!(
+                                    "MCP server sent event data exceeding {} byte limit",
+                                    MAX_MCP_BUFFER_SIZE
+                                );
+                            }
 
                             while let Some((pos, delim_len)) = find_event_boundary(&raw_buffer) {
                                 let event_bytes = raw_buffer[..pos].to_vec();

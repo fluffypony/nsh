@@ -8,13 +8,20 @@ use std::os::unix::net::UnixStream;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
 
+const MAX_DAEMON_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
+
 fn log_daemon_client(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
 }
 
 fn read_daemon_response<R: Read>(reader: &mut R) -> anyhow::Result<String> {
     let mut buf = Vec::new();
-    reader.read_to_end(&mut buf)?;
+    reader
+        .take(MAX_DAEMON_RESPONSE_BYTES + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_DAEMON_RESPONSE_BYTES {
+        anyhow::bail!("daemon response exceeded {MAX_DAEMON_RESPONSE_BYTES} bytes");
+    }
     if buf.is_empty() {
         anyhow::bail!("empty daemon response");
     }

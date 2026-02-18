@@ -57,7 +57,25 @@ pub fn rotate_audit_log() {
 
 fn rotate_audit_log_in_dir(dir: &Path) {
     let log_path = dir.join("audit.log");
-    let Ok(meta) = std::fs::metadata(&log_path) else {
+    let Ok(input_file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&log_path)
+    else {
+        return;
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+
+        let ret = unsafe { libc::flock(input_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if ret != 0 {
+            return;
+        }
+    }
+
+    let Ok(meta) = input_file.metadata() else {
         return;
     };
     if meta.len() <= 15_000_000 {
@@ -68,14 +86,28 @@ fn rotate_audit_log_in_dir(dir: &Path) {
     let archive_name = format!("audit_{ts}.log.gz");
     let archive_path = dir.join(&archive_name);
 
-    let Ok(input_file) = std::fs::File::open(&log_path) else {
-        return;
+    #[cfg(unix)]
+    let output_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&archive_path)
     };
-    let Ok(output_file) = std::fs::File::create(&archive_path) else {
+    #[cfg(not(unix))]
+    let output_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&archive_path);
+
+    let Ok(output_file) = output_file else {
         return;
     };
     let mut encoder = flate2::write::GzEncoder::new(output_file, flate2::Compression::default());
-    let mut reader = std::io::BufReader::new(input_file);
+    let mut reader = std::io::BufReader::new(&input_file);
     if std::io::copy(&mut reader, &mut encoder).is_err() {
         return;
     }
@@ -89,7 +121,7 @@ fn rotate_audit_log_in_dir(dir: &Path) {
         let _ = std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o600));
     }
 
-    let _ = std::fs::write(&log_path, "");
+    let _ = input_file.set_len(0);
 
     cleanup_old_archives_in_dir(dir);
 }
