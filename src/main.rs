@@ -151,6 +151,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             private,
             json,
         } => {
+            if words.is_empty() {
+                eprintln!("Usage: ? <your question>");
+                std::process::exit(1);
+            }
+
             if !ensure_daemon_ready(json)? {
                 return Ok(());
             }
@@ -159,11 +164,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 eprintln!(
                     "\x1b[2m⏳ nsh is still indexing history; results may be incomplete.\x1b[0m"
                 );
-            }
-
-            if words.is_empty() {
-                eprintln!("Usage: ? <your question>");
-                std::process::exit(1);
             }
             let mut query_text = words.join(" ");
 
@@ -588,10 +588,14 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     no_prune,
                     no_vacuum,
                 };
-                if let daemon::DaemonResponse::Error { message } =
-                    send_to_global_or_fallback(&request)?
-                {
-                    anyhow::bail!(message);
+                match send_to_global_or_fallback(&request) {
+                    Ok(daemon::DaemonResponse::Error { message }) => {
+                        anyhow::bail!(message);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("  Database maintenance skipped (daemon unavailable: {e})");
+                    }
                 }
                 cleanup_staged_updates();
             }

@@ -226,7 +226,8 @@ pub async fn run_coding_agent(
             crate::debug_io::append(
                 path,
                 "assistant_response",
-                &serde_json::to_string_pretty(&response).unwrap_or_else(|_| format!("{response:?}")),
+                &serde_json::to_string_pretty(&response)
+                    .unwrap_or_else(|_| format!("{response:?}")),
             );
         }
         messages.push(response.clone());
@@ -292,11 +293,7 @@ pub async fn run_coding_agent(
                     Ok(c) => c.clone(),
                     Err(e) => e.to_string(),
                 };
-                crate::debug_io::append(
-                    path,
-                    &format!("tool_result:{name}:{status}"),
-                    &content,
-                );
+                crate::debug_io::append(path, &format!("tool_result:{name}:{status}"), &content);
             }
 
             let (content, is_error) = match tool_result {
@@ -516,9 +513,7 @@ async fn execute_bash(
     if explicit_timeout.is_some() {
         eprintln!("  \x1b[2m↳ running: {command} (timeout {timeout_seconds}s)\x1b[0m");
     } else {
-        eprintln!(
-            "  \x1b[2m↳ running: {command} (timeout {timeout_seconds}s, estimated)\x1b[0m"
-        );
+        eprintln!("  \x1b[2m↳ running: {command} (timeout {timeout_seconds}s, estimated)\x1b[0m");
     }
     #[cfg(unix)]
     let mut cmd = tokio::process::Command::new("sh");
@@ -628,7 +623,8 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
     } else if lower.starts_with("go test")
         || lower.starts_with("pytest")
         || lower.starts_with("jest")
-        || lower.contains(" test") && (lower.starts_with("npm") || lower.starts_with("pnpm") || lower.starts_with("yarn"))
+        || lower.contains(" test")
+            && (lower.starts_with("npm") || lower.starts_with("pnpm") || lower.starts_with("yarn"))
     {
         120 + file_count / 5
     } else if lower.starts_with("ruff")
@@ -735,10 +731,7 @@ fn describe_coding_tool_action(name: &str, input: &serde_json::Value) -> String 
             "finding {}",
             input["pattern"].as_str().unwrap_or("(missing pattern)")
         ),
-        "list_directory" => format!(
-            "listing {}",
-            input["path"].as_str().unwrap_or(".")
-        ),
+        "list_directory" => format!("listing {}", input["path"].as_str().unwrap_or(".")),
         "bash" => format!(
             "running {}",
             input["command"].as_str().unwrap_or("(missing command)")

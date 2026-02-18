@@ -517,12 +517,14 @@ mod tests {
         assert_eq!(tty, "/dev/ttys007");
         assert_eq!(shell, "zsh");
 
-        let (id, tty, shell) = import_session_info(Path::new("/home/user/.bash_history"), &Shell::Bash);
+        let (id, tty, shell) =
+            import_session_info(Path::new("/home/user/.bash_history"), &Shell::Bash);
         assert_eq!(id, "imported_bash_history");
         assert_eq!(tty, "import");
         assert_eq!(shell, "bash");
 
-        let (id, tty, shell) = import_session_info(Path::new("/home/user/.zsh_history"), &Shell::Zsh);
+        let (id, tty, shell) =
+            import_session_info(Path::new("/home/user/.zsh_history"), &Shell::Zsh);
         assert_eq!(id, "imported_zsh_history");
         assert_eq!(tty, "import");
         assert_eq!(shell, "zsh");
@@ -703,7 +705,9 @@ mod tests {
             .unwrap();
         assert!(!results.is_empty());
         assert!(
-            results.iter().any(|r| r.session_id == "imported_zsh_ttys042"),
+            results
+                .iter()
+                .any(|r| r.session_id == "imported_zsh_ttys042"),
             "per-TTY file should create session with TTY-based ID"
         );
 
@@ -711,7 +715,9 @@ mod tests {
             .search_history_advanced(Some("echo"), None, None, None, None, false, None, None, 100)
             .unwrap();
         assert!(
-            results.iter().any(|r| r.session_id == "imported_bash_history"),
+            results
+                .iter()
+                .any(|r| r.session_id == "imported_bash_history"),
             "generic bash should create session with filename-based ID"
         );
 
