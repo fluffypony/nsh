@@ -91,7 +91,7 @@ pub async fn handle_query(
     let config_xml = crate::config::build_config_xml(config, &skills, &mcp_info);
 
     let memories = db.get_memories(100).unwrap_or_default();
-    let memories_xml = build_memories_xml(&memories);
+    let memories_xml = build_memories_xml_with_redaction(&memories, &config.redaction);
 
     let mut relevant_history_xml = String::new();
     let original_query = query;
@@ -1606,19 +1606,29 @@ These ALWAYS require investigation → execution → verification at minimum.
     result
 }
 
+#[cfg(test)]
 fn build_memories_xml(memories: &[crate::db::Memory]) -> String {
+    let default_redaction = crate::config::RedactionConfig::default();
+    build_memories_xml_with_redaction(memories, &default_redaction)
+}
+
+fn build_memories_xml_with_redaction(
+    memories: &[crate::db::Memory],
+    redaction_config: &crate::config::RedactionConfig,
+) -> String {
     use crate::context::xml_escape;
     if memories.is_empty() {
         return "<memories count=\"0\" />\n".to_string();
     }
     let mut x = format!("<memories count=\"{}\">\n", memories.len());
     for m in memories {
+        let redacted_value = crate::redact::redact_secrets(&m.value, redaction_config);
         x.push_str(&format!(
             "  <memory id=\"{}\" key=\"{}\" updated=\"{}\">{}</memory>\n",
             m.id,
             xml_escape(&m.key),
             xml_escape(&m.updated_at),
-            xml_escape(&m.value),
+            xml_escape(&redacted_value),
         ));
     }
     x.push_str("</memories>");

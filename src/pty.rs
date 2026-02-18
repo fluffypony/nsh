@@ -157,6 +157,12 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             // ── Parent: run the pump ───────────────────────────
             drop(pty.slave);
 
+            // Keep wrap startup snappy, but spawn after fork to avoid
+            // multi-threaded-fork hazards in the child path.
+            std::thread::spawn(|| {
+                let _ = crate::daemon_client::ensure_global_daemon_running();
+            });
+
             let pid = rustix::process::Pid::from_raw(child_pid).expect("invalid child pid");
 
             pump_loop(

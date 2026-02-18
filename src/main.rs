@@ -110,11 +110,6 @@ fn main() -> anyhow::Result<()> {
 
         apply_pending_update();
 
-        // Startup must stay snappy: kick heavy tasks to background.
-        std::thread::spawn(|| {
-            let _ = daemon_client::ensure_global_daemon_running();
-        });
-
         if config::Config::nsh_dir().join("update_pending").exists() {
             eprintln!("\x1b[2mnsh: update ready, will apply on next shell start\x1b[0m");
         }
@@ -1071,13 +1066,31 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn parse_dns_txt_records(raw: &str) -> Vec<(String, String, String)> {
+    fn valid_version(version: &str) -> bool {
+        !version.is_empty()
+            && version
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '-')
+    }
+
+    fn valid_target(target: &str) -> bool {
+        !target.is_empty()
+            && target
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }
+
     raw.lines()
         .filter_map(|line| {
             let cleaned = line.trim().trim_matches('"');
             let parts: Vec<&str> = cleaned.splitn(3, ':').collect();
             if parts.len() == 3 {
                 let (version, target, sha) = (parts[0], parts[1], parts[2]);
-                if sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
+                if valid_version(version)
+                    && valid_target(target)
+                    && sha.len() == 64
+                    && sha.chars().all(|c| c.is_ascii_hexdigit())
+                {
                     return Some((version.to_string(), target.to_string(), sha.to_string()));
                 }
             }
