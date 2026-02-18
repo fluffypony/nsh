@@ -87,6 +87,15 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
 
+    // Spawn system monitor thread — samples CPU/memory every 10 seconds.
+    std::thread::spawn(|| {
+        loop {
+            let _ = crate::context::sample_volatile_info();
+            let _ = crate::context::get_semi_dynamic_info();
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    });
+
     #[cfg(unix)]
     {
         listener.set_nonblocking(true)?;
@@ -700,6 +709,22 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
             "pid": std::process::id(),
             "daemon_type": "global",
         })),
+        DaemonRequest::GetSystemInfo => {
+            let static_info = crate::context::get_static_info();
+            let semi_dynamic = crate::context::get_semi_dynamic_info();
+            let (cpu_samples, memory_usage, load_average) = crate::context::sample_volatile_info();
+            let bundle = crate::context::SystemInfoBundle {
+                static_info: static_info.to_snapshot(),
+                semi_dynamic: semi_dynamic.to_snapshot(),
+                cpu_samples,
+                memory_usage,
+                load_average,
+            };
+            match serde_json::to_value(bundle) {
+                Ok(value) => DaemonResponse::ok_with_data(value),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::Scrollback { .. }
         | DaemonRequest::CaptureMark { .. }
         | DaemonRequest::CaptureRead { .. } => {

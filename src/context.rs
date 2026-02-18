@@ -1,41 +1,305 @@
+use std::collections::VecDeque;
 use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 use crate::daemon_db::DbAccess;
 use crate::db::{CommandWithSummary, ConversationExchange, OtherSessionSummary};
 
-#[derive(Clone)]
-struct CachedSystemInfo {
+/// Tier 1: Static — effectively never changes during a session.
+/// TTL: 300 seconds (5 minutes)
+#[derive(Clone, Debug)]
+pub struct StaticSystemInfo {
     os_info: String,
     hostname: String,
-    machine_info: String,
+    machine_details: MachineDetails,
+    cpu_model: String,
+    gpu_info: String,
     timezone_info: String,
     locale_info: String,
+    locale_detail: String,
     cached_at: Instant,
 }
 
-static SYSTEM_INFO_CACHE: LazyLock<Mutex<Option<CachedSystemInfo>>> =
-    LazyLock::new(|| Mutex::new(None));
+/// Tier 2: Semi-dynamic — changes occasionally (new disks mounted, IP changes).
+/// TTL: 30 seconds
+#[derive(Clone, Debug)]
+pub struct SemiDynamicInfo {
+    disk_info: Vec<DiskInfo>,
+    network_info: Vec<NetworkInterface>,
+    uptime: String,
+    cached_at: Instant,
+}
 
-fn get_cached_system_info() -> CachedSystemInfo {
-    let mut cache = SYSTEM_INFO_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+/// Tier 3: Volatile — changes frequently, rolling window.
+/// TTL: 10 seconds per sample, keep last 6 in VecDeque.
+#[derive(Clone, Debug)]
+struct VolatileInfo {
+    cpu_samples: VecDeque<(Instant, f32)>,
+    memory_usage: MemoryUsage,
+    load_average: String,
+    last_sampled: Instant,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DiskInfo {
+    pub mount: String,
+    pub device: String,
+    pub fs_type: String,
+    pub total: String,
+    pub available: String,
+    pub use_pct: String,
+    pub free_bytes: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct NetworkInterface {
+    pub name: String,
+    pub ip: String,
+    pub kind: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MemoryUsage {
+    pub total: String,
+    pub used: String,
+    pub available: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MachineDetails {
+    pub arch: String,
+    pub cores: usize,
+    pub total_ram: String,
+    pub pkg_managers: String,
+    pub lang_pkg_managers: String,
+    pub dev_tools: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StaticSystemInfoSnapshot {
+    pub os_info: String,
+    pub hostname: String,
+    pub machine_details: MachineDetails,
+    pub cpu_model: String,
+    pub gpu_info: String,
+    pub timezone_info: String,
+    pub locale_info: String,
+    pub locale_detail: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SemiDynamicInfoSnapshot {
+    pub disk_info: Vec<DiskInfo>,
+    pub network_info: Vec<NetworkInterface>,
+    pub uptime: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct StaticSystemInfoFile {
+    os_info: String,
+    hostname: String,
+    machine_details: MachineDetails,
+    cpu_model: String,
+    gpu_info: String,
+    timezone_info: String,
+    locale_info: String,
+    locale_detail: String,
+    cached_at_epoch: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SystemInfoBundle {
+    pub static_info: StaticSystemInfoSnapshot,
+    pub semi_dynamic: SemiDynamicInfoSnapshot,
+    pub cpu_samples: String,
+    pub memory_usage: MemoryUsage,
+    pub load_average: String,
+}
+
+// The global daemon (nshd) maintains rolling CPU/memory samples and shared
+// static/semi-dynamic caches. When available, sessions query the daemon to
+// avoid redundant subprocess spawning across concurrent terminal sessions.
+// If the daemon is unreachable, each session falls back to process-local
+// detection with identical tiered TTLs.
+static STATIC_CACHE: LazyLock<Mutex<Option<StaticSystemInfo>>> = LazyLock::new(|| Mutex::new(None));
+static SEMI_DYNAMIC_CACHE: LazyLock<Mutex<Option<SemiDynamicInfo>>> =
+    LazyLock::new(|| Mutex::new(None));
+static VOLATILE_CACHE: LazyLock<Mutex<Option<VolatileInfo>>> = LazyLock::new(|| Mutex::new(None));
+
+const STATIC_TTL: Duration = Duration::from_secs(300);
+const SEMI_DYNAMIC_TTL: Duration = Duration::from_secs(30);
+const VOLATILE_TTL: Duration = Duration::from_secs(10);
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+impl StaticSystemInfo {
+    pub(crate) fn to_snapshot(&self) -> StaticSystemInfoSnapshot {
+        StaticSystemInfoSnapshot {
+            os_info: self.os_info.clone(),
+            hostname: self.hostname.clone(),
+            machine_details: self.machine_details.clone(),
+            cpu_model: self.cpu_model.clone(),
+            gpu_info: self.gpu_info.clone(),
+            timezone_info: self.timezone_info.clone(),
+            locale_info: self.locale_info.clone(),
+            locale_detail: self.locale_detail.clone(),
+        }
+    }
+}
+
+impl SemiDynamicInfo {
+    pub(crate) fn to_snapshot(&self) -> SemiDynamicInfoSnapshot {
+        SemiDynamicInfoSnapshot {
+            disk_info: self.disk_info.clone(),
+            network_info: self.network_info.clone(),
+            uptime: self.uptime.clone(),
+        }
+    }
+}
+
+impl From<&StaticSystemInfo> for StaticSystemInfoFile {
+    fn from(value: &StaticSystemInfo) -> Self {
+        Self {
+            os_info: value.os_info.clone(),
+            hostname: value.hostname.clone(),
+            machine_details: value.machine_details.clone(),
+            cpu_model: value.cpu_model.clone(),
+            gpu_info: value.gpu_info.clone(),
+            timezone_info: value.timezone_info.clone(),
+            locale_info: value.locale_info.clone(),
+            locale_detail: value.locale_detail.clone(),
+            cached_at_epoch: now_epoch(),
+        }
+    }
+}
+
+impl StaticSystemInfoFile {
+    fn into_static_system_info(self) -> StaticSystemInfo {
+        StaticSystemInfo {
+            os_info: self.os_info,
+            hostname: self.hostname,
+            machine_details: self.machine_details,
+            cpu_model: self.cpu_model,
+            gpu_info: self.gpu_info,
+            timezone_info: self.timezone_info,
+            locale_info: self.locale_info,
+            locale_detail: self.locale_detail,
+            cached_at: Instant::now(),
+        }
+    }
+}
+
+pub(crate) fn get_static_info() -> StaticSystemInfo {
+    let mut cache = STATIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cached) = *cache {
-        if cached.cached_at.elapsed() < Duration::from_secs(30) {
+        if cached.cached_at.elapsed() < STATIC_TTL {
             return cached.clone();
         }
     }
-    let fresh = CachedSystemInfo {
+
+    let cache_path = crate::config::Config::nsh_dir()
+        .join("cache")
+        .join("static_system_info.json");
+    if let Ok(contents) = std::fs::read_to_string(&cache_path)
+        && let Ok(file_cached) = serde_json::from_str::<StaticSystemInfoFile>(&contents)
+        && file_cached.cached_at_epoch + STATIC_TTL.as_secs() > now_epoch()
+    {
+        let info = file_cached.into_static_system_info();
+        let result = info.clone();
+        *cache = Some(info);
+        return result;
+    }
+
+    let fresh = StaticSystemInfo {
         os_info: detect_os(),
         hostname: detect_hostname(),
-        machine_info: detect_machine_info(),
+        machine_details: detect_machine_info(),
+        cpu_model: detect_cpu_model(),
+        gpu_info: detect_gpu_info(),
         timezone_info: detect_timezone(),
         locale_info: detect_locale(),
+        locale_detail: detect_locale_detail(),
+        cached_at: Instant::now(),
+    };
+
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(file) = std::fs::File::create(&cache_path) {
+        let _ = serde_json::to_writer(file, &StaticSystemInfoFile::from(&fresh));
+    }
+
+    let result = fresh.clone();
+    *cache = Some(fresh);
+    result
+}
+
+#[allow(dead_code)]
+fn get_cached_system_info() -> StaticSystemInfo {
+    get_static_info()
+}
+
+pub(crate) fn get_semi_dynamic_info() -> SemiDynamicInfo {
+    let mut cache = SEMI_DYNAMIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ref cached) = *cache {
+        if cached.cached_at.elapsed() < SEMI_DYNAMIC_TTL {
+            return cached.clone();
+        }
+    }
+    let fresh = SemiDynamicInfo {
+        disk_info: detect_disk_info(),
+        network_info: detect_network_info(),
+        uptime: detect_uptime(),
         cached_at: Instant::now(),
     };
     let result = fresh.clone();
     *cache = Some(fresh);
     result
+}
+
+pub(crate) fn sample_volatile_info() -> (String, MemoryUsage, String) {
+    let mut cache = VOLATILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+
+    let needs_sample = match &*cache {
+        Some(v) => v.last_sampled.elapsed() >= VOLATILE_TTL,
+        None => true,
+    };
+
+    if needs_sample {
+        let cpu_pct = measure_cpu_percent(cache.as_ref());
+        let mem = detect_memory_usage();
+        let load = detect_load_average();
+
+        let vol = cache.get_or_insert_with(|| VolatileInfo {
+            cpu_samples: VecDeque::with_capacity(6),
+            memory_usage: mem.clone(),
+            load_average: load.clone(),
+            last_sampled: Instant::now(),
+        });
+
+        vol.cpu_samples.push_back((Instant::now(), cpu_pct));
+        while vol.cpu_samples.len() > 6 {
+            let _ = vol.cpu_samples.pop_front();
+        }
+        vol.memory_usage = mem;
+        vol.load_average = load;
+        vol.last_sampled = Instant::now();
+    }
+
+    let vol = cache.as_ref().expect("volatile cache initialized");
+    let cpu_str = vol
+        .cpu_samples
+        .iter()
+        .map(|(_, pct)| format!("{pct:.0}%"))
+        .collect::<Vec<_>>()
+        .join(",");
+    (cpu_str, vol.memory_usage.clone(), vol.load_average.clone())
 }
 
 pub struct QueryContext {
@@ -45,10 +309,19 @@ pub struct QueryContext {
     pub username: String,
     pub conversation_history: Vec<ConversationExchange>,
     pub hostname: String,
-    pub machine_info: String,
     pub datetime_info: String,
     pub timezone_info: String,
     pub locale_info: String,
+    pub machine_details: MachineDetails,
+    pub cpu_model: String,
+    pub gpu_info: String,
+    pub disk_info: Vec<DiskInfo>,
+    pub memory_usage: MemoryUsage,
+    pub load_average: String,
+    pub cpu_samples: String,
+    pub network_info: Vec<NetworkInterface>,
+    pub locale_detail: String,
+    pub uptime: String,
     pub cwd_listing: Vec<CwdListingEntry>,
     pub session_history: Vec<CommandWithSummary>,
     pub other_sessions: Vec<OtherSessionSummary>,
@@ -90,7 +363,37 @@ pub fn build_context(
     session_id: &str,
     config: &Config,
 ) -> anyhow::Result<QueryContext> {
-    let sys = get_cached_system_info();
+    let (static_info, semi_dynamic, cpu_samples, memory_usage, load_average) =
+        match crate::daemon_client::get_system_info(session_id) {
+            Ok(daemon_data) => (
+                StaticSystemInfo {
+                    os_info: daemon_data.static_info.os_info,
+                    hostname: daemon_data.static_info.hostname,
+                    machine_details: daemon_data.static_info.machine_details,
+                    cpu_model: daemon_data.static_info.cpu_model,
+                    gpu_info: daemon_data.static_info.gpu_info,
+                    timezone_info: daemon_data.static_info.timezone_info,
+                    locale_info: daemon_data.static_info.locale_info,
+                    locale_detail: daemon_data.static_info.locale_detail,
+                    cached_at: Instant::now(),
+                },
+                SemiDynamicInfo {
+                    disk_info: daemon_data.semi_dynamic.disk_info,
+                    network_info: daemon_data.semi_dynamic.network_info,
+                    uptime: daemon_data.semi_dynamic.uptime,
+                    cached_at: Instant::now(),
+                },
+                daemon_data.cpu_samples,
+                daemon_data.memory_usage,
+                daemon_data.load_average,
+            ),
+            Err(_) => {
+                let s = get_static_info();
+                let sd = get_semi_dynamic_info();
+                let (cpu_s, mem, load) = sample_volatile_info();
+                (s, sd, cpu_s, mem, load)
+            }
+        };
 
     let shell = detect_shell();
 
@@ -129,18 +432,27 @@ pub fn build_context(
     let custom_instructions = gather_custom_instructions(config, &cwd);
 
     Ok(QueryContext {
-        os_info: sys.os_info,
+        os_info: static_info.os_info,
         shell,
         cwd,
         username,
         conversation_history,
-        hostname: sys.hostname,
-        machine_info: sys.machine_info,
+        hostname: static_info.hostname,
         datetime_info: chrono::Local::now()
             .format("%Y-%m-%d %H:%M:%S %Z")
             .to_string(),
-        timezone_info: sys.timezone_info,
-        locale_info: sys.locale_info,
+        timezone_info: static_info.timezone_info,
+        locale_info: static_info.locale_info,
+        locale_detail: static_info.locale_detail,
+        machine_details: static_info.machine_details,
+        cpu_model: static_info.cpu_model,
+        gpu_info: static_info.gpu_info,
+        disk_info: semi_dynamic.disk_info,
+        memory_usage,
+        load_average,
+        cpu_samples,
+        network_info: semi_dynamic.network_info,
+        uptime: semi_dynamic.uptime,
         cwd_listing,
         session_history,
         other_sessions,
@@ -156,21 +468,89 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
     let mut xml = String::from("<context>\n");
 
     // Environment
+    xml.push_str("  <environment>\n");
     xml.push_str(&format!(
-        "  <environment os=\"{}\" shell=\"{}\" cwd=\"{}\" \
-         user=\"{}\" hostname=\"{}\" datetime=\"{}\" \
-         timezone=\"{}\" locale=\"{}\" \
-         machine=\"{}\" />\n",
+        "    <system os=\"{}\" shell=\"{}\" cwd=\"{}\" user=\"{}\" hostname=\"{}\" />\n",
         xml_escape(&ctx.os_info),
         xml_escape(&ctx.shell),
         xml_escape(&ctx.cwd),
         xml_escape(&ctx.username),
         xml_escape(&ctx.hostname),
+    ));
+    xml.push_str(&format!(
+        "    <temporal datetime=\"{}\" timezone=\"{}\" uptime=\"{}\" />\n",
         xml_escape(&ctx.datetime_info),
         xml_escape(&ctx.timezone_info),
-        xml_escape(&ctx.locale_info),
-        xml_escape(&ctx.machine_info),
+        xml_escape(&ctx.uptime),
     ));
+    xml.push_str(&format!(
+        "    <locale lang=\"{}\"",
+        xml_escape(&ctx.locale_info),
+    ));
+    if !ctx.locale_detail.is_empty() {
+        xml.push_str(&format!(" detail=\"{}\"", xml_escape(&ctx.locale_detail)));
+    }
+    xml.push_str(" />\n");
+    xml.push_str(&format!(
+        "    <hardware cpu=\"{}\" arch=\"{}\" cores=\"{}\" ram_total=\"{}\"",
+        xml_escape(&ctx.cpu_model),
+        xml_escape(&ctx.machine_details.arch),
+        ctx.machine_details.cores,
+        xml_escape(&ctx.machine_details.total_ram),
+    ));
+    if !ctx.gpu_info.is_empty() {
+        xml.push_str(&format!(" gpu=\"{}\"", xml_escape(&ctx.gpu_info)));
+    }
+    xml.push_str(" />\n");
+    xml.push_str(&format!(
+        "    <utilization load_avg=\"{}\" memory_used=\"{}\" memory_available=\"{}\"",
+        xml_escape(&ctx.load_average),
+        xml_escape(&ctx.memory_usage.used),
+        xml_escape(&ctx.memory_usage.available),
+    ));
+    if !ctx.cpu_samples.is_empty() {
+        xml.push_str(&format!(
+            " cpu_samples=\"{}\"",
+            xml_escape(&ctx.cpu_samples)
+        ));
+    }
+    xml.push_str(" />\n");
+
+    if !ctx.disk_info.is_empty() {
+        xml.push_str("    <disks>\n");
+        for disk in &ctx.disk_info {
+            xml.push_str(&format!(
+                "      <disk mount=\"{}\" fs=\"{}\" total=\"{}\" available=\"{}\" use_pct=\"{}\" />\n",
+                xml_escape(&disk.mount),
+                xml_escape(&disk.fs_type),
+                xml_escape(&disk.total),
+                xml_escape(&disk.available),
+                xml_escape(&disk.use_pct),
+            ));
+        }
+        xml.push_str("    </disks>\n");
+    }
+
+    if !ctx.network_info.is_empty() {
+        xml.push_str("    <network>\n");
+        for iface in &ctx.network_info {
+            xml.push_str(&format!(
+                "      <iface name=\"{}\" ip=\"{}\" type=\"{}\" />\n",
+                xml_escape(&iface.name),
+                xml_escape(&iface.ip),
+                xml_escape(&iface.kind),
+            ));
+        }
+        xml.push_str("    </network>\n");
+    }
+
+    xml.push_str(&format!(
+        "    <tools pkg=\"{}\" lang_pkg=\"{}\" dev=\"{}\" />\n",
+        xml_escape(&ctx.machine_details.pkg_managers),
+        xml_escape(&ctx.machine_details.lang_pkg_managers),
+        xml_escape(&ctx.machine_details.dev_tools),
+    ));
+    xml.push_str("  </environment>\n");
 
     // SSH context
     if let Some(ref ssh) = ctx.ssh_context {
@@ -330,10 +710,13 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         ));
         // conversation_history is already in chronological order (oldest first)
         for exchange in ctx.conversation_history.iter() {
-            let ts_attr = exchange.created_at.as_ref()
+            let ts_attr = exchange
+                .created_at
+                .as_ref()
                 .map(|t| format!(" ts=\"{}\"", xml_escape(t)))
                 .unwrap_or_default();
-            let result_attr = exchange.result_exit_code
+            let result_attr = exchange
+                .result_exit_code
                 .map(|c| format!(" result_exit_code=\"{c}\""))
                 .unwrap_or_default();
             let response_preview = crate::util::truncate(
@@ -1105,114 +1488,789 @@ fn detect_hostname() -> String {
         })
 }
 
-fn detect_machine_info() -> String {
-    let arch = std::env::consts::ARCH;
-    let cpus = std::thread::available_parallelism()
+fn run_command_with_timeout(command: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut child = std::process::Command::new(command)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let output = child.wait_with_output().ok()?;
+                if !output.status.success() {
+                    return None;
+                }
+                return Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+#[cfg(unix)]
+#[allow(dead_code)]
+fn run_shell_with_timeout(script: &str, timeout: Duration) -> Option<String> {
+    run_command_with_timeout("sh", &["-c", script], timeout)
+}
+
+fn format_size_human(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes == 0 {
+        return "0B".into();
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit <= 1 {
+        format!("{value:.0}{}", UNITS[unit])
+    } else {
+        format!("{value:.1}{}", UNITS[unit])
+    }
+}
+
+fn parse_uptime_seconds(total_seconds: u64) -> String {
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days} days, {hours}:{minutes:02}")
+    } else {
+        format!("{hours}:{minutes:02}")
+    }
+}
+
+fn detect_machine_info() -> MachineDetails {
+    let arch = std::env::consts::ARCH.to_string();
+    let cores = std::thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(0);
-
-    #[cfg(target_os = "macos")]
-    let mem = {
-        std::process::Command::new("sysctl")
-            .args(["-n", "hw.memsize"])
-            .output()
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .parse::<u64>()
-                    .ok()
-            })
-            .map(|b| format!("{:.0}GB RAM", b as f64 / 1_073_741_824.0))
-            .unwrap_or_default()
-    };
-
-    #[cfg(target_os = "linux")]
-    let mem = {
-        std::fs::read_to_string("/proc/meminfo")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("MemTotal:"))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .map(|kb| format!("{:.0}GB RAM", kb as f64 / 1_048_576.0))
-            })
-            .unwrap_or_default()
-    };
-
-    #[cfg(target_os = "windows")]
-    let mem = {
-        std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "[math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)",
-            ])
-            .output()
-            .ok()
-            .and_then(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .parse::<u64>()
-                    .ok()
-            })
-            .map(|gb| format!("{gb}GB RAM"))
-            .unwrap_or_default()
-    };
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let mem = String::new();
-
-    let mut parts = vec![arch.to_string()];
-    if cpus > 0 {
-        parts.push(format!("{cpus} cores"));
-    }
-    if !mem.is_empty() {
-        parts.push(mem);
-    }
+        .unwrap_or(1);
+    let total_ram = detect_memory_usage().total;
 
     #[cfg(target_os = "windows")]
     let pkg_mgr_candidates: &[&str] = &["winget", "choco", "scoop"];
     #[cfg(not(target_os = "windows"))]
-    let pkg_mgr_candidates: &[&str] = &["brew", "apt", "dnf", "yum", "pacman", "nix", "apk"];
+    let pkg_mgr_candidates: &[&str] = &["brew", "apt", "dnf", "yum", "pacman", "nix", "apk", "pkg"];
 
-    let pkg_mgrs: Vec<&str> = pkg_mgr_candidates
+    let pkg_managers = pkg_mgr_candidates
         .iter()
         .filter(|cmd| which_exists(cmd))
         .copied()
-        .collect();
-    if !pkg_mgrs.is_empty() {
-        parts.push(format!("pkg: {}", pkg_mgrs.join(", ")));
-    }
+        .collect::<Vec<_>>()
+        .join(", ");
 
-    let lang_pkg_mgrs: Vec<&str> = [
+    let lang_pkg_managers = [
         "npm", "npx", "yarn", "pnpm", "bun", "deno", "pip3", "pipx", "uv", "cargo", "rustup",
         "gem", "go", "composer", "dotnet",
     ]
     .iter()
     .filter(|cmd| which_exists(cmd))
     .copied()
-    .collect();
-    if !lang_pkg_mgrs.is_empty() {
-        parts.push(format!("lang_pkg: {}", lang_pkg_mgrs.join(", ")));
-    }
+    .collect::<Vec<_>>()
+    .join(", ");
 
     #[cfg(target_os = "windows")]
     let dev_tool_candidates: &[&str] = &["node", "python", "rustc", "pwsh", "wsl"];
     #[cfg(not(target_os = "windows"))]
     let dev_tool_candidates: &[&str] = &["node", "python3", "rustc", "ruby", "java"];
 
-    let dev_tools: Vec<&str> = dev_tool_candidates
+    let dev_tools = dev_tool_candidates
         .iter()
         .filter(|cmd| which_exists(cmd))
         .copied()
-        .collect();
-    if !dev_tools.is_empty() {
-        parts.push(format!("tools: {}", dev_tools.join(", ")));
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    MachineDetails {
+        arch,
+        cores,
+        total_ram,
+        pkg_managers,
+        lang_pkg_managers,
+        dev_tools,
+    }
+}
+
+fn detect_cpu_model() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        return run_command_with_timeout(
+            "sysctl",
+            &["-n", "machdep.cpu.brand_string"],
+            Duration::from_secs(2),
+        )
+        .unwrap_or_default();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
+            for line in cpuinfo.lines() {
+                if let Some(name) = line.strip_prefix("model name") {
+                    let val = name.split(':').nth(1).unwrap_or("").trim();
+                    if !val.is_empty() {
+                        return val.to_string();
+                    }
+                }
+            }
+        }
+        return String::new();
+    }
+    #[cfg(target_os = "freebsd")]
+    {
+        return run_command_with_timeout("sysctl", &["-n", "hw.model"], Duration::from_secs(2))
+            .unwrap_or_default();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let wmic = run_command_with_timeout(
+            "wmic",
+            &["cpu", "get", "name", "/value"],
+            Duration::from_secs(2),
+        );
+        if let Some(out) = wmic {
+            if let Some(value) = out.lines().find_map(|l| l.strip_prefix("Name=")) {
+                return value.trim().to_string();
+            }
+        }
+        return run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_Processor).Name",
+            ],
+            Duration::from_secs(2),
+        )
+        .unwrap_or_default();
+    }
+    #[allow(unreachable_code)]
+    String::new()
+}
+
+fn detect_gpu_info() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(out) = run_command_with_timeout(
+            "system_profiler",
+            &["SPDisplaysDataType", "-detailLevel", "mini"],
+            Duration::from_secs(2),
+        ) {
+            let mut chipset = String::new();
+            let mut vram = String::new();
+            for line in out.lines() {
+                let trimmed = line.trim();
+                if let Some(v) = trimmed.strip_prefix("Chipset Model:") {
+                    chipset = v.trim().to_string();
+                }
+                if let Some(v) = trimmed.strip_prefix("VRAM") {
+                    vram = v.split(':').nth(1).unwrap_or("").trim().to_string();
+                }
+            }
+            if !chipset.is_empty() && !vram.is_empty() {
+                return format!("{chipset} ({vram})");
+            }
+            if !chipset.is_empty() {
+                return chipset;
+            }
+        }
+        return String::new();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(out) = run_command_with_timeout(
+            "nvidia-smi",
+            &["--query-gpu=name", "--format=csv,noheader"],
+            Duration::from_secs(2),
+        ) {
+            let first = out.lines().next().unwrap_or("").trim();
+            if !first.is_empty() {
+                return first.to_string();
+            }
+        }
+        if let Some(out) = run_shell_with_timeout(
+            "lspci 2>/dev/null | grep -Ei 'vga|3d|display'",
+            Duration::from_secs(2),
+        ) && let Some(line) = out.lines().next()
+        {
+            return line
+                .splitn(3, ':')
+                .last()
+                .unwrap_or(line)
+                .trim()
+                .to_string();
+        }
+        return String::new();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(out) = run_command_with_timeout(
+            "wmic",
+            &["path", "win32_VideoController", "get", "name", "/value"],
+            Duration::from_secs(2),
+        ) {
+            return out
+                .lines()
+                .find_map(|line| line.strip_prefix("Name=").map(|v| v.trim().to_string()))
+                .unwrap_or_default();
+        }
+        return String::new();
+    }
+    #[allow(unreachable_code)]
+    String::new()
+}
+
+fn detect_disk_info() -> Vec<DiskInfo> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut out = Vec::new();
+        if let Some(df) = run_command_with_timeout("df", &["-P", "-T"], Duration::from_secs(2)) {
+            for line in df.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 7 {
+                    continue;
+                }
+                let device = parts[0].to_string();
+                let fs_type = parts[1].to_string();
+                let total_kb = parts[2].parse::<u64>().ok();
+                let available_kb = parts[4].parse::<u64>().ok();
+                let use_pct = parts[5].to_string();
+                let mount = parts[6].to_string();
+                if !(device.starts_with("/dev/")
+                    || fs_type.contains("nfs")
+                    || fs_type.contains("smb"))
+                {
+                    continue;
+                }
+                if ["tmpfs", "devtmpfs", "squashfs", "overlay"].contains(&fs_type.as_str()) {
+                    continue;
+                }
+                if mount.starts_with("/snap") || mount.contains("docker") {
+                    continue;
+                }
+                let (Some(total_kb), Some(available_kb)) = (total_kb, available_kb) else {
+                    continue;
+                };
+                let total_bytes = total_kb.saturating_mul(1024);
+                let free_bytes = available_kb.saturating_mul(1024);
+                out.push(DiskInfo {
+                    mount,
+                    device,
+                    fs_type,
+                    total: format_size_human(total_bytes),
+                    available: format_size_human(free_bytes),
+                    use_pct,
+                    free_bytes,
+                });
+            }
+        }
+        return out;
+    }
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        let mut out = Vec::new();
+        if let Some(df) = run_command_with_timeout("df", &["-P"], Duration::from_secs(2)) {
+            for line in df.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 6 {
+                    continue;
+                }
+                let device = parts[0].to_string();
+                let total_kb = parts[1].parse::<u64>().ok();
+                let available_kb = parts[3].parse::<u64>().ok();
+                let use_pct = parts[4].to_string();
+                let mount = parts[5].to_string();
+                if !device.starts_with("/dev/") {
+                    continue;
+                }
+                let (Some(total_kb), Some(available_kb)) = (total_kb, available_kb) else {
+                    continue;
+                };
+                let total_bytes = total_kb.saturating_mul(512);
+                let free_bytes = available_kb.saturating_mul(512);
+                out.push(DiskInfo {
+                    mount,
+                    device,
+                    fs_type: String::new(),
+                    total: format_size_human(total_bytes),
+                    available: format_size_human(free_bytes),
+                    use_pct,
+                    free_bytes,
+                });
+            }
+        }
+        return out;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut out = Vec::new();
+        if let Some(ps) = run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "Get-PSDrive -PSProvider FileSystem | ForEach-Object {\"$($_.Name)|$($_.Used)|$($_.Free)\"}",
+            ],
+            Duration::from_secs(2),
+        ) {
+            for line in ps.lines() {
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() != 3 {
+                    continue;
+                }
+                let used = parts[1].trim().parse::<u64>().ok().unwrap_or(0);
+                let free = parts[2].trim().parse::<u64>().ok().unwrap_or(0);
+                let total = used.saturating_add(free);
+                let use_pct = if total > 0 {
+                    format!("{}%", (used as f64 * 100.0 / total as f64).round() as u64)
+                } else {
+                    String::new()
+                };
+                out.push(DiskInfo {
+                    mount: format!("{}:\\", parts[0].trim()),
+                    device: parts[0].trim().to_string(),
+                    fs_type: String::new(),
+                    total: format_size_human(total),
+                    available: format_size_human(free),
+                    use_pct,
+                    free_bytes: free,
+                });
+            }
+        }
+        return out;
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
+fn detect_memory_usage() -> MemoryUsage {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+            let mut total_kb = 0_u64;
+            let mut available_kb = 0_u64;
+            for line in meminfo.lines() {
+                if line.starts_with("MemTotal:") {
+                    total_kb = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                }
+                if line.starts_with("MemAvailable:") {
+                    available_kb = line
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                }
+            }
+            let total = total_kb.saturating_mul(1024);
+            let available = available_kb.saturating_mul(1024);
+            let used = total.saturating_sub(available);
+            return MemoryUsage {
+                total: format_size_human(total),
+                used: format_size_human(used),
+                available: format_size_human(available),
+            };
+        }
+        return MemoryUsage {
+            total: String::new(),
+            used: String::new(),
+            available: String::new(),
+        };
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let total =
+            run_command_with_timeout("sysctl", &["-n", "hw.memsize"], Duration::from_secs(2))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+        let mut available = 0_u64;
+        if let Some(vm_stat) = run_command_with_timeout("vm_stat", &[], Duration::from_secs(2)) {
+            let page_size = vm_stat
+                .lines()
+                .next()
+                .and_then(|line| line.split("page size of ").nth(1))
+                .and_then(|v| v.split(' ').next())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(4096);
+            let mut pages = 0_u64;
+            for line in vm_stat.lines() {
+                if line.starts_with("Pages free")
+                    || line.starts_with("Pages inactive")
+                    || line.starts_with("Pages speculative")
+                {
+                    let count = line
+                        .split(':')
+                        .nth(1)
+                        .map(|v| v.trim().trim_end_matches('.'))
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    pages = pages.saturating_add(count);
+                }
+            }
+            available = pages.saturating_mul(page_size);
+        }
+        let used = total.saturating_sub(available);
+        return MemoryUsage {
+            total: format_size_human(total),
+            used: format_size_human(used),
+            available: format_size_human(available),
+        };
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(out) = run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_OperatingSystem) | ForEach-Object {\"$($_.TotalVisibleMemorySize)|$($_.FreePhysicalMemory)\"}",
+            ],
+            Duration::from_secs(2),
+        ) {
+            let parts: Vec<&str> = out.trim().split('|').collect();
+            if parts.len() == 2 {
+                let total = parts[0]
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .unwrap_or(0)
+                    .saturating_mul(1024);
+                let free = parts[1]
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .unwrap_or(0)
+                    .saturating_mul(1024);
+                let used = total.saturating_sub(free);
+                return MemoryUsage {
+                    total: format_size_human(total),
+                    used: format_size_human(used),
+                    available: format_size_human(free),
+                };
+            }
+        }
+        return MemoryUsage {
+            total: String::new(),
+            used: String::new(),
+            available: String::new(),
+        };
+    }
+    #[allow(unreachable_code)]
+    MemoryUsage {
+        total: String::new(),
+        used: String::new(),
+        available: String::new(),
+    }
+}
+
+fn detect_load_average() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
+            let parts: Vec<&str> = loadavg.split_whitespace().take(3).collect();
+            if parts.len() == 3 {
+                return parts.join(" ");
+            }
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        if let Some(out) =
+            run_command_with_timeout("sysctl", &["-n", "vm.loadavg"], Duration::from_secs(2))
+        {
+            let trimmed = out
+                .trim()
+                .trim_matches('{')
+                .trim_matches('}')
+                .replace('"', "");
+            let parts: Vec<&str> = trimmed.split_whitespace().take(3).collect();
+            if parts.len() == 3 {
+                return parts.join(" ");
+            }
+        }
+    }
+    if let Some(out) = run_command_with_timeout("uptime", &[], Duration::from_secs(2))
+        && let Some(idx) = out.find("load average")
+    {
+        return out[idx..]
+            .split(':')
+            .nth(1)
+            .map(|s| s.trim().replace(",", ""))
+            .unwrap_or_default();
+    }
+    String::new()
+}
+
+fn classify_interface(name: &str) -> String {
+    let n = name.to_lowercase();
+    if n == "lo" || n.starts_with("lo") {
+        "loopback".into()
+    } else if n.starts_with("utun") || n.starts_with("tun") || n.starts_with("wg") {
+        "vpn".into()
+    } else if n.starts_with("wlan") || n.starts_with("wl") || n.starts_with("wifi") {
+        "wifi".into()
+    } else if n.starts_with("eth") || n.starts_with("enp") || n.starts_with("eno") {
+        "ethernet".into()
+    } else if n.starts_with("en") {
+        "wifi".into()
+    } else {
+        "unknown".into()
+    }
+}
+
+fn is_filtered_ip(ip: &str) -> bool {
+    ip.starts_with("127.") || ip.starts_with("169.254.") || ip.starts_with("fe80:")
+}
+
+fn detect_network_info() -> Vec<NetworkInterface> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut entries = Vec::new();
+        if let Some(out) =
+            run_shell_with_timeout("ip -brief addr 2>/dev/null", Duration::from_secs(2))
+        {
+            for line in out.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                let name = parts[0].to_string();
+                for token in &parts[2..] {
+                    let ip = token.split('/').next().unwrap_or("").trim();
+                    if ip.is_empty() || ip.contains(':') || is_filtered_ip(ip) {
+                        continue;
+                    }
+                    entries.push(NetworkInterface {
+                        name: name.clone(),
+                        ip: ip.to_string(),
+                        kind: classify_interface(&name),
+                    });
+                    break;
+                }
+            }
+        }
+        entries.truncate(5);
+        return entries;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut entries = Vec::new();
+        if let Some(out) = run_command_with_timeout("ifconfig", &[], Duration::from_secs(2)) {
+            let mut current_if = String::new();
+            for line in out.lines() {
+                if !line.starts_with('\t') && line.contains(':') {
+                    current_if = line.split(':').next().unwrap_or("").to_string();
+                } else if line.trim_start().starts_with("inet ") {
+                    let ip = line
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if ip.is_empty() || is_filtered_ip(&ip) {
+                        continue;
+                    }
+                    entries.push(NetworkInterface {
+                        name: current_if.clone(),
+                        ip,
+                        kind: classify_interface(&current_if),
+                    });
+                }
+            }
+        }
+        entries.truncate(5);
+        return entries;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let mut entries = Vec::new();
+        if let Some(out) = run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "Get-NetIPAddress -AddressFamily IPv4 | ForEach-Object {\"$($_.InterfaceAlias)|$($_.IPAddress)\"}",
+            ],
+            Duration::from_secs(2),
+        ) {
+            for line in out.lines() {
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() != 2 {
+                    continue;
+                }
+                let ip = parts[1].trim();
+                if ip.is_empty() || is_filtered_ip(ip) {
+                    continue;
+                }
+                let name = parts[0].trim().to_string();
+                entries.push(NetworkInterface {
+                    kind: classify_interface(&name),
+                    name,
+                    ip: ip.to_string(),
+                });
+            }
+        }
+        entries.truncate(5);
+        return entries;
+    }
+    #[allow(unreachable_code)]
+    Vec::new()
+}
+
+fn detect_locale_detail() -> String {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let fallback = std::env::var("LC_ALL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var("LANG").ok())
+            .unwrap_or_default();
+        let parts = ["LC_TIME", "LC_NUMERIC", "LC_MONETARY", "LC_COLLATE"]
+            .iter()
+            .filter_map(|key| {
+                let value = std::env::var(key).ok().filter(|v| !v.is_empty());
+                let value = value.or_else(|| {
+                    if fallback.is_empty() {
+                        None
+                    } else {
+                        Some(fallback.clone())
+                    }
+                })?;
+                Some(format!("{key}={value}"))
+            })
+            .collect::<Vec<_>>();
+        return parts.join(" ");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "$c = Get-Culture; \"LC_TIME=$($c.Name) LC_NUMERIC=$($c.NumberFormat.NumberDecimalSeparator)\"",
+            ],
+            Duration::from_secs(2),
+        )
+        .unwrap_or_default();
+    }
+    #[allow(unreachable_code)]
+    String::new()
+}
+
+fn detect_uptime() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(raw) = std::fs::read_to_string("/proc/uptime")
+            && let Some(first) = raw.split_whitespace().next()
+            && let Ok(secs) = first.parse::<f64>()
+        {
+            return parse_uptime_seconds(secs as u64);
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        if let Some(out) =
+            run_command_with_timeout("sysctl", &["-n", "kern.boottime"], Duration::from_secs(2))
+            && let Some(sec_field) = out.split(',').find(|f| f.contains("sec"))
+            && let Some(sec_str) = sec_field.split('=').nth(1)
+            && let Ok(boot_secs) = sec_str.trim().parse::<u64>()
+        {
+            let now = now_epoch();
+            if now > boot_secs {
+                return parse_uptime_seconds(now - boot_secs);
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(out) = run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "(New-TimeSpan -Start (Get-CimInstance Win32_OperatingSystem).LastBootUpTime -End (Get-Date)).TotalSeconds",
+            ],
+            Duration::from_secs(2),
+        ) && let Ok(secs) = out.trim().parse::<f64>()
+        {
+            return parse_uptime_seconds(secs as u64);
+        }
+    }
+    if let Some(out) = run_command_with_timeout("uptime", &[], Duration::from_secs(2)) {
+        return out;
+    }
+    String::new()
+}
+
+fn measure_cpu_percent(_existing: Option<&VolatileInfo>) -> f32 {
+    #[cfg(target_os = "linux")]
+    {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as f32)
+            .unwrap_or(1.0);
+        let load1 = detect_load_average()
+            .split_whitespace()
+            .next()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.0);
+        return (load1 / cores * 100.0).clamp(0.0, 100.0);
     }
 
-    parts.join(", ")
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(out) =
+            run_command_with_timeout("top", &["-l", "1", "-n", "0"], Duration::from_secs(2))
+            && let Some(line) = out.lines().find(|l| l.contains("CPU usage"))
+        {
+            let user = line
+                .split('%')
+                .next()
+                .and_then(|prefix| prefix.split_whitespace().last())
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            let sys = line
+                .split("sys")
+                .next()
+                .and_then(|prefix| prefix.split_whitespace().last())
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            return (user + sys).clamp(0.0, 100.0);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(out) = run_command_with_timeout(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_Processor).LoadPercentage",
+            ],
+            Duration::from_secs(2),
+        ) && let Ok(v) = out.trim().parse::<f32>()
+        {
+            return v.clamp(0.0, 100.0);
+        }
+    }
+    0.0
 }
 
 fn which_exists(cmd: &str) -> bool {
@@ -1419,10 +2477,30 @@ mod tests {
             username: "testuser".into(),
             conversation_history: vec![],
             hostname: "testhost".into(),
-            machine_info: "arm64".into(),
             datetime_info: "2025-01-01 00:00:00 UTC".into(),
             timezone_info: "UTC".into(),
             locale_info: "en_US.UTF-8".into(),
+            machine_details: MachineDetails {
+                arch: String::new(),
+                cores: 1,
+                total_ram: String::new(),
+                pkg_managers: String::new(),
+                lang_pkg_managers: String::new(),
+                dev_tools: String::new(),
+            },
+            cpu_model: String::new(),
+            gpu_info: String::new(),
+            disk_info: vec![],
+            memory_usage: MemoryUsage {
+                total: String::new(),
+                used: String::new(),
+                available: String::new(),
+            },
+            load_average: String::new(),
+            cpu_samples: String::new(),
+            network_info: vec![],
+            locale_detail: String::new(),
+            uptime: String::new(),
             cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
@@ -1452,7 +2530,7 @@ mod tests {
         assert!(xml.contains("cwd=\"/tmp\""));
         assert!(xml.contains("user=\"testuser\""));
         assert!(xml.contains("hostname=\"testhost\""));
-        assert!(xml.contains("machine=\"arm64\""));
+        assert!(xml.contains("<hardware"));
     }
 
     #[test]
@@ -1462,7 +2540,43 @@ mod tests {
         assert!(xml.contains("<environment"));
         assert!(xml.contains("datetime=\"2025-01-01 00:00:00 UTC\""));
         assert!(xml.contains("timezone=\"UTC\""));
-        assert!(xml.contains("locale=\"en_US.UTF-8\""));
+        assert!(xml.contains("lang=\"en_US.UTF-8\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_environment_structure() {
+        let ctx = make_minimal_ctx();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(xml.contains("<environment>"));
+        assert!(xml.contains("<system"));
+        assert!(xml.contains("<temporal"));
+        assert!(xml.contains("<hardware"));
+        assert!(xml.contains("<utilization"));
+        assert!(xml.contains("</environment>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_omits_empty_gpu() {
+        let mut ctx = make_minimal_ctx();
+        ctx.gpu_info.clear();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains(" gpu=\""));
+    }
+
+    #[test]
+    fn test_build_xml_context_omits_empty_disks() {
+        let mut ctx = make_minimal_ctx();
+        ctx.disk_info.clear();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<disks>"));
+    }
+
+    #[test]
+    fn test_build_xml_context_omits_empty_network() {
+        let mut ctx = make_minimal_ctx();
+        ctx.network_info.clear();
+        let xml = build_xml_context(&ctx, &Config::default());
+        assert!(!xml.contains("<network>"));
     }
 
     #[test]
@@ -1583,8 +2697,9 @@ mod tests {
     fn test_detect_machine_info_contains_arch() {
         let info = detect_machine_info();
         assert!(
-            info.contains(std::env::consts::ARCH),
-            "expected arch in machine info, got: {info}"
+            info.arch.contains(std::env::consts::ARCH),
+            "expected arch in machine details, got: {:?}",
+            info
         );
     }
 
@@ -1757,7 +2872,7 @@ mod tests {
         let info = get_cached_system_info();
         assert!(!info.os_info.is_empty());
         assert!(!info.hostname.is_empty());
-        assert!(!info.machine_info.is_empty());
+        assert!(!info.machine_details.arch.is_empty());
         assert!(!info.timezone_info.is_empty());
         assert!(!info.locale_info.is_empty());
     }
@@ -1768,7 +2883,57 @@ mod tests {
         let info2 = get_cached_system_info();
         assert_eq!(info1.os_info, info2.os_info);
         assert_eq!(info1.hostname, info2.hostname);
-        assert_eq!(info1.machine_info, info2.machine_info);
+        assert_eq!(info1.machine_details.arch, info2.machine_details.arch);
+    }
+
+    #[test]
+    fn test_tiered_cache_ttls() {
+        assert!(STATIC_TTL > SEMI_DYNAMIC_TTL);
+        assert!(SEMI_DYNAMIC_TTL > VOLATILE_TTL);
+
+        {
+            let mut cache = VOLATILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            *cache = Some(VolatileInfo {
+                cpu_samples: VecDeque::with_capacity(6),
+                memory_usage: MemoryUsage {
+                    total: String::new(),
+                    used: String::new(),
+                    available: String::new(),
+                },
+                load_average: String::new(),
+                last_sampled: Instant::now() - VOLATILE_TTL,
+            });
+        }
+
+        for _ in 0..8 {
+            {
+                let mut cache = VOLATILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(v) = cache.as_mut() {
+                    v.last_sampled = Instant::now() - VOLATILE_TTL;
+                }
+            }
+            let _ = sample_volatile_info();
+        }
+
+        let cache = VOLATILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let count = cache.as_ref().map(|v| v.cpu_samples.len()).unwrap_or(0);
+        assert!(count <= 6);
+    }
+
+    #[test]
+    fn test_detect_load_average_shape() {
+        let load = detect_load_average();
+        if !load.is_empty() {
+            assert!(load.split_whitespace().count() >= 1);
+        }
+    }
+
+    #[test]
+    fn test_detect_disk_info_mounts() {
+        let disks = detect_disk_info();
+        for disk in disks {
+            assert!(!disk.mount.is_empty());
+        }
     }
 
     #[test]
@@ -1781,10 +2946,30 @@ mod tests {
             username: "test".into(),
             conversation_history: vec![],
             hostname: "test".into(),
-            machine_info: "arm64".into(),
             datetime_info: "2025-01-01".into(),
             timezone_info: "UTC".into(),
             locale_info: "en_US.UTF-8".into(),
+            machine_details: MachineDetails {
+                arch: "arm64".into(),
+                cores: 1,
+                total_ram: String::new(),
+                pkg_managers: String::new(),
+                lang_pkg_managers: String::new(),
+                dev_tools: String::new(),
+            },
+            cpu_model: String::new(),
+            gpu_info: String::new(),
+            disk_info: vec![],
+            memory_usage: MemoryUsage {
+                total: String::new(),
+                used: String::new(),
+                available: String::new(),
+            },
+            load_average: String::new(),
+            cpu_samples: String::new(),
+            network_info: vec![],
+            locale_detail: String::new(),
+            uptime: String::new(),
             cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],
@@ -2490,8 +3675,9 @@ mod tests {
     fn test_detect_machine_info_contains_cores() {
         let info = detect_machine_info();
         assert!(
-            info.contains("cores"),
-            "expected 'cores' in machine info, got: {info}"
+            info.cores >= 1,
+            "expected at least one core, got: {}",
+            info.cores
         );
     }
 
@@ -2515,7 +3701,7 @@ mod tests {
         let info2 = get_cached_system_info();
         assert_eq!(info1.os_info, info2.os_info);
         assert_eq!(info1.hostname, info2.hostname);
-        assert_eq!(info1.machine_info, info2.machine_info);
+        assert_eq!(info1.machine_details.arch, info2.machine_details.arch);
         assert_eq!(info1.timezone_info, info2.timezone_info);
         assert_eq!(info1.locale_info, info2.locale_info);
     }
@@ -5040,10 +6226,30 @@ mod tests {
             username: "root".into(),
             conversation_history: vec![],
             hostname: "localhost".into(),
-            machine_info: "x86_64".into(),
             datetime_info: "2025-01-01".into(),
             timezone_info: "UTC".into(),
             locale_info: "C".into(),
+            machine_details: MachineDetails {
+                arch: "x86_64".into(),
+                cores: 1,
+                total_ram: String::new(),
+                pkg_managers: String::new(),
+                lang_pkg_managers: String::new(),
+                dev_tools: String::new(),
+            },
+            cpu_model: String::new(),
+            gpu_info: String::new(),
+            disk_info: vec![],
+            memory_usage: MemoryUsage {
+                total: String::new(),
+                used: String::new(),
+                available: String::new(),
+            },
+            load_average: String::new(),
+            cpu_samples: String::new(),
+            network_info: vec![],
+            locale_detail: String::new(),
+            uptime: String::new(),
             cwd_listing: vec![],
             session_history: vec![],
             other_sessions: vec![],

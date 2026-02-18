@@ -1,6 +1,6 @@
-use std::io::{Read, Write};
 #[cfg(test)]
 use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -58,13 +58,19 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
         let response_line = read_daemon_response(&mut stream)?;
         log_daemon_client(
             "client.send_request.response",
-            &format!(
-                "session={session_id}\nresponse={}",
-                response_line
-            ),
+            &format!("session={session_id}\nresponse={}", response_line),
         );
 
         Ok(serde_json::from_str(&response_line)?)
+    }
+}
+
+pub fn get_system_info(_session_id: &str) -> anyhow::Result<crate::context::SystemInfoBundle> {
+    let request = DaemonRequest::GetSystemInfo;
+    match send_to_global(&request) {
+        Ok(DaemonResponse::Ok { data: Some(d) }) => Ok(serde_json::from_value(d)?),
+        Ok(other) => anyhow::bail!("unexpected daemon response: {other:?}"),
+        Err(e) => Err(e),
     }
 }
 

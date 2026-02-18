@@ -42,6 +42,7 @@ pub enum DaemonRequest {
     Context {
         session: String,
     },
+    GetSystemInfo,
     Status,
     McpToolCall {
         tool: String,
@@ -397,6 +398,7 @@ pub fn handle_daemon_request(
         | DaemonRequest::SearchHistoryAdvanced { .. }
         | DaemonRequest::SearchCommandEntities { .. }
         | DaemonRequest::CommandCount
+        | DaemonRequest::GetSystemInfo
         | DaemonRequest::CleanupOrphanedSessions
         | DaemonRequest::Prune { .. }
         | DaemonRequest::RebuildFts
