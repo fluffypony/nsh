@@ -328,8 +328,8 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
             "\n  <recent_nsh_queries session=\"current\" count=\"{}\" note=\"These are recent AI assistant interactions in this session. Use for conversational continuity and self-correction.\">\n",
             ctx.conversation_history.len(),
         ));
-        // Show oldest to newest for logical chronological flow
-        for exchange in ctx.conversation_history.iter().rev() {
+        // conversation_history is already in chronological order (oldest first)
+        for exchange in ctx.conversation_history.iter() {
             let ts_attr = exchange.created_at.as_ref()
                 .map(|t| format!(" ts=\"{}\"", xml_escape(t)))
                 .unwrap_or_default();
