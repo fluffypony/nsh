@@ -112,18 +112,24 @@ pub(crate) fn validate_path_with_access(
         }
     }
 
-    if let Some(parent) = canonical_target.parent() {
-        if parent.exists() {
-            let real_parent = parent.canonicalize()?;
+    let mut current = canonical_target.parent().map(|p| p.to_path_buf());
+    while let Some(path) = current {
+        if path.exists() {
+            let real_path = path.canonicalize()?;
             if sensitive_file_access != "allow"
-                && sensitive_dirs.iter().any(|d| real_parent.starts_with(d))
+                && sensitive_dirs.iter().any(|d| real_path.starts_with(d))
             {
-                anyhow::bail!("symlink resolves to a blocked directory");
+                anyhow::bail!(
+                    "path resolves to a blocked sensitive directory: {}",
+                    real_path.display()
+                );
             }
-            if real_parent.starts_with("/etc") && !is_root() {
+            if real_path.starts_with("/etc") && !is_root() {
                 anyhow::bail!("symlink resolves to /etc/ (requires root)");
             }
+            break;
         }
+        current = path.parent().map(|pp| pp.to_path_buf());
     }
 
     Ok(())

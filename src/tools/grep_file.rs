@@ -1,5 +1,21 @@
 use regex::Regex;
-use std::fs;
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
+
+#[cfg(unix)]
+fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
 
 #[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
@@ -24,12 +40,11 @@ pub fn execute_with_access(
     let max_lines = input["max_lines"].as_u64().unwrap_or(100) as usize;
 
     let path_display = path.display().to_string();
-    let content = match fs::read_to_string(&path) {
-        Ok(c) => c,
+    let file = match open_for_read(&path) {
+        Ok(f) => f,
         Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
     };
-
-    let lines: Vec<&str> = content.lines().collect();
+    let mut reader = BufReader::new(file);
 
     match pattern {
         Some(pat) => {
@@ -40,21 +55,70 @@ pub fn execute_with_access(
 
             let mut result = String::new();
             let mut output_lines = 0;
+            let mut line_no = 0usize;
+            let mut line = String::new();
+            let mut before = VecDeque::<(usize, String)>::new();
+            let mut after_remaining = 0usize;
+            let mut last_emitted_line: Option<usize> = None;
 
-            for (i, line) in lines.iter().enumerate() {
-                if re.is_match(line) {
-                    let start = i.saturating_sub(context_lines);
-                    let end = (i + context_lines + 1).min(lines.len());
-                    for (j, line) in lines.iter().enumerate().take(end).skip(start) {
+            loop {
+                line.clear();
+                let bytes = match reader.read_line(&mut line) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
+                };
+                if bytes == 0 {
+                    break;
+                }
+                line_no += 1;
+
+                let line_str = line.trim_end_matches(['\n', '\r']).to_string();
+                let is_match = re.is_match(&line_str);
+
+                if is_match {
+                    for (ctx_no, ctx_line) in &before {
+                        if last_emitted_line.is_some_and(|n| *ctx_no <= n) {
+                            continue;
+                        }
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
                             return Ok(result);
                         }
-                        let marker = if j == i { ">>>" } else { "   " };
-                        result.push_str(&format!("{marker} {:>4}: {}\n", j + 1, line));
+                        result.push_str(&format!("    {:>4}: {}\n", ctx_no, ctx_line));
                         output_lines += 1;
+                        last_emitted_line = Some(*ctx_no);
                     }
+
+                    if last_emitted_line != Some(line_no) {
+                        if output_lines >= max_lines {
+                            result.push_str("\n[... truncated]\n");
+                            return Ok(result);
+                        }
+                        result.push_str(&format!(">>> {:>4}: {}\n", line_no, line_str));
+                        output_lines += 1;
+                        last_emitted_line = Some(line_no);
+                    }
+
                     result.push_str("---\n");
+                    after_remaining = context_lines;
+                } else if after_remaining > 0 {
+                    if last_emitted_line != Some(line_no) {
+                        if output_lines >= max_lines {
+                            result.push_str("\n[... truncated]\n");
+                            return Ok(result);
+                        }
+                        result.push_str(&format!("    {:>4}: {}\n", line_no, line_str));
+                        output_lines += 1;
+                        last_emitted_line = Some(line_no);
+                    }
+                    after_remaining -= 1;
+                }
+
+                if context_lines > 0 {
+                    before.push_back((line_no, line_str));
+                    while before.len() > context_lines {
+                        before.pop_front();
+                    }
                 }
             }
 
@@ -66,14 +130,35 @@ pub fn execute_with_access(
         }
         None => {
             // No pattern — read the file (up to max_lines)
-            let end = max_lines.min(lines.len());
             let mut result = String::new();
-            for (i, line) in lines[..end].iter().enumerate() {
-                result.push_str(&format!("{:>4}: {}\n", i + 1, line));
+            let mut line = String::new();
+            let mut line_no = 0usize;
+            let mut total_lines = 0usize;
+            loop {
+                line.clear();
+                let bytes = match reader.read_line(&mut line) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
+                };
+                if bytes == 0 {
+                    break;
+                }
+
+                total_lines += 1;
+                if line_no < max_lines {
+                    line_no += 1;
+                    result.push_str(&format!(
+                        "{:>4}: {}\n",
+                        line_no,
+                        line.trim_end_matches(['\n', '\r'])
+                    ));
+                }
             }
-            if lines.len() > max_lines {
-                result.push_str(&format!("\n[... {} more lines]\n", lines.len() - max_lines));
+
+            if total_lines > max_lines {
+                result.push_str(&format!("\n[... {} more lines]\n", total_lines - max_lines));
             }
+
             Ok(result)
         }
     }

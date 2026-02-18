@@ -1,4 +1,19 @@
-use std::fs;
+use std::io::{BufRead, BufReader, Read};
+
+#[cfg(unix)]
+fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
 
 #[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
@@ -21,22 +36,60 @@ pub fn execute_with_access(
     let start_line = (input["start_line"].as_u64().unwrap_or(1) as usize).max(1);
     let end_line = input["end_line"].as_u64().unwrap_or(200) as usize;
 
-    let bytes = match fs::read(&path) {
-        Ok(b) => b,
+    let mut probe_file = match open_for_read(&path) {
+        Ok(f) => f,
         Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
     };
 
-    if bytes.iter().take(8192).any(|&b| b == 0) {
+    let requested_end = end_line.min(start_line + 499);
+    let mut line_buf = Vec::new();
+    let mut total_lines = 0usize;
+    let mut result = String::new();
+
+    // Quick binary check from the first bytes while keeping streaming behavior.
+    let mut prefix = [0_u8; 8192];
+    let bytes_read = match probe_file.read(&mut prefix) {
+        Ok(n) => n,
+        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+    };
+    if prefix[..bytes_read].contains(&0) {
         return Ok("Binary file, cannot display".into());
     }
 
-    let content = match String::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => return Ok("Binary file, cannot display".into()),
+    let file = match open_for_read(&path) {
+        Ok(f) => f,
+        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
     };
+    let mut stream_reader = BufReader::new(file);
 
-    let lines: Vec<&str> = content.lines().collect();
-    let total_lines = lines.len();
+    loop {
+        line_buf.clear();
+        let n = match stream_reader.read_until(b'\n', &mut line_buf) {
+            Ok(n) => n,
+            Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+        };
+        if n == 0 {
+            break;
+        }
+
+        if line_buf.contains(&0) {
+            return Ok("Binary file, cannot display".into());
+        }
+
+        total_lines += 1;
+        if total_lines < start_line || total_lines > requested_end {
+            continue;
+        }
+
+        let mut line = match String::from_utf8(line_buf.clone()) {
+            Ok(s) => s,
+            Err(_) => return Ok("Binary file, cannot display".into()),
+        };
+        while line.ends_with('\n') || line.ends_with('\r') {
+            line.pop();
+        }
+        result.push_str(&format!("{:>4}: {line}\n", total_lines));
+    }
 
     if start_line > total_lines {
         return Ok(format!(
@@ -45,14 +98,7 @@ pub fn execute_with_access(
         ));
     }
 
-    let capped_end = end_line.min(start_line + 499).min(total_lines);
-
-    let mut result = String::new();
-    for (i, line) in lines[start_line - 1..capped_end].iter().enumerate() {
-        result.push_str(&format!("{:>4}: {line}\n", start_line + i));
-    }
-
-    if capped_end < total_lines {
+    if requested_end < total_lines {
         result.push_str(&format!(
             "\n[{}: {total_lines} total lines]\n",
             path.display()

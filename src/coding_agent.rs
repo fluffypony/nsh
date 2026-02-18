@@ -751,13 +751,27 @@ fn ensure_under_working_dir(path: &Path, working_dir: &Path) -> anyhow::Result<(
 
     let normalized = if absolute.exists() {
         absolute.canonicalize()?
-    } else if let Some(parent) = absolute.parent() {
-        let parent = parent
-            .canonicalize()
-            .unwrap_or_else(|_| working_dir.to_path_buf());
-        parent.join(absolute.file_name().unwrap_or_default())
     } else {
-        absolute
+        let mut existing_ancestor = absolute.clone();
+        let mut suffix_components = Vec::new();
+
+        while !existing_ancestor.exists() {
+            let Some(file_name) = existing_ancestor.file_name() else {
+                break;
+            };
+            suffix_components.push(file_name.to_os_string());
+            if !existing_ancestor.pop() {
+                break;
+            }
+        }
+
+        let mut resolved = existing_ancestor.canonicalize().map_err(|_| {
+            anyhow::anyhow!("cannot resolve any ancestor of: {}", absolute.display())
+        })?;
+        for component in suffix_components.into_iter().rev() {
+            resolved.push(component);
+        }
+        resolved
     };
     let wd = working_dir
         .canonicalize()
@@ -776,20 +790,211 @@ fn is_dev_command_allowed(command: &str) -> bool {
         "ruff", "git", "wc", "head", "tail", "cat", "find", "grep", "sort", "uniq", "diff",
         "which", "file", "stat", "ls", "tree", "echo", "env", "pwd",
     ];
-    let mut parts = command.split_whitespace();
-    let Some(bin) = parts.next() else {
-        return false;
-    };
-    if !allow.contains(&bin) {
+    // Command substitution hides nested execution from token-based validation.
+    if command.contains("$(") || command.contains('`') {
         return false;
     }
-    if bin == "git" {
-        let Some(sub) = parts.next() else {
-            return false;
-        };
-        return matches!(sub, "diff" | "status" | "log" | "branch");
+
+    let sub_commands = split_on_shell_chaining_operators(command);
+    if sub_commands.is_empty() {
+        return false;
     }
+
+    for sub in &sub_commands {
+        for segment in split_on_unquoted_pipe(sub) {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+
+            let mut parts = segment.split_whitespace();
+            let Some(bin) = parts.next() else {
+                continue;
+            };
+
+            if !allow.contains(&bin) {
+                return false;
+            }
+
+            if bin == "git" {
+                let Some(sub) = parts.next() else {
+                    return false;
+                };
+                if !matches!(sub, "diff" | "status" | "log" | "branch") {
+                    return false;
+                }
+            }
+        }
+    }
+
     true
+}
+
+fn split_on_shell_chaining_operators(cmd: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = cmd.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    while let Some(c) = chars.next() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' && !in_single {
+            current.push(c);
+            escaped = true;
+            continue;
+        }
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+            current.push(c);
+            continue;
+        }
+        if c == '"' && !in_single {
+            in_double = !in_double;
+            current.push(c);
+            continue;
+        }
+        if in_single || in_double {
+            current.push(c);
+            continue;
+        }
+
+        match c {
+            ';' | '\n' => {
+                let t = current.trim().to_string();
+                if !t.is_empty() {
+                    parts.push(t);
+                }
+                current.clear();
+            }
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                let t = current.trim().to_string();
+                if !t.is_empty() {
+                    parts.push(t);
+                }
+                current.clear();
+            }
+            '|' if chars.peek() == Some(&'|') => {
+                chars.next();
+                let t = current.trim().to_string();
+                if !t.is_empty() {
+                    parts.push(t);
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+
+    let t = current.trim().to_string();
+    if !t.is_empty() {
+        parts.push(t);
+    }
+    parts
+}
+
+fn split_on_unquoted_pipe(cmd: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut chars = cmd.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    while let Some(c) = chars.next() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' && !in_single {
+            current.push(c);
+            escaped = true;
+            continue;
+        }
+        if c == '\'' && !in_double {
+            in_single = !in_single;
+            current.push(c);
+            continue;
+        }
+        if c == '"' && !in_single {
+            in_double = !in_double;
+            current.push(c);
+            continue;
+        }
+        if in_single || in_double {
+            current.push(c);
+            continue;
+        }
+
+        if c == '|' && chars.peek() != Some(&'|') {
+            let t = current.trim().to_string();
+            if !t.is_empty() {
+                parts.push(t);
+            }
+            current.clear();
+            continue;
+        }
+
+        current.push(c);
+    }
+
+    let t = current.trim().to_string();
+    if !t.is_empty() {
+        parts.push(t);
+    }
+    parts
+}
+
+#[cfg(test)]
+fn absolute_from(path: &Path) -> anyhow::Result<std::path::PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+#[cfg(test)]
+fn resolved_candidate_path(path: &Path) -> anyhow::Result<std::path::PathBuf> {
+    let absolute = absolute_from(path)?;
+    if absolute.exists() {
+        return absolute.canonicalize().map_err(Into::into);
+    }
+
+    let mut existing_ancestor = absolute.clone();
+    let mut suffix_components = Vec::new();
+    while !existing_ancestor.exists() {
+        let Some(file_name) = existing_ancestor.file_name() else {
+            break;
+        };
+        suffix_components.push(file_name.to_os_string());
+        if !existing_ancestor.pop() {
+            break;
+        }
+    }
+    let mut resolved = existing_ancestor
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("cannot resolve any ancestor of: {}", absolute.display()))?;
+    for component in suffix_components.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+#[cfg(test)]
+fn is_under_working_dir_for_tests(path: &Path, working_dir: &Path) -> anyhow::Result<bool> {
+    let normalized = resolved_candidate_path(path)?;
+    let wd = working_dir
+        .canonicalize()
+        .unwrap_or_else(|_| working_dir.to_path_buf());
+    Ok(normalized.starts_with(&wd))
 }
 
 #[cfg(test)]
@@ -826,5 +1031,37 @@ mod tests {
         let test_t = estimate_timeout_seconds("cargo test", tmp.path());
         let git_t = estimate_timeout_seconds("git status", tmp.path());
         assert!(test_t > git_t);
+    }
+
+    #[test]
+    fn test_dev_command_allowlist_blocks_shell_chaining() {
+        assert!(!is_dev_command_allowed("echo ok; curl https://example.com"));
+        assert!(!is_dev_command_allowed("cargo test && rm -rf /tmp/foo"));
+        assert!(!is_dev_command_allowed(
+            "echo ok | curl https://example.com"
+        ));
+    }
+
+    #[test]
+    fn test_dev_command_allowlist_blocks_command_substitution() {
+        assert!(!is_dev_command_allowed("echo $(rm -rf /tmp/data)"));
+        assert!(!is_dev_command_allowed("echo `rm -rf /tmp/data`"));
+    }
+
+    #[test]
+    fn test_dev_command_allowlist_allows_safe_chaining() {
+        assert!(is_dev_command_allowed("cargo build && cargo test"));
+        assert!(is_dev_command_allowed("git status || git diff"));
+        assert!(is_dev_command_allowed("cat Cargo.toml | grep name"));
+    }
+
+    #[test]
+    fn test_is_under_working_dir_for_tests_detects_escape_with_missing_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = std::env::temp_dir()
+            .join(format!("nsh-outside-{}", uuid::Uuid::new_v4()))
+            .join("payload.sh");
+        let under = is_under_working_dir_for_tests(&outside, tmp.path()).unwrap();
+        assert!(!under);
     }
 }
