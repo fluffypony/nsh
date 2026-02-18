@@ -59,16 +59,29 @@ __nsh_run_deferred() {
 }
 
 __nsh_accept_line() {
+    # Reentrance guard: if we're already inside this widget (due to
+    # widget-chain loops caused by other plugins wrapping accept-line),
+    # fall back directly to the builtin to break the cycle.
+    if [[ -n "${__nsh_accept_line_active:-}" ]]; then
+        zle .accept-line
+        return
+    fi
+    typeset -g __nsh_accept_line_active=1
+
     if __nsh_handle_nl_query_line; then
+        __nsh_accept_line_active=""
         return 0
     fi
 
     # Safety guard: if wrapper chaining got corrupted, fall back to builtin.
     local orig_widget="${widgets[__nsh_accept_line_orig]:-}"
     if [[ "$orig_widget" == "user:__nsh_accept_line" ]]; then
+        __nsh_accept_line_active=""
         zle .accept-line
     else
+        # Keep the guard active across the call so indirect cycles are caught
         zle __nsh_accept_line_orig
+        __nsh_accept_line_active=""
     fi
 }
 

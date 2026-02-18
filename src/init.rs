@@ -219,6 +219,22 @@ mod tests {
     }
 
     #[test]
+    fn test_zsh_accept_line_has_reentrance_guard() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("__nsh_accept_line_active"),
+            "zsh accept-line wrapper should have a reentrance guard variable"
+        );
+        // The guard should check for the variable early and fall back to builtin
+        let guard_pos = script.find("__nsh_accept_line_active").unwrap();
+        let func_pos = script.find("__nsh_accept_line()").unwrap();
+        assert!(
+            guard_pos > func_pos,
+            "reentrance guard should be inside the accept-line wrapper function"
+        );
+    }
+
+    #[test]
     fn test_zsh_accept_line_install_heals_corrupt_orig_widget() {
         let script = generate_init_script("zsh");
         assert!(
