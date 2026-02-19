@@ -1796,10 +1796,22 @@ impl Db {
                     orphaned_count += 1;
                     continue;
                 }
-                // Clean up orphaned per-TTY CWD files
-                if name.starts_with("cwd_") {
-                    let _ = std::fs::remove_file(entry.path());
-                    orphaned_count += 1;
+                // Clean up orphaned per-TTY CWD files (skip active sessions)
+                if name.starts_with("cwd_") && !name.ends_with(".tmp") {
+                    // Extract TTY from filename: cwd__dev_ttys011 → /dev/ttys011
+                    let tty = name.trim_start_matches("cwd_").replace('_', "/");
+                    let tty_active: bool = self
+                        .conn
+                        .query_row(
+                            "SELECT COUNT(*) > 0 FROM sessions WHERE tty = ? AND ended_at IS NULL",
+                            params![tty],
+                            |row| row.get(0),
+                        )
+                        .unwrap_or(false);
+                    if !tty_active {
+                        let _ = std::fs::remove_file(entry.path());
+                        orphaned_count += 1;
+                    }
                     continue;
                 }
                 if (name.starts_with("daemon_")

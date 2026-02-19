@@ -107,15 +107,52 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     )));
 
     let basename = shell.rsplit('/').next().unwrap_or(shell);
-    let orig_tty = tty_path(real_stdin);
+    let orig_tty = tty_path(real_stdin)
+        .or_else(|| {
+            // Fallback: resolve /dev/fd/<n> symlink (macOS, Linux, FreeBSD)
+            use std::os::fd::AsRawFd;
+            std::fs::read_link(format!("/dev/fd/{}", real_stdin.as_raw_fd()))
+                .ok()
+                .and_then(|p| {
+                    let s = p.to_string_lossy().to_string();
+                    if s.starts_with("/dev/tty") || s.starts_with("/dev/pts") {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                })
+        })
+        .or_else(|| std::env::var("SSH_TTY").ok().filter(|s| !s.is_empty()));
+    if orig_tty.is_none() {
+        tracing::warn!(
+            "nsh wrap: could not determine original TTY for fd {}; NSH_ORIG_TTY will not be set",
+            real_stdin.as_raw_fd()
+        );
+        eprintln!("nsh: warning: could not determine original TTY; CWD tracking may use PTY slave path");
+    }
     let argv0_cstr = std::ffi::CString::new(format!("-{basename}")).expect("valid shell name");
     let shell_cstr = std::ffi::CString::new(shell.to_owned()).expect("valid shell path");
+    const NSH_ENV_FILTER: &[&str] = &[
+        "NSH_ORIG_TTY",
+        "NSH_PTY_ACTIVE",
+        "NSH_SESSION_ID",
+        "NSH_TTY",
+        "NSH_WRAP_SESSION_ID",
+    ];
     let mut env_vec: Vec<std::ffi::CString> = std::env::vars()
+        .filter(|(k, _)| !NSH_ENV_FILTER.contains(&k.as_str()))
         .filter_map(|(k, v)| std::ffi::CString::new(format!("{k}={v}")).ok())
         .collect();
     env_vec.push(std::ffi::CString::new("NSH_PTY_ACTIVE=1").unwrap());
-    if let Some(orig_tty) = orig_tty {
+    if let Some(ref orig_tty) = orig_tty {
         if let Ok(var) = std::ffi::CString::new(format!("NSH_ORIG_TTY={orig_tty}")) {
+            env_vec.push(var);
+        }
+    }
+    // Preserve NSH_WRAP_SESSION_ID across the wrap boundary so the child
+    // shell init derives the same session identity.
+    if let Ok(wsid) = std::env::var("NSH_WRAP_SESSION_ID") {
+        if let Ok(var) = std::ffi::CString::new(format!("NSH_WRAP_SESSION_ID={wsid}")) {
             env_vec.push(var);
         }
     }
