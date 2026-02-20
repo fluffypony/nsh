@@ -8,7 +8,6 @@ pub mod install_skill;
 pub mod list_directory;
 pub mod man_page;
 pub mod manage_config;
-pub mod memory;
 pub mod patch_file;
 pub mod read_file;
 pub mod run_command;
@@ -696,68 +695,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["name"]
             }),
         },
-        ToolDefinition {
-            name: "remember".into(),
-            description: "Store a fact, preference, or note in persistent \
-                          memory. If a memory with the same key already \
-                          exists, it will be updated. Memories are shown \
-                          in your context on every query."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "Short label for the memory (e.g. 'home NAS IP', 'deploy command', 'preferred editor')"
-                    },
-                    "value": {
-                        "type": "string",
-                        "description": "The content to remember"
-                    }
-                },
-                "required": ["key", "value"]
-            }),
-        },
-        ToolDefinition {
-            name: "forget_memory".into(),
-            description: "Delete a memory by its ID. Memory IDs are visible \
-                          in the <memories> context block."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "The memory ID to delete"
-                    }
-                },
-                "required": ["id"]
-            }),
-        },
-        ToolDefinition {
-            name: "update_memory".into(),
-            description: "Update an existing memory by ID. Provide a new \
-                          key, value, or both."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "integer",
-                        "description": "The memory ID to update"
-                    },
-                    "key": {
-                        "type": "string",
-                        "description": "New label (optional)"
-                    },
-                    "value": {
-                        "type": "string",
-                        "description": "New value (optional)"
-                    }
-                },
-                "required": ["id"]
-            }),
-        },
     ]
 }
 
@@ -769,7 +706,7 @@ mod tests {
     #[test]
     fn test_all_tool_definitions_returns_all_tools() {
         let tools = all_tool_definitions();
-        assert_eq!(tools.len(), 20);
+        assert_eq!(tools.len(), 17);
         for tool in &tools {
             assert!(!tool.name.is_empty());
             assert!(!tool.description.is_empty());
@@ -823,9 +760,6 @@ mod tests {
             "manage_config",
             "install_skill",
             "install_mcp_server",
-            "remember",
-            "forget_memory",
-            "update_memory",
         ];
         for name in &expected {
             assert!(names.contains(*name), "missing tool: {name}");
@@ -1156,35 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remember_tool_requires_key_value() {
-        let tools = all_tool_definitions();
-        let rem = tools.iter().find(|t| t.name == "remember").unwrap();
-        let required = rem.parameters["required"].as_array().unwrap();
-        let req_strs: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(req_strs, vec!["key", "value"]);
-    }
-
-    #[test]
-    fn test_forget_memory_requires_id() {
-        let tools = all_tool_definitions();
-        let fm = tools.iter().find(|t| t.name == "forget_memory").unwrap();
-        let required = fm.parameters["required"].as_array().unwrap();
-        assert_eq!(required.len(), 1);
-        assert_eq!(required[0], "id");
-        assert_eq!(fm.parameters["properties"]["id"]["type"], "integer");
-    }
-
-    #[test]
-    fn test_update_memory_requires_only_id() {
-        let tools = all_tool_definitions();
-        let um = tools.iter().find(|t| t.name == "update_memory").unwrap();
-        let required = um.parameters["required"].as_array().unwrap();
-        assert_eq!(required.len(), 1);
-        assert_eq!(required[0], "id");
-        let props = um.parameters["properties"].as_object().unwrap();
-        assert!(props.contains_key("key"));
-        assert!(props.contains_key("value"));
-    }
+    
 
     #[test]
     fn test_all_tools_have_properties_object() {
@@ -1316,7 +1222,7 @@ mod tests {
     fn test_tool_count_matches_expected_names() {
         let tools = all_tool_definitions();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names.len(), 20);
+        assert_eq!(names.len(), 17);
         assert_eq!(
             names,
             vec![
@@ -1337,9 +1243,6 @@ mod tests {
                 "manage_config",
                 "install_skill",
                 "install_mcp_server",
-                "remember",
-                "forget_memory",
-                "update_memory",
             ]
         );
     }
