@@ -39,14 +39,13 @@ $nshDir = Join-Path $HOME ".nsh"
 New-Item -ItemType Directory -Force -Path $nshDir | Out-Null
 $configPath = Join-Path $nshDir "config.toml"
 if (-not (Test-Path $configPath)) {
-    @"
-[provider]
-default = "openrouter"
-model = "google/gemini-2.5-flash"
-
-[provider.openrouter]
-# api_key = "sk-or-v1-..."
-"@ | Set-Content -Path $configPath -Encoding UTF8
+    Write-Host ""
+    Write-Host "Running initial configuration..."
+    try {
+        & (Join-Path $installDir "nsh.exe") autoconfigure
+    } catch {
+        Write-Host "Auto-configuration skipped. Run 'nsh autoconfigure' to configure later."
+    }
 }
 
 if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {

@@ -359,6 +359,18 @@ else
 fi
 
 echo ""
+
+# Run autoconfigure if no config exists
+if [ ! -f "$HOME/.nsh/config.toml" ]; then
+    info "Running initial configuration..."
+    if "$INSTALL_DIR/nsh" autoconfigure; then
+        :
+    else
+        warn "Auto-configuration skipped. Run 'nsh autoconfigure' to configure later."
+    fi
+    echo ""
+fi
+
 ok "nsh installed successfully!"
 echo ""
 echo "  Start a new shell, then try:"
