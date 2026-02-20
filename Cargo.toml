@@ -55,6 +55,7 @@ glob = "0.3"
 sha2 = "0.10"
 
 # Misc
+which = "8"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"

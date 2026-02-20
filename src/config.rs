@@ -105,7 +105,7 @@ impl Default for ModelsConfig {
             main: vec![
                 "google/gemini-2.5-flash".into(),
                 "google/gemini-3-flash-preview".into(),
-                "anthropic/claude-sonnet-4.5".into(),
+                "anthropic/claude-sonnet-4.6".into(),
             ],
             fast: vec![
                 "google/gemini-2.5-flash-lite".into(),
@@ -113,7 +113,7 @@ impl Default for ModelsConfig {
             ],
             coding: vec![
                 "anthropic/claude-opus-4.6".into(),
-                "anthropic/claude-sonnet-4.5".into(),
+                "anthropic/claude-sonnet-4.6".into(),
             ],
         }
     }
@@ -155,7 +155,7 @@ impl Default for ProviderConfig {
         Self {
             default: "openrouter".into(),
             model: "google/gemini-2.5-flash".into(),
-            fallback_model: Some("anthropic/claude-sonnet-4.5".into()),
+            fallback_model: Some("anthropic/claude-sonnet-4.6".into()),
             web_search_model: "perplexity/sonar".into(),
             openrouter: Some(ProviderAuth::default()),
             anthropic: None,
@@ -2083,7 +2083,7 @@ model = "primary"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(
             config.provider.fallback_model.as_deref(),
-            Some("anthropic/claude-sonnet-4.5")
+            Some("anthropic/claude-sonnet-4.6")
         );
     }
 
@@ -3421,7 +3421,7 @@ key = "value"
         assert_eq!(p.model, "google/gemini-2.5-flash");
         assert_eq!(
             p.fallback_model.as_deref(),
-            Some("anthropic/claude-sonnet-4.5")
+            Some("anthropic/claude-sonnet-4.6")
         );
         assert_eq!(p.web_search_model, "perplexity/sonar");
         assert!(p.openrouter.is_some());

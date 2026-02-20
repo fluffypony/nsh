@@ -1,5 +1,6 @@
 mod ansi;
 mod audit;
+mod autoconfigure;
 mod cli;
 mod coding_agent;
 mod config;
@@ -605,6 +606,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             let flag_path = config::Config::nsh_dir().join(format!("redact_next_{session_id}"));
             std::fs::write(&flag_path, "")?;
             eprintln!("nsh: next command output will not be captured");
+        }
+
+        Commands::Autoconfigure => {
+            crate::autoconfigure::run_autoconfigure()?;
         }
 
         Commands::Restart => {

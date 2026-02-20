@@ -150,6 +150,10 @@ pub enum Commands {
     /// Restart the nsh daemon
     Restart,
 
+    /// Auto-detect API keys and configure nsh
+    #[command(alias = "autoconfig")]
+    Autoconfigure,
+
     /// Self-update nsh to the latest version
     Update,
 
