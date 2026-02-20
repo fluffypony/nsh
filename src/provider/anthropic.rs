@@ -205,6 +205,7 @@ impl LlmProvider for AnthropicProvider {
             use futures::StreamExt;
             let mut stream = resp.bytes_stream().eventsource();
             let mut in_tool_use = false;
+            let mut in_server_tool_use = false;
 
             while let Some(event) = stream.next().await {
                 let event = match event {
@@ -229,9 +230,15 @@ impl LlmProvider for AnthropicProvider {
                                     name: block["name"].as_str().unwrap_or("").to_string(),
                                 })
                                 .await;
+                        } else if matches!(block["type"].as_str(), Some("server_tool_use") | Some("web_search_tool_result")) {
+                            // server_tool_use and web_search_tool_result are handled by Anthropic internally
+                            in_server_tool_use = true;
                         }
                     }
                     "content_block_delta" => {
+                        if in_server_tool_use {
+                            continue;
+                        }
                         let delta = &data["delta"];
                         match delta["type"].as_str() {
                             Some("text_delta") => {
@@ -249,6 +256,10 @@ impl LlmProvider for AnthropicProvider {
                         }
                     }
                     "content_block_stop" => {
+                        if in_server_tool_use {
+                            in_server_tool_use = false;
+                            continue;
+                        }
                         if in_tool_use {
                             let _ = tx.send(StreamEvent::ToolUseEnd).await;
                             in_tool_use = false;
@@ -257,6 +268,7 @@ impl LlmProvider for AnthropicProvider {
                     "message_stop" => {
                         if in_tool_use {
                             let _ = tx.send(StreamEvent::ToolUseEnd).await;
+                            in_tool_use = false;
                         }
                         let _ = tx.send(StreamEvent::Done { usage: None }).await;
                         break;
@@ -269,6 +281,12 @@ impl LlmProvider for AnthropicProvider {
                     _ => {}
                 }
             }
+
+            // Stream ended without message_stop — ensure cleanup
+            if in_tool_use {
+                let _ = tx.send(StreamEvent::ToolUseEnd).await;
+            }
+            let _ = tx.send(StreamEvent::Done { usage: None }).await;
         });
         Ok(rx)
     }

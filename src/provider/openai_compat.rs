@@ -2119,6 +2119,12 @@ pub fn spawn_openai_stream(
                 break;
             }
         }
+
+        // Stream ended without [DONE] or finish_reason — ensure cleanup
+        if current_tool_index.is_some() {
+            let _ = tx.send(StreamEvent::ToolUseEnd).await;
+        }
+        let _ = tx.send(StreamEvent::Done { usage: None }).await;
     });
     Ok(rx)
 }
