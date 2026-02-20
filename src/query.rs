@@ -7,6 +7,18 @@ use crate::{config::Config, context, daemon_db::DbAccess, provider::*, streaming
 type ToolFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>>;
 
+fn display_tool_error(error: &str, json_output: bool) {
+    if !json_output {
+        eprintln!(
+            "  \x1b[31m↳ error encountered: {}\x1b[0m",
+            crate::util::truncate(error, 200)
+        );
+        eprintln!(
+            "  \x1b[2m↳ please report this error here: https://github.com/fluffypony/nsh/issues/new\x1b[0m"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueryOptions {
     pub think: bool,
@@ -581,7 +593,11 @@ pub async fn handle_query(
                         let (content, is_error) =
                             match tools::search_history::execute(db, &input, config, session_id) {
                                 Ok(c) => (c, false),
-                                Err(e) => (format!("{e}"), true),
+                                Err(e) => {
+                                    let err_msg = format!("{e}");
+                                    display_tool_error(&err_msg, opts.json_output);
+                                    (err_msg, true)
+                                }
                             };
                         let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                         let sanitized = crate::security::sanitize_tool_output(&redacted);
@@ -655,9 +671,13 @@ pub async fn handle_query(
             for (id, name, result) in results {
                 let (content, is_error) = match result {
                     Ok(c) => (c, false),
-                    Err(e) => (e, true),
+                    Err(e) => {
+                        display_tool_error(&e, opts.json_output);
+                        (e, true)
+                    }
                 };
                 let redacted = crate::redact::redact_secrets(&content, &config.redaction);
+                let redacted = crate::util::truncate(&redacted, 32000);
                 let sanitized = crate::security::sanitize_tool_output(&redacted);
                 let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
                 tool_results.push(ContentBlock::ToolResult {

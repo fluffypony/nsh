@@ -308,7 +308,8 @@ pub fn build_openai_messages(messages: &[Message], system: &str) -> Vec<serde_js
                         ..
                     } = block
                     {
-                        out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": content}));
+                        let truncated = crate::util::truncate(content, 60000);
+                        out.push(json!({"role": "tool", "tool_call_id": tool_use_id, "content": truncated}));
                     }
                 }
             }
@@ -2051,7 +2052,9 @@ pub fn spawn_openai_stream(
         let mut stream = resp.bytes_stream().eventsource();
         let mut current_tool_index: Option<usize> = None;
         let mut generation_id: Option<String> = None;
-        while let Some(event) = stream.next().await {
+        // Add timeout bounds to detect stalled SSE connections
+        while let Ok(maybe_event) = tokio::time::timeout(std::time::Duration::from_secs(120), stream.next()).await {
+            let Some(event) = maybe_event else { break };
             let event = match event {
                 Ok(e) => e,
                 Err(e) => {

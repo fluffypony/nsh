@@ -165,7 +165,16 @@ pub fn parse_openai_response(json: &serde_json::Value) -> anyhow::Result<Message
             let id = tc["id"].as_str().unwrap_or("").to_string();
             let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
             let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-            let input: serde_json::Value = serde_json::from_str(args_str).unwrap_or_default();
+            let input: serde_json::Value = match serde_json::from_str(args_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse tool call arguments: {e}, raw: {}",
+                        &args_str[..args_str.len().min(200)]
+                    );
+                    serde_json::Value::Null
+                }
+            };
             content.push(ContentBlock::ToolUse { id, name, input });
         }
     }

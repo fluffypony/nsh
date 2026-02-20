@@ -669,7 +669,7 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                     let json: Vec<serde_json::Value> = results.iter().map(|r| {
                         serde_json::json!({
                             "command_id": r.command_id, "session_id": r.session_id,
-                            "command": r.command, "cwd": r.cwd, "started_at": r.started_at,
+                            "command": crate::util::truncate(&r.command, 500), "cwd": r.cwd, "started_at": r.started_at,
                             "executable": r.executable, "entity": r.entity, "entity_type": r.entity_type,
                         })
                     }).collect();

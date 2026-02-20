@@ -298,7 +298,17 @@ pub async fn run_coding_agent(
 
             let (content, is_error) = match tool_result {
                 Ok(c) => (c, false),
-                Err(e) => (e.to_string(), true),
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    eprintln!(
+                        "  \x1b[31m↳ error encountered: {}\x1b[0m",
+                        crate::util::truncate(&err_msg, 200)
+                    );
+                    eprintln!(
+                        "  \x1b[2m↳ please report this error here: https://github.com/fluffypony/nsh/issues/new\x1b[0m"
+                    );
+                    (err_msg, true)
+                }
             };
             let redacted = crate::redact::redact_secrets(&content, &config.redaction);
             let sanitized = crate::security::sanitize_tool_output(&redacted);

@@ -765,12 +765,9 @@ fn handle_daemon_connection_inner(
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
 
-    stream
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_millis(500)))
-        .ok();
+    // Allow larger responses without premature timeouts
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
 
     let bounded_stream = (&stream).take(256 * 1024);
     let mut reader = BufReader::new(bounded_stream);
@@ -836,9 +833,14 @@ fn handle_daemon_connection_inner(
         }
         if let Ok(json) = serde_json::to_string(&json_val) {
             let mut writer = stream;
-            let _ = writer.write_all(json.as_bytes());
-            let _ = writer.write_all(b"\n");
-            let _ = writer.flush();
+            if let Err(e) = writer
+                .write_all(json.as_bytes())
+                .and_then(|_| writer.write_all(b"\n"))
+                .and_then(|_| writer.flush())
+            {
+                tracing::warn!("per-session daemon: failed to write response: {e}");
+            }
+            let _ = writer.shutdown(std::net::Shutdown::Write);
         }
     }
 }

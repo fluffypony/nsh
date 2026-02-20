@@ -579,7 +579,7 @@ impl Db {
         let fts_query = Self::to_fts_literal_query(query);
         let mut stmt = self.conn.prepare_cached(
             "SELECT c.id, c.session_id, c.command, c.cwd,
-                    c.exit_code, c.started_at, c.output, c.summary,
+                    c.exit_code, c.started_at, SUBSTR(c.output, 1, 2000), c.summary,
                     highlight(commands_fts, 0, '>>>', '<<<') as cmd_hl,
                     highlight(commands_fts, 1, '>>>', '<<<') as out_hl
              FROM commands_fts f
@@ -874,6 +874,8 @@ impl Db {
         current_session: Option<&str>,
         limit: usize,
     ) -> rusqlite::Result<Vec<CommandEntityMatch>> {
+        // Hard clamp to avoid excessive responses over the daemon socket
+        let limit = limit.min(200);
         let mut sql = String::from(
             "SELECT ce.command_id, c.session_id, c.command, c.cwd, c.started_at,
                     ce.executable, ce.entity, ce.entity_type
