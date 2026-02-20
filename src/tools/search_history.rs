@@ -175,23 +175,7 @@ pub fn execute(
         result.push('\n');
     }
 
-    let memory_query = query
-        .or(regex)
-        .or(command_filter)
-        .or(entity_filter)
-        .unwrap_or("");
-    let memory_matches = if memory_query.is_empty() {
-        Vec::new()
-    } else {
-        db.search_memories(memory_query).unwrap_or_default()
-    };
-
-    if !memory_matches.is_empty() {
-        result.push_str("\n── Memories ──\n");
-        for m in &memory_matches {
-            result.push_str(&format!("  [memory #{}] {} = {}\n", m.id, m.key, m.value,));
-        }
-    }
+    // memory section removed entirely
 
     const MAX_TOOL_RESULT_BYTES: usize = 48_000;
     if result.len() > MAX_TOOL_RESULT_BYTES {
@@ -953,23 +937,16 @@ mod tests {
     fn test_execute_includes_matching_memories() {
         let db = test_db();
         insert_test_commands(&db);
-        db.upsert_memory("cargo_tip", "use cargo check for fast feedback")
-            .unwrap();
         let config = Config::default();
         let input = serde_json::json!({"query": "cargo"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(result.contains("── Memories ──"));
-        assert!(result.contains("[memory #"));
-        assert!(result.contains("cargo_tip"));
-        assert!(result.contains("use cargo check for fast feedback"));
+        assert!(!result.contains("── Memories ──"));
     }
 
     #[test]
     fn test_execute_no_memories_when_no_match() {
         let db = test_db();
         insert_test_commands(&db);
-        db.upsert_memory("unrelated_key", "unrelated_value")
-            .unwrap();
         let config = Config::default();
         let input = serde_json::json!({"query": "cargo"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
@@ -980,20 +957,16 @@ mod tests {
     fn test_execute_memories_via_regex_fallback() {
         let db = test_db();
         insert_test_commands(&db);
-        db.upsert_memory("git_workflow", "always rebase before push")
-            .unwrap();
         let config = Config::default();
         let input = serde_json::json!({"regex": "git"});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(result.contains("── Memories ──"));
-        assert!(result.contains("git_workflow"));
+        assert!(!result.contains("── Memories ──"));
     }
 
     #[test]
     fn test_execute_no_memories_section_when_query_empty_via_failed_only() {
         let db = test_db();
         insert_test_commands(&db);
-        db.upsert_memory("some_key", "some_value").unwrap();
         let config = Config::default();
         let input = serde_json::json!({"failed_only": true});
         let result = execute(&db, &input, &config, "test_sess").unwrap();
