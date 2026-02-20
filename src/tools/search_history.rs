@@ -933,45 +933,13 @@ mod tests {
         assert!(result.contains("cargo"));
     }
 
-    #[test]
-    fn test_execute_includes_matching_memories() {
-        let db = test_db();
-        insert_test_commands(&db);
-        let config = Config::default();
-        let input = serde_json::json!({"query": "cargo"});
-        let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(!result.contains("── Memories ──"));
-    }
+    
 
-    #[test]
-    fn test_execute_no_memories_when_no_match() {
-        let db = test_db();
-        insert_test_commands(&db);
-        let config = Config::default();
-        let input = serde_json::json!({"query": "cargo"});
-        let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(!result.contains("── Memories ──"));
-    }
+    
 
-    #[test]
-    fn test_execute_memories_via_regex_fallback() {
-        let db = test_db();
-        insert_test_commands(&db);
-        let config = Config::default();
-        let input = serde_json::json!({"regex": "git"});
-        let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(!result.contains("── Memories ──"));
-    }
+    
 
-    #[test]
-    fn test_execute_no_memories_section_when_query_empty_via_failed_only() {
-        let db = test_db();
-        insert_test_commands(&db);
-        let config = Config::default();
-        let input = serde_json::json!({"failed_only": true});
-        let result = execute(&db, &input, &config, "test_sess").unwrap();
-        assert!(!result.contains("── Memories ──"));
-    }
+    
 
     #[test]
     fn test_result_formatting_with_cwd_and_output() {

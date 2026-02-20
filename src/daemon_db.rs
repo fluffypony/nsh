@@ -354,40 +354,7 @@ impl DbAccess for DaemonDb {
             .collect())
     }
 
-    fn get_memories(&self, limit: usize) -> anyhow::Result<Vec<Memory>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::GetMemories { limit })?);
-        let arr = data
-            .get("memories")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| Memory {
-                id: v.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
-                key: v
-                    .get("key")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                value: v
-                    .get("value")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                created_at: v
-                    .get("created_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                updated_at: v
-                    .get("updated_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-            .collect())
-    }
+    
 
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>> {
         let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistory {
@@ -592,42 +559,7 @@ impl DbAccess for DaemonDb {
             .collect())
     }
 
-    fn search_memories(&self, query: &str) -> anyhow::Result<Vec<Memory>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::SearchMemories {
-            query: query.to_string(),
-        })?);
-        let arr = data
-            .get("memories")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| Memory {
-                id: v.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
-                key: v
-                    .get("key")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                value: v
-                    .get("value")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                created_at: v
-                    .get("created_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                updated_at: v
-                    .get("updated_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-            .collect())
-    }
+    
 
     fn insert_conversation(
         &self,
@@ -658,43 +590,11 @@ impl DbAccess for DaemonDb {
         Ok(())
     }
 
-    fn upsert_memory(&self, key: &str, value: &str) -> anyhow::Result<(i64, bool)> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::UpsertMemory {
-            key: key.to_string(),
-            value: value.to_string(),
-        })?);
-        Ok((
-            data.get("id").and_then(|v| v.as_i64()).unwrap_or_default(),
-            data.get("updated")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        ))
-    }
+    
 
-    fn delete_memory(&self, id: i64) -> anyhow::Result<bool> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::DeleteMemory { id })?);
-        Ok(data
-            .get("deleted")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false))
-    }
+    
 
-    fn update_memory(
-        &self,
-        id: i64,
-        key: Option<&str>,
-        value: Option<&str>,
-    ) -> anyhow::Result<bool> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::UpdateMemory {
-            id,
-            key: key.unwrap_or_default().to_string(),
-            value: value.unwrap_or_default().to_string(),
-        })?);
-        Ok(data
-            .get("updated")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false))
-    }
+    
 
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>> {
         let data =
@@ -1001,42 +901,5 @@ mod tests {
         handle.join().expect("join daemon thread");
     }
 
-    #[test]
-    #[serial]
-    fn upsert_and_update_memory_default_missing_fields_safely() {
-        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
-        let (request_rx, handle) = spawn_mock_global_daemon(
-            home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
-                "id": 0
-            })),
-        );
-
-        let db = DaemonDb::new();
-        let (id, updated) = db
-            .upsert_memory("key", "value")
-            .expect("upsert_memory should succeed");
-        assert_eq!(id, 0);
-        assert!(!updated);
-        let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "upsert_memory");
-        assert_eq!(request["key"], "key");
-        assert_eq!(request["value"], "value");
-        handle.join().expect("join daemon thread");
-
-        let (request_rx2, handle2) = spawn_mock_global_daemon(
-            home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({})),
-        );
-        let was_updated = db
-            .update_memory(7, None, None)
-            .expect("update_memory should succeed");
-        assert!(!was_updated);
-        let request2 = request_rx2.recv().expect("captured request 2");
-        assert_eq!(request2["type"], "update_memory");
-        assert_eq!(request2["id"], 7);
-        assert_eq!(request2["key"], "");
-        assert_eq!(request2["value"], "");
-        handle2.join().expect("join daemon thread 2");
-    }
+    
 }

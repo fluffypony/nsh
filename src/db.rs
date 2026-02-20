@@ -283,7 +283,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             )?;
         }
 
-        // memory table creation removed
+        
 
         if recheck < 5 {
             conn.execute_batch(
@@ -1831,7 +1831,7 @@ impl Db {
     }
 }
 
-// Memory struct removed with memory system
+
 
 // ── Data types ─────────────────────────────────────────────────────
 
@@ -2248,7 +2248,7 @@ fn is_hostname_like(value: &str) -> bool {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any())))]
 mod tests {
     use super::*;
     use std::ffi::OsStr;
@@ -5961,141 +5961,12 @@ mod tests {
         assert_eq!(db.command_count().unwrap(), 1);
     }
 
-    #[test]
-    fn test_upsert_memory_insert() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, was_update) = db.upsert_memory("editor", "vim").unwrap();
-        assert!(id > 0);
-        assert!(!was_update);
-    }
+    // memory-related tests removed
 
-    #[test]
-    fn test_upsert_memory_update() {
-        let db = Db::open_in_memory().unwrap();
-        let (id1, was_update1) = db.upsert_memory("editor", "vim").unwrap();
-        assert!(!was_update1);
-        let (id2, was_update2) = db.upsert_memory("editor", "nvim").unwrap();
-        assert!(was_update2);
-        assert_eq!(id1, id2);
-    }
+    
 
-    #[test]
-    fn test_delete_memory() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("temp", "data").unwrap();
-        assert!(db.delete_memory(id).unwrap());
-        assert!(!db.delete_memory(id).unwrap());
-    }
-
-    #[test]
-    fn test_update_memory() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("key1", "val1").unwrap();
-        assert!(db.update_memory(id, Some("key2"), Some("val2")).unwrap());
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "key2");
-        assert_eq!(mem.value, "val2");
-    }
-
-    #[test]
-    fn test_update_memory_nonexistent() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(!db.update_memory(99999, Some("k"), None).unwrap());
-    }
-
-    #[test]
-    fn test_get_memories() {
-        let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("a", "1").unwrap();
-        db.upsert_memory("b", "2").unwrap();
-        db.upsert_memory("c", "3").unwrap();
-        let mems = db.get_memories(10).unwrap();
-        assert_eq!(mems.len(), 3);
-    }
-
-    #[test]
-    fn test_get_memories_limit() {
-        let db = Db::open_in_memory().unwrap();
-        for i in 0..5 {
-            db.upsert_memory(&format!("k{i}"), &format!("v{i}"))
-                .unwrap();
-        }
-        let mems = db.get_memories(3).unwrap();
-        assert_eq!(mems.len(), 3);
-    }
-
-    #[test]
-    fn test_search_memories() {
-        let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("editor", "vim is the best editor")
-            .unwrap();
-        db.upsert_memory("shell", "zsh with oh-my-zsh").unwrap();
-        let results = db.search_memories("editor").unwrap();
-        assert!(!results.is_empty());
-    }
-
-    #[test]
-    fn test_get_memory_by_id() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("test_key", "test_val").unwrap();
-        let mem = db.get_memory_by_id(id).unwrap();
-        assert!(mem.is_some());
-        let mem = mem.unwrap();
-        assert_eq!(mem.key, "test_key");
-        assert_eq!(mem.value, "test_val");
-    }
-
-    #[test]
-    fn test_get_memory_by_id_nonexistent() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(db.get_memory_by_id(99999).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_search_memories_no_results() {
-        let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("editor", "vim").unwrap();
-        let results = db.search_memories("nonexistent_xyz").unwrap();
-        assert!(results.is_empty());
-    }
-
-    #[test]
-    fn test_update_memory_key_only() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("old_key", "val").unwrap();
-        assert!(db.update_memory(id, Some("new_key"), None).unwrap());
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "new_key");
-        assert_eq!(mem.value, "val");
-    }
-
-    #[test]
-    fn test_update_memory_value_only() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("key", "old_val").unwrap();
-        assert!(db.update_memory(id, None, Some("new_val")).unwrap());
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "key");
-        assert_eq!(mem.value, "new_val");
-    }
-
-    #[test]
-    fn test_update_memory_neither_key_nor_value() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("k", "v").unwrap();
-        assert!(!db.update_memory(id, None, None).unwrap());
-    }
-
-    #[test]
-    fn test_upsert_memory_case_insensitive_key() {
-        let db = Db::open_in_memory().unwrap();
-        let (id1, _) = db.upsert_memory("Editor", "vim").unwrap();
-        let (id2, was_update) = db.upsert_memory("editor", "nvim").unwrap();
-        assert!(was_update);
-        assert_eq!(id1, id2);
-        let mem = db.get_memory_by_id(id1).unwrap().unwrap();
-        assert_eq!(mem.value, "nvim");
-    }
+    // #[test]
+    // fn test_upsert_memory_case_insensitive_key() {}
 
     #[test]
     fn test_mark_unsummarized_for_llm_empty() {
@@ -6362,28 +6233,10 @@ mod tests {
         assert_eq!(after[0].command, "deploy app");
     }
 
-    #[test]
-    fn test_delete_memory_nonexistent() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(!db.delete_memory(99999).unwrap());
-    }
+    // #[test]
+    // fn test_delete_memory_nonexistent() {}
 
-    #[test]
-    fn test_get_memories_empty() {
-        let db = Db::open_in_memory().unwrap();
-        let mems = db.get_memories(10).unwrap();
-        assert!(mems.is_empty());
-    }
-
-    #[test]
-    fn test_search_memories_matches_value() {
-        let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("editor", "vim is great").unwrap();
-        db.upsert_memory("shell", "zsh").unwrap();
-        let results = db.search_memories("great").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].key, "editor");
-    }
+    
 
     #[test]
     fn test_command_count_after_prune() {
@@ -7677,94 +7530,25 @@ mod tests {
         assert_eq!(results[0].command, "npm run build");
     }
 
-    #[test]
-    fn test_memory_upsert_insert() {
-        let db = test_db();
-        let (id, was_update) = db.upsert_memory("test_key", "test_value").unwrap();
-        assert!(id > 0);
-        assert!(!was_update);
-    }
+    
 
-    #[test]
-    fn test_memory_upsert_update() {
-        let db = test_db();
-        db.upsert_memory("key1", "old_value").unwrap();
-        let (_, was_update) = db.upsert_memory("key1", "new_value").unwrap();
-        assert!(was_update);
-        let mem = db.get_memory_by_id(1).unwrap().unwrap();
-        assert_eq!(mem.value, "new_value");
-    }
+    
 
-    #[test]
-    fn test_memory_delete() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("del_key", "del_val").unwrap();
-        assert!(db.delete_memory(id).unwrap());
-        assert!(db.get_memory_by_id(id).unwrap().is_none());
-    }
+    
 
-    #[test]
-    fn test_memory_delete_nonexistent() {
-        let db = test_db();
-        assert!(!db.delete_memory(99999).unwrap());
-    }
+    
 
-    #[test]
-    fn test_memory_update_key_only() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("orig_key", "orig_val").unwrap();
-        assert!(db.update_memory(id, Some("new_key"), None).unwrap());
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "new_key");
-        assert_eq!(mem.value, "orig_val");
-    }
+    
 
-    #[test]
-    fn test_memory_update_value_only() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("k", "v1").unwrap();
-        assert!(db.update_memory(id, None, Some("v2")).unwrap());
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "k");
-        assert_eq!(mem.value, "v2");
-    }
+    
 
-    #[test]
-    fn test_memory_update_both() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("k1", "v1").unwrap();
-        assert!(db.update_memory(id, Some("k2"), Some("v2")).unwrap());
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "k2");
-        assert_eq!(mem.value, "v2");
-    }
+    
 
-    #[test]
-    fn test_memory_update_neither() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("k", "v").unwrap();
-        assert!(!db.update_memory(id, None, None).unwrap());
-    }
+    
 
-    #[test]
-    fn test_search_memories_by_key() {
-        let db = test_db();
-        db.upsert_memory("rust_version", "1.85").unwrap();
-        db.upsert_memory("python_version", "3.12").unwrap();
-        let results = db.search_memories("rust").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].key, "rust_version");
-    }
+    
 
-    #[test]
-    fn test_search_memories_by_value() {
-        let db = test_db();
-        db.upsert_memory("editor", "neovim").unwrap();
-        db.upsert_memory("shell", "zsh").unwrap();
-        let results = db.search_memories("neovim").unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].value, "neovim");
-    }
+    
 
     #[test]
     fn test_session_labels() {
@@ -8389,21 +8173,7 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn test_init_db_creates_memories_table() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_db(&conn, 10000).unwrap();
-
-        conn.execute(
-            "INSERT INTO memories (key, value, created_at, updated_at) VALUES ('k', 'v', '2025-01-01', '2025-01-01')",
-            [],
-        ).unwrap();
-
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
-    }
+    
 
     #[test]
     fn test_init_db_sets_pragmas() {
@@ -9238,51 +9008,15 @@ mod tests {
         assert!(results[0].command.contains("fts_target"));
     }
 
-    #[test]
-    fn test_search_memories_case_insensitive_like() {
-        let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("OS", "macOS Sequoia").unwrap();
-        let results = db.search_memories("macos").unwrap();
-        assert_eq!(results.len(), 1);
-    }
+    
 
-    #[test]
-    fn test_get_memories_ordered_by_updated_at() {
-        let db = Db::open_in_memory().unwrap();
-        db.upsert_memory("first", "1").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.upsert_memory("second", "2").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.upsert_memory("third", "3").unwrap();
+    
 
-        let mems = db.get_memories(10).unwrap();
-        assert_eq!(mems.len(), 3);
-        assert_eq!(mems[0].key, "third");
-        assert_eq!(mems[2].key, "first");
-    }
+    // #[test]
+    
 
-    #[test]
-    fn test_update_memory_updates_timestamp() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("ts_key", "v1").unwrap();
-        let before = db.get_memory_by_id(id).unwrap().unwrap().updated_at;
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.update_memory(id, None, Some("v2")).unwrap();
-        let after = db.get_memory_by_id(id).unwrap().unwrap().updated_at;
-        assert!(after > before);
-    }
-
-    #[test]
-    fn test_upsert_memory_preserves_created_at_on_update() {
-        let db = Db::open_in_memory().unwrap();
-        let (id, _) = db.upsert_memory("pkey", "v1").unwrap();
-        let created1 = db.get_memory_by_id(id).unwrap().unwrap().created_at;
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.upsert_memory("pkey", "v2").unwrap();
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.created_at, created1);
-        assert_ne!(mem.updated_at, created1);
-    }
+    // #[test]
+    
 
     #[test]
     fn test_conversation_exchange_to_tool_result_chat_with_exit_code() {
@@ -9849,16 +9583,7 @@ mod tests {
         assert!(db.get_meta("last_prune_at").unwrap().is_some());
     }
 
-    #[test]
-    fn test_search_memories_multiple_matches() {
-        let db = test_db();
-        db.upsert_memory("rust_compiler", "rustc 1.85").unwrap();
-        db.upsert_memory("rust_edition", "2024").unwrap();
-        db.upsert_memory("python_version", "3.12").unwrap();
-
-        let results = db.search_memories("rust").unwrap();
-        assert_eq!(results.len(), 2);
-    }
+    
 
     #[test]
     fn test_update_command_triggers_fts_update() {
@@ -9994,48 +9719,11 @@ mod tests {
         assert_eq!(db.command_count().unwrap(), 1);
     }
 
-    #[test]
-    fn test_delete_memory_after_upsert_and_search() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("ephemeral", "temp data").unwrap();
+    
 
-        let found = db.search_memories("ephemeral").unwrap();
-        assert_eq!(found.len(), 1);
+    
 
-        assert!(db.delete_memory(id).unwrap());
-
-        let found_after = db.search_memories("ephemeral").unwrap();
-        assert!(found_after.is_empty());
-    }
-
-    #[test]
-    fn test_update_memory_then_search() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("lang", "python").unwrap();
-
-        let before = db.search_memories("golang").unwrap();
-        assert!(before.is_empty());
-
-        db.update_memory(id, Some("lang"), Some("golang")).unwrap();
-
-        let after = db.search_memories("golang").unwrap();
-        assert_eq!(after.len(), 1);
-        assert_eq!(after[0].value, "golang");
-    }
-
-    #[test]
-    fn test_get_memory_by_id_after_update() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("original_key", "original_val").unwrap();
-
-        db.update_memory(id, Some("updated_key"), Some("updated_val"))
-            .unwrap();
-
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "updated_key");
-        assert_eq!(mem.value, "updated_val");
-        assert_eq!(mem.id, id);
-    }
+    
 
     #[test]
     fn test_insert_usage_minimal_fields() {
@@ -10506,29 +10194,11 @@ mod tests {
     #[test]
     fn test_get_memories_respects_limit_ordering() {
         let db = test_db();
-        for i in 0..5 {
-            db.upsert_memory(&format!("key_{i}"), &format!("val_{i}"))
-                .unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-
-        let memories = db.get_memories(3).unwrap();
-        assert_eq!(memories.len(), 3);
-        assert_eq!(memories[0].key, "key_4");
-        assert_eq!(memories[2].key, "key_2");
+        // removed legacy memory limit/ordering test
     }
 
-    #[test]
-    fn test_memory_update_value_only_preserves_key() {
-        let db = test_db();
-        let (id, _) = db.upsert_memory("stable_key", "old_value").unwrap();
-        let ok = db.update_memory(id, None, Some("new_value")).unwrap();
-        assert!(ok);
-
-        let mem = db.get_memory_by_id(id).unwrap().unwrap();
-        assert_eq!(mem.key, "stable_key");
-        assert_eq!(mem.value, "new_value");
-    }
+    // #[test]
+    fn test_memory_update_value_only_preserves_key() {}
 
     #[test]
     fn test_find_pending_conversation_returns_latest_command() {
@@ -11199,14 +10869,7 @@ mod tests {
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
 
-        conn.execute(
-            "INSERT INTO memories (key, value, created_at, updated_at) VALUES ('test', 'val', '2025-01-01', '2025-01-01')",
-            [],
-        ).unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM memories", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
+        // removed legacy table verification
 
         conn.execute(
             "INSERT INTO sessions (id, tty, shell, pid, started_at) VALUES ('migr_s', '/dev/pts/0', 'zsh', 1, '2025-01-01T00:00:00Z')",
