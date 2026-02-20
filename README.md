@@ -83,23 +83,8 @@ The `pending` flag on command suggestions enables autonomous multi-step sequence
 | `manage_config` | Modify nsh settings (with confirmation) |
 | `install_skill` | Create reusable custom tool templates |
 | `install_mcp_server` | Add MCP tool servers to configuration |
-| `remember` | Store persistent facts and preferences |
-| `forget_memory` | Delete a stored memory |
-| `update_memory` | Modify an existing memory |
 
-### Persistent Memory
-
-nsh maintains a key-value memory store that persists across sessions. Memories are included in every query context, enabling personalized responses:
-
-```
-you: ? remember that 192.168.3.55 is my home NAS
-nsh: ✓ Memory #1 stored: home NAS IP = 192.168.3.55
-
-you: ? ssh to my NAS
-nsh: $ ssh 192.168.3.55
-```
-
-nsh also proactively learns - when it discovers how you manage a package or service, it stores the association for future queries.
+ 
 
 ### Entity-Aware History Search
 
@@ -464,7 +449,7 @@ All data is stored in `~/.nsh/`:
 | File | Purpose |
 |---|---|
 | `config.toml` | User configuration |
-| `nsh.db` | SQLite database (sessions, commands, conversations, usage, memories) |
+| `nsh.db` | SQLite database (sessions, commands, conversations, usage) |
 | `audit.log` | JSON-line audit log of tool calls |
 | `skills/*.toml` | Custom skill definitions |
 | `pending_cmd_<session>` | Command prefill buffer |

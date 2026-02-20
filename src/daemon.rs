@@ -112,25 +112,6 @@ pub enum DaemonRequest {
     FindPendingConversation {
         session: String,
     },
-    GetMemories {
-        #[serde(default = "default_limit")]
-        limit: usize,
-    },
-    SearchMemories {
-        query: String,
-    },
-    UpsertMemory {
-        key: String,
-        value: String,
-    },
-    DeleteMemory {
-        id: i64,
-    },
-    UpdateMemory {
-        id: i64,
-        key: String,
-        value: String,
-    },
     GetMeta {
         key: String,
     },
@@ -385,11 +366,6 @@ pub fn handle_daemon_request(
         | DaemonRequest::InsertUsage { .. }
         | DaemonRequest::UpdateConversationResult { .. }
         | DaemonRequest::FindPendingConversation { .. }
-        | DaemonRequest::GetMemories { .. }
-        | DaemonRequest::SearchMemories { .. }
-        | DaemonRequest::UpsertMemory { .. }
-        | DaemonRequest::DeleteMemory { .. }
-        | DaemonRequest::UpdateMemory { .. }
         | DaemonRequest::GetMeta { .. }
         | DaemonRequest::SetMeta { .. }
         | DaemonRequest::GetSessionLabel { .. }
@@ -514,15 +490,9 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                     {
                         let _ = db.update_summary(*id, &trivial);
                     }
-                    if ec == 0 {
-                        if let Some((key, value)) =
-                            crate::summary::extract_package_association(&cmd_text, ec)
-                        {
-                            let _ = db.upsert_memory(&key, &value);
-                        }
-                    }
-                    // Conversation feedback loop: if this command matches
-                    // a pending conversation suggestion, record the result
+                    // memory system removed: no package association persistence
+                // Conversation feedback loop: if this command matches
+                // a pending conversation suggestion, record the result
                     if let Ok(Some((conv_id, suggested_cmd))) =
                         db.find_pending_conversation(&session)
                     {

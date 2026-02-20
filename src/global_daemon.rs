@@ -251,13 +251,7 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                     {
                         let _ = db.update_summary(id, &trivial);
                     }
-                    if exit_code == 0 {
-                        if let Some((key, value)) =
-                            crate::summary::extract_package_association(&command, exit_code)
-                        {
-                            let _ = db.upsert_memory(&key, &value);
-                        }
-                    }
+                    // memory system removed: no package association persistence
                     if let Ok(Some((conv_id, suggested_cmd))) =
                         db.find_pending_conversation(&session)
                     {
@@ -372,24 +366,7 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
             Ok(()) => DaemonResponse::ok(),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
-        DaemonRequest::UpsertMemory { key, value } => match db.upsert_memory(&key, &value) {
-            Ok((id, was_update)) => {
-                DaemonResponse::ok_with_data(serde_json::json!({"id": id, "updated": was_update}))
-            }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::DeleteMemory { id } => match db.delete_memory(id) {
-            Ok(deleted) => DaemonResponse::ok_with_data(serde_json::json!({"deleted": deleted})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::UpdateMemory { id, key, value } => {
-            match db.update_memory(id, Some(&key), Some(&value)) {
-                Ok(updated) => {
-                    DaemonResponse::ok_with_data(serde_json::json!({"updated": updated}))
-                }
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
-        }
+        
         DaemonRequest::SetMeta { key, value } => match db.set_meta(&key, &value) {
             Ok(()) => DaemonResponse::ok(),
             Err(e) => DaemonResponse::error(format!("{e}")),
@@ -544,24 +521,7 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::GetMemories { limit } => match db.get_memories(limit) {
-            Ok(memories) => {
-                let json: Vec<serde_json::Value> = memories.iter().map(|m| {
-                        serde_json::json!({"id": m.id, "key": m.key, "value": m.value, "created_at": m.created_at, "updated_at": m.updated_at})
-                    }).collect();
-                DaemonResponse::ok_with_data(serde_json::json!({"memories": json}))
-            }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::SearchMemories { query } => match db.search_memories(&query) {
-            Ok(memories) => {
-                let json: Vec<serde_json::Value> = memories.iter().map(|m| {
-                        serde_json::json!({"id": m.id, "key": m.key, "value": m.value, "created_at": m.created_at, "updated_at": m.updated_at})
-                    }).collect();
-                DaemonResponse::ok_with_data(serde_json::json!({"memories": json}))
-            }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+        
         DaemonRequest::GetMeta { key } => match db.get_meta(&key) {
             Ok(value) => DaemonResponse::ok_with_data(serde_json::json!({"value": value})),
             Err(e) => DaemonResponse::error(format!("{e}")),
@@ -824,9 +784,7 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::InsertConversation { .. }
             | DaemonRequest::InsertUsage { .. }
             | DaemonRequest::UpdateConversationResult { .. }
-            | DaemonRequest::UpsertMemory { .. }
-            | DaemonRequest::DeleteMemory { .. }
-            | DaemonRequest::UpdateMemory { .. }
+            
             | DaemonRequest::SetMeta { .. }
             | DaemonRequest::Prune { .. }
             | DaemonRequest::RebuildFts

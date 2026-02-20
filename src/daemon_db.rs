@@ -3,7 +3,7 @@ use anyhow::anyhow;
 use crate::daemon::{DaemonRequest, DaemonResponse};
 use crate::db::{
     CommandEntityMatch, CommandForSummary, CommandWithSummary, ConversationExchange, Db,
-    HistoryMatch, Memory, OtherSessionSummary,
+    HistoryMatch, OtherSessionSummary,
 };
 
 pub trait DbAccess {
@@ -23,7 +23,6 @@ pub trait DbAccess {
         max_ttys: usize,
         summaries_per_tty: usize,
     ) -> anyhow::Result<Vec<OtherSessionSummary>>;
-    fn get_memories(&self, limit: usize) -> anyhow::Result<Vec<Memory>>;
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>>;
     fn search_history_advanced(
         &self,
@@ -48,7 +47,6 @@ pub trait DbAccess {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<CommandEntityMatch>>;
-    fn search_memories(&self, query: &str) -> anyhow::Result<Vec<Memory>>;
     fn insert_conversation(
         &self,
         session_id: &str,
@@ -60,14 +58,7 @@ pub trait DbAccess {
         pending: bool,
     ) -> anyhow::Result<i64>;
     fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()>;
-    fn upsert_memory(&self, key: &str, value: &str) -> anyhow::Result<(i64, bool)>;
-    fn delete_memory(&self, id: i64) -> anyhow::Result<bool>;
-    fn update_memory(
-        &self,
-        id: i64,
-        key: Option<&str>,
-        value: Option<&str>,
-    ) -> anyhow::Result<bool>;
+    
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>>;
     fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
@@ -97,10 +88,6 @@ impl DbAccess for Db {
         summaries_per_tty: usize,
     ) -> anyhow::Result<Vec<OtherSessionSummary>> {
         Ok(self.other_sessions_with_summaries(session_id, max_ttys, summaries_per_tty)?)
-    }
-
-    fn get_memories(&self, limit: usize) -> anyhow::Result<Vec<Memory>> {
-        Ok(self.get_memories(limit)?)
     }
 
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>> {
@@ -155,10 +142,6 @@ impl DbAccess for Db {
         )?)
     }
 
-    fn search_memories(&self, query: &str) -> anyhow::Result<Vec<Memory>> {
-        Ok(self.search_memories(query)?)
-    }
-
     fn insert_conversation(
         &self,
         session_id: &str,
@@ -182,23 +165,6 @@ impl DbAccess for Db {
 
     fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()> {
         Ok(self.clear_conversations(session_id)?)
-    }
-
-    fn upsert_memory(&self, key: &str, value: &str) -> anyhow::Result<(i64, bool)> {
-        Ok(self.upsert_memory(key, value)?)
-    }
-
-    fn delete_memory(&self, id: i64) -> anyhow::Result<bool> {
-        Ok(self.delete_memory(id)?)
-    }
-
-    fn update_memory(
-        &self,
-        id: i64,
-        key: Option<&str>,
-        value: Option<&str>,
-    ) -> anyhow::Result<bool> {
-        Ok(self.update_memory(id, key, value)?)
     }
 
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>> {
@@ -975,13 +941,9 @@ mod tests {
         );
 
         let db = DaemonDb::new();
-        let err = db
-            .get_memories(10)
-            .expect_err("error response should propagate as anyhow error");
-        assert!(
-            err.to_string().contains("database temporarily unavailable"),
-            "unexpected error: {err}"
-        );
+        // simulate an error via a read-only request
+        let err = db.search_history("foo", 1).expect_err("should propagate error");
+        assert!(err.to_string().contains("database temporarily unavailable"));
         handle.join().expect("join daemon thread");
     }
 

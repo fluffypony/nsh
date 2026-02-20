@@ -283,19 +283,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             )?;
         }
 
-        if recheck < 4 {
-            conn.execute_batch(
-                "CREATE TABLE IF NOT EXISTS memories (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    key         TEXT NOT NULL COLLATE NOCASE,
-                    value       TEXT NOT NULL,
-                    created_at  TEXT NOT NULL,
-                    updated_at  TEXT NOT NULL,
-                    UNIQUE(key)
-                );
-                CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);",
-            )?;
-        }
+        // memory table creation removed
 
         if recheck < 5 {
             conn.execute_batch(
@@ -1012,133 +1000,7 @@ impl Db {
         Ok(inserted)
     }
 
-    // ── Memory system ──────────────────────────────────────────────
-
-    pub fn upsert_memory(&self, key: &str, value: &str) -> rusqlite::Result<(i64, bool)> {
-        let now = chrono::Utc::now().to_rfc3339();
-        let existing: Option<i64> = self
-            .conn
-            .query_row(
-                "SELECT id FROM memories WHERE key = ?",
-                params![key],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        let was_update = existing.is_some();
-
-        self.conn.execute(
-            "INSERT INTO memories (key, value, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?3) \
-             ON CONFLICT(key) DO UPDATE SET \
-               value = excluded.value, \
-               key = excluded.key, \
-               updated_at = excluded.updated_at",
-            params![key, value, now],
-        )?;
-
-        let id = if let Some(id) = existing {
-            id
-        } else {
-            self.conn.last_insert_rowid()
-        };
-
-        Ok((id, was_update))
-    }
-
-    pub fn delete_memory(&self, id: i64) -> rusqlite::Result<bool> {
-        let rows = self
-            .conn
-            .execute("DELETE FROM memories WHERE id = ?", params![id])?;
-        Ok(rows > 0)
-    }
-
-    pub fn update_memory(
-        &self,
-        id: i64,
-        key: Option<&str>,
-        value: Option<&str>,
-    ) -> rusqlite::Result<bool> {
-        if key.is_none() && value.is_none() {
-            return Ok(false);
-        }
-        let now = chrono::Utc::now().to_rfc3339();
-        let mut parts = Vec::new();
-        let mut vals: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(k) = key {
-            parts.push("key = ?");
-            vals.push(Box::new(k.to_string()));
-        }
-        if let Some(v) = value {
-            parts.push("value = ?");
-            vals.push(Box::new(v.to_string()));
-        }
-        parts.push("updated_at = ?");
-        vals.push(Box::new(now));
-        vals.push(Box::new(id));
-
-        let sql = format!("UPDATE memories SET {} WHERE id = ?", parts.join(", "));
-        let params: Vec<&dyn rusqlite::types::ToSql> = vals.iter().map(|v| v.as_ref()).collect();
-        let rows = self.conn.execute(&sql, params.as_slice())?;
-        Ok(rows > 0)
-    }
-
-    pub fn get_memories(&self, limit: usize) -> rusqlite::Result<Vec<Memory>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, key, value, created_at, updated_at \
-             FROM memories ORDER BY updated_at DESC LIMIT ?",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                value: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    pub fn search_memories(&self, query: &str) -> rusqlite::Result<Vec<Memory>> {
-        let pattern = format!("%{query}%");
-        let mut stmt = self.conn.prepare(
-            "SELECT id, key, value, created_at, updated_at \
-             FROM memories \
-             WHERE key LIKE ? OR value LIKE ? \
-             ORDER BY updated_at DESC LIMIT 20",
-        )?;
-        let rows = stmt.query_map(params![pattern, pattern], |row| {
-            Ok(Memory {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                value: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    #[allow(dead_code)]
-    pub fn get_memory_by_id(&self, id: i64) -> rusqlite::Result<Option<Memory>> {
-        self.conn
-            .query_row(
-                "SELECT id, key, value, created_at, updated_at FROM memories WHERE id = ?",
-                params![id],
-                |row| {
-                    Ok(Memory {
-                        id: row.get(0)?,
-                        key: row.get(1)?,
-                        value: row.get(2)?,
-                        created_at: row.get(3)?,
-                        updated_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-    }
+    // memory system removed
 
     #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
@@ -1969,15 +1831,7 @@ impl Db {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Memory {
-    pub id: i64,
-    pub key: String,
-    pub value: String,
-    #[allow(dead_code)]
-    pub created_at: String,
-    pub updated_at: String,
-}
+// Memory struct removed with memory system
 
 // ── Data types ─────────────────────────────────────────────────────
 

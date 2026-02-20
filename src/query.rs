@@ -1305,32 +1305,10 @@ install_mcp_server to connect to MCP servers. All changes require user confirmat
   and any provider API keys, key commands, or base URLs.
   If the user asks to change these, direct them to `nsh config edit`.
 
-## Memory
-You have a persistent memory system. The <memories> block in your context
-shows all stored memories with their IDs, keys, and values. Use these to
-personalize responses — if the user has stored a server IP, project path,
-or preference, use it when relevant without asking again.
-
-When the user asks you to remember something, extract a clear key-value
-pair. Keys should be concise labels ("home NAS IP", "deploy command",
-"preferred language"). When searching history, memory results are included
-automatically.
-
-## Proactive Memory & Learning
-When you discover how the user manages a specific package, tool, or service
-(from history search, investigation, or user confirmation), proactively call
-the remember tool to store the association for future reference. Examples:
-- After finding `npm update -g @sourcegraph/amp` in history, remember:
-  key="amp", value="npm global: @sourcegraph/amp, update: npm update -g @sourcegraph/amp"
-- After confirming `brew install ripgrep`, remember:
-  key="ripgrep install method", value="homebrew"
-- After a server session: key="135.181.128.145", value="Hetzner VPS, Ubuntu 24.04"
-This eliminates repeated history searches and prevents wrong-tool mistakes.
-
-When you suggest a command and the session history later shows the user ran a
-DIFFERENT command instead (e.g. you suggested `pip install amp` but they ran
-`npm update -g @sourcegraph/amp`), immediately remember the correction so you
-get it right next time.
+## Proactive Learning
+Prefer deriving associations (package→manager, service→config paths) from local evidence
+(history, filesystem, config) instead of guessing. If you discover a corrected command
+or better method, use that going forward.
 
 ## Efficiency
 - The terminal context already includes recent commands, output, and summaries.
@@ -1431,27 +1409,24 @@ track conversational context across exchanges:
 
 ## Package & Tool Resolution
 When the user asks to install, update, upgrade, or manage a package or tool:
-1. ALWAYS check <memories> first for known package-to-manager mappings.
-2. ALWAYS call search_history with the package/tool name to find how the user
+1. ALWAYS call search_history with the package/tool name to find how the user
    previously installed or updated it. The user's established method is correct.
-3. If no history, use run_command to probe:
+2. If no history, use run_command to probe:
    - `which <name>` or `command -v <name>` to check if/where it's installed
    - `npm list -g --depth=0 2>/dev/null | grep <name>`
    - `brew list 2>/dev/null | grep <name>`
    - `pipx list 2>/dev/null | grep <name>`
-4. If still ambiguous, use web_search to determine the canonical install method.
-5. If multiple valid candidates exist (e.g. Ghost CMS vs Ghostty), use
+3. If still ambiguous, use web_search to determine the canonical install method.
+4. If multiple valid candidates exist (e.g. Ghost CMS vs Ghostty), use
    `ask_user` to confirm which one the user wants before proceeding.
-6. NEVER guess the package manager. The same name can exist in multiple registries
+5. NEVER guess the package manager. The same name can exist in multiple registries
    (e.g. "amp" could be @sourcegraph/amp on npm, not "amp" on pip). Always verify.
-7. Pay attention to the detected package managers in the <environment> context
+6. Pay attention to the detected package managers in the <environment> context
    (machine attribute "pkg:" and "lang_pkg:" fields). If a package manager isn't
    listed, do NOT suggest it without first checking if it's installed.
-8. macOS: prefer brew or pipx for CLI tools over raw pip. pip installs to system
+7. macOS: prefer brew or pipx for CLI tools over raw pip. pip installs to system
    Python and can cause conflicts. Use pip only inside virtualenvs.
-9. After successfully identifying the correct method, use the remember tool to
-   store the mapping (e.g. key="amp", value="npm global: @sourcegraph/amp,
-   update: npm update -g @sourcegraph/amp") so future queries are instant.
+
 
 ## Project Context
 Use the <project> context to tailor responses: Cargo.toml → use cargo,
@@ -1753,28 +1728,14 @@ mod tests {
     #[test]
     fn test_build_system_prompt_non_empty() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(
-            &ctx,
-            "<ctx/>",
-            "BOUNDARY123",
-            "<config/>",
-            "<memories count=\"0\" />",
-            "",
-        );
+        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY123", "<config/>", "");
         assert!(!result.is_empty());
     }
 
     #[test]
     fn test_build_system_prompt_contains_nsh() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(
-            &ctx,
-            "<ctx/>",
-            "BOUNDARY123",
-            "<config/>",
-            "<memories count=\"0\" />",
-            "",
-        );
+        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY123", "<config/>", "");
         assert!(result.contains("nsh"), "expected 'nsh' in prompt");
         assert!(
             result.contains("Natural Shell"),
@@ -1785,14 +1746,7 @@ mod tests {
     #[test]
     fn test_build_system_prompt_contains_boundary() {
         let ctx = make_test_ctx();
-        let result = build_system_prompt(
-            &ctx,
-            "<ctx/>",
-            "BOUNDARY_TOKEN_XYZ",
-            "<config/>",
-            "<memories count=\"0\" />",
-            "",
-        );
+        let result = build_system_prompt(&ctx, "<ctx/>", "BOUNDARY_TOKEN_XYZ", "<config/>", "");
         assert!(
             result.contains("BOUNDARY_TOKEN_XYZ"),
             "expected boundary token in prompt"
@@ -1803,8 +1757,7 @@ mod tests {
     fn test_build_system_prompt_contains_xml_context() {
         let ctx = make_test_ctx();
         let xml = "<context><env os=\"linux\"/></context>";
-        let result =
-            build_system_prompt(&ctx, xml, "B", "<config/>", "<memories count=\"0\" />", "");
+        let result = build_system_prompt(&ctx, xml, "B", "<config/>", "");
         assert!(result.contains(xml));
     }
 
@@ -1812,7 +1765,7 @@ mod tests {
     fn test_build_system_prompt_contains_config_xml() {
         let ctx = make_test_ctx();
         let cfg = "<nsh_configuration>test config</nsh_configuration>";
-        let result = build_system_prompt(&ctx, "<ctx/>", "B", cfg, "<memories count=\"0\" />", "");
+        let result = build_system_prompt(&ctx, "<ctx/>", "B", cfg, "");
         assert!(result.contains(cfg));
     }
 
