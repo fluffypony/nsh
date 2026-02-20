@@ -102,9 +102,6 @@ pub async fn handle_query(
     let mcp_info = mcp_client.lock().await.server_info();
     let config_xml = crate::config::build_config_xml(config, &skills, &mcp_info);
 
-    let memories = db.get_memories(100).unwrap_or_default();
-    let memories_xml = build_memories_xml_with_redaction(&memories, &config.redaction);
-
     let mut relevant_history_xml = String::new();
     let original_query = query;
     let should_search_history = original_query.len() >= 4
@@ -140,7 +137,6 @@ pub async fn handle_query(
         &xml_context,
         &boundary,
         &config_xml,
-        &memories_xml,
         &relevant_history_xml,
     );
     let mut messages: Vec<Message> = Vec::new();
@@ -436,49 +432,7 @@ pub async fn handle_query(
                         has_terminal_tool = true;
                         tools::install_mcp::execute(input, config)?;
                     }
-                    "remember" => {
-                        let (content, is_error) =
-                            match tools::memory::execute_remember(input, query, db, session_id) {
-                                Ok(()) => ("Memory stored successfully.".to_string(), false),
-                                Err(e) => (format!("{e}"), true),
-                            };
-                        let sanitized = crate::security::sanitize_tool_output(&content);
-                        let wrapped =
-                            crate::security::wrap_tool_result(name, &sanitized, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
-                    "forget_memory" => {
-                        let (content, is_error) = match tools::memory::execute_forget(input, db) {
-                            Ok(()) => ("Memory deleted.".to_string(), false),
-                            Err(e) => (format!("{e}"), true),
-                        };
-                        let sanitized = crate::security::sanitize_tool_output(&content);
-                        let wrapped =
-                            crate::security::wrap_tool_result(name, &sanitized, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
-                    "update_memory" => {
-                        let (content, is_error) = match tools::memory::execute_update(input, db) {
-                            Ok(()) => ("Memory updated.".to_string(), false),
-                            Err(e) => (format!("{e}"), true),
-                        };
-                        let sanitized = crate::security::sanitize_tool_output(&content);
-                        let wrapped =
-                            crate::security::wrap_tool_result(name, &sanitized, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
+                    
                     "ask_user" => {
                         ask_user_calls.push((id.clone(), name.clone(), input.clone()));
                     }
@@ -758,7 +712,6 @@ pub fn build_system_prompt(
     xml_context: &str,
     boundary: &str,
     config_xml: &str,
-    memories_xml: &str,
     relevant_history: &str,
 ) -> String {
     let os_lower = ctx.os_info.to_lowercase();
@@ -818,7 +771,7 @@ understand what the user is working on.
   and current load. Use core counts, cpu_samples, and load_avg to decide
   parallelism (e.g., ffmpeg -threads, make -j, xargs -P). If cpu_samples are
   consistently above 80%, reduce parallelism. memory_used and memory_available
-  help you decide whether to use memory-intensive approaches.
+  help you decide whether to use resource-intensive approaches.
 - The <disks> section shows mounted volumes and free space. Check free space
   before large operations (downloads, builds, backups, video conversion). The
   1% free space threshold for backups can be calculated from these values.
@@ -862,8 +815,7 @@ asks you to DO something (install, configure, set up, fix, deploy, debug, etc.):
    test commands, read config files, check service status).
 5. **Recover** — if a step fails, diagnose the error, try an alternative
    approach, and continue. Don't give up after one failure.
-6. **Remember** — store key learnings (package manager mappings, server details,
-   successful approaches) using the remember tool so future queries are instant.
+6. **Verify learnings** — Prefer deriving insights from recent context and history search.
 
 Most real-world tasks require 3-10 tool calls. A single-tool-call response
 should be rare — only for trivially obvious commands like `ls`, `pwd`, or
@@ -984,17 +936,7 @@ using Streamable HTTP). The server becomes available on the next query.
 Currently configured MCP servers are listed in the <nsh_configuration>
 block.
 
-**remember** — Store a fact, preference, or piece of information the user
-explicitly asks you to remember. Memories persist across sessions and are
-always visible in your context. Use this when the user says "remember",
-"save this", "note that", or similar. If a memory with the same key exists,
-it will be updated automatically. Examples: server IPs, project paths,
-personal preferences, frequently-used commands.
-
-**forget_memory** — Delete a memory by its ID when the user asks to forget
-something.
-
-**update_memory** — Update an existing memory's key or value by ID.
+ 
 
 ### Local-first resolution for command/tool/package names
 When the user asks what a named command/tool/package does ("what does X do",
@@ -1038,9 +980,8 @@ When the user asks "where is the config for X", "find the config file for X",
 
 ### Investigation priority for ambiguous requests
 When the user's request could have multiple interpretations or approaches:
-1. Check <memories> — you may already know the answer.
-2. Check terminal context / scrollback — recent activity may be relevant.
-3. Use search_history — the user may have done this before.
+1. Check terminal context / scrollback — recent activity may be relevant.
+2. Use search_history — the user may have done this before.
 4. Use run_command — verify tool availability (which, --version, read-only queries).
 5. Use web_search — look up canonical approaches if still unsure.
 6. Use ask_user — if multiple valid approaches or interpretations exist, ask the
@@ -1158,38 +1099,21 @@ User: "set up the filesystem MCP server"
 → install_mcp_server: name="filesystem", command="npx",
     args=["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
 
-User: "ssh to my NAS"
-→ [checks <memories> for NAS-related entries, finds "home NAS IP = 192.168.3.55"]
-→ command: ssh 192.168.3.55
-  explanation: "Connects to your home NAS at the IP you saved."
-
-User: "remember that 192.168.3.55 is my home NAS"
-→ remember: key="home NAS IP", value="192.168.3.55"
-
-User: "what do I have saved about my servers?"
-→ search_history: query="server"
-→ [gets memory results: home NAS IP = 192.168.3.55, prod server = ...]
-→ chat: "Here's what I have: ..."
-
-User: "forget memory #3"
-→ forget_memory: id=3
-
-User: "update my NAS IP to 192.168.3.60"
-→ update_memory: id=1, value="192.168.3.60"
+ 
 
 User: "upgrade amp"
 → search_history: query="amp"
 → [finds: npm update -g @sourcegraph/amp]
 → command: npm update -g @sourcegraph/amp
   explanation: "Updates amp globally via npm, matching your previous install method."
-→ remember: key="amp", value="npm global: @sourcegraph/amp, update: npm update -g @sourcegraph/amp"
+ 
 
 User: "install ripgrep"
 → [checks memories: no info] → run_command: which rg (not found)
 → [checks context: macOS with brew available]
 → command: brew install ripgrep
   explanation: "Installs ripgrep via Homebrew."
-→ remember: key="ripgrep install method", value="homebrew"
+ 
 
 User: "what does ampup do"
 → search_history: query="ampup"
@@ -1211,7 +1135,7 @@ User: "install ghost"
 → command (pending=true): npm install -g ghost-cli
 → [sees success output]
 → run_command: ghost --version
-→ remember: key="ghost", value="Ghost CMS, installed via: npm install -g ghost-cli"
+ 
 → chat: "Ghost CLI installed successfully. Run `ghost install local` to set up a local instance."
 
 User: "set up nginx as a reverse proxy"
@@ -1617,8 +1541,7 @@ These ALWAYS require investigation → execution → verification at minimum.
         .replace("{SHELL_GUIDANCE}", shell_guidance);
 
     let boundary_note = crate::security::boundary_system_prompt_addition(boundary);
-    let mut result =
-        format!("{base}\n{boundary_note}\n\n{config_xml}\n\n{memories_xml}\n\n{xml_context}");
+    let mut result = format!("{base}\n{boundary_note}\n\n{config_xml}\n\n{xml_context}");
     if !relevant_history.is_empty() {
         result.push_str("\n\nI have automatically searched your command history for terms related to this query.\nCheck <relevant_history_from_db> before guessing package names or approaches.\n\n");
         result.push_str(relevant_history);
@@ -1626,34 +1549,9 @@ These ALWAYS require investigation → execution → verification at minimum.
     result
 }
 
-#[cfg(test)]
-fn build_memories_xml(memories: &[crate::db::Memory]) -> String {
-    let default_redaction = crate::config::RedactionConfig::default();
-    build_memories_xml_with_redaction(memories, &default_redaction)
-}
+// build_memories_xml removed with memory system
 
-fn build_memories_xml_with_redaction(
-    memories: &[crate::db::Memory],
-    redaction_config: &crate::config::RedactionConfig,
-) -> String {
-    use crate::context::xml_escape;
-    if memories.is_empty() {
-        return "<memories count=\"0\" />\n".to_string();
-    }
-    let mut x = format!("<memories count=\"{}\">\n", memories.len());
-    for m in memories {
-        let redacted_value = crate::redact::redact_secrets(&m.value, redaction_config);
-        x.push_str(&format!(
-            "  <memory id=\"{}\" key=\"{}\" updated=\"{}\">{}</memory>\n",
-            m.id,
-            xml_escape(&m.key),
-            xml_escape(&m.updated_at),
-            xml_escape(&redacted_value),
-        ));
-    }
-    x.push_str("</memories>");
-    x
-}
+// memory XML removed entirely
 
 fn execute_sync_tool(
     name: &str,
@@ -1748,18 +1646,6 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
             let name = input["name"].as_str().unwrap_or("...");
             format!("installing MCP server: {name}")
         }
-        "remember" => {
-            let key = input["key"].as_str().unwrap_or("...");
-            format!("remembering: {key}")
-        }
-        "forget_memory" => {
-            let id = input["id"].as_i64().unwrap_or(0);
-            format!("forgetting memory #{id}")
-        }
-        "update_memory" => {
-            let id = input["id"].as_i64().unwrap_or(0);
-            format!("updating memory #{id}")
-        }
         other => other.to_string(),
     }
 }
@@ -1780,9 +1666,6 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "manage_config" => &["action", "key"],
         "install_skill" => &["name", "description", "command"],
         "install_mcp_server" => &["name"],
-        "remember" => &["key", "value"],
-        "forget_memory" => &["id"],
-        "update_memory" => &["id"],
         _ => &[],
     };
     for field in required_fields {
