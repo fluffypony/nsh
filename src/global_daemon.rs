@@ -745,8 +745,9 @@ fn handle_global_connection(
     write_tx: mpsc::Sender<WriteCommand>,
     read_tx: mpsc::Sender<ReadCommand>,
 ) {
+    let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
 
     let limited_stream = (&stream).take(1024 * 1024);
     let mut reader = BufReader::new(limited_stream);
@@ -759,7 +760,10 @@ fn handle_global_connection(
         Ok(r) => r,
         Err(e) => {
             let resp = DaemonResponse::error(format!("parse error: {e}"));
-            let _ = write_response(&stream, &resp);
+            if let Err(e) = write_response(&stream, &resp) {
+                tracing::warn!("daemon: failed to write parse error response: {e}");
+            }
+            let _ = stream.shutdown(std::net::Shutdown::Write);
             return;
         }
     };
@@ -785,19 +789,27 @@ fn handle_global_connection(
     };
 
     if send_result.is_err() {
-        let _ = write_response(&stream, &DaemonResponse::error("daemon shutting down"));
+        if let Err(e) = write_response(&stream, &DaemonResponse::error("daemon shutting down")) {
+            tracing::warn!("daemon: failed to write shutdown response: {e}");
+        }
+        let _ = stream.shutdown(std::net::Shutdown::Write);
         return;
     }
 
     match reply_rx.recv_timeout(Duration::from_secs(30)) {
         Ok(resp) => {
             log_daemon("server.connection.response", &format!("{resp:?}"));
-            let _ = write_response(&stream, &resp);
+            if let Err(e) = write_response(&stream, &resp) {
+                tracing::warn!("daemon: failed to write response: {e}");
+            }
         }
         Err(_) => {
-            let _ = write_response(&stream, &DaemonResponse::error("timeout"));
+            if let Err(e) = write_response(&stream, &DaemonResponse::error("timeout")) {
+                tracing::warn!("daemon: failed to write timeout response: {e}");
+            }
         }
     }
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
 fn is_write_request(req: &DaemonRequest) -> bool {
@@ -835,7 +847,7 @@ fn write_response(
     stream: &std::os::unix::net::UnixStream,
     resp: &DaemonResponse,
 ) -> std::io::Result<()> {
-    let mut w = stream;
+    let mut w = std::io::BufWriter::with_capacity(256 * 1024, stream);
     let mut json = serde_json::to_string(resp)
         .unwrap_or_else(|_| r#"{"status":"error","message":"serialize error"}"#.into());
     json.push('\n');

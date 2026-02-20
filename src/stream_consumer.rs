@@ -62,8 +62,17 @@ pub async fn consume_stream(
             StreamEvent::ToolUseEnd => {
                 let input = serde_json::from_str::<serde_json::Value>(&current_tool_input)
                     .ok()
-                    .or_else(|| crate::json_extract::extract_json(&current_tool_input))
-                    .unwrap_or_else(|| serde_json::json!({}));
+                    .or_else(|| {
+                        tracing::warn!(
+                            "Failed to parse tool input JSON ({} bytes), attempting extraction",
+                            current_tool_input.len()
+                        );
+                        crate::json_extract::extract_json(&current_tool_input)
+                    })
+                    .unwrap_or_else(|| {
+                        tracing::warn!("All tool input parse attempts failed, using empty object");
+                        serde_json::json!({})
+                    });
                 content_blocks.push(ContentBlock::ToolUse {
                     id: current_tool_id.clone(),
                     name: current_tool_name.clone(),

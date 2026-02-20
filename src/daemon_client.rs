@@ -1,5 +1,6 @@
+use std::io::BufRead;
 #[cfg(test)]
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::io::{Read, Write};
 use std::time::Duration;
 
@@ -15,21 +16,31 @@ fn log_daemon_client(action: &str, payload: &str) {
 }
 
 fn read_daemon_response<R: Read>(reader: &mut R) -> anyhow::Result<String> {
-    let mut buf = Vec::new();
-    reader
-        .take(MAX_DAEMON_RESPONSE_BYTES + 1)
-        .read_to_end(&mut buf)?;
-    if buf.len() as u64 > MAX_DAEMON_RESPONSE_BYTES {
+    let mut buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
+    let mut line = String::new();
+    let bytes_read = buf_reader.read_line(&mut line)?;
+
+    if bytes_read == 0 {
+        anyhow::bail!("empty daemon response (EOF before any data)");
+    }
+    if line.len() as u64 > MAX_DAEMON_RESPONSE_BYTES {
         anyhow::bail!("daemon response exceeded {MAX_DAEMON_RESPONSE_BYTES} bytes");
     }
-    if buf.is_empty() {
-        anyhow::bail!("empty daemon response");
-    }
-    let text = String::from_utf8(buf)?;
-    let trimmed = text.trim();
+
+    let trimmed = line.trim();
     if trimmed.is_empty() {
-        anyhow::bail!("empty daemon response");
+        anyhow::bail!("empty daemon response (whitespace only)");
     }
+
+    if trimmed.starts_with('{') && !trimmed.ends_with('}') {
+        anyhow::bail!(
+            "daemon response appears truncated ({} bytes received, ends with '...{}'). \
+             This usually means the response was too large or a write timeout occurred.",
+            trimmed.len(),
+            &trimmed[trimmed.len().saturating_sub(40)..]
+        );
+    }
+
     Ok(trimmed.to_string())
 }
 
@@ -41,35 +52,58 @@ pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result
     }
     #[cfg(unix)]
     {
-        let socket_path = crate::daemon::daemon_socket_path(session_id);
-        let mut stream = UnixStream::connect(&socket_path)?;
-        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-
-        let mut json_val = serde_json::to_value(request)?;
-        if let serde_json::Value::Object(ref mut map) = json_val {
-            map.insert(
-                "v".into(),
-                serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
-            );
+        let mut last_err = None;
+        for attempt in 0..2 {
+            match send_request_once(session_id, request) {
+                Ok(resp) => return Ok(resp),
+                Err(e) => {
+                    if attempt == 0 {
+                        tracing::debug!("send_request attempt 0 failed: {e}, retrying...");
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    last_err = Some(e);
+                }
+            }
         }
-        let mut json = serde_json::to_string(&json_val)?;
-        json.push('\n');
-        log_daemon_client(
-            "client.send_request",
-            &format!("session={session_id}\nrequest={}", json.trim_end()),
-        );
-        stream.write_all(json.as_bytes())?;
-        stream.flush()?;
-
-        let response_line = read_daemon_response(&mut stream)?;
-        log_daemon_client(
-            "client.send_request.response",
-            &format!("session={session_id}\nresponse={}", response_line),
-        );
-
-        Ok(serde_json::from_str(&response_line)?)
+        Err(last_err.unwrap())
     }
+}
+
+#[cfg(unix)]
+fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let socket_path = crate::daemon::daemon_socket_path(session_id);
+    let mut stream = UnixStream::connect(&socket_path)?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+
+    let mut json_val = serde_json::to_value(request)?;
+    if let serde_json::Value::Object(ref mut map) = json_val {
+        map.insert(
+            "v".into(),
+            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
+        );
+    }
+    let mut json = serde_json::to_string(&json_val)?;
+    json.push('\n');
+    log_daemon_client(
+        "client.send_request",
+        &format!("session={session_id}\nrequest={}", json.trim_end()),
+    );
+    stream.write_all(json.as_bytes())?;
+    stream.flush()?;
+
+    let response_line = read_daemon_response(&mut stream)?;
+    log_daemon_client(
+        "client.send_request.response",
+        &format!("session={session_id}\nresponse={}", response_line),
+    );
+
+    serde_json::from_str(&response_line).map_err(|e| {
+        anyhow::anyhow!(
+            "daemon response JSON parse failed ({} bytes): {e}",
+            response_line.len()
+        )
+    })
 }
 
 pub fn get_system_info(_session_id: &str) -> anyhow::Result<crate::context::SystemInfoBundle> {
@@ -137,10 +171,28 @@ pub fn is_global_daemon_running() -> bool {
 
 #[cfg(unix)]
 pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let mut last_err = None;
+    for attempt in 0..2 {
+        match send_to_global_once(request) {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                if attempt == 0 {
+                    tracing::debug!("send_to_global attempt 0 failed: {e}, retrying...");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+#[cfg(unix)]
+fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
     let socket_path = crate::daemon::global_daemon_socket_path();
     let mut stream = UnixStream::connect(&socket_path)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
     let mut json_val = serde_json::to_value(request)?;
     if let serde_json::Value::Object(ref mut map) = json_val {
@@ -164,7 +216,12 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
         &format!("response={response_line}"),
     );
 
-    Ok(serde_json::from_str(&response_line)?)
+    serde_json::from_str(&response_line).map_err(|e| {
+        anyhow::anyhow!(
+            "daemon response JSON parse failed ({} bytes): {e}",
+            response_line.len()
+        )
+    })
 }
 
 #[cfg(not(unix))]
