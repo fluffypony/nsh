@@ -3,7 +3,7 @@ use crate::daemon_db::DbAccess;
 use regex::Regex;
 use std::collections::HashSet;
 
-const MAX_SEARCH_RESULTS: usize = 100;
+const MAX_SEARCH_RESULTS: usize = 50;
 
 #[derive(Debug, Clone)]
 struct EntitySearchIntent {
@@ -79,7 +79,7 @@ pub fn execute(
             limit.saturating_mul(10).max(100)
         }
         .min(MAX_SEARCH_RESULTS);
-        let entity_matches = db.search_command_entities(
+        let entity_matches = match db.search_command_entities(
             intent.executable.as_deref(),
             intent.entity.as_deref(),
             intent.entity_type.as_deref(),
@@ -88,7 +88,13 @@ pub fn execute(
             session_filter.as_deref(),
             Some(session_id),
             raw_limit,
-        )?;
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("entity search failed: {e}");
+                Vec::new()
+            }
+        };
 
         if !entity_matches.is_empty() {
             let summary = summarize_entity_matches(&entity_matches, &intent, limit);
@@ -162,7 +168,8 @@ pub fn execute(
             result.push_str(&format!("  cwd: {cwd}\n"));
         }
         if let Some(hl) = &m.output_highlight {
-            let preview = crate::util::truncate(hl, 300);
+            let max_preview = if limit > 20 { 100 } else { 300 };
+            let preview = crate::util::truncate(hl, max_preview);
             result.push_str(&format!("  output: {preview}\n"));
         }
         result.push('\n');
@@ -184,6 +191,19 @@ pub fn execute(
         for m in &memory_matches {
             result.push_str(&format!("  [memory #{}] {} = {}\n", m.id, m.key, m.value,));
         }
+    }
+
+    const MAX_TOOL_RESULT_BYTES: usize = 48_000;
+    if result.len() > MAX_TOOL_RESULT_BYTES {
+        let mut end = MAX_TOOL_RESULT_BYTES;
+        while end > 0 && !result.is_char_boundary(end) {
+            end -= 1;
+        }
+        result.truncate(end);
+        if let Some(pos) = result.rfind('\n') {
+            result.truncate(pos);
+        }
+        result.push_str("\n... (results truncated due to size)");
     }
 
     Ok(crate::redact::redact_secrets(&result, &config.redaction))
@@ -220,7 +240,7 @@ fn summarize_entity_matches(
         let m = &matches[0];
         return format!(
             "Most recent matching target:\n- [{}] {} (via {})\n  command: {}\n",
-            m.started_at, m.entity, m.executable, m.command
+            m.started_at, m.entity, m.executable, crate::util::truncate(&m.command, 200)
         );
     }
 

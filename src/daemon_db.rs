@@ -487,7 +487,7 @@ impl DbAccess for DaemonDb {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<HistoryMatch>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistoryAdvanced {
+        let data = match self.request(DaemonRequest::SearchHistoryAdvanced {
             fts_query: fts_query.map(str::to_string),
             regex_pattern: regex_pattern.map(str::to_string),
             since: since.map(str::to_string),
@@ -497,7 +497,13 @@ impl DbAccess for DaemonDb {
             session_filter: session_filter.map(str::to_string),
             current_session: current_session.map(str::to_string),
             limit,
-        })?);
+        }) {
+            Ok(d) => Self::data_or_empty(d),
+            Err(e) => {
+                tracing::warn!("search_history_advanced failed: {e}");
+                return Ok(Vec::new());
+            }
+        };
         let arr = data
             .get("results")
             .and_then(|v| v.as_array())
@@ -556,7 +562,8 @@ impl DbAccess for DaemonDb {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<CommandEntityMatch>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::SearchCommandEntities {
+        let limit = limit.min(200);
+        let data = match self.request(DaemonRequest::SearchCommandEntities {
             executable: executable.map(str::to_string),
             entity: entity.map(str::to_string),
             entity_type: entity_type.map(str::to_string),
@@ -565,7 +572,13 @@ impl DbAccess for DaemonDb {
             session_filter: session_filter.map(str::to_string),
             current_session: current_session.map(str::to_string),
             limit,
-        })?);
+        }) {
+            Ok(d) => Self::data_or_empty(d),
+            Err(e) => {
+                tracing::warn!("search_command_entities failed: {e}");
+                return Ok(Vec::new());
+            }
+        };
         let arr = data
             .get("results")
             .and_then(|v| v.as_array())

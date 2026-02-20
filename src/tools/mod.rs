@@ -196,7 +196,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             name: "search_history".into(),
             description: "Search command history across all sessions. \
                           Searches commands, output, and AI-generated \
-                          summaries."
+                          summaries. If search_history returns an error, retry with a smaller limit \
+                          (e.g., 20) or narrower filters. For large history queries, prefer limit <= 30."
                 .into(),
             parameters: json!({
                 "type": "object",
