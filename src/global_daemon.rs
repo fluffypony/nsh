@@ -435,6 +435,48 @@ fn execute_write(
                             );
                         }
                     }
+
+                    // ── Memory: record generic command execution ─────────────
+                    // Skip internal project switch marker; we already emit a dedicated ProjectSwitch event above.
+                    if command != "__nsh_project_switch" {
+                        // Try to capture the per-command output from the per-session capture engine if present.
+                        let mut captured_output: Option<String> = None;
+                        #[cfg(unix)]
+                        {
+                            if !tty.is_empty() {
+                                let req = crate::daemon::DaemonRequest::CaptureRead {
+                                    session: session.clone(),
+                                    max_lines: 500,
+                                };
+                                if let Some(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
+                                    crate::daemon_client::try_send_request(&session, &req)
+                                {
+                                    captured_output = d.get("output").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                }
+                            }
+                        }
+                        // Fallback to provided output (usually None in global path)
+                        if captured_output.is_none() {
+                            captured_output = output.clone();
+                        }
+
+                        let event = crate::memory::types::ShellEvent {
+                            event_type: crate::memory::types::ShellEventType::CommandExecution,
+                            command: Some(command.clone()),
+                            output: captured_output,
+                            exit_code: Some(exit_code),
+                            working_dir: Some(cwd.clone()),
+                            session_id: Some(session.clone()),
+                            timestamp: started_at.clone(),
+                            git_context: None,
+                            instruction: None,
+                            file_path: None,
+                        };
+                        memory.record_event(event);
+                        if memory.should_flush_ingestion() {
+                            let _ = memory_tx.send(MemoryTask::FlushIngestion);
+                        }
+                    }
                     DaemonResponse::ok_with_data(serde_json::json!({"id": id}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
@@ -453,12 +495,48 @@ fn execute_write(
             shell,
             pid,
         } => match db.create_session(&session, &tty, &shell, pid) {
-            Ok(()) => DaemonResponse::ok(),
+            Ok(()) => {
+                // Emit a SessionStart event into memory (best-effort)
+                let event = crate::memory::types::ShellEvent {
+                    event_type: crate::memory::types::ShellEventType::SessionStart,
+                    command: None,
+                    output: None,
+                    exit_code: None,
+                    working_dir: None,
+                    session_id: Some(session.clone()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    git_context: None,
+                    instruction: None,
+                    file_path: None,
+                };
+                memory.record_event(event);
+                if memory.should_flush_ingestion() {
+                    let _ = memory_tx.send(MemoryTask::FlushIngestion);
+                }
+                DaemonResponse::ok()
+            }
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::EndSession { session } => match db.end_session(&session) {
             Ok(()) => {
                 session_project_roots.remove(&session);
+                // Emit a SessionEnd event into memory (best-effort)
+                let event = crate::memory::types::ShellEvent {
+                    event_type: crate::memory::types::ShellEventType::SessionEnd,
+                    command: None,
+                    output: None,
+                    exit_code: None,
+                    working_dir: None,
+                    session_id: Some(session.clone()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    git_context: None,
+                    instruction: None,
+                    file_path: None,
+                };
+                memory.record_event(event);
+                if memory.should_flush_ingestion() {
+                    let _ = memory_tx.send(MemoryTask::FlushIngestion);
+                }
                 DaemonResponse::ok()
             }
             Err(e) => DaemonResponse::error(format!("{e}")),
