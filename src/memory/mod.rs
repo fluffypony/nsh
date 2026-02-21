@@ -607,4 +607,272 @@ mod tests {
         assert!(prompt.contains("Test User"));
         assert!(prompt.contains("<memory_context"));
     }
+
+    #[test]
+    fn open_in_memory_works() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        let stats = mem.stats().unwrap();
+        assert_eq!(stats.core_count, 3);
+    }
+
+    #[test]
+    fn record_event_adds_to_buffer() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        mem.record_event(ShellEvent {
+            event_type: ShellEventType::CommandExecution,
+            command: Some("cargo build".into()),
+            output: None,
+            exit_code: Some(0),
+            working_dir: Some("/home/user/project".into()),
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        });
+
+        let buffer = mem.ingestion_buffer.lock().unwrap();
+        assert_eq!(buffer.len(), 1, "event should be in buffer");
+    }
+
+    #[test]
+    fn record_event_skips_password_prompts() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        mem.record_event(ShellEvent {
+            event_type: ShellEventType::CommandExecution,
+            command: Some("sudo command".into()),
+            output: Some("Password:".into()),
+            exit_code: Some(0),
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        });
+
+        let buffer = mem.ingestion_buffer.lock().unwrap();
+        assert!(buffer.is_empty(), "password prompt events should be skipped");
+    }
+
+    #[test]
+    fn record_event_skips_binary_output() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        mem.record_event(ShellEvent {
+            event_type: ShellEventType::CommandExecution,
+            command: Some("cat binary".into()),
+            output: Some("hello\x00world".into()),
+            exit_code: Some(0),
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        });
+
+        let buffer = mem.ingestion_buffer.lock().unwrap();
+        assert!(buffer.is_empty(), "binary output events should be skipped");
+    }
+
+    #[test]
+    fn search_with_populated_data() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        // Insert a semantic item directly
+        {
+            let conn = mem.db.lock().unwrap();
+            crate::memory::store::semantic::insert_or_update(
+                &conn,
+                "Rust toolchain",
+                "tools",
+                "Uses cargo for building",
+                None,
+                "rust cargo build",
+            ).unwrap();
+        }
+
+        let results = mem.search("cargo", None, 10).unwrap();
+        assert!(!results.is_empty(), "search should find the semantic entry");
+    }
+
+    #[test]
+    fn delete_memory_works() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        let id = {
+            let conn = mem.db.lock().unwrap();
+            crate::memory::store::semantic::insert_or_update(
+                &conn, "fact", "general", "test", None, "test",
+            ).unwrap()
+        };
+
+        mem.delete_memory(MemoryType::Semantic, &id).unwrap();
+        let stats = mem.stats().unwrap();
+        assert_eq!(stats.semantic_count, 0);
+    }
+
+    #[test]
+    fn delete_core_fails() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        let result = mem.delete_memory(MemoryType::Core, "human");
+        assert!(result.is_err(), "deleting core memory should fail");
+    }
+
+    #[test]
+    fn apply_op_all_types() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        let conn = mem.db.lock().unwrap();
+
+        // Test CoreAppend
+        mem.apply_op(&conn, &MemoryOp::CoreAppend {
+            label: "human".into(),
+            content: "likes Rust".into(),
+        }).unwrap();
+
+        // Test CoreRewrite
+        mem.apply_op(&conn, &MemoryOp::CoreRewrite {
+            label: "persona".into(),
+            content: "helpful assistant".into(),
+        }).unwrap();
+
+        // Test SemanticInsert
+        mem.apply_op(&conn, &MemoryOp::SemanticInsert {
+            name: "test_fact".into(),
+            category: "general".into(),
+            summary: "a test fact".into(),
+            details: None,
+            search_keywords: "test fact".into(),
+        }).unwrap();
+
+        // Test ProceduralInsert
+        mem.apply_op(&conn, &MemoryOp::ProceduralInsert {
+            entry_type: "workflow".into(),
+            trigger_pattern: "deploy".into(),
+            summary: "deploy flow".into(),
+            steps: "[]".into(),
+            search_keywords: "deploy".into(),
+        }).unwrap();
+
+        // Test ResourceInsert
+        mem.apply_op(&conn, &MemoryOp::ResourceInsert {
+            resource_type: "file".into(),
+            file_path: Some("/tmp/test".into()),
+            file_hash: None,
+            title: "test file".into(),
+            summary: "test".into(),
+            content: None,
+            search_keywords: "test".into(),
+        }).unwrap();
+
+        // Test NoOp
+        mem.apply_op(&conn, &MemoryOp::NoOp { reason: "test".into() }).unwrap();
+
+        // Verify everything was created
+        let blocks = crate::memory::store::core::get_all(&conn).unwrap();
+        let human = blocks.iter().find(|b| b.label == CoreLabel::Human).unwrap();
+        assert!(human.value.contains("likes Rust"));
+
+        let persona = blocks.iter().find(|b| b.label == CoreLabel::Persona).unwrap();
+        assert_eq!(persona.value, "helpful assistant");
+
+        assert_eq!(crate::memory::store::semantic::count(&conn).unwrap(), 1);
+        assert_eq!(crate::memory::store::procedural::count(&conn).unwrap(), 1);
+        assert_eq!(crate::memory::store::resource::count(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn set_config_stores_value() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        mem.set_config("test_key", "test_value").unwrap();
+
+        let conn = mem.db.lock().unwrap();
+        let val: String = conn.query_row(
+            "SELECT value FROM memory_config WHERE key = 'test_key'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, "test_value");
+    }
+
+    #[test]
+    fn should_flush_ingestion_initially_false() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        assert!(!mem.should_flush_ingestion(), "should not flush with empty buffer");
+    }
+
+    #[test]
+    fn has_bootstrapped_initially_false() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        assert!(!mem.has_bootstrapped());
+    }
+
+    #[test]
+    fn clear_selective_by_type() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+
+        // Add data to multiple types
+        {
+            let conn = mem.db.lock().unwrap();
+            crate::memory::store::semantic::insert_or_update(
+                &conn, "fact", "general", "test", None, "test",
+            ).unwrap();
+            crate::memory::store::episodic::insert(&conn, &crate::memory::types::EpisodicEventCreate {
+                event_type: crate::memory::types::EventType::CommandExecution,
+                actor: crate::memory::types::Actor::User,
+                summary: "test".into(),
+                details: None,
+                command: None,
+                exit_code: None,
+                working_dir: None,
+                project_context: None,
+                search_keywords: "test".into(),
+            }).unwrap();
+        }
+
+        let stats = mem.stats().unwrap();
+        assert_eq!(stats.semantic_count, 1);
+        assert_eq!(stats.episodic_count, 1);
+
+        // clear_all should reset everything
+        mem.clear_all().unwrap();
+        let stats = mem.stats().unwrap();
+        assert_eq!(stats.semantic_count, 0);
+        assert_eq!(stats.episodic_count, 0);
+    }
+
+    #[test]
+    fn resource_exists_with_hash_integration() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        {
+            let conn = mem.db.lock().unwrap();
+            crate::memory::store::resource::insert(
+                &conn, "file", Some("/tmp/test"), Some("hash123"), "test", "test", None, "test",
+            ).unwrap();
+        }
+
+        assert!(mem.resource_exists_with_hash(std::path::Path::new("/tmp/test"), "hash123").unwrap());
+        assert!(!mem.resource_exists_with_hash(std::path::Path::new("/tmp/test"), "wrong_hash").unwrap());
+    }
+
+    #[test]
+    fn disabled_memory_skips_events() {
+        let mut config = test_config();
+        config.enabled = false;
+        let mem = MemorySystem::open(config, ":memory:".into()).unwrap();
+
+        mem.record_event(ShellEvent {
+            event_type: ShellEventType::CommandExecution,
+            command: Some("cargo build".into()),
+            output: None,
+            exit_code: Some(0),
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        });
+
+        let buffer = mem.ingestion_buffer.lock().unwrap();
+        assert!(buffer.is_empty(), "disabled memory should skip events");
+    }
 }

@@ -119,4 +119,48 @@ mod tests {
         let (redacted, _secrets) = redact_secrets_for_memory("just normal text");
         assert_eq!(redacted, "just normal text");
     }
+
+    #[test]
+    fn is_ignored_with_multiple_patterns() {
+        let patterns = vec![
+            "/home/user/secret/**".to_string(),
+            "*.key".to_string(),
+        ];
+        assert!(is_ignored_path("/home/user/secret/file.txt", &patterns));
+        assert!(is_ignored_path("vault.key", &patterns));
+        assert!(!is_ignored_path("/home/user/project/main.rs", &patterns));
+    }
+
+    #[test]
+    fn is_ignored_empty_patterns() {
+        let patterns: Vec<String> = vec![];
+        assert!(!is_ignored_path("/any/path", &patterns));
+    }
+
+    #[test]
+    fn password_prompt_case_insensitive() {
+        assert!(is_password_prompt("PASSWORD:"));
+        assert!(is_password_prompt("Enter Passphrase:"));
+        assert!(is_password_prompt("AUTHENTICATION REQUIRED"));
+    }
+
+    #[test]
+    fn should_skip_output_normal_text() {
+        assert!(!should_skip_output("normal output text\nwith lines\n"));
+    }
+
+    #[test]
+    fn should_skip_output_at_boundary() {
+        let exactly_50k = "x".repeat(50_000);
+        assert!(!should_skip_output(&exactly_50k));
+        let over_50k = "x".repeat(50_001);
+        assert!(should_skip_output(&over_50k));
+    }
+
+    #[test]
+    fn redact_preserves_non_secret_text() {
+        let (redacted, secrets) = redact_secrets_for_memory("Hello, world! Just regular text.");
+        assert_eq!(redacted, "Hello, world! Just regular text.");
+        assert!(secrets.is_empty());
+    }
 }
