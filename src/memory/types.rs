@@ -302,7 +302,7 @@ pub struct GitContext {
 
 // ── Query Context ──
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryQueryContext {
     pub query: String,
     pub cwd: Option<String>,
@@ -311,7 +311,7 @@ pub struct MemoryQueryContext {
     pub error_context: Option<ErrorContext>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InteractionMode {
     NaturalLanguage,
     CommandSuggestion,
@@ -320,7 +320,7 @@ pub enum InteractionMode {
     AutonomousExecution,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorContext {
     pub command: String,
     pub exit_code: i32,

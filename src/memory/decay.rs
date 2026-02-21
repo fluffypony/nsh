@@ -4,7 +4,7 @@ use crate::memory::types::DecayReport;
 
 pub fn run_decay(
     conn: &Connection,
-    fade_after_days: u32,
+    _fade_after_days: u32,
     expire_after_days: u32,
 ) -> anyhow::Result<DecayReport> {
     let mut report = DecayReport::default();

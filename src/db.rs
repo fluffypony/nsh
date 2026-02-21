@@ -1253,7 +1253,7 @@ impl Db {
 
     pub fn run_memory_decay(
         &self,
-        fade_days: u32,
+        _fade_days: u32,
         expire_days: u32,
     ) -> rusqlite::Result<crate::memory::types::DecayReport> {
         let cutoff = chrono::Utc::now()

@@ -145,17 +145,8 @@ pub async fn handle_query(
             },
             error_context: None,
         };
-        match db.memory_search(&memory_ctx.query, None, config.memory.max_retrieval_per_type) {
-            Ok(results) => {
-                if results == "{}" || results.is_empty() {
-                    String::new()
-                } else {
-                    // Redact secrets and sanitize for safe inclusion in system prompt
-                    let redacted = crate::redact::redact_secrets(&results, &config.redaction);
-                    let escaped = context::xml_escape(&redacted);
-                    format!("<memory_search_results>\n{escaped}\n</memory_search_results>")
-                }
-            }
+        match db.memory_retrieve_prompt(&memory_ctx) {
+            Ok(prompt) => prompt,
             Err(e) => {
                 tracing::debug!("Memory retrieval failed: {e}");
                 String::new()
@@ -642,44 +633,40 @@ pub async fn handle_query(
                                     let mt = input["memory_type"].as_str().unwrap_or("all");
                                     let q = input["query"].as_str().unwrap_or("");
                                     let lim = (input["limit"].as_u64().unwrap_or(10) as usize).min(50);
-                                    match db.memory_search(
-                                        q,
-                                        if mt == "all" { None } else { Some(mt) },
-                                        lim,
-                                    ) {
+                                    match crate::tools::memory::execute_search_memory(db, mt, q, lim) {
                                         Ok(results) => (results, false),
-                                        Err(e) => (format!("Memory search error: {e}"), true),
+                                        Err(e) => (e, true),
                                     }
                                 }
                                 "core_memory_append" => {
                                     let label = input["label"].as_str().unwrap_or("");
                                     let content = input["content"].as_str().unwrap_or("");
-                                    match db.memory_core_append(label, content) {
-                                        Ok(()) => (format!("Appended to core memory '{label}'"), false),
-                                        Err(e) => (format!("Error: {e}"), true),
+                                    match crate::tools::memory::execute_core_memory_append(db, label, content) {
+                                        Ok(msg) => (msg, false),
+                                        Err(e) => (e, true),
                                     }
                                 }
                                 "core_memory_rewrite" => {
                                     let label = input["label"].as_str().unwrap_or("");
                                     let content = input["content"].as_str().unwrap_or("");
-                                    match db.memory_core_rewrite(label, content) {
-                                        Ok(()) => (format!("Rewrote core memory block '{label}'"), false),
-                                        Err(e) => (format!("Error: {e}"), true),
+                                    match crate::tools::memory::execute_core_memory_rewrite(db, label, content) {
+                                        Ok(msg) => (msg, false),
+                                        Err(e) => (e, true),
                                     }
                                 }
                                 "store_memory" => {
                                     let memory_type = input["memory_type"].as_str().unwrap_or("");
                                     let data = input.get("data").cloned().unwrap_or(serde_json::json!({}));
-                                    match db.memory_store(memory_type, &data.to_string()) {
-                                        Ok(id_val) => (format!("Stored in {memory_type} memory (id: {id_val})"), false),
-                                        Err(e) => (format!("Error: {e}"), true),
+                                    match crate::tools::memory::execute_store_memory(db, memory_type, &data) {
+                                        Ok(msg) => (msg, false),
+                                        Err(e) => (e, true),
                                     }
                                 }
                                 "retrieve_secret" => {
                                     let caption_query = input["caption_query"].as_str().unwrap_or("");
-                                    match db.memory_retrieve_secret(caption_query) {
+                                    match crate::tools::memory::execute_retrieve_secret(db, caption_query) {
                                         Ok(secret) => (secret, false),
-                                        Err(e) => (format!("Secret retrieval error: {e}"), true),
+                                        Err(e) => (e, true),
                                     }
                                 }
                                 _ => unreachable!(),

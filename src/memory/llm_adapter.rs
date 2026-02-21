@@ -1,6 +1,7 @@
 #[async_trait::async_trait]
 pub trait MemoryLlmClient: Send + Sync {
     async fn complete_json(&self, prompt: &str) -> anyhow::Result<String>;
+    #[allow(unused)]
     async fn complete(&self, system: &str, user: &str) -> anyhow::Result<String>;
 }
 

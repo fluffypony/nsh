@@ -111,10 +111,11 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         .enumerate()
         .map(|(i, db)| {
             let rx = Arc::clone(&read_rx);
+            let mem = Arc::clone(&memory);
             std::thread::Builder::new()
                 .name(format!("nshd-reader-{i}"))
                 .spawn(move || {
-                    run_read_thread(db, rx);
+                    run_read_thread(db, rx, mem);
                 })
                 .unwrap()
         })
@@ -677,7 +678,11 @@ fn execute_write(
     }
 }
 
-fn run_read_thread(db: crate::db::Db, rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>) {
+fn run_read_thread(
+    db: crate::db::Db,
+    rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>,
+    memory: Arc<crate::memory::MemorySystem>,
+) {
     loop {
         let cmd = loop {
             let maybe = {
@@ -690,12 +695,12 @@ fn run_read_thread(db: crate::db::Db, rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>
                 Err(mpsc::TryRecvError::Disconnected) => return,
             }
         };
-        let resp = execute_read(&db, cmd.request);
+        let resp = execute_read(&db, &memory, cmd.request);
         let _ = cmd.reply.send(resp);
     }
 }
 
-fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
+fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, request: DaemonRequest) -> DaemonResponse {
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_read.request", &req_dbg);
     match request {
@@ -935,7 +940,27 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
         // ── Memory read operations ──────────────────────
         DaemonRequest::MemoryRetrieve { context_json } => {
             tracing::debug!("memory: retrieve (len={})", context_json.len());
-            DaemonResponse::ok_with_data(serde_json::json!({"memories": {}}))
+            // Parse context
+            match serde_json::from_str::<crate::memory::types::MemoryQueryContext>(&context_json) {
+                Ok(ctx) => {
+                    // For read path, perform retrieval without LLM (fast path handles most cases)
+                    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                        Ok(rt) => rt,
+                        Err(e) => return DaemonResponse::error(format!("memory runtime init failed: {e}")),
+                    };
+                    let result = rt.block_on(async { memory.retrieve_for_query(&ctx, None).await });
+                    match result {
+                        Ok(memories) => {
+                            let prompt = memory.build_memory_prompt(&memories);
+                            DaemonResponse::ok_with_data(serde_json::json!({
+                                "prompt": prompt,
+                            }))
+                        }
+                        Err(e) => DaemonResponse::error(format!("{e}")),
+                    }
+                }
+                Err(e) => DaemonResponse::error(format!("invalid context JSON: {e}")),
+            }
         }
         DaemonRequest::MemorySearch { query, memory_type, limit } => {
             use crate::daemon_db::DbAccess;

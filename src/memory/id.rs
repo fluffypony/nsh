@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 pub use crate::memory::types::generate_id;
 
 #[cfg(test)]

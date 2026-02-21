@@ -2368,6 +2368,7 @@ fn detect_timezone() -> String {
 
 /// Detect the project name from common project files or fall back to the
 /// directory name inside a git repository.
+#[allow(dead_code)]
 pub fn detect_project_name(cwd: &str) -> Option<String> {
     let path = std::path::Path::new(cwd);
 

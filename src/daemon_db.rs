@@ -64,6 +64,7 @@ pub trait DbAccess {
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
 
     // ── Memory system ──────────────────────────────────
+    fn memory_retrieve_prompt(&self, ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String>;
     fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String>;
     fn memory_core_get(&self) -> anyhow::Result<String>;
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
@@ -188,6 +189,11 @@ impl DbAccess for Db {
 
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()> {
         Ok(self.mark_summary_error(id, error)?)
+    }
+
+    fn memory_retrieve_prompt(&self, _ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String> {
+        // Direct DbAccess is used only in limited contexts; return empty prompt here.
+        Ok(String::new())
     }
 
     fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {
@@ -776,6 +782,13 @@ impl DbAccess for DaemonDb {
             error: error.to_string(),
         })?;
         Ok(())
+    }
+
+    fn memory_retrieve_prompt(&self, ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String> {
+        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieve {
+            context_json: serde_json::to_string(ctx)?,
+        })?);
+        Ok(data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string())
     }
 
     fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 
 pub fn parse_temporal_expression(
     expr: &str,
