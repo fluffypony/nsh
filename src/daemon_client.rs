@@ -218,17 +218,19 @@ fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse
     let json_val: serde_json::Value = serde_json::from_str(&response_line)
         .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
 
-    // Check if the global daemon is outdated
+    // Check if the global daemon is outdated; prefer graceful SIGHUP over hard stop
     let daemon_version = json_val.get("daemon_version").and_then(|v| v.as_str());
     if daemon_version != Some(env!("CARGO_PKG_VERSION")) {
         tracing::info!(
-            "Global daemon is outdated (running: {:?}, current: {}). Restarting...",
+            "Global daemon is outdated (running: {:?}, current: {}), signaling restart",
             daemon_version,
             env!("CARGO_PKG_VERSION")
         );
-        // Restart asynchronously so we don't block this response
+        // Trigger graceful restart asynchronously; client call proceeds
         std::thread::spawn(|| {
-            stop_global_daemon();
+            let _ = signal_daemon_restart();
+            // Nudge ensure after a short delay
+            std::thread::sleep(Duration::from_millis(300));
             let _ = ensure_global_daemon_running();
         });
     }
@@ -290,7 +292,7 @@ pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ensure the global daemon binary version matches ours; restart if not.
+/// Ensure the global daemon binary version matches ours; gracefully restart if not.
 pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
     let our_version = env!("CARGO_PKG_VERSION");
     if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
@@ -299,12 +301,12 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
         if let Some(daemon_ver) = d.get("version").and_then(|v| v.as_str()) {
             if daemon_ver != our_version {
                 tracing::info!(
-                    "daemon version {daemon_ver} != our version {our_version}, restarting"
+                    "daemon version {daemon_ver} != our version {our_version}, signaling graceful restart"
                 );
-                stop_global_daemon();
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                ensure_global_daemon_running()?;
-                std::thread::sleep(std::time::Duration::from_millis(300));
+                let _ = signal_daemon_restart();
+                // Allow a short window for graceful drain and re-exec, then ensure running
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let _ = ensure_global_daemon_running();
             }
         }
     }
