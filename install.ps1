@@ -27,7 +27,31 @@ if ($actual -ne $expected.ToLowerInvariant()) {
 }
 
 Expand-Archive -Path $zipPath -DestinationPath $tmpDir -Force
-Copy-Item (Join-Path $tmpDir "nsh.exe") (Join-Path $installDir "nsh.exe") -Force
+
+# Place both binaries when available:
+#  - Shim: install to cargo bin as 'nsh.exe' only if not already present (it's frozen)
+#  - Core: always install/update to %USERPROFILE%\.nsh\bin\nsh-core.exe
+$nshDir = Join-Path $HOME ".nsh"
+New-Item -ItemType Directory -Force -Path $nshDir | Out-Null
+$coreDir = Join-Path $nshDir "bin"
+New-Item -ItemType Directory -Force -Path $coreDir | Out-Null
+
+$shimPath = Join-Path $tmpDir "nsh-shim.exe"
+$corePath = Join-Path $tmpDir "nsh.exe"
+
+if (Test-Path $shimPath) {
+  if (-not (Test-Path (Join-Path $installDir "nsh.exe"))) {
+    Copy-Item $shimPath (Join-Path $installDir "nsh.exe") -Force
+    Write-Host "Installed shim to $installDir\nsh.exe"
+  } else {
+    Write-Host "Shim already present at $installDir\nsh.exe (left unchanged)"
+  }
+} else {
+  # Back-compat: only one binary; install it as the shim
+  Copy-Item $corePath (Join-Path $installDir "nsh.exe") -Force
+}
+Copy-Item $corePath (Join-Path $coreDir "nsh-core.exe") -Force
+Write-Host "Installed core to $coreDir\nsh-core.exe"
 
 $pathUser = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($pathUser -notlike "*$installDir*") {
@@ -35,8 +59,6 @@ if ($pathUser -notlike "*$installDir*") {
     Write-Host "Added $installDir to user PATH"
 }
 
-$nshDir = Join-Path $HOME ".nsh"
-New-Item -ItemType Directory -Force -Path $nshDir | Out-Null
 $configPath = Join-Path $nshDir "config.toml"
 if (-not (Test-Path $configPath)) {
     Write-Host ""

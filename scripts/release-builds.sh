@@ -227,35 +227,47 @@ package_target() {
   local out_dir="$3"
   local manifest="$4"
 
-  local bin="${ROOT_DIR}/target/${target}/release/nsh"
+  # Both binaries are built by cargo: shim (nsh) and core (nsh-core)
+  local bin_shim="${ROOT_DIR}/target/${target}/release/nsh"
+  local bin_core="${ROOT_DIR}/target/${target}/release/nsh-core"
+  local is_windows=0
   if [[ "${target}" == *"windows"* ]]; then
-    bin="${ROOT_DIR}/target/${target}/release/nsh.exe"
+    bin_shim="${bin_shim}.exe"
+    bin_core="${bin_core}.exe"
+    is_windows=1
   fi
-  [[ -x "${bin}" ]] || error "binary not found for ${target}: ${bin}"
+  [[ -x "${bin_shim}" ]] || error "shim binary not found for ${target}: ${bin_shim}"
+  [[ -x "${bin_core}" ]] || error "core binary not found for ${target}: ${bin_core}"
 
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "${tmp}"' RETURN
-  local bin_name="nsh"
-  if [[ "${target}" == *"windows"* ]]; then
-    bin_name="nsh.exe"
+  # Archive layout:
+  #   - 'nsh' is the core binary (for auto-update compatibility)
+  #   - 'nsh-shim' is the shim binary (installed once if missing)
+  if (( is_windows )); then
+    cp "${bin_core}" "${tmp}/nsh.exe"
+    cp "${bin_shim}" "${tmp}/nsh-shim.exe"
+  else
+    cp "${bin_core}" "${tmp}/nsh"
+    cp "${bin_shim}" "${tmp}/nsh-shim"
   fi
-  cp "${bin}" "${tmp}/${bin_name}"
 
   local archive="${out_dir}/nsh-${target}.tar.gz"
-  if [[ "${target}" == *"windows"* ]]; then
+  if (( is_windows )); then
     archive="${out_dir}/nsh-${target}.zip"
-    (cd "${tmp}" && zip -q "${archive}" "${bin_name}")
+    (cd "${tmp}" && zip -q "${archive}" nsh.exe nsh-shim.exe)
   else
-    tar -C "${tmp}" -czf "${archive}" "${bin_name}"
+    tar -C "${tmp}" -czf "${archive}" nsh nsh-shim
   fi
 
   local archive_sha
   archive_sha="$(sha256_file "${archive}")"
   printf '%s  %s\n' "${archive_sha}" "$(basename "${archive}")" > "${archive}.sha256"
 
+  # For DNS TXT update records we publish the checksum of the core binary
   local binary_sha
-  binary_sha="$(sha256_file "${bin}")"
+  binary_sha="$(sha256_file "${bin_core}")"
   printf '%s:%s:%s\n' "${version}" "${target}" "${binary_sha}" >> "${manifest}"
 
   echo "    packaged: $(basename "${archive}")"

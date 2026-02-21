@@ -129,15 +129,15 @@ install_from_release() {
             tar xzf "$TMP/nsh_archive" -C "$TMP"
         fi
 
-        # Compute SHA256 of extracted binary (used by DNS TXT update records)
+        # Compute SHA256 of extracted core binary (nsh) used by DNS TXT update records
         local binary_sha=""
         if [[ -f "$TMP/nsh" || -f "$TMP/nsh.exe" ]]; then
-            local extracted_bin="$TMP/nsh"
-            [[ -f "$TMP/nsh.exe" ]] && extracted_bin="$TMP/nsh.exe"
+            local extracted_core="$TMP/nsh"
+            [[ -f "$TMP/nsh.exe" ]] && extracted_core="$TMP/nsh.exe"
             if command -v sha256sum &>/dev/null; then
-                binary_sha="$(sha256sum "$extracted_bin" | awk '{print $1}')"
+                binary_sha="$(sha256sum "$extracted_core" | awk '{print $1}')"
             elif command -v shasum &>/dev/null; then
-                binary_sha="$(shasum -a 256 "$extracted_bin" | awk '{print $1}')"
+                binary_sha="$(shasum -a 256 "$extracted_core" | awk '{print $1}')"
             fi
         fi
 
@@ -161,11 +161,43 @@ install_from_release() {
             warn "No verification available, proceeding with unverified binary"
         fi
 
+        # Place both binaries when available:
+        #  - Shim: install to cargo bin as 'nsh' only if not already present (it's frozen)
+        #  - Core: always install/update to ~/.nsh/bin/nsh-core
         mkdir -p "$INSTALL_DIR"
+        local NSH_BIN_DIR="$HOME/.nsh/bin"
+        mkdir -p "$NSH_BIN_DIR"
+
         if [[ "$TARGET" == *windows* ]]; then
-            install -m 755 "$TMP/nsh.exe" "$INSTALL_DIR/nsh.exe"
+            # Windows archive: nsh.exe (core), nsh-shim.exe (shim)
+            if [[ -f "$TMP/nsh-shim.exe" ]]; then
+                if [[ ! -f "$INSTALL_DIR/nsh.exe" ]]; then
+                    install -m 755 "$TMP/nsh-shim.exe" "$INSTALL_DIR/nsh.exe"
+                    ok "Installed shim to $INSTALL_DIR/nsh.exe"
+                else
+                    ok "Shim already present at $INSTALL_DIR/nsh.exe (left unchanged)"
+                fi
+            else
+                # Back-compat: only one binary; install it as the shim
+                install -m 755 "$TMP/nsh.exe" "$INSTALL_DIR/nsh.exe"
+            fi
+            install -m 755 "$TMP/nsh.exe" "$NSH_BIN_DIR/nsh-core.exe"
+            ok "Installed core to $NSH_BIN_DIR/nsh-core.exe"
         else
-            install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
+            # Unix archive: nsh (core), nsh-shim (shim)
+            if [[ -f "$TMP/nsh-shim" ]]; then
+                if [[ ! -f "$INSTALL_DIR/nsh" ]]; then
+                    install -m 755 "$TMP/nsh-shim" "$INSTALL_DIR/nsh"
+                    ok "Installed shim to $INSTALL_DIR/nsh"
+                else
+                    ok "Shim already present at $INSTALL_DIR/nsh (left unchanged)"
+                fi
+            else
+                # Back-compat: only one binary; install it as the shim
+                install -m 755 "$TMP/nsh" "$INSTALL_DIR/nsh"
+            fi
+            install -m 755 "$TMP/nsh" "$NSH_BIN_DIR/nsh-core"
+            ok "Installed core to $NSH_BIN_DIR/nsh-core"
         fi
         return 0
     fi
