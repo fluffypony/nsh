@@ -286,4 +286,201 @@ mod tests {
             _ => panic!("expected SemanticInsert"),
         }
     }
+
+    #[test]
+    fn extract_fallback_keywords_short_words_filtered() {
+        let result = extract_fallback_keywords("A is to be or");
+        // All words are <= 2 chars or stop words
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn extract_fallback_keywords_max_10() {
+        let text = "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12";
+        let result = extract_fallback_keywords(text);
+        let count = result.split_whitespace().count();
+        assert!(count <= 10, "should take at most 10 keywords, got {count}");
+    }
+
+    #[test]
+    fn extract_fallback_keywords_preserves_underscores() {
+        let result = extract_fallback_keywords("my_function_name");
+        assert!(result.contains("my_function_name"));
+    }
+
+    #[test]
+    fn extract_fallback_keywords_preserves_dashes() {
+        let result = extract_fallback_keywords("my-component-name");
+        assert!(result.contains("my-component-name"));
+    }
+
+    #[test]
+    fn extract_command_tags_git() {
+        let tags = extract_command_tags("git push origin main");
+        assert!(tags.contains(&"git".to_string()));
+        assert!(tags.contains(&"version_control".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_docker() {
+        let tags = extract_command_tags("docker build -t myapp .");
+        assert!(tags.contains(&"docker".to_string()));
+        assert!(tags.contains(&"containerization".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_kubectl() {
+        let tags = extract_command_tags("kubectl get pods");
+        assert!(tags.contains(&"kubectl".to_string()));
+        assert!(tags.contains(&"kubernetes".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_cargo() {
+        let tags = extract_command_tags("cargo test --release");
+        assert!(tags.contains(&"cargo".to_string()));
+        assert!(tags.contains(&"rust".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_npm() {
+        let tags = extract_command_tags("npm install express");
+        assert!(tags.contains(&"npm".to_string()));
+        assert!(tags.contains(&"nodejs".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_pip() {
+        let tags = extract_command_tags("pip install requests");
+        assert!(tags.contains(&"pip".to_string()));
+        assert!(tags.contains(&"python".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_ssh() {
+        let tags = extract_command_tags("ssh user@host");
+        assert!(tags.contains(&"ssh".to_string()));
+        assert!(tags.contains(&"remote_access".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_brew() {
+        let tags = extract_command_tags("brew install ripgrep");
+        assert!(tags.contains(&"brew".to_string()));
+        assert!(tags.contains(&"package_management".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_systemctl() {
+        let tags = extract_command_tags("systemctl restart nginx");
+        assert!(tags.contains(&"systemctl".to_string()));
+        assert!(tags.contains(&"systemd".to_string()));
+    }
+
+    #[test]
+    fn extract_command_tags_unknown_command() {
+        let tags = extract_command_tags("myunknowncommand --flag");
+        assert!(tags.contains(&"myunknowncommand".to_string()));
+        assert_eq!(tags.len(), 1, "unknown command should only have base name");
+    }
+
+    #[test]
+    fn extract_command_tags_full_path() {
+        let tags = extract_command_tags("/usr/bin/git status");
+        assert!(tags.contains(&"git".to_string()));
+        assert!(tags.contains(&"version_control".to_string()));
+    }
+
+    #[test]
+    fn validate_keyword_presence_procedural_empty_keywords() {
+        let ops = vec![MemoryOp::ProceduralInsert {
+            entry_type: "workflow".into(),
+            trigger_pattern: "deploy".into(),
+            summary: "Deploy to production server".into(),
+            steps: r#"["build", "test"]"#.into(),
+            search_keywords: "".into(),
+        }];
+        let validated = validate_keyword_presence(ops);
+        match &validated[0] {
+            MemoryOp::ProceduralInsert { search_keywords, .. } => {
+                assert!(!search_keywords.is_empty(), "should fill in fallback keywords for procedural");
+                assert!(search_keywords.contains("Deploy"));
+            }
+            _ => panic!("expected ProceduralInsert"),
+        }
+    }
+
+    #[test]
+    fn validate_keyword_presence_episodic_empty_keywords() {
+        let ops = vec![MemoryOp::EpisodicInsert {
+            event: crate::memory::types::EpisodicEventCreate {
+                event_type: crate::memory::types::EventType::CommandExecution,
+                actor: crate::memory::types::Actor::User,
+                summary: "Built the Rust project using cargo".into(),
+                details: None,
+                command: Some("cargo build".into()),
+                exit_code: Some(0),
+                working_dir: None,
+                project_context: None,
+                search_keywords: "   ".into(),
+            },
+        }];
+        let validated = validate_keyword_presence(ops);
+        match &validated[0] {
+            MemoryOp::EpisodicInsert { event } => {
+                assert!(!event.search_keywords.trim().is_empty(), "should fill in fallback keywords");
+                assert!(event.search_keywords.contains("Built"));
+            }
+            _ => panic!("expected EpisodicInsert"),
+        }
+    }
+
+    #[test]
+    fn validate_keyword_presence_preserves_existing() {
+        let ops = vec![MemoryOp::SemanticInsert {
+            name: "test".into(),
+            category: "general".into(),
+            summary: "Test summary".into(),
+            details: None,
+            search_keywords: "existing keywords here".into(),
+        }];
+        let validated = validate_keyword_presence(ops);
+        match &validated[0] {
+            MemoryOp::SemanticInsert { search_keywords, .. } => {
+                assert_eq!(search_keywords, "existing keywords here");
+            }
+            _ => panic!("expected SemanticInsert"),
+        }
+    }
+
+    #[test]
+    fn validate_keyword_presence_noop_passthrough() {
+        let ops = vec![MemoryOp::NoOp { reason: "test".into() }];
+        let validated = validate_keyword_presence(ops);
+        assert!(matches!(&validated[0], MemoryOp::NoOp { .. }));
+    }
+
+    #[test]
+    fn parse_extraction_response_with_surrounding_text() {
+        let response = "Here is the output:\n[{\"op\": \"NoOp\", \"reason\": \"test\"}]\nDone!";
+        let ops = parse_extraction_response(response).unwrap();
+        assert_eq!(ops.len(), 1);
+    }
+
+    #[test]
+    fn parse_extraction_response_multiple_ops() {
+        let response = r#"[
+            {"op": "EpisodicInsert", "event": {"event_type": "command_execution", "actor": "user", "summary": "test", "search_keywords": "test"}},
+            {"op": "NoOp", "reason": "low signal"}
+        ]"#;
+        let ops = parse_extraction_response(response).unwrap();
+        assert_eq!(ops.len(), 2);
+    }
+
+    #[test]
+    fn parse_extraction_response_empty_array() {
+        let response = "[]";
+        let ops = parse_extraction_response(response).unwrap();
+        assert!(ops.is_empty());
+    }
 }
