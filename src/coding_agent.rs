@@ -159,7 +159,7 @@ pub async fn run_coding_agent(
     let boundary = crate::security::generate_boundary();
     let instructions = crate::context::gather_custom_instructions(config, &working_dir_str)
         .unwrap_or_else(|| "(none)".into());
-    let memory_prompt = if config.memory.enabled && !config.memory.incognito {
+    let memory_prompt = if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
         let db = crate::daemon_db::DaemonDb::new();
         let search_text = crate::util::truncate(task, 200);
         match db.memory_search(&search_text, None, config.memory.max_retrieval_per_type) {

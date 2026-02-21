@@ -261,6 +261,23 @@ fn test_doctor_capture_succeeds() {
 }
 
 #[test]
+fn test_memory_stats_cli_outputs_telemetry_keys() {
+    let home = test_home();
+    let output = run_nsh(home.path(), &["memory", "stats"]);
+
+    assert!(
+        output.status.success(),
+        "nsh memory stats should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // JSON should at least contain the keys; values may be defaults
+    assert!(stdout.contains("\"core\""));
+    assert!(stdout.contains("\"decay_runs\""));
+    assert!(stdout.contains("\"reflection_runs\""));
+}
+
+#[test]
 fn test_daemon_send_record_updates_fast_cwd_file() {
     let home = test_home();
     let output = run_nsh(

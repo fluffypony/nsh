@@ -1204,6 +1204,22 @@ impl Db {
         })
     }
 
+    // Helper: tolerant datetime parse for doctor heuristics
+    fn parse_sqlite_datetime(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        // Try RFC3339 first
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            return Some(dt.with_timezone(&chrono::Utc));
+        }
+        // Try SQLite default format: "YYYY-MM-DD HH:MM:SS"
+        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+            return Some(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                naive,
+                chrono::Utc,
+            ));
+        }
+        None
+    }
+
     pub fn clear_all_memories(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
             "DELETE FROM episodic_memory;
@@ -2282,9 +2298,67 @@ impl Db {
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         eprintln!("{result}");
 
+        // 12. Memory health section
+        let mem_health = self.build_memory_health_section();
+        eprint!("{mem_health}");
+
         eprintln!("\nnsh doctor: done");
 
         Ok(())
+    }
+
+    fn build_memory_health_section(&self) -> String {
+        // Fetch counts
+        let stats = self.memory_stats().unwrap_or_default();
+        let decay_runs: i64 = self
+            .get_memory_config("decay_runs")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let last_decay_at = self
+            .get_memory_config("last_decay_at")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "".into());
+        let reflection_runs: i64 = self
+            .get_memory_config("reflection_runs")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
+        let last_reflection_at = self
+            .get_memory_config("last_reflection_at")
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "".into());
+
+        // Heuristics
+        let mut decay_status = "OK".to_string();
+        if let Some(ts) = Self::parse_sqlite_datetime(&last_decay_at) {
+            if (chrono::Utc::now() - ts).num_hours() > 48 {
+                decay_status = "WARN: last decay > 48h ago".into();
+            }
+        }
+        let mut reflection_status = "OK".to_string();
+        if reflection_runs == 0 && stats.episodic_count > 100 {
+            reflection_status = "WARN: no reflections and episodic>100".into();
+        }
+
+        let mut s = String::new();
+        s.push_str("\nMemory Health:\n");
+        s.push_str(&format!("  Last decay: {} ({})\n", last_decay_at, decay_status));
+        s.push_str(&format!("  Decay runs: {}\n", decay_runs));
+        s.push_str(&format!(
+            "  Last reflection: {} ({})\n",
+            last_reflection_at, reflection_status
+        ));
+        s.push_str(&format!("  Reflection runs: {}\n", reflection_runs));
+        s.push_str(&format!(
+            "  Notes: episodic={}, semantic={}, procedural={}\n",
+            stats.episodic_count, stats.semantic_count, stats.procedural_count
+        ));
+        s
     }
 
     pub fn open_readonly() -> anyhow::Result<Self> {
@@ -3640,6 +3714,28 @@ mod tests {
         assert_eq!(*input_tok, 300);
         assert_eq!(*output_tok, 150);
         assert!((cost - 0.03).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_build_memory_health_section_formats_values() {
+        let db = Db::open_in_memory().unwrap();
+        // Seed some episodic rows to trigger warning condition if no reflections
+        for i in 0..105 {
+            let _ = db.conn.execute(
+                "INSERT INTO episodic_memory (id, summary, details, search_keywords, created_at, updated_at) VALUES (?, 'sum', NULL, 'kw', datetime('now'), datetime('now'))",
+                rusqlite::params![format!("ep_{:08X}", i)],
+            );
+        }
+        db.set_memory_config("decay_runs", "2").unwrap();
+        db.set_memory_config("reflection_runs", "0").unwrap();
+        db.set_memory_config("last_decay_at", "2026-02-20 10:00:00").unwrap();
+        db.set_memory_config("last_reflection_at", "").unwrap();
+
+        let report = db.build_memory_health_section();
+        assert!(report.contains("Memory Health:"));
+        assert!(report.contains("Decay runs: 2"));
+        assert!(report.contains("Reflection runs: 0"));
+        assert!(report.contains("episodic="));
     }
 
     #[test]

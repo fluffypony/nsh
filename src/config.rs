@@ -486,6 +486,7 @@ impl Default for DbConfig {
 #[serde(default)]
 pub struct MemoryConfig {
     pub enabled: bool,
+    pub inject_prompt: bool,
     pub fade_after_days: u32,
     pub expire_after_days: u32,
     pub max_retrieval_per_type: usize,
@@ -504,6 +505,7 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            inject_prompt: true,
             fade_after_days: 30,
             expire_after_days: 90,
             max_retrieval_per_type: 10,
@@ -1245,6 +1247,13 @@ pub fn build_config_xml(
         "enabled",
         &config.memory.enabled.to_string(),
         "Enable/disable persistent memory system",
+        Some("true,false"),
+    );
+    opt(
+        &mut x,
+        "inject_prompt",
+        &config.memory.inject_prompt.to_string(),
+        "Whether to inject persistent memory context into LLM prompts",
         Some("true,false"),
     );
     x.push_str(&format!(

@@ -1043,14 +1043,44 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
         }
         DaemonRequest::MemoryStats => {
             match memory.stats() {
-                Ok(stats) => DaemonResponse::ok_with_data(serde_json::json!({
-                    "core": stats.core_count,
-                    "episodic": stats.episodic_count,
-                    "semantic": stats.semantic_count,
-                    "procedural": stats.procedural_count,
-                    "resource": stats.resource_count,
-                    "knowledge": stats.knowledge_count,
-                })),
+                Ok(stats) => {
+                    // Read telemetry from memory_config (NULL-safe defaults)
+                    let decay_runs: i64 = db
+                        .get_memory_config("decay_runs")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(0);
+                    let last_decay_at = db
+                        .get_memory_config("last_decay_at")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "".into());
+                    let reflection_runs: i64 = db
+                        .get_memory_config("reflection_runs")
+                        .ok()
+                        .flatten()
+                        .and_then(|s| s.parse::<i64>().ok())
+                        .unwrap_or(0);
+                    let last_reflection_at = db
+                        .get_memory_config("last_reflection_at")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "".into());
+
+                    DaemonResponse::ok_with_data(serde_json::json!({
+                        "core": stats.core_count,
+                        "episodic": stats.episodic_count,
+                        "semantic": stats.semantic_count,
+                        "procedural": stats.procedural_count,
+                        "resource": stats.resource_count,
+                        "knowledge": stats.knowledge_count,
+                        "decay_runs": decay_runs,
+                        "last_decay_at": last_decay_at,
+                        "reflection_runs": reflection_runs,
+                        "last_reflection_at": last_reflection_at,
+                    }))
+                }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -1068,6 +1098,40 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_stats_includes_telemetry() {
+        // In-memory DB and MemorySystem
+        let db = crate::db::Db::open_in_memory().expect("db");
+        let mem = crate::memory::MemorySystem::open_in_memory().expect("mem");
+        // Seed telemetry
+        db.set_memory_config("decay_runs", "9").unwrap();
+        db.set_memory_config("reflection_runs", "3").unwrap();
+        db.set_memory_config("last_decay_at", "2026-02-21 12:34:56").unwrap();
+        db.set_memory_config("last_reflection_at", "2026-02-20 08:10:11").unwrap();
+
+        let resp = execute_read(&db, &mem, DaemonRequest::MemoryStats);
+        match resp {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert!(d.get("core").is_some());
+                assert_eq!(d["decay_runs"].as_i64(), Some(9));
+                assert_eq!(d["reflection_runs"].as_i64(), Some(3));
+                assert_eq!(
+                    d["last_decay_at"].as_str(),
+                    Some("2026-02-21 12:34:56")
+                );
+                assert_eq!(
+                    d["last_reflection_at"].as_str(),
+                    Some("2026-02-20 08:10:11")
+                );
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    }
+}
 #[cfg(unix)]
 fn handle_global_connection(
     stream: std::os::unix::net::UnixStream,

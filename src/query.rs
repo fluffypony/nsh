@@ -133,7 +133,7 @@ pub async fn handle_query(
     }
 
     // ── Active Memory Retrieval ──────────────────────
-    let memory_prompt = if config.memory.enabled && !config.memory.incognito {
+    let memory_prompt = if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
         let memory_ctx = crate::memory::types::MemoryQueryContext {
             query: query.to_string(),
             cwd: Some(ctx.cwd.clone()),
