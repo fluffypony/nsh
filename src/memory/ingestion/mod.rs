@@ -143,7 +143,8 @@ fn generate_fast_path_keywords(event: &ShellEvent) -> String {
         }
     }
     if let Some(ref cwd) = event.working_dir {
-        if let Some(dir) = std::path::Path::new(cwd)
+        let trimmed = cwd.trim_end_matches(['/', '\\']);
+        if let Some(dir) = std::path::Path::new(trimmed)
             .file_name()
             .and_then(|n| n.to_str())
         {
@@ -214,6 +215,14 @@ mod tests {
     fn fast_path_keywords_windows_path() {
         let mut event = make_event("dir", 0);
         event.working_dir = Some("C:\\Users\\alice\\project".into());
+        let kw = generate_fast_path_keywords(&event);
+        assert!(kw.contains("project"), "keywords were: {kw}");
+    }
+
+    #[test]
+    fn fast_path_keywords_trailing_separator() {
+        let mut event = make_event("ls", 0);
+        event.working_dir = Some("/home/user/project/".into());
         let kw = generate_fast_path_keywords(&event);
         assert!(kw.contains("project"), "keywords were: {kw}");
     }
