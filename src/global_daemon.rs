@@ -559,7 +559,9 @@ fn execute_write(
                     memory.record_event(event);
                     // Auto-flush when buffer is ready
                     if memory.should_flush_ingestion() {
-                        let _ = memory_tx.send(MemoryTask::FlushIngestion);
+                        if memory_tx.send(MemoryTask::FlushIngestion).is_err() {
+                            tracing::debug!("memory thread disconnected, flush skipped");
+                        }
                     }
                     DaemonResponse::ok()
                 }
@@ -567,13 +569,17 @@ fn execute_write(
             }
         }
         DaemonRequest::MemoryFlushIngestion => {
-            let _ = memory_tx.send(MemoryTask::FlushIngestion);
+            if memory_tx.send(MemoryTask::FlushIngestion).is_err() {
+                tracing::debug!("memory thread disconnected, flush skipped");
+            }
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryIngestBatch { events_json } => {
             match serde_json::from_str::<Vec<crate::memory::types::ShellEvent>>(&events_json) {
                 Ok(events) => {
-                    let _ = memory_tx.send(MemoryTask::IngestBatch { events });
+                    if memory_tx.send(MemoryTask::IngestBatch { events }).is_err() {
+                        tracing::debug!("memory thread disconnected, ingest skipped");
+                    }
                     DaemonResponse::ok()
                 }
                 Err(e) => DaemonResponse::error(format!("invalid events JSON: {e}")),
@@ -628,11 +634,15 @@ fn execute_write(
             }
         }
         DaemonRequest::MemoryRunReflection => {
-            let _ = memory_tx.send(MemoryTask::RunReflection);
+            if memory_tx.send(MemoryTask::RunReflection).is_err() {
+                tracing::debug!("memory thread disconnected, reflection skipped");
+            }
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryBootstrapScan => {
-            let _ = memory_tx.send(MemoryTask::BootstrapScan);
+            if memory_tx.send(MemoryTask::BootstrapScan).is_err() {
+                tracing::debug!("memory thread disconnected, bootstrap skipped");
+            }
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryClearAll => {

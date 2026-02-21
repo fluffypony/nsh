@@ -12,8 +12,7 @@ pub fn route(event: &ShellEvent) -> RoutingDecision {
             return decision;
         }
         ShellEventType::ProjectSwitch => {
-            decision.update_semantic = true;
-            decision.reasoning = "Project switch may reveal project context".into();
+            decision.reasoning = "Project switch event".into();
             return decision;
         }
         ShellEventType::UserInstruction => {
