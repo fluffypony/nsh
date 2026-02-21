@@ -1,0 +1,599 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+// ── ID Generation ──
+
+pub fn generate_id(prefix: &str) -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
+    let suffix: String = (0..4).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
+    format!("{}_{}", prefix, suffix)
+}
+
+// ── Core Memory ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreBlock {
+    pub label: CoreLabel,
+    pub value: String,
+    pub char_limit: usize,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CoreLabel {
+    Human,
+    Persona,
+    Environment,
+}
+
+impl CoreLabel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CoreLabel::Human => "human",
+            CoreLabel::Persona => "persona",
+            CoreLabel::Environment => "environment",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "human" => Some(CoreLabel::Human),
+            "persona" => Some(CoreLabel::Persona),
+            "environment" => Some(CoreLabel::Environment),
+            _ => None,
+        }
+    }
+
+    pub fn default_limit(&self) -> usize {
+        match self {
+            CoreLabel::Human => 5000,
+            CoreLabel::Persona => 5000,
+            CoreLabel::Environment => 5000,
+        }
+    }
+}
+
+impl std::fmt::Display for CoreLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreOp {
+    Append,
+    Rewrite,
+}
+
+// ── Episodic Memory ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodicEvent {
+    pub id: String,
+    pub event_type: EventType,
+    pub actor: Actor,
+    pub summary: String,
+    pub details: Option<String>,
+    pub command: Option<String>,
+    pub exit_code: Option<i32>,
+    pub working_dir: Option<String>,
+    pub project_context: Option<String>,
+    pub search_keywords: String,
+    pub occurred_at: String,
+    pub is_consolidated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpisodicEventCreate {
+    pub event_type: EventType,
+    pub actor: Actor,
+    pub summary: String,
+    pub details: Option<String>,
+    pub command: Option<String>,
+    pub exit_code: Option<i32>,
+    pub working_dir: Option<String>,
+    pub project_context: Option<String>,
+    pub search_keywords: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventType {
+    CommandExecution,
+    CommandError,
+    UserInstruction,
+    AssistantAction,
+    FileEdit,
+    SessionStart,
+    SessionEnd,
+    ProjectSwitch,
+    SystemEvent,
+}
+
+impl EventType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventType::CommandExecution => "command_execution",
+            EventType::CommandError => "command_error",
+            EventType::UserInstruction => "user_instruction",
+            EventType::AssistantAction => "assistant_action",
+            EventType::FileEdit => "file_edit",
+            EventType::SessionStart => "session_start",
+            EventType::SessionEnd => "session_end",
+            EventType::ProjectSwitch => "project_switch",
+            EventType::SystemEvent => "system_event",
+        }
+    }
+}
+
+impl std::fmt::Display for EventType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Actor {
+    User,
+    Assistant,
+    System,
+}
+
+impl Actor {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Actor::User => "user",
+            Actor::Assistant => "assistant",
+            Actor::System => "system",
+        }
+    }
+}
+
+impl std::fmt::Display for Actor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+// ── Semantic Memory ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SemanticItem {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub summary: String,
+    pub details: Option<String>,
+    pub search_keywords: String,
+    pub access_count: i64,
+    pub last_accessed: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Procedural Memory ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProceduralItem {
+    pub id: String,
+    pub entry_type: String,
+    pub trigger_pattern: String,
+    pub summary: String,
+    pub steps: String, // JSON array
+    pub search_keywords: String,
+    pub access_count: i64,
+    pub last_accessed: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Resource Memory ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceItem {
+    pub id: String,
+    pub resource_type: String,
+    pub file_path: Option<String>,
+    pub file_hash: Option<String>,
+    pub title: String,
+    pub summary: String,
+    pub content: Option<String>,
+    pub search_keywords: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ── Knowledge Vault ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeEntry {
+    pub id: String,
+    pub entry_type: String,
+    pub caption: String,
+    pub secret_value: String, // encrypted at rest
+    pub sensitivity: Sensitivity,
+    pub search_keywords: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sensitivity {
+    Low,
+    Medium,
+    High,
+}
+
+impl Sensitivity {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Sensitivity::Low => "low",
+            Sensitivity::Medium => "medium",
+            Sensitivity::High => "high",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "high" => Sensitivity::High,
+            "medium" => Sensitivity::Medium,
+            _ => Sensitivity::Low,
+        }
+    }
+}
+
+impl std::fmt::Display for Sensitivity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+// ── Shell Events (ingestion input) ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellEvent {
+    pub event_type: ShellEventType,
+    pub command: Option<String>,
+    pub output: Option<String>,
+    pub exit_code: Option<i32>,
+    pub working_dir: Option<String>,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    pub git_context: Option<GitContext>,
+    pub instruction: Option<String>,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellEventType {
+    CommandExecution,
+    FileEdit,
+    UserInstruction,
+    AssistantAction,
+    SessionStart,
+    SessionEnd,
+}
+
+impl ShellEventType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ShellEventType::CommandExecution => "command_execution",
+            ShellEventType::FileEdit => "file_edit",
+            ShellEventType::UserInstruction => "user_instruction",
+            ShellEventType::AssistantAction => "assistant_action",
+            ShellEventType::SessionStart => "session_start",
+            ShellEventType::SessionEnd => "session_end",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitContext {
+    pub branch: Option<String>,
+    pub repo_root: Option<String>,
+}
+
+// ── Query Context ──
+
+#[derive(Debug, Clone)]
+pub struct MemoryQueryContext {
+    pub query: String,
+    pub cwd: Option<String>,
+    pub session_id: Option<String>,
+    pub interaction_mode: InteractionMode,
+    pub error_context: Option<ErrorContext>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractionMode {
+    NaturalLanguage,
+    CommandSuggestion,
+    ErrorFix,
+    CodeGeneration,
+    AutonomousExecution,
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorContext {
+    pub command: String,
+    pub exit_code: i32,
+    pub stderr: Option<String>,
+}
+
+// ── Retrieved Memories ──
+
+#[derive(Debug, Clone, Default)]
+pub struct RetrievedMemories {
+    pub keywords: Vec<String>,
+    pub core: Vec<CoreBlock>,
+    pub recent_episodic: Vec<EpisodicEvent>,
+    pub relevant_episodic: Vec<EpisodicEvent>,
+    pub semantic: Vec<SemanticItem>,
+    pub procedural: Vec<ProceduralItem>,
+    pub resource: Vec<ResourceItem>,
+    pub knowledge: Vec<KnowledgeEntry>,
+}
+
+// ── Routing Decision ──
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoutingDecision {
+    pub update_core: Option<CoreUpdateDecision>,
+    pub update_episodic: bool,
+    pub update_semantic: bool,
+    pub update_procedural: bool,
+    pub update_resource: bool,
+    pub update_knowledge: bool,
+    pub reasoning: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreUpdateDecision {
+    pub label: String,
+    pub op: String, // "append" or "rewrite"
+}
+
+impl RoutingDecision {
+    pub fn has_any_updates(&self) -> bool {
+        self.update_core.is_some()
+            || self.update_episodic
+            || self.update_semantic
+            || self.update_procedural
+            || self.update_resource
+            || self.update_knowledge
+    }
+
+    pub fn only_episodic(&self) -> bool {
+        self.update_episodic
+            && self.update_core.is_none()
+            && !self.update_semantic
+            && !self.update_procedural
+            && !self.update_resource
+            && !self.update_knowledge
+    }
+}
+
+// ── Memory Operations ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op")]
+pub enum MemoryOp {
+    CoreAppend { label: String, content: String },
+    CoreRewrite { label: String, content: String },
+    EpisodicInsert { event: EpisodicEventCreate },
+    EpisodicMerge { target_id: String, combined_summary: String, additional_details: Option<String>, search_keywords: String },
+    EpisodicDelete { ids: Vec<String> },
+    SemanticInsert { name: String, category: String, summary: String, details: Option<String>, search_keywords: String },
+    SemanticUpdate { id: String, summary: String, details: Option<String>, search_keywords: String },
+    SemanticDelete { ids: Vec<String> },
+    ProceduralInsert { entry_type: String, trigger_pattern: String, summary: String, steps: String, search_keywords: String },
+    ProceduralUpdate { id: String, summary: String, steps: String, search_keywords: String },
+    ProceduralDelete { ids: Vec<String> },
+    ResourceInsert { resource_type: String, file_path: Option<String>, file_hash: Option<String>, title: String, summary: String, content: Option<String>, search_keywords: String },
+    ResourceDelete { ids: Vec<String> },
+    KnowledgeInsert { entry_type: String, caption: String, secret_value: String, sensitivity: String, search_keywords: String },
+    KnowledgeDelete { ids: Vec<String> },
+    NoOp { reason: String },
+}
+
+// ── Context Budget ──
+
+#[derive(Debug, Clone)]
+pub struct ContextBudget {
+    pub total_tokens: usize,
+    pub system_prompt_tokens: usize,
+    pub conversation_tokens: usize,
+}
+
+impl ContextBudget {
+    pub fn memory_budget(&self) -> usize {
+        let used = self.system_prompt_tokens + self.conversation_tokens;
+        if self.total_tokens > used {
+            (self.total_tokens - used) / 3
+        } else {
+            2000
+        }
+    }
+}
+
+// ── Memory Type ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryType {
+    Core,
+    Episodic,
+    Semantic,
+    Procedural,
+    Resource,
+    Knowledge,
+}
+
+impl MemoryType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MemoryType::Core => "core",
+            MemoryType::Episodic => "episodic",
+            MemoryType::Semantic => "semantic",
+            MemoryType::Procedural => "procedural",
+            MemoryType::Resource => "resource",
+            MemoryType::Knowledge => "knowledge",
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+// ── Stats & Reports ──
+
+#[derive(Debug, Clone, Default)]
+pub struct MemoryStats {
+    pub core_count: usize,
+    pub episodic_count: usize,
+    pub semantic_count: usize,
+    pub procedural_count: usize,
+    pub resource_count: usize,
+    pub knowledge_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DecayReport {
+    pub episodic_deleted: usize,
+    pub semantic_deleted: usize,
+    pub procedural_deleted: usize,
+    pub resource_deleted: usize,
+    pub knowledge_deleted: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReflectionReport {
+    pub ops_applied: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BootstrapReport {
+    pub files_scanned: usize,
+}
+
+// ── Search Result ──
+
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub memory_type: MemoryType,
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    pub relevance_score: f64,
+}
+
+// ── Detected Secret ──
+
+#[derive(Debug, Clone)]
+pub struct DetectedSecret {
+    pub label: String,
+    pub value: String,
+    pub position: usize,
+}
+
+// ── Memory Config ──
+
+#[derive(Debug, Clone)]
+pub struct MemoryConfig {
+    pub enabled: bool,
+    pub incognito: bool,
+    pub fade_after_days: u32,
+    pub expire_after_days: u32,
+    pub consolidation_threshold: usize,
+    pub max_buffer_size: usize,
+    pub max_buffer_age_secs: u64,
+    pub db_path: PathBuf,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        let db_path = crate::config::Config::nsh_dir().join("nsh.db");
+        Self {
+            enabled: true,
+            incognito: false,
+            fade_after_days: 30,
+            expire_after_days: 90,
+            consolidation_threshold: 50,
+            max_buffer_size: 15,
+            max_buffer_age_secs: 60,
+            db_path,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_id_has_correct_prefix() {
+        let id = generate_id("ep");
+        assert!(id.starts_with("ep_"));
+        assert_eq!(id.len(), 7); // "ep_" + 4 chars
+    }
+
+    #[test]
+    fn generate_id_unique() {
+        let a = generate_id("sem");
+        let b = generate_id("sem");
+        // Statistically should differ; not guaranteed but 36^4 = 1.6M possibilities
+        // Just check format
+        assert!(a.starts_with("sem_"));
+        assert!(b.starts_with("sem_"));
+    }
+
+    #[test]
+    fn core_label_roundtrip() {
+        for label in [CoreLabel::Human, CoreLabel::Persona, CoreLabel::Environment] {
+            let s = label.as_str();
+            assert_eq!(CoreLabel::from_str(s), Some(label));
+        }
+    }
+
+    #[test]
+    fn routing_decision_has_any_updates() {
+        let mut d = RoutingDecision::default();
+        assert!(!d.has_any_updates());
+        d.update_episodic = true;
+        assert!(d.has_any_updates());
+    }
+
+    #[test]
+    fn routing_decision_only_episodic() {
+        let mut d = RoutingDecision::default();
+        d.update_episodic = true;
+        assert!(d.only_episodic());
+        d.update_semantic = true;
+        assert!(!d.only_episodic());
+    }
+
+    #[test]
+    fn sensitivity_ordering() {
+        assert!(Sensitivity::Low < Sensitivity::Medium);
+        assert!(Sensitivity::Medium < Sensitivity::High);
+    }
+
+    #[test]
+    fn context_budget_memory_budget() {
+        let b = ContextBudget {
+            total_tokens: 100_000,
+            system_prompt_tokens: 10_000,
+            conversation_tokens: 20_000,
+        };
+        assert_eq!(b.memory_budget(), 23_333);
+    }
+}

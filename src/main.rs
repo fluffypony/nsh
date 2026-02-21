@@ -20,6 +20,7 @@ mod json_display;
 mod json_extract;
 #[allow(dead_code)]
 mod mcp;
+mod memory;
 mod provider;
 #[cfg(unix)]
 mod pty;

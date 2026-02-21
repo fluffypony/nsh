@@ -305,6 +305,9 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             )?;
         }
 
+        // Memory system tables (idempotent)
+        crate::memory::schema::create_memory_tables(conn).ok();
+
         if recheck < SCHEMA_VERSION {
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
