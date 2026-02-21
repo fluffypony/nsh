@@ -161,7 +161,8 @@ pub async fn run_coding_agent(
         .unwrap_or_else(|| "(none)".into());
     let memory_prompt = if config.memory.enabled && !config.memory.incognito {
         let db = crate::daemon_db::DaemonDb::new();
-        match db.memory_search(&task[..task.len().min(200)], None, config.memory.max_retrieval_per_type) {
+        let search_text = crate::util::truncate(task, 200);
+        match db.memory_search(&search_text, None, config.memory.max_retrieval_per_type) {
             Ok(results) if !results.is_empty() && results != "{}" => {
                 let redacted = crate::redact::redact_secrets(&results, &config.redaction);
                 format!("<memory_search_results>\n{}\n</memory_search_results>", crate::context::xml_escape(&redacted))

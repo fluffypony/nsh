@@ -607,89 +607,92 @@ pub async fn handle_query(
                         }));
                     }
                     // ── Memory tools (non-terminal) ──────────
-                    "search_memory" => {
-                        let mt = input["memory_type"].as_str().unwrap_or("all");
-                        let q = input["query"].as_str().unwrap_or("");
-                        let lim = input["limit"].as_u64().unwrap_or(10) as usize;
-                        let (content, is_error) = match db.memory_search(
-                            q,
-                            if mt == "all" { None } else { Some(mt) },
-                            lim,
+                    "search_memory" | "core_memory_append" | "core_memory_rewrite"
+                    | "store_memory" | "retrieve_secret" => {
+                        // Gate on memory config
+                        if !config.memory.enabled || config.memory.incognito {
+                            let wrapped = crate::security::wrap_tool_result(
+                                &name,
+                                "Memory system is disabled or in incognito mode",
+                                &boundary,
+                            );
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: wrapped,
+                                is_error: true,
+                            });
+                        } else if let Err(e) = crate::security::assess_memory_tool_call(
+                            &name,
+                            &input,
+                            &messages,
                         ) {
-                            Ok(results) => (results, false),
-                            Err(e) => (format!("Memory search error: {e}"), true),
-                        };
-                        let sanitized = crate::security::sanitize_tool_output(&content);
-                        let wrapped =
-                            crate::security::wrap_tool_result(&name, &sanitized, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
-                    "core_memory_append" => {
-                        let label = input["label"].as_str().unwrap_or("");
-                        let content = input["content"].as_str().unwrap_or("");
-                        let (result_msg, is_error) = match db.memory_core_append(label, content) {
-                            Ok(()) => (format!("Appended to core memory '{label}'"), false),
-                            Err(e) => (format!("Error: {e}"), true),
-                        };
-                        let wrapped =
-                            crate::security::wrap_tool_result(&name, &result_msg, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
-                    "core_memory_rewrite" => {
-                        let label = input["label"].as_str().unwrap_or("");
-                        let content = input["content"].as_str().unwrap_or("");
-                        let (result_msg, is_error) = match db.memory_core_rewrite(label, content) {
-                            Ok(()) => (format!("Rewrote core memory block '{label}'"), false),
-                            Err(e) => (format!("Error: {e}"), true),
-                        };
-                        let wrapped =
-                            crate::security::wrap_tool_result(&name, &result_msg, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
-                    "store_memory" => {
-                        let memory_type = input["memory_type"].as_str().unwrap_or("");
-                        let data = input.get("data").cloned().unwrap_or(serde_json::json!({}));
-                        let (result_msg, is_error) =
-                            match db.memory_store(memory_type, &data.to_string()) {
-                                Ok(id_val) => {
-                                    (format!("Stored in {memory_type} memory (id: {id_val})"), false)
+                            let wrapped = crate::security::wrap_tool_result(
+                                &name,
+                                &format!("Security check failed: {e}"),
+                                &boundary,
+                            );
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: wrapped,
+                                is_error: true,
+                            });
+                        } else {
+                            let (content, is_error) = match name.as_str() {
+                                "search_memory" => {
+                                    let mt = input["memory_type"].as_str().unwrap_or("all");
+                                    let q = input["query"].as_str().unwrap_or("");
+                                    let lim = (input["limit"].as_u64().unwrap_or(10) as usize).min(50);
+                                    match db.memory_search(
+                                        q,
+                                        if mt == "all" { None } else { Some(mt) },
+                                        lim,
+                                    ) {
+                                        Ok(results) => (results, false),
+                                        Err(e) => (format!("Memory search error: {e}"), true),
+                                    }
                                 }
-                                Err(e) => (format!("Error: {e}"), true),
+                                "core_memory_append" => {
+                                    let label = input["label"].as_str().unwrap_or("");
+                                    let content = input["content"].as_str().unwrap_or("");
+                                    match db.memory_core_append(label, content) {
+                                        Ok(()) => (format!("Appended to core memory '{label}'"), false),
+                                        Err(e) => (format!("Error: {e}"), true),
+                                    }
+                                }
+                                "core_memory_rewrite" => {
+                                    let label = input["label"].as_str().unwrap_or("");
+                                    let content = input["content"].as_str().unwrap_or("");
+                                    match db.memory_core_rewrite(label, content) {
+                                        Ok(()) => (format!("Rewrote core memory block '{label}'"), false),
+                                        Err(e) => (format!("Error: {e}"), true),
+                                    }
+                                }
+                                "store_memory" => {
+                                    let memory_type = input["memory_type"].as_str().unwrap_or("");
+                                    let data = input.get("data").cloned().unwrap_or(serde_json::json!({}));
+                                    match db.memory_store(memory_type, &data.to_string()) {
+                                        Ok(id_val) => (format!("Stored in {memory_type} memory (id: {id_val})"), false),
+                                        Err(e) => (format!("Error: {e}"), true),
+                                    }
+                                }
+                                "retrieve_secret" => {
+                                    let caption_query = input["caption_query"].as_str().unwrap_or("");
+                                    match db.memory_retrieve_secret(caption_query) {
+                                        Ok(secret) => (secret, false),
+                                        Err(e) => (format!("Secret retrieval error: {e}"), true),
+                                    }
+                                }
+                                _ => unreachable!(),
                             };
-                        let wrapped =
-                            crate::security::wrap_tool_result(&name, &result_msg, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: wrapped,
-                            is_error,
-                        });
-                    }
-                    "retrieve_secret" => {
-                        let caption_query = input["caption_query"].as_str().unwrap_or("");
-                        let (content, is_error) = match db.memory_retrieve_secret(caption_query) {
-                            Ok(secret) => (secret, false),
-                            Err(e) => (format!("Secret retrieval error: {e}"), true),
-                        };
-                        let sanitized = crate::security::sanitize_tool_output(&content);
-                        let wrapped =
-                            crate::security::wrap_tool_result(&name, &sanitized, &boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: wrapped,
-                            is_error,
-                        });
+                            let sanitized = crate::security::sanitize_tool_output(&content);
+                            let wrapped =
+                                crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id,
+                                content: wrapped,
+                                is_error,
+                            });
+                        }
                     }
                     _ => {
                         // MCP tools
