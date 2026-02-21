@@ -1099,7 +1099,7 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
 }
 
 #[cfg(test)]
-mod tests {
+mod tests_memory_stats {
     use super::*;
 
     #[test]
