@@ -132,12 +132,43 @@ pub async fn handle_query(
         }
     }
 
+    // ── Active Memory Retrieval ──────────────────────
+    let memory_prompt = if config.memory.enabled && !config.memory.incognito {
+        let memory_ctx = crate::memory::types::MemoryQueryContext {
+            query: query.to_string(),
+            cwd: Some(ctx.cwd.clone()),
+            session_id: Some(session_id.to_string()),
+            interaction_mode: if query.starts_with("The previous command failed") {
+                crate::memory::types::InteractionMode::ErrorFix
+            } else {
+                crate::memory::types::InteractionMode::NaturalLanguage
+            },
+            error_context: None,
+        };
+        match db.memory_search(&memory_ctx.query, None, config.memory.max_retrieval_per_type) {
+            Ok(results) => {
+                if results == "{}" || results.is_empty() {
+                    String::new()
+                } else {
+                    format!("<memory_search_results>\n{results}\n</memory_search_results>")
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Memory retrieval failed: {e}");
+                String::new()
+            }
+        }
+    } else {
+        String::new()
+    };
+
     let system = build_system_prompt(
         &ctx,
         &xml_context,
         &boundary,
         &config_xml,
         &relevant_history_xml,
+        &memory_prompt,
     );
     let mut messages: Vec<Message> = Vec::new();
 
@@ -572,6 +603,91 @@ pub async fn handle_query(
                             (id, name, result)
                         }));
                     }
+                    // ── Memory tools (non-terminal) ──────────
+                    "search_memory" => {
+                        let mt = input["memory_type"].as_str().unwrap_or("all");
+                        let q = input["query"].as_str().unwrap_or("");
+                        let lim = input["limit"].as_u64().unwrap_or(10) as usize;
+                        let (content, is_error) = match db.memory_search(
+                            q,
+                            if mt == "all" { None } else { Some(mt) },
+                            lim,
+                        ) {
+                            Ok(results) => (results, false),
+                            Err(e) => (format!("Memory search error: {e}"), true),
+                        };
+                        let sanitized = crate::security::sanitize_tool_output(&content);
+                        let wrapped =
+                            crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: wrapped,
+                            is_error,
+                        });
+                    }
+                    "core_memory_append" => {
+                        let label = input["label"].as_str().unwrap_or("");
+                        let content = input["content"].as_str().unwrap_or("");
+                        let (result_msg, is_error) = match db.memory_core_append(label, content) {
+                            Ok(()) => (format!("Appended to core memory '{label}'"), false),
+                            Err(e) => (format!("Error: {e}"), true),
+                        };
+                        let wrapped =
+                            crate::security::wrap_tool_result(&name, &result_msg, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: wrapped,
+                            is_error,
+                        });
+                    }
+                    "core_memory_rewrite" => {
+                        let label = input["label"].as_str().unwrap_or("");
+                        let content = input["content"].as_str().unwrap_or("");
+                        let (result_msg, is_error) = match db.memory_core_rewrite(label, content) {
+                            Ok(()) => (format!("Rewrote core memory block '{label}'"), false),
+                            Err(e) => (format!("Error: {e}"), true),
+                        };
+                        let wrapped =
+                            crate::security::wrap_tool_result(&name, &result_msg, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: wrapped,
+                            is_error,
+                        });
+                    }
+                    "store_memory" => {
+                        let memory_type = input["memory_type"].as_str().unwrap_or("");
+                        let data = input.get("data").cloned().unwrap_or(serde_json::json!({}));
+                        let (result_msg, is_error) =
+                            match db.memory_store(memory_type, &data.to_string()) {
+                                Ok(id_val) => {
+                                    (format!("Stored in {memory_type} memory (id: {id_val})"), false)
+                                }
+                                Err(e) => (format!("Error: {e}"), true),
+                            };
+                        let wrapped =
+                            crate::security::wrap_tool_result(&name, &result_msg, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: wrapped,
+                            is_error,
+                        });
+                    }
+                    "retrieve_secret" => {
+                        let caption_query = input["caption_query"].as_str().unwrap_or("");
+                        let (content, is_error) = match db.memory_retrieve_secret(caption_query) {
+                            Ok(secret) => (secret, false),
+                            Err(e) => (format!("Secret retrieval error: {e}"), true),
+                        };
+                        let sanitized = crate::security::sanitize_tool_output(&content);
+                        let wrapped =
+                            crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: wrapped,
+                            is_error,
+                        });
+                    }
                     _ => {
                         // MCP tools
                         if mcp_tool_names.contains(&name) {
@@ -713,6 +829,7 @@ pub fn build_system_prompt(
     boundary: &str,
     config_xml: &str,
     relevant_history: &str,
+    memory_prompt: &str,
 ) -> String {
     let os_lower = ctx.os_info.to_lowercase();
     let package_guidance = if os_lower.contains("windows") || os_lower.contains("msys") {
@@ -1517,6 +1634,11 @@ These ALWAYS require investigation → execution → verification at minimum.
 
     let boundary_note = crate::security::boundary_system_prompt_addition(boundary);
     let mut result = format!("{base}\n{boundary_note}\n\n{config_xml}\n\n{xml_context}");
+    if !memory_prompt.is_empty() {
+        result.push_str("\n\n--- PERSISTENT MEMORY ---\n");
+        result.push_str(memory_prompt);
+        result.push_str("\n--- END PERSISTENT MEMORY ---\n");
+    }
     if !relevant_history.is_empty() {
         result.push_str("\n\nI have automatically searched your command history for terms related to this query.\nCheck <relevant_history_from_db> before guessing package names or approaches.\n\n");
         result.push_str(relevant_history);
@@ -1620,6 +1742,27 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
         "install_mcp_server" => {
             let name = input["name"].as_str().unwrap_or("...");
             format!("installing MCP server: {name}")
+        }
+        "search_memory" => {
+            let q = input["query"].as_str().unwrap_or("...");
+            let mt = input["memory_type"].as_str().unwrap_or("all");
+            format!("searching {mt} memory for \"{q}\"")
+        }
+        "core_memory_append" => {
+            let label = input["label"].as_str().unwrap_or("...");
+            format!("appending to core memory: {label}")
+        }
+        "core_memory_rewrite" => {
+            let label = input["label"].as_str().unwrap_or("...");
+            format!("rewriting core memory: {label}")
+        }
+        "store_memory" => {
+            let mt = input["memory_type"].as_str().unwrap_or("...");
+            format!("storing to {mt} memory")
+        }
+        "retrieve_secret" => {
+            let q = input["caption_query"].as_str().unwrap_or("...");
+            format!("retrieving secret: \"{q}\"")
         }
         other => other.to_string(),
     }
