@@ -656,4 +656,188 @@ mod tests {
         assert_eq!(value, "");
         assert_eq!(limit, 5000);
     }
+
+    #[test]
+    fn semantic_fts_update_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO semantic_memory (id, name, category, summary, search_keywords)
+             VALUES ('sem_U', 'Old name', 'general', 'old summary', 'old keywords')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "UPDATE semantic_memory SET name = 'New name', summary = 'new summary', search_keywords = 'new keywords' WHERE id = 'sem_U'",
+            [],
+        ).unwrap();
+
+        let old_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'old'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old_count, 0, "old term should be removed after update");
+
+        let new_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH '\"New\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_count, 1, "new term should be present after update");
+    }
+
+    #[test]
+    fn semantic_fts_delete_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO semantic_memory (id, name, category, summary, search_keywords)
+             VALUES ('sem_D', 'Docker tools', 'tools', 'uses docker', 'docker tools')",
+            [],
+        ).unwrap();
+
+        conn.execute("DELETE FROM semantic_memory WHERE id = 'sem_D'", []).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'docker'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "FTS entry should be removed after delete");
+    }
+
+    #[test]
+    fn procedural_fts_update_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO procedural_memory (id, entry_type, trigger_pattern, summary, steps, search_keywords)
+             VALUES ('proc_U', 'workflow', 'old', 'old workflow', '[\"old\"]', 'old keywords')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "UPDATE procedural_memory SET summary = 'new workflow', steps = '[\"new\"]', search_keywords = 'new keywords' WHERE id = 'proc_U'",
+            [],
+        ).unwrap();
+
+        let old_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory_fts WHERE procedural_memory_fts MATCH '\"old\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old_count, 0, "old term should be removed after update");
+
+        let new_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory_fts WHERE procedural_memory_fts MATCH '\"new\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_count, 1, "new term should be present after update");
+    }
+
+    #[test]
+    fn procedural_fts_delete_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO procedural_memory (id, entry_type, trigger_pattern, summary, steps, search_keywords)
+             VALUES ('proc_D', 'workflow', 'deploy', 'deploy flow', '[\"build\"]', 'deploy build')",
+            [],
+        ).unwrap();
+
+        conn.execute("DELETE FROM procedural_memory WHERE id = 'proc_D'", []).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory_fts WHERE procedural_memory_fts MATCH 'deploy'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "FTS entry should be removed after delete");
+    }
+
+    #[test]
+    fn resource_fts_update_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO resource_memory (id, resource_type, title, summary, search_keywords)
+             VALUES ('res_U', 'config', 'Old title', 'old summary', 'old keywords')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "UPDATE resource_memory SET title = 'New title', summary = 'new summary', search_keywords = 'new keywords' WHERE id = 'res_U'",
+            [],
+        ).unwrap();
+
+        let old_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM resource_memory_fts WHERE resource_memory_fts MATCH '\"old\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old_count, 0, "old term should be removed after update");
+
+        let new_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM resource_memory_fts WHERE resource_memory_fts MATCH '\"New\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_count, 1, "new term should be present after update");
+    }
+
+    #[test]
+    fn resource_fts_delete_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO resource_memory (id, resource_type, title, summary, search_keywords)
+             VALUES ('res_D', 'config', 'Nginx config', 'nginx conf', 'nginx config')",
+            [],
+        ).unwrap();
+
+        conn.execute("DELETE FROM resource_memory WHERE id = 'res_D'", []).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM resource_memory_fts WHERE resource_memory_fts MATCH 'nginx'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "FTS entry should be removed after delete");
+    }
+
+    #[test]
+    fn knowledge_fts_update_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO knowledge_vault (id, entry_type, caption, secret_value, sensitivity, search_keywords)
+             VALUES ('kv_U', 'credential', 'Old API token', 'encrypted', 'high', 'old api token')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "UPDATE knowledge_vault SET caption = 'New API token', search_keywords = 'new api token' WHERE id = 'kv_U'",
+            [],
+        ).unwrap();
+
+        let old_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge_vault_fts WHERE knowledge_vault_fts MATCH '\"old\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(old_count, 0, "old term should be removed after update");
+
+        let new_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge_vault_fts WHERE knowledge_vault_fts MATCH '\"new\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_count, 1, "new term should be present after update");
+    }
+
+    #[test]
+    fn knowledge_fts_delete_trigger() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO knowledge_vault (id, entry_type, caption, secret_value, sensitivity, search_keywords)
+             VALUES ('kv_D', 'credential', 'AWS secret key', 'encrypted', 'high', 'aws secret key')",
+            [],
+        ).unwrap();
+
+        conn.execute("DELETE FROM knowledge_vault WHERE id = 'kv_D'", []).unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge_vault_fts WHERE knowledge_vault_fts MATCH 'aws'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "FTS entry should be removed after delete");
+    }
 }

@@ -200,6 +200,7 @@ fn decrypt_secret(hex_data: &str) -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use crate::memory::schema::create_memory_tables;
+    use serial_test::serial;
 
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -208,6 +209,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encrypt_decrypt_roundtrip() {
         let original = "my-secret-api-key-12345";
         let encrypted = encrypt_secret(original).unwrap();
@@ -217,6 +219,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn insert_and_retrieve_secret() {
         let conn = setup();
         let id = insert(
@@ -234,6 +237,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn search_never_returns_secret_value() {
         let conn = setup();
         insert(
@@ -253,6 +257,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn search_filters_by_sensitivity() {
         let conn = setup();
         insert(&conn, "cred", "Low secret", "val", Sensitivity::Low, "low test").unwrap();
@@ -267,6 +272,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn delete_removes_entries() {
         let conn = setup();
         let id = insert(&conn, "cred", "test secret", "value", Sensitivity::Low, "test").unwrap();
@@ -276,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn multiple_secrets_independent() {
         let conn = setup();
         let id1 = insert(&conn, "api_key", "GitHub token", "ghp_abc123", Sensitivity::High, "github token").unwrap();
@@ -291,6 +298,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encrypt_different_each_time() {
         // Same plaintext should produce different ciphertext due to random nonce
         let enc1 = encrypt_secret("test-value").unwrap();
@@ -305,6 +313,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encrypt_empty_string() {
         let encrypted = encrypt_secret("").unwrap();
         let decrypted = decrypt_secret(&encrypted).unwrap();
@@ -312,6 +321,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encrypt_long_secret() {
         let long_secret = "a".repeat(10000);
         let encrypted = encrypt_secret(&long_secret).unwrap();
@@ -320,6 +330,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encrypt_special_characters() {
         let special = "p@$$w0rd!#%^&*()_+-=[]{}|;':\",./<>?";
         let encrypted = encrypt_secret(special).unwrap();
@@ -328,6 +339,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn encrypt_unicode() {
         let unicode = "密码 пароль パスワード 🔑🔐";
         let encrypted = encrypt_secret(unicode).unwrap();
@@ -336,18 +348,21 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn decrypt_invalid_hex_fails() {
         let result = decrypt_secret("not_valid_hex!");
         assert!(result.is_err());
     }
 
     #[test]
+    #[serial]
     fn decrypt_too_short_fails() {
         let result = decrypt_secret("aabbccdd");
         assert!(result.is_err());
     }
 
     #[test]
+    #[serial]
     fn search_bm25_empty_query() {
         let conn = setup();
         insert(&conn, "cred", "test", "val", Sensitivity::Low, "test").unwrap();
@@ -356,6 +371,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn sensitivity_low_only_excludes_medium_high() {
         let conn = setup();
         insert(&conn, "cred", "Low item", "val", Sensitivity::Low, "shared keyword").unwrap();
@@ -368,6 +384,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn sensitivity_medium_includes_low_and_medium() {
         let conn = setup();
         insert(&conn, "cred", "Low item", "val", Sensitivity::Low, "shared keyword").unwrap();
@@ -379,6 +396,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn retrieve_nonexistent_fails() {
         let conn = setup();
         let result = retrieve_secret(&conn, "kv_NONEXIST");
