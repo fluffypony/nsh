@@ -49,22 +49,7 @@ function global:prompt {
         Get-Content $msgFile | Write-Host
         Remove-Item $msgFile -Force -ErrorAction SilentlyContinue
     }
-    $restartFlag = Join-Path $HOME ".nsh\restart_needed_$env:NSH_SESSION_ID"
-    if (Test-Path $restartFlag) {
-        $now = Get-Date
-        if (-not $global:NshLastRestartWarn -or ($now - $global:NshLastRestartWarn).TotalSeconds -gt 3600) {
-            Write-Host "  nsh: A protocol update requires you to restart this terminal session for full functionality." -ForegroundColor Yellow
-            $global:NshLastRestartWarn = $now
-        }
-    }
-    $updateFlag = Join-Path $HOME ".nsh\update_available_$env:NSH_SESSION_ID"
-    if (Test-Path $updateFlag) {
-        $now = Get-Date
-        if (-not $global:NshLastUpdateNotify -or ($now - $global:NshLastUpdateNotify).TotalSeconds -gt 3600) {
-            Get-Content $updateFlag | Write-Host -ForegroundColor DarkGray
-            $global:NshLastUpdateNotify = $now
-        }
-    }
+    # restart_needed and update_available markers are obsolete under shim/core split
     $noticeFile = Join-Path $HOME ".nsh\update_notice"
     if (Test-Path $noticeFile) {
         $msg = Get-Content $noticeFile -Raw

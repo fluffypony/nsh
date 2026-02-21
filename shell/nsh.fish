@@ -290,22 +290,7 @@ function __nsh_postexec --on-event fish_postexec
         command cat $msg_file >&2
         command rm -f $msg_file 2>/dev/null
     end
-    set -l restart_flag "$HOME/.nsh/restart_needed_$NSH_SESSION_ID"
-    if test -f $restart_flag
-        set -l now (date +%s)
-        if test (math "$now - $__nsh_last_restart_warn") -gt 3600
-            printf '\x1b[33m  nsh: A protocol update requires you to restart this terminal session for full functionality.\x1b[0m\n' >&2
-            set -g __nsh_last_restart_warn $now
-        end
-    end
-    set -l update_flag "$HOME/.nsh/update_available_$NSH_SESSION_ID"
-    if test -f $update_flag
-        set -l now (date +%s)
-        if test (math "$now - $__nsh_last_update_notify") -gt 3600
-            command cat $update_flag >&2
-            set -g __nsh_last_update_notify $now
-        end
-    end
+    # restart_needed and update_available markers are obsolete under shim/core split
     set -l notice_file "$HOME/.nsh/update_notice"
     if test -f $notice_file
         printf '\x1b[2m  nsh: %s\x1b[0m\n' (command cat $notice_file 2>/dev/null) >&2

@@ -97,30 +97,7 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
     let json_val: serde_json::Value = serde_json::from_str(&response_line)
         .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
 
-    // Check if the per-session daemon (PTY wrapper) is outdated
-    let daemon_v = json_val.get("v").and_then(|val| val.as_u64()).unwrap_or(1);
-    let daemon_version = json_val.get("daemon_version").and_then(|v| v.as_str());
-    if daemon_version != Some(env!("CARGO_PKG_VERSION")) {
-        let notify_path = crate::config::Config::nsh_dir()
-            .join(format!("notify_restart_{session_id}"));
-        let our_proto: u64 = crate::daemon::DAEMON_PROTOCOL_VERSION as u64;
-        if daemon_v < our_proto {
-            let _ = std::fs::write(
-                &notify_path,
-                "\x1b[33m⚠ nsh has been updated with protocol changes. Please restart your terminal session to fully apply the update.\x1b[0m",
-            );
-        } else {
-            let general_path = crate::config::Config::nsh_dir()
-                .join(format!("update_available_{session_id}"));
-            let _ = std::fs::write(
-                &general_path,
-                format!(
-                    "\x1b[2m⟳ nsh updated to v{} — restart your terminal when convenient for full effect\x1b[0m",
-                    env!("CARGO_PKG_VERSION")
-                ),
-            );
-        }
-    }
+    // Wrapper version notifications are obsolete with shim/core split; no restart or update markers
 
     log_daemon_client(
         "client.send_request.response",

@@ -374,22 +374,7 @@ __nsh_precmd() {
         command cat "$msg_file" >&2
         command rm -f "$msg_file" 2>/dev/null
     fi
-    local restart_flag="$HOME/.nsh/restart_needed_${NSH_SESSION_ID}"
-    if [[ -f "$restart_flag" ]]; then
-        local now=$(date +%s)
-        if (( now - ${__NSH_LAST_RESTART_WARN:-0} > 3600 )); then
-            printf '\x1b[33m  nsh: A protocol update requires you to restart this terminal session for full functionality.\x1b[0m\n' >&2
-            typeset -g __NSH_LAST_RESTART_WARN=$now
-        fi
-    fi
-    local update_flag="$HOME/.nsh/update_available_${NSH_SESSION_ID}"
-    if [[ -f "$update_flag" ]]; then
-        local now=$(date +%s)
-        if (( now - ${__NSH_LAST_UPDATE_NOTIFY:-0} > 3600 )); then
-            command cat "$update_flag" >&2
-            typeset -g __NSH_LAST_UPDATE_NOTIFY=$now
-        fi
-    fi
+    # restart_needed and update_available markers are obsolete under shim/core split
     local notice_file="$HOME/.nsh/update_notice"
     if [[ -f "$notice_file" ]]; then
         printf '\x1b[2m  nsh: %s\x1b[0m\n' "$(command cat "$notice_file" 2>/dev/null)" >&2

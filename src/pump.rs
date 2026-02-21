@@ -806,10 +806,7 @@ fn handle_daemon_connection_inner(
                     "daemon: client protocol version {client_version} > server {}",
                     crate::daemon::DAEMON_PROTOCOL_VERSION
                 );
-                // Write a flag so shell hooks can notify user
-                let flag_path = crate::config::Config::nsh_dir()
-                    .join(format!("restart_needed_{session_id}"));
-                let _ = std::fs::write(&flag_path, "");
+                // Obsolete: wrapper is stable with shim/core split; no restart-needed flags
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
                 Ok(request) => {
