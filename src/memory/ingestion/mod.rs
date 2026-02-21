@@ -56,7 +56,7 @@ pub fn can_fast_path(event: &ShellEvent) -> bool {
         ShellEventType::SessionStart | ShellEventType::SessionEnd | ShellEventType::ProjectSwitch => true,
         ShellEventType::CommandExecution => {
             if let Some(ref cmd) = event.command {
-                classifier::is_low_signal(cmd) || event.exit_code == Some(0) && event.output.as_ref().map_or(true, |o| o.len() < 200)
+                classifier::is_low_signal(cmd) || event.exit_code == Some(0) && event.output.as_ref().is_none_or(|o| o.len() < 200)
             } else {
                 true
             }

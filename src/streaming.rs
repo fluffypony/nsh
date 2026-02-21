@@ -111,6 +111,12 @@ impl SpinnerGuard {
     }
 }
 
+impl Default for SpinnerGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for SpinnerGuard {
     fn drop(&mut self) {
         if self.did_start {

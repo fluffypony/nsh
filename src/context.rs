@@ -2765,8 +2765,7 @@ mod tests {
         let info = detect_machine_info();
         assert!(
             info.arch.contains(std::env::consts::ARCH),
-            "expected arch in machine details, got: {:?}",
-            info
+            "expected arch in machine details, got: {info:?}"
         );
     }
 

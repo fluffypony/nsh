@@ -40,13 +40,14 @@ pub fn build_reflection_prompt(
 
     prompt.push_str("\n## Unconsolidated Events\n");
     for ep in unconsolidated {
+        let cmd_note = ep
+            .command
+            .as_ref()
+            .map(|c| format!(" (cmd: {c})"))
+            .unwrap_or_default();
         prompt.push_str(&format!(
             "- [{}] {} | {} | {}{}\n",
-            ep.id,
-            ep.occurred_at,
-            ep.event_type,
-            ep.summary,
-            ep.command.as_ref().map(|c| format!(" (cmd: {})", c)).unwrap_or_default()
+            ep.id, ep.occurred_at, ep.event_type, ep.summary, cmd_note
         ));
     }
 

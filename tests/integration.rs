@@ -255,8 +255,7 @@ fn test_doctor_capture_succeeds() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("nsh doctor capture:"),
-        "expected capture diagnostic output, got: {}",
-        stderr
+        "expected capture diagnostic output, got: {stderr}"
     );
 }
 

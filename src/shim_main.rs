@@ -38,7 +38,7 @@ fn main() {
 
     // Fallback: nsh-core not found or exec failed — run built-in (single-binary installs)
     if let Err(e) = nsh::main_inner() {
-        eprintln!("nsh: {}", e);
+        eprintln!("nsh: {e}");
         std::process::exit(1);
     }
 }

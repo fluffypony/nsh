@@ -163,8 +163,7 @@ impl McpServer {
                             raw_buffer.extend_from_slice(&chunk);
                             if raw_buffer.len() > MAX_MCP_BUFFER_SIZE {
                                 anyhow::bail!(
-                                    "MCP server sent event data exceeding {} byte limit",
-                                    MAX_MCP_BUFFER_SIZE
+                                    "MCP server sent event data exceeding {MAX_MCP_BUFFER_SIZE} byte limit"
                                 );
                             }
 
@@ -512,6 +511,12 @@ impl McpClient {
             }
         }
         self.servers.clear();
+    }
+}
+
+impl Default for McpClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

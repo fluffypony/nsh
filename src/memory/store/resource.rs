@@ -17,6 +17,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceItem> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert(
     conn: &Connection,
     resource_type: &str,
@@ -36,6 +37,7 @@ pub fn insert(
     Ok(id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_by_path(
     conn: &Connection,
     resource_type: &str,

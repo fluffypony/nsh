@@ -187,6 +187,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             let file = std::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
+                .truncate(false)
                 .open(&lock_path)
                 .ok()?;
             #[cfg(unix)]
@@ -943,7 +944,7 @@ impl Db {
              FROM episodic_memory ORDER BY occurred_at DESC LIMIT ?1".to_string()
         };
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit as i64], |row| Self::row_to_episodic(row))?;
+        let rows = stmt.query_map(params![limit as i64], Self::row_to_episodic)?;
         rows.collect()
     }
 
@@ -957,7 +958,7 @@ impl Db {
              FROM episodic_memory WHERE is_consolidated = 0 \
              ORDER BY occurred_at ASC LIMIT ?",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| Self::row_to_episodic(row))?;
+        let rows = stmt.query_map(params![limit as i64], Self::row_to_episodic)?;
         rows.collect()
     }
 
@@ -1280,23 +1281,23 @@ impl Db {
         let ep_del = self.conn.execute(
             "DELETE FROM episodic_memory WHERE occurred_at < ?",
             params![cutoff_str],
-        )? as usize;
+        )?;
         let sem_del = self.conn.execute(
             "DELETE FROM semantic_memory WHERE updated_at < ? AND access_count < 3",
             params![cutoff_str],
-        )? as usize;
+        )?;
         let proc_del = self.conn.execute(
             "DELETE FROM procedural_memory WHERE updated_at < ? AND access_count < 2",
             params![cutoff_str],
-        )? as usize;
+        )?;
         let res_del = self.conn.execute(
             "DELETE FROM resource_memory WHERE updated_at < ?",
             params![cutoff_str],
-        )? as usize;
+        )?;
         let kv_del = self.conn.execute(
             "DELETE FROM knowledge_vault WHERE updated_at < ?",
             params![cutoff_str],
-        )? as usize;
+        )?;
 
         let now = chrono::Utc::now().to_rfc3339();
         let _ = self.set_memory_config("last_decay_at", &now);
@@ -1368,6 +1369,7 @@ impl Db {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_command_entities(
         &self,
         executable_filter: Option<&str>,
@@ -2347,13 +2349,10 @@ impl Db {
 
         let mut s = String::new();
         s.push_str("\nMemory Health:\n");
-        s.push_str(&format!("  Last decay: {} ({})\n", last_decay_at, decay_status));
-        s.push_str(&format!("  Decay runs: {}\n", decay_runs));
-        s.push_str(&format!(
-            "  Last reflection: {} ({})\n",
-            last_reflection_at, reflection_status
-        ));
-        s.push_str(&format!("  Reflection runs: {}\n", reflection_runs));
+        s.push_str(&format!("  Last decay: {last_decay_at} ({decay_status})\n"));
+        s.push_str(&format!("  Decay runs: {decay_runs}\n"));
+        s.push_str(&format!("  Last reflection: {last_reflection_at} ({reflection_status})\n"));
+        s.push_str(&format!("  Reflection runs: {reflection_runs}\n"));
         s.push_str(&format!(
             "  Notes: episodic={}, semantic={}, procedural={}\n",
             stats.episodic_count, stats.semantic_count, stats.procedural_count

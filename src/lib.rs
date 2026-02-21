@@ -79,11 +79,11 @@ fn send_to_global_or_fallback(
     // Use robust retry path to bridge brief restarts
     #[cfg(unix)]
     {
-        return daemon_client::send_to_global_with_retry(request.clone());
+        daemon_client::send_to_global_with_retry(request.clone())
     }
     #[cfg(not(unix))]
     {
-        return daemon_client::send_to_global(request);
+        daemon_client::send_to_global(request)
     }
 }
 

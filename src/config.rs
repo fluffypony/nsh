@@ -379,8 +379,8 @@ impl ToolsConfig {
                 continue;
             }
             if let Some((allowed_cmd, allowed_sub)) = entry.split_once(':') {
-                if argv.first().map_or(false, |a| *a == allowed_cmd)
-                    && argv.get(1).map_or(false, |a| *a == allowed_sub)
+                if argv.first().is_some_and(|a| *a == allowed_cmd)
+                    && argv.get(1).is_some_and(|a| *a == allowed_sub)
                 {
                     return true;
                 }
@@ -522,16 +522,10 @@ impl Default for MemoryConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct DebugConfig {
     pub llm_io: bool,
-}
-
-impl Default for DebugConfig {
-    fn default() -> Self {
-        Self { llm_io: false }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1950,10 +1944,9 @@ confirm_intermediate_steps = false
 
     #[test]
     fn test_execution_config_effective_max_tool_iterations_bounds() {
-        let mut ec = ExecutionConfig::default();
-        ec.max_tool_iterations = 0;
+        let ec = ExecutionConfig { max_tool_iterations: 0, ..Default::default() };
         assert_eq!(ec.effective_max_tool_iterations(), 1);
-        ec.max_tool_iterations = 250;
+        let ec = ExecutionConfig { max_tool_iterations: 250, ..Default::default() };
         assert_eq!(ec.effective_max_tool_iterations(), 200);
     }
 

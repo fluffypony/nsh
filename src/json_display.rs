@@ -31,6 +31,12 @@ impl JsonDisplay {
     }
 }
 
+impl Default for JsonDisplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

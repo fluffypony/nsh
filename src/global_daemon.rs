@@ -26,6 +26,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)?;
     #[cfg(unix)]
     {
@@ -769,10 +770,10 @@ fn execute_write(
                 Ok(event) => {
                     memory.record_event(event);
                     // Auto-flush when buffer is ready
-                    if memory.should_flush_ingestion() {
-                        if memory_tx.send(MemoryTask::FlushIngestion).is_err() {
-                            tracing::debug!("memory thread disconnected, flush skipped");
-                        }
+                    if memory.should_flush_ingestion()
+                        && memory_tx.send(MemoryTask::FlushIngestion).is_err()
+                    {
+                        tracing::debug!("memory thread disconnected, flush skipped");
                     }
                     DaemonResponse::ok()
                 }

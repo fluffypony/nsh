@@ -7,7 +7,7 @@ pub fn generate_id(prefix: &str) -> String {
     let mut rng = rand::thread_rng();
     let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
     let suffix: String = (0..8).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
-    format!("{}_{}", prefix, suffix)
+    format!("{prefix}_{suffix}")
 }
 
 // ── Core Memory ──
@@ -37,6 +37,7 @@ impl CoreLabel {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "human" => Some(CoreLabel::Human),
@@ -238,6 +239,7 @@ impl Sensitivity {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "high" => Sensitivity::High,
@@ -542,16 +544,15 @@ mod tests {
     fn routing_decision_has_any_updates() {
         let mut d = RoutingDecision::default();
         assert!(!d.has_any_updates());
-        d.update_episodic = true;
+        d = RoutingDecision { update_episodic: true, ..Default::default() };
         assert!(d.has_any_updates());
     }
 
     #[test]
     fn routing_decision_only_episodic() {
-        let mut d = RoutingDecision::default();
-        d.update_episodic = true;
+        let mut d = RoutingDecision { update_episodic: true, ..Default::default() };
         assert!(d.only_episodic());
-        d.update_semantic = true;
+        d = RoutingDecision { update_episodic: true, update_semantic: true, ..Default::default() };
         assert!(!d.only_episodic());
     }
 

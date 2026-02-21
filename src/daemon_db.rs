@@ -24,6 +24,7 @@ pub trait DbAccess {
         summaries_per_tty: usize,
     ) -> anyhow::Result<Vec<OtherSessionSummary>>;
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>>;
+    #[allow(clippy::too_many_arguments)]
     fn search_history_advanced(
         &self,
         fts_query: Option<&str>,
@@ -36,6 +37,7 @@ pub trait DbAccess {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<HistoryMatch>>;
+    #[allow(clippy::too_many_arguments)]
     fn search_command_entities(
         &self,
         executable: Option<&str>,
@@ -47,6 +49,7 @@ pub trait DbAccess {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<CommandEntityMatch>>;
+    #[allow(clippy::too_many_arguments)]
     fn insert_conversation(
         &self,
         session_id: &str,

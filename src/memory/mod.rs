@@ -114,7 +114,6 @@ impl MemorySystem {
         events: &[ShellEvent],
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<Vec<MemoryOp>> {
-        let conn = self.db.lock().unwrap();
         let mut all_ops = Vec::new();
 
         // Separate fast-path and complex events
@@ -125,19 +124,21 @@ impl MemorySystem {
             if ingestion::can_fast_path(event) && decision.only_episodic() {
                 let ep = ingestion::fast_path_episodic(event);
                 // Check for merge candidates
-                let merge_id = ingestion::consolidator::find_merge_candidate(
-                    &conn,
-                    &ep.summary,
-                    30,
-                )?;
+                let merge_id = {
+                    let conn = self.db.lock().unwrap();
+                    ingestion::consolidator::find_merge_candidate(&conn, &ep.summary, 30)?
+                };
                 if let Some(id) = merge_id {
-                    store::episodic::merge(
-                        &conn,
-                        &id,
-                        &ep.summary,
-                        ep.details.as_deref(),
-                        &ep.search_keywords,
-                    )?;
+                    {
+                        let conn = self.db.lock().unwrap();
+                        store::episodic::merge(
+                            &conn,
+                            &id,
+                            &ep.summary,
+                            ep.details.as_deref(),
+                            &ep.search_keywords,
+                        )?;
+                    }
                     all_ops.push(MemoryOp::EpisodicMerge {
                         target_id: id,
                         combined_summary: ep.summary,
@@ -145,6 +146,7 @@ impl MemorySystem {
                         search_keywords: ep.search_keywords,
                     });
                 } else {
+                    let conn = self.db.lock().unwrap();
                     store::episodic::insert(&conn, &ep)?;
                     all_ops.push(MemoryOp::EpisodicInsert { event: ep });
                 }
@@ -155,13 +157,15 @@ impl MemorySystem {
 
         // Process complex events with LLM extraction
         if !complex_events.is_empty() {
-            let core = store::core::get_all(&conn)?;
-            let recent = store::episodic::list_recent(&conn, 10, None, None)?;
-            let semantic = store::semantic::list_all(&conn)?;
-            let procedural = store::procedural::list_all(&conn)?;
-
-            // Drop the lock before async call
-            drop(conn);
+            // Collect inputs while holding DB lock in a limited scope, then drop before await
+            let (core, recent, semantic, procedural) = {
+                let conn = self.db.lock().unwrap();
+                let core = store::core::get_all(&conn)?;
+                let recent = store::episodic::list_recent(&conn, 10, None, None)?;
+                let semantic = store::semantic::list_all(&conn)?;
+                let procedural = store::procedural::list_all(&conn)?;
+                (core, recent, semantic, procedural)
+            };
 
             let ops = ingestion::extractor::extract_memory_ops(
                 &complex_events,

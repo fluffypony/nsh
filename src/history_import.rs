@@ -5,11 +5,17 @@ use regex::Regex;
 
 use crate::db::IMPORT_SESSION_PREFIX;
 
+type SessionEntries = std::collections::HashMap<
+    String,
+    (String, String, Vec<(String, DateTime<Utc>)>),
+>;
+
 const MAX_IMPORT_ENTRIES: usize = 10_000;
 const IMPORT_LOCK_FILENAME: &str = "history_import.lock";
 const IMPORT_LOCK_STALE_SECS: u64 = 60 * 60;
 
 #[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Shell {
     Bash,
@@ -111,10 +117,7 @@ pub fn import_if_needed(db: &crate::db::Db) {
             files.retain(|(path, shell)| *shell == Shell::Zsh && is_per_tty_zsh_history(path));
         }
 
-        let mut entries_by_session: std::collections::HashMap<
-            String,
-            (String, String, Vec<(String, DateTime<Utc>)>),
-        > = std::collections::HashMap::new();
+        let mut entries_by_session: SessionEntries = std::collections::HashMap::new();
 
         for (path, shell) in &files {
             let file_mtime = match std::fs::metadata(path).and_then(|m| m.modified()) {
@@ -1162,3 +1165,4 @@ mod tests {
         );
     }
 }
+// alias used above

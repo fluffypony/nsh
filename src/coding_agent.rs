@@ -649,13 +649,15 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
     let file_count = estimate_project_file_count(working_dir, 3000) as u64;
     let t = if lower.starts_with("cargo test") {
         180 + file_count / 4
-    } else if lower.starts_with("cargo build") || lower.starts_with("cargo check") {
-        120 + file_count / 5
-    } else if lower.starts_with("go test")
+    } else if lower.starts_with("cargo build")
+        || lower.starts_with("cargo check")
+        || lower.starts_with("go test")
         || lower.starts_with("pytest")
         || lower.starts_with("jest")
-        || lower.contains(" test")
-            && (lower.starts_with("npm") || lower.starts_with("pnpm") || lower.starts_with("yarn"))
+        || (lower.contains(" test")
+            && (lower.starts_with("npm")
+                || lower.starts_with("pnpm")
+                || lower.starts_with("yarn")))
     {
         120 + file_count / 5
     } else if lower.starts_with("ruff")

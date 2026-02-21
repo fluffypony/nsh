@@ -1743,8 +1743,7 @@ These ALWAYS require investigation → execution → verification at minimum.
         .replace(
             "## Package & Tool Resolution\nWhen the user asks to install, update, upgrade, or manage a package or tool:\n",
             &format!(
-                "## Package & Tool Resolution\nWhen the user asks to install, update, upgrade, or manage a package or tool:\n{}\n",
-                package_guidance
+                "## Package & Tool Resolution\nWhen the user asks to install, update, upgrade, or manage a package or tool:\n{package_guidance}\n"
             ),
         )
         .replace("{SHELL_GUIDANCE}", shell_guidance);
