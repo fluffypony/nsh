@@ -2,6 +2,7 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{KnowledgeEntry, Sensitivity, generate_id};
 
+#[cfg(test)]
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
     Ok(KnowledgeEntry {
         id: row.get(0)?,
@@ -90,6 +91,7 @@ pub fn search_bm25(
     Ok(results)
 }
 
+#[cfg(test)]
 pub fn retrieve_secret(conn: &Connection, id: &str) -> anyhow::Result<String> {
     let encrypted: String = conn.query_row(
         "SELECT secret_value FROM knowledge_vault WHERE id = ?",
@@ -179,6 +181,7 @@ fn encrypt_secret(plaintext: &str) -> anyhow::Result<String> {
     Ok(hex::encode(&combined))
 }
 
+#[cfg(test)]
 fn decrypt_secret(hex_data: &str) -> anyhow::Result<String> {
     use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
     let key = get_or_create_key()?;

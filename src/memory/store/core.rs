@@ -64,6 +64,7 @@ pub fn rewrite(conn: &Connection, label: CoreLabel, content: &str) -> anyhow::Re
     Ok(())
 }
 
+#[cfg(test)]
 pub fn compile_for_prompt(conn: &Connection) -> anyhow::Result<String> {
     let blocks = get_all(conn)?;
     let mut parts = Vec::new();

@@ -40,6 +40,7 @@ impl IngestionBuffer {
         std::mem::take(&mut self.events)
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.events.len()
     }

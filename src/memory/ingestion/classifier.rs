@@ -9,6 +9,7 @@ pub fn is_low_signal(command: &str) -> bool {
     LOW_SIGNAL_COMMANDS.contains(&base)
 }
 
+#[cfg(test)]
 pub fn is_rapid_repeat(command: &str, last_command: Option<&str>, last_timestamp: Option<i64>, now: i64) -> bool {
     if let (Some(last_cmd), Some(last_ts)) = (last_command, last_timestamp) {
         if last_cmd == command && (now - last_ts) < 5 {

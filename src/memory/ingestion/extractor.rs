@@ -206,6 +206,7 @@ pub fn extract_fallback_keywords(text: &str) -> String {
         .join(" ")
 }
 
+#[cfg(test)]
 pub fn extract_command_tags(command: &str) -> Vec<String> {
     let mut tags = Vec::new();
     let first = command.split_whitespace().next().unwrap_or("");

@@ -141,6 +141,7 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
     parts.join("\n")
 }
 
+#[cfg(test)]
 pub fn compile_core_memory(
     conn: &rusqlite::Connection,
 ) -> anyhow::Result<String> {
