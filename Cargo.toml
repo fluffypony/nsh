@@ -5,6 +5,7 @@ edition = "2024"
 description = "Natural Shell — AI-powered shell assistant"
 license = "BSD-3-Clause"
 repository = "https://github.com/fluffypony/nsh"
+default-run = "nsh"
 
 [lib]
 name = "nsh"
