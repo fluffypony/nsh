@@ -272,6 +272,94 @@ pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Memory client helpers ────────────────────────────────
+
+pub fn memory_search(query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {
+    let request = DaemonRequest::MemorySearch {
+        query: query.to_string(),
+        memory_type: memory_type.map(|s| s.to_string()),
+        limit,
+    };
+    match send_to_global(&request)? {
+        DaemonResponse::Ok { data: Some(d) } => Ok(serde_json::to_string(&d)?),
+        DaemonResponse::Ok { data: None } => Ok("{}".into()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_core_get() -> anyhow::Result<String> {
+    match send_to_global(&DaemonRequest::MemoryGetCore)? {
+        DaemonResponse::Ok { data: Some(d) } => Ok(serde_json::to_string(&d)?),
+        DaemonResponse::Ok { data: None } => Ok("{}".into()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_core_append(label: &str, content: &str) -> anyhow::Result<()> {
+    let request = DaemonRequest::MemoryCoreAppend {
+        label: label.to_string(),
+        content: content.to_string(),
+    };
+    match send_to_global(&request)? {
+        DaemonResponse::Ok { .. } => Ok(()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_core_rewrite(label: &str, content: &str) -> anyhow::Result<()> {
+    let request = DaemonRequest::MemoryCoreRewrite {
+        label: label.to_string(),
+        content: content.to_string(),
+    };
+    match send_to_global(&request)? {
+        DaemonResponse::Ok { .. } => Ok(()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_store(memory_type: &str, data_json: &str) -> anyhow::Result<String> {
+    let request = DaemonRequest::MemoryStore {
+        memory_type: memory_type.to_string(),
+        data_json: data_json.to_string(),
+    };
+    match send_to_global(&request)? {
+        DaemonResponse::Ok { data: Some(d) } => {
+            Ok(d.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        }
+        DaemonResponse::Ok { data: None } => Ok(String::new()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_retrieve_secret(caption_query: &str) -> anyhow::Result<String> {
+    let request = DaemonRequest::MemoryRetrieveSecret {
+        caption_query: caption_query.to_string(),
+    };
+    match send_to_global(&request)? {
+        DaemonResponse::Ok { data: Some(d) } => Ok(serde_json::to_string(&d)?),
+        DaemonResponse::Ok { data: None } => Ok(String::new()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_record_event(event_json: &str) -> anyhow::Result<()> {
+    let request = DaemonRequest::MemoryRecordEvent {
+        event_json: event_json.to_string(),
+    };
+    match send_to_global(&request)? {
+        DaemonResponse::Ok { .. } => Ok(()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
+pub fn memory_stats() -> anyhow::Result<String> {
+    match send_to_global(&DaemonRequest::MemoryStats)? {
+        DaemonResponse::Ok { data: Some(d) } => Ok(serde_json::to_string(&d)?),
+        DaemonResponse::Ok { data: None } => Ok("{}".into()),
+        DaemonResponse::Error { message } => anyhow::bail!("{message}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(unix))]

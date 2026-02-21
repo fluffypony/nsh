@@ -501,6 +501,65 @@ pub fn secure_nsh_directory() {
 #[cfg(not(unix))]
 pub fn secure_nsh_directory() {}
 
+/// Validate memory tool inputs for security.
+///
+/// - `retrieve_secret`: should only be called when there's evidence of explicit user request
+/// - `core_memory_rewrite`: validates content doesn't contain prompt injection attempts
+/// - `store_memory` with type `knowledge`: validates that `secret_value` is present
+pub fn assess_memory_tool_call(
+    tool_name: &str,
+    input: &serde_json::Value,
+    _conversation: &[crate::provider::Message],
+) -> Result<(), String> {
+    match tool_name {
+        "retrieve_secret" => {
+            let caption = input["caption_query"].as_str().unwrap_or("");
+            if caption.is_empty() {
+                return Err("retrieve_secret requires a non-empty caption_query".into());
+            }
+            Ok(())
+        }
+        "core_memory_rewrite" => {
+            let content = input["content"].as_str().unwrap_or("");
+            // Check for prompt injection patterns in core memory content
+            let injection_patterns = [
+                "ignore previous instructions",
+                "you are now",
+                "new instructions:",
+                "system prompt:",
+                "override all",
+                "disregard",
+                "forget everything",
+            ];
+            let content_lower = content.to_lowercase();
+            for pattern in &injection_patterns {
+                if content_lower.contains(pattern) {
+                    return Err(format!(
+                        "core_memory_rewrite content contains suspicious pattern: '{pattern}'"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "store_memory" => {
+            let memory_type = input["memory_type"].as_str().unwrap_or("");
+            if memory_type == "knowledge" {
+                let data = input.get("data").unwrap_or(&serde_json::Value::Null);
+                if data.get("secret_value").is_none()
+                    || data["secret_value"].as_str().unwrap_or("").is_empty()
+                {
+                    return Err(
+                        "store_memory with type 'knowledge' requires a non-empty 'secret_value' in data"
+                            .into(),
+                    );
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

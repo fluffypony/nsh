@@ -159,11 +159,24 @@ pub async fn run_coding_agent(
     let boundary = crate::security::generate_boundary();
     let instructions = crate::context::gather_custom_instructions(config, &working_dir_str)
         .unwrap_or_else(|| "(none)".into());
+    let memory_prompt = if config.memory.enabled && !config.memory.incognito {
+        let db = crate::daemon_db::DaemonDb::new();
+        match db.memory_search(&task[..task.len().min(200)], None, config.memory.max_retrieval_per_type) {
+            Ok(results) if !results.is_empty() && results != "{}" => {
+                let redacted = crate::redact::redact_secrets(&results, &config.redaction);
+                format!("<memory_search_results>\n{}\n</memory_search_results>", crate::context::xml_escape(&redacted))
+            }
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    };
     let system = build_coding_system_prompt(
         &working_dir_str,
         project_context_xml,
         &instructions,
         &crate::security::boundary_system_prompt_addition(&boundary),
+        &memory_prompt,
     );
 
     let mut messages = vec![Message {
@@ -365,7 +378,13 @@ fn build_coding_system_prompt(
     xml_context: &str,
     agent_instructions: &str,
     boundary_addition: &str,
+    memory_prompt: &str,
 ) -> String {
+    let memory_section = if memory_prompt.is_empty() {
+        String::new()
+    } else {
+        format!("\n## Persistent Memory\n{memory_prompt}")
+    };
     format!(
         "You are nsh's coding sub-agent, an expert software engineer.
 You complete delegated coding tasks end-to-end by exploring, editing, and verifying.
@@ -396,7 +415,8 @@ You complete delegated coding tasks end-to-end by exploring, editing, and verify
 {agent_instructions}
 
 ## Security
-{boundary_addition}"
+{boundary_addition}
+{memory_section}"
     )
 }
 
@@ -1030,7 +1050,7 @@ mod tests {
 
     #[test]
     fn test_coding_system_prompt_discourages_root_list_directory() {
-        let prompt = build_coding_system_prompt("/tmp", "<project_context />", "none", "none");
+        let prompt = build_coding_system_prompt("/tmp", "<project_context />", "none", "none", "");
         assert!(prompt.contains("Do not call list_directory for initial exploration"));
     }
 

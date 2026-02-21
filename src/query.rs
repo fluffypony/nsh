@@ -1056,7 +1056,59 @@ using Streamable HTTP). The server becomes available on the next query.
 Currently configured MCP servers are listed in the <nsh_configuration>
 block.
 
- 
+**search_memory** — Search the persistent memory system for relevant
+information. Searches across summaries, details, names, content, and
+LLM-generated semantic keywords using BM25 full-text search.
+
+**core_memory_append** — Append new information to a core memory block
+(human, persona, or environment). Core memory is always loaded into
+context. Use this to persistently remember user preferences, facts about
+the user, or environment details.
+
+**core_memory_rewrite** — Rewrite a core memory block entirely with
+condensed or updated content. Use when a block exceeds 80% capacity
+or contains outdated information that needs restructuring.
+
+**store_memory** — Explicitly store a new entry in persistent memory.
+For semantic: facts about projects, tools, people. For procedural:
+step-by-step workflows. For resource: important file contents.
+For knowledge: credentials (encrypted). Always include search_keywords.
+
+**retrieve_secret** — Retrieve the actual decrypted value of a secret
+from the Knowledge Vault. Only use when the user explicitly asks for
+a stored credential, API key, or connection string.
+
+## Persistent Memory System
+
+You have access to a structured long-term memory system with six components:
+
+**Core Memory** — Always loaded in your context. Contains persistent facts about the user (human), your behavior settings (persona), and the system environment. You can append to or rewrite these blocks using core_memory_append and core_memory_rewrite tools. Monitor the capacity percentages shown — when a block exceeds 80%, rewrite it to be more concise.
+
+**Episodic Memory** — Timestamped records of past commands, errors, sessions, and interactions. Automatically populated. Searchable via search_memory.
+
+**Semantic Memory** — Learned facts, entity knowledge, project info, tool preferences. Use store_memory to save new facts you discover. Example: "Project Alpha uses Python 3.12 and Poetry".
+
+**Procedural Memory** — Step-by-step workflows and learned procedures. Use store_memory to save multi-step processes. Example: "How to deploy to staging: 1. Run tests, 2. Build Docker image, 3. Push to registry, 4. kubectl apply".
+
+**Resource Memory** — Digests of config files, READMEs, docs the user has interacted with. Automatically populated when files are read.
+
+**Knowledge Vault** — Encrypted sensitive data (API keys, credentials, connection strings). Use retrieve_secret only when the user explicitly asks for a stored credential.
+
+### Memory Tool Usage
+- Use search_memory proactively when you need historical context, past solutions, or project-specific knowledge that isn't in your immediate context.
+- Use core_memory_append when you learn a NEW persistent fact about the user (preferences, name, common patterns). Don't duplicate what's already there.
+- Use core_memory_rewrite when core memory is nearing capacity or contains outdated information — condense it.
+- Use store_memory to save semantic facts, procedures, or important resources you discover during investigation.
+- Every store_memory call should include search_keywords: 5-15 space-separated terms including synonyms, related concepts, tool names, and likely future search phrases.
+- Do NOT store trivial or ephemeral information. Only store facts that would be useful in future sessions.
+- When the user explicitly says "remember that...", "note that...", "don't forget...", "I prefer...", "always use...", "never use...", immediately store the information in the appropriate memory type.
+- Check procedural and episodic memory for previous fixes to similar errors before suggesting new approaches.
+- The memory system automatically retrieves relevant context before every query. Check the PERSISTENT MEMORY section — if the answer is already there from a previous session, use it directly rather than re-investigating.
+
+### Memory Sensitivity
+- The <knowledge> section in your context shows only captions (descriptions) of stored secrets.
+- To access the actual secret value, use the retrieve_secret tool — but ONLY when the user explicitly requests it.
+- Never log, display, or include secret values in your responses except when directly requested.
 
 ### Local-first resolution for command/tool/package names
 When the user asks what a named command/tool/package does ("what does X do",
@@ -1787,6 +1839,11 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "manage_config" => &["action", "key"],
         "install_skill" => &["name", "description", "command"],
         "install_mcp_server" => &["name"],
+        "search_memory" => &["memory_type", "query"],
+        "core_memory_append" => &["label", "content"],
+        "core_memory_rewrite" => &["label", "content"],
+        "store_memory" => &["memory_type", "data"],
+        "retrieve_secret" => &["caption_query"],
         _ => &[],
     };
     for field in required_fields {

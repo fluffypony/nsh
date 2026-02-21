@@ -8,6 +8,7 @@ pub mod install_skill;
 pub mod list_directory;
 pub mod man_page;
 pub mod manage_config;
+pub mod memory;
 pub mod patch_file;
 pub mod read_file;
 pub mod run_command;
@@ -695,6 +696,124 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["name"]
             }),
         },
+        // ── Memory tools ─────────────────────────────────
+        ToolDefinition {
+            name: "search_memory".into(),
+            description: "Search the persistent memory system for relevant information \
+                          using BM25 full-text search. Searches across summaries, details, \
+                          names, content, and LLM-generated semantic keywords."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "memory_type": {
+                        "type": "string",
+                        "enum": ["episodic", "semantic", "procedural", "resource", "knowledge", "all"],
+                        "description": "Which memory type to search, or 'all' for all types"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (natural language or keywords)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Maximum results per type"
+                    }
+                },
+                "required": ["memory_type", "query"]
+            }),
+        },
+        ToolDefinition {
+            name: "core_memory_append".into(),
+            description: "Append new information to a core memory block. Core memory is \
+                          always loaded into context. Use this to persistently remember \
+                          user preferences, facts about the user, or environment details."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "enum": ["human", "persona", "environment"],
+                        "description": "Which core block to append to"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Text to append (will be added on a new line)"
+                    }
+                },
+                "required": ["label", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "core_memory_rewrite".into(),
+            description: "Rewrite a core memory block entirely with condensed/updated \
+                          content. Use when a block is >80% full and needs condensing, \
+                          or when information needs significant restructuring."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "enum": ["human", "persona", "environment"],
+                        "description": "Which core block to rewrite"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Complete new content for the block"
+                    }
+                },
+                "required": ["label", "content"]
+            }),
+        },
+        ToolDefinition {
+            name: "store_memory".into(),
+            description: "Explicitly store a new entry in persistent memory. Use when you \
+                          learn something worth remembering across sessions. For semantic: \
+                          facts about projects, tools, people. For procedural: step-by-step \
+                          workflows. For resource: important file contents. For knowledge: \
+                          credentials (encrypted)."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "memory_type": {
+                        "type": "string",
+                        "enum": ["semantic", "procedural", "resource", "knowledge"],
+                        "description": "Type of memory to store"
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": "Memory data with search_keywords field required. \
+                                        Semantic: {name, summary, details, category, search_keywords}. \
+                                        Procedural: {entry_type, summary, steps[], trigger_pattern, search_keywords}. \
+                                        Resource: {title, summary, resource_type, content, file_path, search_keywords}. \
+                                        Knowledge: {entry_type, caption, secret_value, source, sensitivity, search_keywords}."
+                    }
+                },
+                "required": ["memory_type", "data"]
+            }),
+        },
+        ToolDefinition {
+            name: "retrieve_secret".into(),
+            description: "Retrieve the actual decrypted value of a high-sensitivity secret \
+                          from the Knowledge Vault. Only use when the user explicitly asks \
+                          for a stored credential, API key, or connection string. Normal \
+                          retrieval only shows captions."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "caption_query": {
+                        "type": "string",
+                        "description": "Search query matching the secret's caption/description"
+                    }
+                },
+                "required": ["caption_query"]
+            }),
+        },
     ]
 }
 
@@ -706,7 +825,7 @@ mod tests {
     #[test]
     fn test_all_tool_definitions_returns_all_tools() {
         let tools = all_tool_definitions();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 22);
         for tool in &tools {
             assert!(!tool.name.is_empty());
             assert!(!tool.description.is_empty());
@@ -1222,7 +1341,7 @@ mod tests {
     fn test_tool_count_matches_expected_names() {
         let tools = all_tool_definitions();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names.len(), 17);
+        assert_eq!(names.len(), 22);
         assert_eq!(
             names,
             vec![
@@ -1243,6 +1362,11 @@ mod tests {
                 "manage_config",
                 "install_skill",
                 "install_mcp_server",
+                "search_memory",
+                "core_memory_append",
+                "core_memory_rewrite",
+                "store_memory",
+                "retrieve_secret",
             ]
         );
     }

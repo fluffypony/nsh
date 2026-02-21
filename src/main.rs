@@ -43,7 +43,7 @@ use crate::daemon_db::DbAccess;
 use clap::Parser;
 use cli::{
     Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
-    ProviderAction, SessionAction,
+    MemoryAction, ProviderAction, SessionAction,
 };
 use sha2::{Digest, Sha256};
 
@@ -752,6 +752,86 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
 
             eprintln!("nsh: update v{version} downloaded and verified.");
             eprintln!("  It will be applied automatically on your next shell start.");
+        }
+
+        Commands::Memory { action } => {
+            if !ensure_daemon_ready(false)? {
+                return Ok(());
+            }
+            match action {
+                MemoryAction::Search { query, r#type, limit } => {
+                    let request = daemon::DaemonRequest::MemorySearch {
+                        query,
+                        memory_type: r#type,
+                        limit,
+                    };
+                    match send_to_global_or_fallback(&request)? {
+                        daemon::DaemonResponse::Ok { data: Some(d) } => {
+                            println!("{}", serde_json::to_string_pretty(&d)?);
+                        }
+                        daemon::DaemonResponse::Ok { data: None } => {
+                            println!("No results");
+                        }
+                        daemon::DaemonResponse::Error { message } => {
+                            eprintln!("error: {message}");
+                        }
+                    }
+                }
+                MemoryAction::Stats => {
+                    let request = daemon::DaemonRequest::MemoryStats;
+                    match send_to_global_or_fallback(&request)? {
+                        daemon::DaemonResponse::Ok { data: Some(d) } => {
+                            println!("{}", serde_json::to_string_pretty(&d)?);
+                        }
+                        resp => eprintln!("{resp:?}"),
+                    }
+                }
+                MemoryAction::Core => {
+                    let request = daemon::DaemonRequest::MemoryGetCore;
+                    match send_to_global_or_fallback(&request)? {
+                        daemon::DaemonResponse::Ok { data: Some(d) } => {
+                            println!("{}", serde_json::to_string_pretty(&d)?);
+                        }
+                        resp => eprintln!("{resp:?}"),
+                    }
+                }
+                MemoryAction::Maintain => {
+                    eprintln!("Running memory decay...");
+                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryRunDecay);
+                    eprintln!("Running memory reflection...");
+                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryRunReflection);
+                    eprintln!("Memory maintenance complete.");
+                }
+                MemoryAction::Bootstrap => {
+                    eprintln!("Running memory bootstrap scan...");
+                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryBootstrapScan);
+                    eprintln!("Bootstrap scan complete.");
+                }
+                MemoryAction::Clear { r#type } => {
+                    if r#type.is_some() {
+                        eprintln!("Selective clearing not yet implemented; clearing all memories.");
+                    }
+                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearAll);
+                    eprintln!("All memories cleared.");
+                }
+                MemoryAction::Decay => {
+                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryRunDecay);
+                    eprintln!("Memory decay complete.");
+                }
+                MemoryAction::Reflect => {
+                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryRunReflection);
+                    eprintln!("Memory reflection complete.");
+                }
+                MemoryAction::Export { format: _ } => {
+                    let request = daemon::DaemonRequest::MemoryStats;
+                    match send_to_global_or_fallback(&request)? {
+                        daemon::DaemonResponse::Ok { data: Some(d) } => {
+                            println!("{}", serde_json::to_string_pretty(&d)?);
+                        }
+                        resp => eprintln!("{resp:?}"),
+                    }
+                }
+            }
         }
 
         Commands::DaemonSend { action } => {

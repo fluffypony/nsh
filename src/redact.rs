@@ -870,6 +870,50 @@ pub fn redact_url(url: &str) -> String {
     }
 }
 
+/// A detected secret with metadata for routing to Knowledge Vault.
+#[derive(Debug, Clone)]
+pub struct DetectedSecret {
+    pub label: String,
+    pub value: String,
+    pub position: usize,
+}
+
+/// Detect secrets in text and return structured matches for Knowledge Vault routing.
+/// Unlike `redact_secrets` which replaces matches, this returns the matched values
+/// and their pattern labels so the memory ingestion can route them to encrypted storage.
+pub fn detect_secrets_for_vault(text: &str) -> Vec<DetectedSecret> {
+    let mut detected = Vec::new();
+    let text_lower = text.to_lowercase();
+
+    for pattern in compiled_builtins() {
+        let check_text = if pattern.case_insensitive {
+            &text_lower
+        } else {
+            text
+        };
+        let has_keyword = pattern.keywords.iter().any(|kw| {
+            if pattern.case_insensitive {
+                check_text.contains(&kw.to_lowercase())
+            } else {
+                text.contains(kw)
+            }
+        });
+        if !has_keyword {
+            continue;
+        }
+
+        for mat in pattern.regex.find_iter(text) {
+            detected.push(DetectedSecret {
+                label: pattern.id.to_string(),
+                value: mat.as_str().to_string(),
+                position: mat.start(),
+            });
+        }
+    }
+
+    detected
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

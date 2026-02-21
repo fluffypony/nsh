@@ -279,6 +279,23 @@ function __nsh_postexec --on-event fish_postexec
         end
     end
 
+    # ── Project switch detection for memory system ────
+    if test "$PWD" != "$_NSH_LAST_DIR"
+        set -g _NSH_LAST_DIR "$PWD"
+        if test -f "$PWD/.git/HEAD" -o -f "$PWD/Cargo.toml" -o -f "$PWD/package.json" -o -f "$PWD/go.mod" -o -f "$PWD/pyproject.toml"
+            nsh daemon-send record \
+                --session $NSH_SESSION_ID \
+                --command "__nsh_project_switch" \
+                --cwd "$PWD" \
+                --exit-code 0 \
+                --started-at (date -u +%Y-%m-%dT%H:%M:%SZ) \
+                --tty $NSH_TTY \
+                --pid $fish_pid \
+                --shell fish &>/dev/null &
+            disown 2>/dev/null
+        end
+    end
+
     __nsh_emit_iterm2_cwd
 end
 

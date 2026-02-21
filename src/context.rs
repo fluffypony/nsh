@@ -2366,6 +2366,72 @@ fn detect_timezone() -> String {
     })
 }
 
+/// Detect the project name from common project files or fall back to the
+/// directory name inside a git repository.
+pub fn detect_project_name(cwd: &str) -> Option<String> {
+    let path = std::path::Path::new(cwd);
+
+    // Cargo.toml
+    if let Ok(content) = std::fs::read_to_string(path.join("Cargo.toml")) {
+        if let Some(name) = content
+            .lines()
+            .find(|l| l.trim().starts_with("name"))
+            .and_then(|l| l.split('=').nth(1))
+            .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        {
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+
+    // package.json
+    if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(name) = parsed["name"].as_str() {
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    // go.mod
+    if let Ok(content) = std::fs::read_to_string(path.join("go.mod")) {
+        if let Some(line) = content.lines().find(|l| l.starts_with("module ")) {
+            let module_path = line.trim_start_matches("module ").trim();
+            if let Some(last) = module_path.rsplit('/').next() {
+                if !last.is_empty() {
+                    return Some(last.to_string());
+                }
+            }
+        }
+    }
+
+    // pyproject.toml
+    if let Ok(content) = std::fs::read_to_string(path.join("pyproject.toml")) {
+        if let Some(name) = content
+            .lines()
+            .find(|l| l.trim().starts_with("name"))
+            .and_then(|l| l.split('=').nth(1))
+            .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        {
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+
+    // Fall back to directory name if inside a git repo
+    if path.join(".git").exists() {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            return Some(name.to_string());
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

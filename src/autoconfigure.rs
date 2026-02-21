@@ -600,6 +600,12 @@ fn save_config(
     ensure_table(&mut doc, "execution");
     doc["execution"]["mode"] = toml_edit::value(execution_mode);
 
+    // Seed memory system defaults if not already present
+    if doc.get("memory").is_none() {
+        ensure_table(&mut doc, "memory");
+        doc["memory"]["enabled"] = toml_edit::value(true);
+    }
+
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

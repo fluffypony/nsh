@@ -157,6 +157,12 @@ pub enum Commands {
     /// Self-update nsh to the latest version
     Update,
 
+    /// Manage persistent memory
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+
     /// Send a message to the daemon (thin client)
     DaemonSend {
         #[command(subcommand)]
@@ -249,6 +255,40 @@ pub enum ConfigAction {
 pub enum ProviderAction {
     /// List locally available models (Ollama)
     ListLocal,
+}
+
+#[derive(Subcommand)]
+pub enum MemoryAction {
+    /// Search across memory types
+    Search {
+        query: String,
+        #[arg(long)]
+        r#type: Option<String>,
+        #[arg(long, default_value = "10")]
+        limit: usize,
+    },
+    /// Show memory statistics
+    Stats,
+    /// Show core memory contents
+    Core,
+    /// Run memory maintenance (decay + reflection)
+    Maintain,
+    /// Run bootstrap scan
+    Bootstrap,
+    /// Clear memories (optionally by type)
+    Clear {
+        #[arg(long)]
+        r#type: Option<String>,
+    },
+    /// Run memory decay (cleanup old entries)
+    Decay,
+    /// Run memory reflection (consolidation)
+    Reflect,
+    /// Export all memories as JSON
+    Export {
+        #[arg(long)]
+        format: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -357,6 +357,22 @@ __nsh_precmd() {
         fi
     fi
 
+    # ── Project switch detection for memory system ────
+    if [[ "$PWD" != "${_NSH_LAST_DIR:-}" ]]; then
+        _NSH_LAST_DIR="$PWD"
+        if [[ -f "$PWD/.git/HEAD" || -f "$PWD/Cargo.toml" || -f "$PWD/package.json" || -f "$PWD/go.mod" || -f "$PWD/pyproject.toml" ]]; then
+            nsh daemon-send record \
+                --session "$NSH_SESSION_ID" \
+                --command "__nsh_project_switch" \
+                --cwd "$PWD" \
+                --exit-code 0 \
+                --started-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --tty "$NSH_TTY" \
+                --pid "$$" \
+                --shell "zsh" >/dev/null 2>&1 &!
+        fi
+    fi
+
     __nsh_emit_iterm2_cwd
 }
 
