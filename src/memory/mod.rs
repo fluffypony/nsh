@@ -52,7 +52,7 @@ impl MemorySystem {
     }
 
     pub fn record_event(&self, event: ShellEvent) {
-        if self.config.incognito {
+        if self.config.incognito || !self.config.enabled {
             return;
         }
 
@@ -171,20 +171,58 @@ impl MemorySystem {
         ctx: &MemoryQueryContext,
         llm: Option<&dyn llm_adapter::MemoryLlmClient>,
     ) -> anyhow::Result<RetrievedMemories> {
+        // Get fade cutoff and core/recent data while holding the lock briefly
+        let (fade_cutoff, core, recent) = {
+            let conn = self.db.lock().unwrap();
+            let cutoff = decay::get_fade_cutoff(&conn, self.config.fade_after_days)?;
+            let core = store::core::get_all(&conn)?;
+            let recent = store::episodic::list_recent(&conn, 10, Some(&cutoff))?;
+            (cutoff, core, recent)
+        };
+
+        // Extract topics without holding the lock (may call LLM)
+        let keywords = retrieval::topic_extractor::extract(ctx, llm).await;
+
+        // Re-acquire lock for searches
         let conn = self.db.lock().unwrap();
+        let mut memories = RetrievedMemories {
+            keywords: keywords.clone(),
+            core,
+            recent_episodic: recent,
+            ..Default::default()
+        };
 
-        let fade_cutoff = decay::get_fade_cutoff(&conn, self.config.fade_after_days)?;
-        let mut memories = retrieval::retrieve_for_query(
-            &conn,
-            ctx,
-            llm,
-            Some(&fade_cutoff),
-        )
-        .await?;
+        if retrieval::needs_full_retrieval(ctx.interaction_mode) && !keywords.is_empty() {
+            let query_str = keywords.join(" ");
+            memories.relevant_episodic =
+                store::episodic::search_bm25(&conn, &query_str, 10, Some(&fade_cutoff))?;
+            memories.semantic =
+                store::semantic::search_bm25(&conn, &query_str, 10)?;
+            memories.procedural =
+                store::procedural::search_bm25(&conn, &query_str, 5)?;
+            memories.resource =
+                store::resource::search_bm25(&conn, &query_str, 5)?;
 
-        // Enforce token budget
+            if let Some(ref cwd) = ctx.cwd {
+                let cwd_resources = store::resource::get_for_cwd(&conn, cwd, 3)?;
+                for r in cwd_resources {
+                    if !memories.resource.iter().any(|existing| existing.id == r.id) {
+                        memories.resource.push(r);
+                    }
+                }
+            }
+
+            memories.knowledge = store::knowledge::search_bm25(
+                &conn, &query_str, 5, Sensitivity::Medium,
+            )?;
+
+            for item in &memories.semantic {
+                let _ = store::semantic::increment_access(&conn, &item.id);
+            }
+        }
+
+        drop(conn);
         retrieval::ranker::enforce_budget(&mut memories, 4000);
-
         Ok(memories)
     }
 
@@ -373,12 +411,12 @@ impl MemorySystem {
                 )?;
             }
             MemoryOp::SemanticUpdate {
-                id: _,
-                summary: _,
-                details: _,
-                search_keywords: _,
+                id,
+                summary,
+                details,
+                search_keywords,
             } => {
-                // Handled through insert_or_update dedup by name
+                store::semantic::update_by_id(conn, id, summary, details.as_deref(), search_keywords)?;
             }
             MemoryOp::SemanticDelete { ids } => {
                 store::semantic::delete(conn, ids)?;

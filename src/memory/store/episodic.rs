@@ -70,10 +70,27 @@ pub fn merge(
     additional_details: Option<&str>,
     search_keywords: &str,
 ) -> anyhow::Result<()> {
+    // Preserve existing details by appending, not replacing
+    let existing_details: Option<String> = conn
+        .query_row(
+            "SELECT details FROM episodic_memory WHERE id = ?",
+            params![event_id],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+
+    let merged_details = match (existing_details, additional_details) {
+        (Some(existing), Some(new)) if !new.is_empty() => Some(format!("{existing}\n{new}")),
+        (Some(existing), _) => Some(existing),
+        (None, Some(new)) if !new.is_empty() => Some(new.to_string()),
+        _ => None,
+    };
+
     conn.execute(
         "UPDATE episodic_memory SET summary = ?, details = ?, search_keywords = ?, occurred_at = datetime('now')
          WHERE id = ?",
-        params![combined_summary, additional_details, search_keywords, event_id],
+        params![combined_summary, merged_details, search_keywords, event_id],
     )?;
     Ok(())
 }

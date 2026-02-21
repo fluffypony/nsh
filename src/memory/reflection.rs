@@ -174,15 +174,18 @@ fn apply_op(conn: &Connection, op: &MemoryOp) -> anyhow::Result<()> {
             )?;
         }
         MemoryOp::SemanticUpdate {
-            id: _,
+            id,
             summary,
             details,
             search_keywords,
         } => {
-            // SemanticUpdate via insert_or_update keyed by name would need the name;
-            // for ID-based update, we just update directly
-            // This is handled by the store's insert_or_update dedup
-            tracing::debug!("SemanticUpdate: {summary} (keywords: {search_keywords}), details: {details:?}");
+            crate::memory::store::semantic::update_by_id(
+                conn,
+                id,
+                summary,
+                details.as_deref(),
+                search_keywords,
+            )?;
         }
         MemoryOp::SemanticDelete { ids } => {
             crate::memory::store::semantic::delete(conn, ids)?;

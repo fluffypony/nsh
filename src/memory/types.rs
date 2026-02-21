@@ -7,7 +7,7 @@ pub fn generate_id(prefix: &str) -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
-    let suffix: String = (0..4).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
+    let suffix: String = (0..8).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
     format!("{}_{}", prefix, suffix)
 }
 
@@ -543,7 +543,7 @@ mod tests {
     fn generate_id_has_correct_prefix() {
         let id = generate_id("ep");
         assert!(id.starts_with("ep_"));
-        assert_eq!(id.len(), 7); // "ep_" + 4 chars
+        assert_eq!(id.len(), 11); // "ep_" + 8 chars
     }
 
     #[test]

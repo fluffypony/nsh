@@ -89,6 +89,21 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<SemanticItem>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+pub fn update_by_id(
+    conn: &Connection,
+    id: &str,
+    summary: &str,
+    details: Option<&str>,
+    search_keywords: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE semantic_memory SET summary = ?, details = ?, search_keywords = ?, updated_at = datetime('now')
+         WHERE id = ?",
+        params![summary, details, search_keywords, id],
+    )?;
+    Ok(())
+}
+
 pub fn delete(conn: &Connection, ids: &[String]) -> anyhow::Result<usize> {
     let mut count = 0;
     for id in ids {
