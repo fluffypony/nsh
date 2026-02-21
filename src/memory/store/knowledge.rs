@@ -141,7 +141,25 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
         }
         #[cfg(not(unix))]
         {
-            std::fs::write(&key_path, &key)?;
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&key_path)?;
+            file.write_all(&key)?;
+            // Mark as read-only to prevent accidental modification
+            let mut perms = std::fs::metadata(&key_path)?.permissions();
+            perms.set_readonly(true);
+            std::fs::set_permissions(&key_path, perms)?;
+            // On Windows, hide the key file
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // Set FILE_ATTRIBUTE_HIDDEN via attrib command (available on all Windows)
+                let _ = std::process::Command::new("attrib")
+                    .args(["+H", &key_path.to_string_lossy()])
+                    .output();
+            }
         }
         Ok(key)
     }

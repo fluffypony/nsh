@@ -25,12 +25,20 @@ pub async fn retrieve_for_query(
 ) -> anyhow::Result<RetrievedMemories> {
     let mut memories = RetrievedMemories::default();
 
+    // Parse temporal expression from query to constrain time range
+    let temporal_range = crate::memory::temporal::parse_temporal_expression(
+        &ctx.query,
+        chrono::Utc::now(),
+    );
+    let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%dT%H:%M:%S").to_string());
+    let since_ref = since_str.as_deref();
+
     // Core memory is always loaded
     memories.core = crate::memory::store::core::get_all(conn)?;
 
     // Recent episodic
     memories.recent_episodic =
-        crate::memory::store::episodic::list_recent(conn, 10, fade_cutoff)?;
+        crate::memory::store::episodic::list_recent(conn, 10, fade_cutoff, since_ref)?;
 
     if !needs_full_retrieval(ctx.interaction_mode) {
         return Ok(memories);
@@ -48,7 +56,7 @@ pub async fn retrieve_for_query(
 
     // Search across memory types
     memories.relevant_episodic =
-        crate::memory::store::episodic::search_bm25(conn, &query_str, 10, fade_cutoff)?;
+        crate::memory::store::episodic::search_bm25(conn, &query_str, 10, fade_cutoff, since_ref)?;
 
     memories.semantic =
         crate::memory::store::semantic::search_bm25(conn, &query_str, 10)?;

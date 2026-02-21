@@ -1207,6 +1207,21 @@ impl Db {
         Ok(())
     }
 
+    pub fn clear_memories_by_type(&self, memory_type: &str) -> rusqlite::Result<()> {
+        match memory_type {
+            "episodic" => self.conn.execute_batch("DELETE FROM episodic_memory;")?,
+            "semantic" => self.conn.execute_batch("DELETE FROM semantic_memory;")?,
+            "procedural" => self.conn.execute_batch("DELETE FROM procedural_memory;")?,
+            "resource" => self.conn.execute_batch("DELETE FROM resource_memory;")?,
+            "knowledge" => self.conn.execute_batch("DELETE FROM knowledge_vault;")?,
+            "core" => self.conn.execute_batch("UPDATE core_memory SET value = '', updated_at = datetime('now');")?,
+            _ => return Err(rusqlite::Error::InvalidParameterName(
+                format!("unknown memory type: {memory_type}")
+            )),
+        }
+        Ok(())
+    }
+
     pub fn delete_memory_by_type_and_id(&self, table: &str, id: &str) -> rusqlite::Result<()> {
         let valid_tables = [
             "episodic_memory",

@@ -10,7 +10,7 @@ pub fn search_all(
 ) -> anyhow::Result<Vec<SearchResult>> {
     let mut results = Vec::new();
 
-    if let Ok(episodic) = crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None) {
+    if let Ok(episodic) = crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None, None) {
         for e in episodic {
             results.push(SearchResult {
                 memory_type: MemoryType::Episodic,

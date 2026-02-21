@@ -103,23 +103,26 @@ pub fn delete(conn: &Connection, ids: &[String]) -> anyhow::Result<usize> {
     Ok(count)
 }
 
-pub fn list_recent(conn: &Connection, limit: usize, fade_cutoff: Option<&str>) -> anyhow::Result<Vec<EpisodicEvent>> {
-    let sql = if let Some(cutoff) = fade_cutoff {
-        format!(
-            "SELECT id, event_type, actor, summary, details, command, exit_code, working_dir, project_context, search_keywords, occurred_at, is_consolidated
-             FROM episodic_memory
-             WHERE occurred_at >= '{cutoff}'
-             ORDER BY occurred_at DESC
-             LIMIT {limit}"
-        )
+pub fn list_recent(conn: &Connection, limit: usize, fade_cutoff: Option<&str>, since: Option<&str>) -> anyhow::Result<Vec<EpisodicEvent>> {
+    let mut conditions = Vec::new();
+    if let Some(cutoff) = fade_cutoff {
+        conditions.push(format!("occurred_at >= '{cutoff}'"));
+    }
+    if let Some(since_val) = since {
+        conditions.push(format!("occurred_at >= '{since_val}'"));
+    }
+    let where_clause = if conditions.is_empty() {
+        String::new()
     } else {
-        format!(
-            "SELECT id, event_type, actor, summary, details, command, exit_code, working_dir, project_context, search_keywords, occurred_at, is_consolidated
-             FROM episodic_memory
-             ORDER BY occurred_at DESC
-             LIMIT {limit}"
-        )
+        format!("WHERE {}", conditions.join(" AND "))
     };
+    let sql = format!(
+        "SELECT id, event_type, actor, summary, details, command, exit_code, working_dir, project_context, search_keywords, occurred_at, is_consolidated
+         FROM episodic_memory
+         {where_clause}
+         ORDER BY occurred_at DESC
+         LIMIT {limit}"
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_event)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -137,24 +140,27 @@ pub fn list_unconsolidated(conn: &Connection, limit: usize) -> anyhow::Result<Ve
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn search_bm25(conn: &Connection, query: &str, limit: usize, fade_cutoff: Option<&str>) -> anyhow::Result<Vec<EpisodicEvent>> {
+pub fn search_bm25(conn: &Connection, query: &str, limit: usize, fade_cutoff: Option<&str>, since: Option<&str>) -> anyhow::Result<Vec<EpisodicEvent>> {
     let fts_query = crate::memory::search::fts::build_fts5_query(query);
     if fts_query.is_empty() {
         return Ok(vec![]);
     }
 
-    let cutoff_clause = if let Some(cutoff) = fade_cutoff {
-        format!("AND e.occurred_at >= '{cutoff}'")
-    } else {
-        String::new()
-    };
+    let mut extra_clauses = Vec::new();
+    if let Some(cutoff) = fade_cutoff {
+        extra_clauses.push(format!("AND e.occurred_at >= '{cutoff}'"));
+    }
+    if let Some(since_val) = since {
+        extra_clauses.push(format!("AND e.occurred_at >= '{since_val}'"));
+    }
+    let extra = extra_clauses.join(" ");
 
     let sql = format!(
         "SELECT e.id, e.event_type, e.actor, e.summary, e.details, e.command, e.exit_code, e.working_dir, e.project_context, e.search_keywords, e.occurred_at, e.is_consolidated
          FROM episodic_memory e
          JOIN episodic_memory_fts f ON e.rowid = f.rowid
          WHERE episodic_memory_fts MATCH ?
-         {cutoff_clause}
+         {extra}
          ORDER BY bm25(episodic_memory_fts, 10.0, 1.0, 3.0) ASC
          LIMIT {limit}"
     );
@@ -206,7 +212,7 @@ mod tests {
         let id = insert(&conn, &event).unwrap();
         assert!(id.starts_with("ep_"));
 
-        let recent = list_recent(&conn, 10, None).unwrap();
+        let recent = list_recent(&conn, 10, None, None).unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].summary, "Ran cargo build");
     }

@@ -236,6 +236,9 @@ pub enum DaemonRequest {
     MemoryBootstrapScan,
     MemoryStats,
     MemoryClearAll,
+    MemoryClearByType {
+        memory_type: String,
+    },
 }
 
 fn default_max_lines() -> usize {
@@ -444,7 +447,8 @@ pub fn handle_daemon_request(
         | DaemonRequest::MemoryRunReflection
         | DaemonRequest::MemoryBootstrapScan
         | DaemonRequest::MemoryStats
-        | DaemonRequest::MemoryClearAll => {
+        | DaemonRequest::MemoryClearAll
+        | DaemonRequest::MemoryClearByType { .. } => {
             DaemonResponse::error("operation must be routed through global daemon")
         }
     }

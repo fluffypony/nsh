@@ -485,6 +485,12 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
+        DaemonRequest::MemoryClearByType { memory_type } => {
+            match db.clear_memories_by_type(&memory_type) {
+                Ok(()) => DaemonResponse::ok(),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::RunDoctor {
             retention_days,
             no_prune,
@@ -946,6 +952,7 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::MemoryRunReflection
             | DaemonRequest::MemoryBootstrapScan
             | DaemonRequest::MemoryClearAll
+            | DaemonRequest::MemoryClearByType { .. }
     )
 }
 

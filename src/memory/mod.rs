@@ -21,14 +21,14 @@ pub use types::*;
 
 pub struct MemorySystem {
     db: Arc<Mutex<Connection>>,
-    config: MemoryConfig,
+    config: crate::config::MemoryConfig,
     ingestion_buffer: std::sync::Mutex<ingestion::IngestionBuffer>,
     ignore_patterns: Vec<String>,
 }
 
 impl MemorySystem {
-    pub fn open(config: MemoryConfig) -> anyhow::Result<Self> {
-        let conn = Connection::open(&config.db_path)?;
+    pub fn open(config: crate::config::MemoryConfig, db_path: std::path::PathBuf) -> anyhow::Result<Self> {
+        let conn = Connection::open(&db_path)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -43,8 +43,8 @@ impl MemorySystem {
         Ok(Self {
             db: Arc::new(Mutex::new(conn)),
             ingestion_buffer: std::sync::Mutex::new(ingestion::IngestionBuffer::new(
-                config.max_buffer_size,
-                config.max_buffer_age_secs,
+                config.ingestion_buffer_size,
+                config.ingestion_buffer_age_secs,
             )),
             config,
             ignore_patterns,
@@ -105,7 +105,8 @@ impl MemorySystem {
         let mut complex_events = Vec::new();
 
         for event in events {
-            if ingestion::can_fast_path(event) {
+            let decision = ingestion::router::route(event);
+            if ingestion::can_fast_path(event) && decision.only_episodic() {
                 let ep = ingestion::fast_path_episodic(event);
                 // Check for merge candidates
                 let merge_id = ingestion::consolidator::find_merge_candidate(
@@ -139,7 +140,7 @@ impl MemorySystem {
         // Process complex events with LLM extraction
         if !complex_events.is_empty() {
             let core = store::core::get_all(&conn)?;
-            let recent = store::episodic::list_recent(&conn, 10, None)?;
+            let recent = store::episodic::list_recent(&conn, 10, None, None)?;
             let semantic = store::semantic::list_all(&conn)?;
             let procedural = store::procedural::list_all(&conn)?;
 
@@ -171,12 +172,20 @@ impl MemorySystem {
         ctx: &MemoryQueryContext,
         llm: Option<&dyn llm_adapter::MemoryLlmClient>,
     ) -> anyhow::Result<RetrievedMemories> {
+        // Parse temporal expression from query to constrain time range
+        let temporal_range = crate::memory::temporal::parse_temporal_expression(
+            &ctx.query,
+            chrono::Utc::now(),
+        );
+        let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%dT%H:%M:%S").to_string());
+        let since_ref = since_str.as_deref();
+
         // Get fade cutoff and core/recent data while holding the lock briefly
         let (fade_cutoff, core, recent) = {
             let conn = self.db.lock().unwrap();
             let cutoff = decay::get_fade_cutoff(&conn, self.config.fade_after_days)?;
             let core = store::core::get_all(&conn)?;
-            let recent = store::episodic::list_recent(&conn, 10, Some(&cutoff))?;
+            let recent = store::episodic::list_recent(&conn, 10, Some(&cutoff), since_ref)?;
             (cutoff, core, recent)
         };
 
@@ -195,7 +204,7 @@ impl MemorySystem {
         if retrieval::needs_full_retrieval(ctx.interaction_mode) && !keywords.is_empty() {
             let query_str = keywords.join(" ");
             memories.relevant_episodic =
-                store::episodic::search_bm25(&conn, &query_str, 10, Some(&fade_cutoff))?;
+                store::episodic::search_bm25(&conn, &query_str, 10, Some(&fade_cutoff), since_ref)?;
             memories.semantic =
                 store::semantic::search_bm25(&conn, &query_str, 10)?;
             memories.procedural =
@@ -493,16 +502,13 @@ impl MemorySystem {
 mod tests {
     use super::*;
 
-    fn test_config() -> MemoryConfig {
-        MemoryConfig {
-            db_path: ":memory:".into(),
-            ..Default::default()
-        }
+    fn test_config() -> crate::config::MemoryConfig {
+        crate::config::MemoryConfig::default()
     }
 
     #[test]
     fn open_and_stats() {
-        let mem = MemorySystem::open(test_config()).unwrap();
+        let mem = MemorySystem::open(test_config(), ":memory:".into()).unwrap();
         let stats = mem.stats().unwrap();
         assert_eq!(stats.core_count, 3);
         assert_eq!(stats.episodic_count, 0);
@@ -510,7 +516,7 @@ mod tests {
 
     #[test]
     fn core_memory_operations() {
-        let mem = MemorySystem::open(test_config()).unwrap();
+        let mem = MemorySystem::open(test_config(), ":memory:".into()).unwrap();
         mem.update_core_block(CoreLabel::Human, CoreOp::Append, "Name: Alice")
             .unwrap();
         let blocks = mem.get_core_memory().unwrap();
@@ -528,7 +534,7 @@ mod tests {
     fn incognito_skips_events() {
         let mut config = test_config();
         config.incognito = true;
-        let mem = MemorySystem::open(config).unwrap();
+        let mem = MemorySystem::open(config, ":memory:".into()).unwrap();
         assert!(mem.is_incognito());
 
         mem.record_event(ShellEvent {
@@ -550,7 +556,7 @@ mod tests {
 
     #[test]
     fn clear_all_resets() {
-        let mem = MemorySystem::open(test_config()).unwrap();
+        let mem = MemorySystem::open(test_config(), ":memory:".into()).unwrap();
         mem.update_core_block(CoreLabel::Human, CoreOp::Append, "test")
             .unwrap();
         mem.clear_all().unwrap();
@@ -561,14 +567,14 @@ mod tests {
 
     #[test]
     fn decay_runs() {
-        let mem = MemorySystem::open(test_config()).unwrap();
+        let mem = MemorySystem::open(test_config(), ":memory:".into()).unwrap();
         let report = mem.run_decay().unwrap();
         assert_eq!(report.episodic_deleted, 0);
     }
 
     #[test]
     fn memory_prompt_generation() {
-        let mem = MemorySystem::open(test_config()).unwrap();
+        let mem = MemorySystem::open(test_config(), ":memory:".into()).unwrap();
         mem.update_core_block(CoreLabel::Human, CoreOp::Append, "Name: Test User")
             .unwrap();
 

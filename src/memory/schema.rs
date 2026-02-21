@@ -280,6 +280,18 @@ fn create_fts_tables(conn: &Connection) -> rusqlite::Result<()> {
         ",
     )?;
 
+    // Rebuild FTS5 indexes to capture any pre-existing rows that
+    // were inserted before triggers existed (e.g., migration path).
+    conn.execute_batch(
+        "
+        INSERT INTO episodic_memory_fts(episodic_memory_fts) VALUES('rebuild');
+        INSERT INTO semantic_memory_fts(semantic_memory_fts) VALUES('rebuild');
+        INSERT INTO procedural_memory_fts(procedural_memory_fts) VALUES('rebuild');
+        INSERT INTO resource_memory_fts(resource_memory_fts) VALUES('rebuild');
+        INSERT INTO knowledge_vault_fts(knowledge_vault_fts) VALUES('rebuild');
+        ",
+    )?;
+
     Ok(())
 }
 

@@ -808,11 +808,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     eprintln!("Bootstrap scan complete.");
                 }
                 MemoryAction::Clear { r#type } => {
-                    if r#type.is_some() {
-                        eprintln!("Selective clearing not yet implemented; clearing all memories.");
+                    if let Some(ref memory_type) = r#type {
+                        let valid = ["episodic", "semantic", "procedural", "resource", "knowledge", "core"];
+                        if !valid.contains(&memory_type.as_str()) {
+                            eprintln!("Unknown memory type '{}'. Valid types: {}", memory_type, valid.join(", "));
+                            return Ok(());
+                        }
+                        let _ = send_to_global_or_fallback(
+                            &daemon::DaemonRequest::MemoryClearByType { memory_type: memory_type.clone() }
+                        );
+                        eprintln!("{memory_type} memories cleared.");
+                    } else {
+                        let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearAll);
+                        eprintln!("All memories cleared.");
                     }
-                    let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearAll);
-                    eprintln!("All memories cleared.");
                 }
                 MemoryAction::Decay => {
                     let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryRunDecay);

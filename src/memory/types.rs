@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 // ── ID Generation ──
 
@@ -503,36 +502,6 @@ pub struct DetectedSecret {
     pub label: String,
     pub value: String,
     pub position: usize,
-}
-
-// ── Memory Config ──
-
-#[derive(Debug, Clone)]
-pub struct MemoryConfig {
-    pub enabled: bool,
-    pub incognito: bool,
-    pub fade_after_days: u32,
-    pub expire_after_days: u32,
-    pub consolidation_threshold: usize,
-    pub max_buffer_size: usize,
-    pub max_buffer_age_secs: u64,
-    pub db_path: PathBuf,
-}
-
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        let db_path = crate::config::Config::nsh_dir().join("nsh.db");
-        Self {
-            enabled: true,
-            incognito: false,
-            fade_after_days: 30,
-            expire_after_days: 90,
-            consolidation_threshold: 50,
-            max_buffer_size: 15,
-            max_buffer_age_secs: 60,
-            db_path,
-        }
-    }
 }
 
 #[cfg(test)]
