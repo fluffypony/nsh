@@ -56,7 +56,14 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
         output.status.code().unwrap_or(-1)
     ));
 
-    Ok(redact::redact_secrets(&result, &config.redaction))
+    let redacted = redact::redact_secrets(&result, &config.redaction);
+    // Echo visible output for run_command so the user can see what happened,
+    // then also return it so the model can interpret it. Keep stdout visible,
+    // include stderr section and exit code just like before.
+    if !redacted.trim().is_empty() {
+        eprintln!("{}", redacted);
+    }
+    Ok(redacted)
 }
 
 #[cfg(test)]

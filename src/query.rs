@@ -933,8 +933,13 @@ System-level commands that manage services or OS facilities (e.g. `launchctl`,
 permitted. When you create or modify a service definition, you must also enable
 and start it by issuing the appropriate commands.
 
-Example (macOS LaunchAgent): after writing a plist under
-`~/Library/LaunchAgents/com.example.task.plist`, you should also run:
+Example (macOS LaunchAgent): when asked to check or manage a LaunchAgent, do not guess the label.
+Investigate first:
+- list: `ls ~/Library/LaunchAgents` and `/Library/LaunchAgents` (read-only)
+- inspect likely files with `cat` (read-only)
+- search history for prior `launchctl` usage instead of generic terms
+- check status: `launchctl list | grep <label>` and interpret columns as `PID\tLASTEXIT\tLABEL`.
+If you create/update a plist under `~/Library/LaunchAgents/com.example.task.plist`, also run:
 - `launchctl unload ~/Library/LaunchAgents/com.example.task.plist 2>/dev/null || true` (pending=true)
 - `launchctl load ~/Library/LaunchAgents/com.example.task.plist` (pending=true)
 - `launchctl start com.example.task` (final step, no pending)
@@ -1809,6 +1814,7 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
             }
             "searching history for \"...\"".to_string()
         }
+        // Improve clarity for run_command by explicitly echoing the command being run
         "grep_file" => {
             let path = input["path"].as_str().unwrap_or("file");
             if let Some(pat) = input["pattern"].as_str() {
@@ -1836,7 +1842,8 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
         }
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("...");
-            format!("running `{cmd}`")
+            // Present in a consistent, literal style so users see what is being executed.
+            format!("↳ running `{cmd}`")
         }
         "web_search" => {
             let q = input["query"].as_str().unwrap_or("...");

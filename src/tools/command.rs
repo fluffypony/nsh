@@ -136,6 +136,14 @@ pub fn execute(
             .args(["/C", command.as_str()])
             .output();
         let (output_content, is_error, exit_code) = format_execution_output(output, config);
+
+        // Show the raw command output to the user immediately so they can
+        // see what happened, while also returning it back to the model for
+        // interpretation on the next turn. The content here is already
+        // redacted by format_execution_output.
+        if !output_content.trim().is_empty() {
+            eprintln!("{}", output_content);
+        }
         if !private {
             let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
             let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
