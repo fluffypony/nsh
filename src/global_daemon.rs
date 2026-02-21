@@ -410,6 +410,81 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
             crate::daemon::generate_summaries_sync_pub(db);
             DaemonResponse::ok()
         }
+        // ── Memory write operations ──────────────────────
+        DaemonRequest::MemoryRecordEvent { event_json } => {
+            tracing::debug!("memory: record_event (len={})", event_json.len());
+            DaemonResponse::ok()
+        }
+        DaemonRequest::MemoryFlushIngestion => {
+            tracing::debug!("memory: flush_ingestion");
+            DaemonResponse::ok()
+        }
+        DaemonRequest::MemoryIngestBatch { events_json } => {
+            tracing::debug!("memory: ingest_batch (len={})", events_json.len());
+            DaemonResponse::ok()
+        }
+        DaemonRequest::MemoryCoreAppend { label, content } => {
+            match db.append_core_block(&label, &content) {
+                Ok(()) => DaemonResponse::ok(),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryCoreRewrite { label, content } => {
+            match db.update_core_block(&label, &content) {
+                Ok(()) => DaemonResponse::ok(),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryStore { memory_type, data_json } => {
+            use crate::daemon_db::DbAccess;
+            match DbAccess::memory_store(db, &memory_type, &data_json) {
+                Ok(id) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryDelete { memory_type, id } => {
+            match db.delete_memory_by_type_and_id(
+                match memory_type.as_str() {
+                    "episodic" => "episodic_memory",
+                    "semantic" => "semantic_memory",
+                    "procedural" => "procedural_memory",
+                    "resource" => "resource_memory",
+                    "knowledge" => "knowledge_vault",
+                    _ => return DaemonResponse::error(format!("unknown memory type: {memory_type}")),
+                },
+                &id,
+            ) {
+                Ok(()) => DaemonResponse::ok(),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryRunDecay => {
+            let config = crate::config::Config::load().unwrap_or_default();
+            match db.run_memory_decay(config.memory.fade_after_days, config.memory.expire_after_days) {
+                Ok(report) => DaemonResponse::ok_with_data(serde_json::json!({
+                    "episodic_deleted": report.episodic_deleted,
+                    "semantic_deleted": report.semantic_deleted,
+                    "procedural_deleted": report.procedural_deleted,
+                    "resource_deleted": report.resource_deleted,
+                    "knowledge_deleted": report.knowledge_deleted,
+                })),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryRunReflection => {
+            tracing::debug!("memory: run_reflection (requires LLM, skipping in daemon)");
+            DaemonResponse::ok()
+        }
+        DaemonRequest::MemoryBootstrapScan => {
+            tracing::debug!("memory: bootstrap_scan (requires LLM, skipping in daemon)");
+            DaemonResponse::ok()
+        }
+        DaemonRequest::MemoryClearAll => {
+            match db.clear_all_memories() {
+                Ok(()) => DaemonResponse::ok(),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::RunDoctor {
             retention_days,
             no_prune,
@@ -685,6 +760,68 @@ fn execute_read(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
+        // ── Memory read operations ──────────────────────
+        DaemonRequest::MemoryRetrieve { context_json } => {
+            tracing::debug!("memory: retrieve (len={})", context_json.len());
+            DaemonResponse::ok_with_data(serde_json::json!({"memories": {}}))
+        }
+        DaemonRequest::MemorySearch { query, memory_type, limit } => {
+            use crate::daemon_db::DbAccess;
+            match DbAccess::memory_search(db, &query, memory_type.as_deref(), limit) {
+                Ok(results_json) => {
+                    match serde_json::from_str::<serde_json::Value>(&results_json) {
+                        Ok(val) => DaemonResponse::ok_with_data(val),
+                        Err(e) => DaemonResponse::error(format!("{e}")),
+                    }
+                }
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryGetCore => {
+            match db.get_core_memory() {
+                Ok(blocks) => {
+                    let json: Vec<serde_json::Value> = blocks.iter().map(|b| {
+                        serde_json::json!({
+                            "label": b.label.as_str(),
+                            "value": b.value,
+                            "char_limit": b.char_limit,
+                            "updated_at": b.updated_at,
+                        })
+                    }).collect();
+                    DaemonResponse::ok_with_data(serde_json::json!({"blocks": json}))
+                }
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryRetrieveSecret { caption_query } => {
+            match db.search_knowledge_fts(&caption_query, 3, &["low", "medium", "high"]) {
+                Ok(results) => {
+                    let json: Vec<serde_json::Value> = results.iter().map(|r| {
+                        serde_json::json!({
+                            "id": r.id,
+                            "caption": r.caption,
+                            "entry_type": r.entry_type,
+                            "sensitivity": r.sensitivity.as_str(),
+                        })
+                    }).collect();
+                    DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
+                }
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryStats => {
+            match db.memory_stats() {
+                Ok(stats) => DaemonResponse::ok_with_data(serde_json::json!({
+                    "core": stats.core_count,
+                    "episodic": stats.episodic_count,
+                    "semantic": stats.semantic_count,
+                    "procedural": stats.procedural_count,
+                    "resource": stats.resource_count,
+                    "knowledge": stats.knowledge_count,
+                })),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::Scrollback { .. }
         | DaemonRequest::CaptureMark { .. }
         | DaemonRequest::CaptureRead { .. } => {
@@ -797,6 +934,18 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::GenerateSummaries
             | DaemonRequest::SummarizeCheck { .. }
             | DaemonRequest::RunDoctor { .. }
+            // Memory write operations
+            | DaemonRequest::MemoryRecordEvent { .. }
+            | DaemonRequest::MemoryFlushIngestion
+            | DaemonRequest::MemoryIngestBatch { .. }
+            | DaemonRequest::MemoryCoreAppend { .. }
+            | DaemonRequest::MemoryCoreRewrite { .. }
+            | DaemonRequest::MemoryStore { .. }
+            | DaemonRequest::MemoryDelete { .. }
+            | DaemonRequest::MemoryRunDecay
+            | DaemonRequest::MemoryRunReflection
+            | DaemonRequest::MemoryBootstrapScan
+            | DaemonRequest::MemoryClearAll
     )
 }
 

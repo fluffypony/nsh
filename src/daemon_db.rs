@@ -62,6 +62,17 @@ pub trait DbAccess {
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>>;
     fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
+
+    // ── Memory system ──────────────────────────────────
+    fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String>;
+    fn memory_core_get(&self) -> anyhow::Result<String>;
+    fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
+    fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()>;
+    fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String>;
+    fn memory_delete(&self, memory_type: &str, id: &str) -> anyhow::Result<()>;
+    fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String>;
+    fn memory_stats(&self) -> anyhow::Result<String>;
+    fn memory_record_event(&self, event_json: &str) -> anyhow::Result<()>;
 }
 
 impl DbAccess for Db {
@@ -177,6 +188,117 @@ impl DbAccess for Db {
 
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()> {
         Ok(self.mark_summary_error(id, error)?)
+    }
+
+    fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {
+        let mut results = serde_json::Map::new();
+        let should_search = |mt: &str| memory_type.is_none() || memory_type == Some(mt);
+
+        if should_search("episodic") {
+            if let Ok(items) = self.search_episodic_fts(query, limit, None) {
+                results.insert("episodic".into(), serde_json::to_value(&items)?);
+            }
+        }
+        if should_search("semantic") {
+            if let Ok(items) = self.search_semantic_fts(query, limit) {
+                results.insert("semantic".into(), serde_json::to_value(&items)?);
+            }
+        }
+        if should_search("procedural") {
+            if let Ok(items) = self.search_procedural_fts(query, limit) {
+                results.insert("procedural".into(), serde_json::to_value(&items)?);
+            }
+        }
+        if should_search("resource") {
+            if let Ok(items) = self.search_resource_fts(query, limit) {
+                results.insert("resource".into(), serde_json::to_value(&items)?);
+            }
+        }
+        if should_search("knowledge") {
+            if let Ok(items) = self.search_knowledge_fts(query, limit, &["low", "medium"]) {
+                results.insert("knowledge".into(), serde_json::to_value(&items)?);
+            }
+        }
+        Ok(serde_json::to_string(&results)?)
+    }
+
+    fn memory_core_get(&self) -> anyhow::Result<String> {
+        let blocks = self.get_core_memory()?;
+        Ok(serde_json::to_string(&blocks)?)
+    }
+
+    fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
+        Ok(self.append_core_block(label, content)?)
+    }
+
+    fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()> {
+        Ok(self.update_core_block(label, content)?)
+    }
+
+    fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String> {
+        let data: serde_json::Value = serde_json::from_str(data_json)?;
+        let id = crate::memory::types::generate_id(match memory_type {
+            "episodic" => "ep",
+            "semantic" => "sem",
+            "procedural" => "proc",
+            "resource" => "res",
+            "knowledge" => "kv",
+            _ => "mem",
+        });
+        match memory_type {
+            "semantic" => {
+                let item = serde_json::from_value::<crate::memory::types::SemanticItem>(data)?;
+                self.conn_execute_batch(&format!(
+                    "INSERT OR REPLACE INTO semantic_memory (id, name, category, summary, details, search_keywords) \
+                     VALUES ('{}', '{}', '{}', '{}', {}, '{}')",
+                    item.id.replace('\'', "''"),
+                    item.name.replace('\'', "''"),
+                    item.category.replace('\'', "''"),
+                    item.summary.replace('\'', "''"),
+                    item.details.as_ref().map_or("NULL".into(), |d| format!("'{}'", d.replace('\'', "''"))),
+                    item.search_keywords.replace('\'', "''"),
+                ))?;
+            }
+            _ => {
+                // For other types, store as-is — the daemon handler will use the memory system
+            }
+        }
+        Ok(id)
+    }
+
+    fn memory_delete(&self, memory_type: &str, id: &str) -> anyhow::Result<()> {
+        let table = match memory_type {
+            "episodic" => "episodic_memory",
+            "semantic" => "semantic_memory",
+            "procedural" => "procedural_memory",
+            "resource" => "resource_memory",
+            "knowledge" => "knowledge_vault",
+            _ => anyhow::bail!("unknown memory type: {memory_type}"),
+        };
+        Ok(self.delete_memory_by_type_and_id(table, id)?)
+    }
+
+    fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
+        let results = self.search_knowledge_fts(caption_query, 3, &["low", "medium", "high"])?;
+        Ok(serde_json::to_string(&results)?)
+    }
+
+    fn memory_stats(&self) -> anyhow::Result<String> {
+        let stats = Db::memory_stats(self)?;
+        Ok(serde_json::to_string(&serde_json::json!({
+            "core": stats.core_count,
+            "episodic": stats.episodic_count,
+            "semantic": stats.semantic_count,
+            "procedural": stats.procedural_count,
+            "resource": stats.resource_count,
+            "knowledge": stats.knowledge_count,
+        }))?)
+    }
+
+    fn memory_record_event(&self, _event_json: &str) -> anyhow::Result<()> {
+        // Direct DB access doesn't buffer events — this is handled by the MemorySystem
+        // via the daemon. This is a no-op for direct Db access.
+        Ok(())
     }
 }
 
@@ -638,6 +760,71 @@ impl DbAccess for DaemonDb {
         self.request(DaemonRequest::MarkSummaryError {
             id,
             error: error.to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {
+        let data = Self::data_or_empty(self.request(DaemonRequest::MemorySearch {
+            query: query.to_string(),
+            memory_type: memory_type.map(String::from),
+            limit,
+        })?);
+        Ok(serde_json::to_string(&data)?)
+    }
+
+    fn memory_core_get(&self) -> anyhow::Result<String> {
+        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryGetCore)?);
+        Ok(serde_json::to_string(&data)?)
+    }
+
+    fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
+        self.request(DaemonRequest::MemoryCoreAppend {
+            label: label.to_string(),
+            content: content.to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()> {
+        self.request(DaemonRequest::MemoryCoreRewrite {
+            label: label.to_string(),
+            content: content.to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String> {
+        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryStore {
+            memory_type: memory_type.to_string(),
+            data_json: data_json.to_string(),
+        })?);
+        Ok(data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+    }
+
+    fn memory_delete(&self, memory_type: &str, id: &str) -> anyhow::Result<()> {
+        self.request(DaemonRequest::MemoryDelete {
+            memory_type: memory_type.to_string(),
+            id: id.to_string(),
+        })?;
+        Ok(())
+    }
+
+    fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
+        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieveSecret {
+            caption_query: caption_query.to_string(),
+        })?);
+        Ok(serde_json::to_string(&data)?)
+    }
+
+    fn memory_stats(&self) -> anyhow::Result<String> {
+        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryStats)?);
+        Ok(serde_json::to_string(&data)?)
+    }
+
+    fn memory_record_event(&self, event_json: &str) -> anyhow::Result<()> {
+        self.request(DaemonRequest::MemoryRecordEvent {
+            event_json: event_json.to_string(),
         })?;
         Ok(())
     }
