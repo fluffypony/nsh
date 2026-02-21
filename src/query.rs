@@ -1323,7 +1323,7 @@ User: "the tests in src/db.rs are failing, fix them"
 → code: task="Fix failing tests in src/db.rs. Run cargo test for that module first, then fix and re-run."
 
 User: "switch to claude sonnet"
-→ manage_config: action="set", key="provider.model", value="anthropic/claude-sonnet-4.5"
+→ manage_config: action="set", key="provider.model", value="anthropic/claude-sonnet-4.6"
 
 User: "install a skill that runs my test suite"
 → install_skill: name="run_tests", description="Run project test suite",

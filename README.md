@@ -158,7 +158,7 @@ Model chains with automatic fallback on rate limits or errors are configured via
 
 ```toml
 [models]
-main = ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4.5"]
+main = ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4.6"]
 fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
 ```
 
@@ -376,7 +376,7 @@ Project-local overrides: `.nsh.toml` or `.nsh/config.toml` (restricted to `conte
 [provider]
 default = "openrouter"
 model = "google/gemini-2.5-flash"
-fallback_model = "anthropic/claude-sonnet-4.5"
+fallback_model = "anthropic/claude-sonnet-4.6"
 web_search_model = "perplexity/sonar"
 timeout_seconds = 120
 
@@ -421,7 +421,7 @@ suppressed_exit_codes = [130, 137, 141, 143]
 main = [
   "google/gemini-2.5-flash",
   "google/gemini-3-flash-preview",
-  "anthropic/claude-sonnet-4.5",
+  "anthropic/claude-sonnet-4.6",
 ]
 fast = [
   "google/gemini-2.5-flash-lite",
