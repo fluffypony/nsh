@@ -428,7 +428,23 @@ pub fn handle_daemon_request(
         | DaemonRequest::CommandsNeedingLlmSummary { .. }
         | DaemonRequest::MarkUnsummarizedForLlm
         | DaemonRequest::BackfillEntities
-        | DaemonRequest::GenerateSummaries => {
+        | DaemonRequest::GenerateSummaries
+        | DaemonRequest::MemoryRecordEvent { .. }
+        | DaemonRequest::MemoryFlushIngestion
+        | DaemonRequest::MemoryIngestBatch { .. }
+        | DaemonRequest::MemoryRetrieve { .. }
+        | DaemonRequest::MemorySearch { .. }
+        | DaemonRequest::MemoryGetCore
+        | DaemonRequest::MemoryCoreAppend { .. }
+        | DaemonRequest::MemoryCoreRewrite { .. }
+        | DaemonRequest::MemoryStore { .. }
+        | DaemonRequest::MemoryDelete { .. }
+        | DaemonRequest::MemoryRetrieveSecret { .. }
+        | DaemonRequest::MemoryRunDecay
+        | DaemonRequest::MemoryRunReflection
+        | DaemonRequest::MemoryBootstrapScan
+        | DaemonRequest::MemoryStats
+        | DaemonRequest::MemoryClearAll => {
             DaemonResponse::error("operation must be routed through global daemon")
         }
     }
