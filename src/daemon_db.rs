@@ -195,28 +195,33 @@ impl DbAccess for Db {
         let should_search = |mt: &str| memory_type.is_none() || memory_type == Some(mt);
 
         if should_search("episodic") {
-            if let Ok(items) = self.search_episodic_fts(query, limit, None) {
-                results.insert("episodic".into(), serde_json::to_value(&items)?);
+            match self.search_episodic_fts(query, limit, None) {
+                Ok(items) => { results.insert("episodic".into(), serde_json::to_value(&items)?); }
+                Err(e) => { tracing::debug!("memory_search episodic failed: {e}"); }
             }
         }
         if should_search("semantic") {
-            if let Ok(items) = self.search_semantic_fts(query, limit) {
-                results.insert("semantic".into(), serde_json::to_value(&items)?);
+            match self.search_semantic_fts(query, limit) {
+                Ok(items) => { results.insert("semantic".into(), serde_json::to_value(&items)?); }
+                Err(e) => { tracing::debug!("memory_search semantic failed: {e}"); }
             }
         }
         if should_search("procedural") {
-            if let Ok(items) = self.search_procedural_fts(query, limit) {
-                results.insert("procedural".into(), serde_json::to_value(&items)?);
+            match self.search_procedural_fts(query, limit) {
+                Ok(items) => { results.insert("procedural".into(), serde_json::to_value(&items)?); }
+                Err(e) => { tracing::debug!("memory_search procedural failed: {e}"); }
             }
         }
         if should_search("resource") {
-            if let Ok(items) = self.search_resource_fts(query, limit) {
-                results.insert("resource".into(), serde_json::to_value(&items)?);
+            match self.search_resource_fts(query, limit) {
+                Ok(items) => { results.insert("resource".into(), serde_json::to_value(&items)?); }
+                Err(e) => { tracing::debug!("memory_search resource failed: {e}"); }
             }
         }
         if should_search("knowledge") {
-            if let Ok(items) = self.search_knowledge_fts(query, limit, &["low", "medium"]) {
-                results.insert("knowledge".into(), serde_json::to_value(&items)?);
+            match self.search_knowledge_fts(query, limit, &["low", "medium"]) {
+                Ok(items) => { results.insert("knowledge".into(), serde_json::to_value(&items)?); }
+                Err(e) => { tracing::debug!("memory_search knowledge failed: {e}"); }
             }
         }
         Ok(serde_json::to_string(&results)?)

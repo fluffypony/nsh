@@ -150,7 +150,10 @@ pub async fn handle_query(
                 if results == "{}" || results.is_empty() {
                     String::new()
                 } else {
-                    format!("<memory_search_results>\n{results}\n</memory_search_results>")
+                    // Redact secrets and sanitize for safe inclusion in system prompt
+                    let redacted = crate::redact::redact_secrets(&results, &config.redaction);
+                    let escaped = context::xml_escape(&redacted);
+                    format!("<memory_search_results>\n{escaped}\n</memory_search_results>")
                 }
             }
             Err(e) => {
