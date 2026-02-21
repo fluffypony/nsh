@@ -143,7 +143,10 @@ fn generate_fast_path_keywords(event: &ShellEvent) -> String {
         }
     }
     if let Some(ref cwd) = event.working_dir {
-        if let Some(dir) = cwd.rsplit('/').next() {
+        if let Some(dir) = std::path::Path::new(cwd)
+            .file_name()
+            .and_then(|n| n.to_str())
+        {
             if !dir.is_empty() {
                 keywords.push(dir.to_string());
             }
@@ -197,5 +200,21 @@ mod tests {
         let ep = fast_path_episodic(&event);
         assert_eq!(ep.summary, "Ran `cargo build` (exit 0)");
         assert!(ep.search_keywords.contains("cargo"));
+    }
+
+    #[test]
+    fn fast_path_keywords_unix_path() {
+        let mut event = make_event("git status", 0);
+        event.working_dir = Some("/home/user/project".into());
+        let kw = generate_fast_path_keywords(&event);
+        assert!(kw.contains("project"));
+    }
+
+    #[test]
+    fn fast_path_keywords_windows_path() {
+        let mut event = make_event("dir", 0);
+        event.working_dir = Some("C:\\Users\\alice\\project".into());
+        let kw = generate_fast_path_keywords(&event);
+        assert!(kw.contains("project"), "keywords were: {kw}");
     }
 }
