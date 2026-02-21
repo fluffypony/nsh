@@ -44,6 +44,11 @@ fn main() {
     // Manually bump when wrapper protocol changes
     println!("cargo:rustc-env=NSH_WRAPPER_PROTOCOL_VERSION=1");
 
+    // Shim protocol version and core discriminator (for future-proofing)
+    println!("cargo:rustc-env=NSH_SHIM_PROTOCOL_VERSION=1");
+    let is_core = std::env::var("NSH_BUILD_CORE").is_ok();
+    println!("cargo:rustc-env=NSH_IS_CORE={}", if is_core { "1" } else { "0" });
+
     // Compute a hash of shell hook templates so we can detect when hooks changed
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};

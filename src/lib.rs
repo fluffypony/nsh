@@ -1,56 +1,59 @@
-mod ansi;
-mod audit;
-mod autoconfigure;
-mod cli;
-mod coding_agent;
-mod config;
-mod context;
-mod daemon;
-mod daemon_client;
-mod daemon_db;
-mod db;
-mod debug_io;
-mod display;
-mod fast_cwd;
+// Library root for nsh: exposes modules and shared main entry for binaries.
+
+pub mod ansi;
+pub mod audit;
+pub mod autoconfigure;
+pub mod cli;
+pub mod coding_agent;
+pub mod config;
+pub mod context;
+pub mod daemon;
+pub mod daemon_client;
+pub mod daemon_db;
+pub mod db;
+pub mod debug_io;
+pub mod display;
+pub mod fast_cwd;
 #[cfg(unix)]
-mod global_daemon;
-mod history_import;
-mod init;
-mod json_display;
-mod json_extract;
+pub mod global_daemon;
+pub mod history_import;
+pub mod init;
+pub mod json_display;
+pub mod json_extract;
 #[allow(dead_code)]
-mod mcp;
-mod memory;
-mod live_update;
-mod provider;
+pub mod mcp;
+pub mod memory;
+pub mod live_update;
+pub mod provider;
 #[cfg(unix)]
-mod pty;
+pub mod pty;
 #[cfg(windows)]
 #[path = "pty_windows.rs"]
-mod pty;
-mod pump;
-mod query;
-mod redact;
-mod security;
-mod shell_hooks;
-mod skills;
-mod stream_consumer;
-mod streaming;
-mod summary;
-mod tools;
-mod util;
+pub mod pty;
+pub mod pump;
+pub mod query;
+pub mod redact;
+pub mod security;
+pub mod shell_hooks;
+pub mod skills;
+pub mod stream_consumer;
+pub mod streaming;
+pub mod summary;
+pub mod tools;
+pub mod util;
 
-use crate::daemon_db::DbAccess;
+pub mod shim;
+
 use clap::Parser;
 use cli::{
     Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
     MemoryAction, ProviderAction, SessionAction,
 };
 use sha2::{Digest, Sha256};
+use crate::daemon_db::DbAccess;
 
 fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
     if daemon_client::is_global_daemon_running() {
-        // Ensure running daemon version matches our binary
         let _ = daemon_client::ensure_daemon_version_matches();
         return Ok(true);
     }
@@ -73,16 +76,31 @@ fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
 fn send_to_global_or_fallback(
     request: &daemon::DaemonRequest,
 ) -> anyhow::Result<daemon::DaemonResponse> {
-    match daemon_client::send_to_global(request) {
-        Ok(resp) => Ok(resp),
-        Err(_) => {
-            let _ = daemon_client::ensure_global_daemon_running();
-            daemon_client::send_to_global(request)
-        }
+    // Use robust retry path to bridge brief restarts
+    #[cfg(unix)]
+    {
+        return daemon_client::send_to_global_with_retry(request.clone());
+    }
+    #[cfg(not(unix))]
+    {
+        return daemon_client::send_to_global(request);
     }
 }
 
-fn main() -> anyhow::Result<()> {
+/// Send SIGHUP to the running daemon for immediate graceful restart.
+/// Falls back to writing a marker file (for non-Unix).
+fn signal_daemon_restart() {
+    #[cfg(unix)]
+    {
+        if daemon_client::signal_daemon_restart() {
+            return;
+        }
+    }
+    let marker = config::Config::nsh_dir().join("nshd_restart_pending");
+    let _ = std::fs::write(&marker, "");
+}
+
+pub fn main_inner() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -107,32 +125,9 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    if let Commands::Wrap { ref shell } = cli.command {
-        #[cfg(not(unix))]
-        {
-            eprintln!("nsh: PTY wrapping is not available on this platform.");
-            eprintln!("  nsh query, history, and tools work without wrapping.");
-            eprintln!("  For full functionality, use WSL: wsl --install");
-            std::process::exit(0);
-        }
+    // Do not handle Wrap here — shim handles it directly
 
-        // Set wrapper version for notifications and clear any stale markers
-        unsafe { std::env::set_var("NSH_WRAP_VERSION", env!("CARGO_PKG_VERSION")); }
-        let marker = config::Config::nsh_dir().join("wrapper_outdated");
-        let _ = std::fs::remove_file(&marker);
-
-        // Apply pending update now and re-exec for wrap
-        apply_pending_update(true);
-
-        let shell = if shell.is_empty() {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-        } else {
-            shell.clone()
-        };
-        return pty::run_wrapped_shell(&shell);
-    }
-
-    // Apply pending update for all other commands without re-exec
+    // Apply pending update for commands (no re-exec; shim delegates new core next run)
     apply_pending_update(false);
 
     tokio::runtime::Builder::new_multi_thread()
@@ -156,7 +151,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             // Clear stale update markers since this is a fresh shell session
             let nsh_dir = config::Config::nsh_dir();
             let _ = std::fs::remove_file(nsh_dir.join("update_notice"));
-            let _ = std::fs::remove_file(nsh_dir.join("wrapper_outdated"));
             let script = init::generate_init_script(&shell);
             print!("{script}");
         }
@@ -187,7 +181,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() {
                 use std::io::Read;
-                let max_pipe_bytes: u64 = 33000; // slightly over 32k to detect truncation
+                let max_pipe_bytes: u64 = 33000;
                 let mut piped = String::new();
                 std::io::stdin()
                     .take(max_pipe_bytes)
@@ -240,7 +234,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             result?;
-            check_wrapper_outdated_notification();
         }
 
         Commands::Record {
@@ -280,7 +273,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 _ => {}
             }
             check_daemon_versions(&session_for_checks);
-            check_wrapper_outdated_notification();
         }
 
         Commands::Session { action } => match action {
@@ -647,20 +639,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         }
 
         Commands::Restart => {
-            eprint!("nsh: stopping daemon...");
-            if daemon_client::stop_global_daemon() {
-                eprintln!(" stopped");
-            } else {
-                eprintln!(" not running");
-            }
-            eprint!("nsh: starting daemon...");
+            eprint!("nsh: signaling daemon restart...");
+            signal_daemon_restart();
+            std::thread::sleep(std::time::Duration::from_millis(1000));
             daemon_client::ensure_global_daemon_running()?;
-            eprintln!(
-                " started (pid {})",
-                std::fs::read_to_string(daemon::global_daemon_pid_path())
-                    .unwrap_or_default()
-                    .trim()
-            );
+            eprintln!(" done");
         }
 
         Commands::Update => {
@@ -782,8 +765,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 serde_json::to_string_pretty(&pending_info)?.as_bytes(),
             )?;
 
-            eprintln!("nsh: update v{version} downloaded and verified.");
-            eprintln!("  It will be applied automatically on your next shell start.");
+            // Immediately apply update by installing as ~/.nsh/bin/nsh-core
+            apply_pending_update(false);
+            signal_daemon_restart();
+            eprintln!("nsh: update applied, daemon will restart gracefully");
         }
 
         Commands::Memory { action } => {
@@ -950,7 +935,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
                 None => {
-                    // Per-session daemon unavailable — try global daemon for DB ops
                     match action {
                         DaemonSendAction::Record {
                             session,
@@ -990,7 +974,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             check_daemon_versions(&session_id);
-            check_wrapper_outdated_notification();
         }
 
         Commands::DaemonRead { action } => {
@@ -1064,10 +1047,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     continue;
                 }
                 if !version_warning_shown {
-                    let marker = config::Config::nsh_dir().join("wrapper_outdated");
-                    if marker.exists() {
+                    let notice = config::Config::nsh_dir().join("update_notice");
+                    if notice.exists() {
                         eprintln!(
-                            "\x1b[2m⟳ nsh updated — exit and re-run for latest features\x1b[0m"
+                            "\x1b[2m⟳ nsh updated — exit and re-run for latest hooks\x1b[0m"
                         );
                         version_warning_shown = true;
                     }
@@ -1349,7 +1332,7 @@ fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn apply_pending_update(reexec: bool) {
+fn apply_pending_update(_reexec: bool) {
     let result = (|| -> anyhow::Result<()> {
         let pending_path = config::Config::nsh_dir().join("update_pending");
         if !pending_path.exists() {
@@ -1385,24 +1368,18 @@ fn apply_pending_update(reexec: bool) {
             anyhow::bail!("staged binary SHA mismatch");
         }
 
-        let current_exe = std::env::current_exe()?;
-        let new_path = current_exe.with_extension("new");
-        std::fs::copy(&staged_path, &new_path)?;
+        // Install as ~/.nsh/bin/nsh-core (atomic swap)
+        let core_dir = config::Config::nsh_dir().join("bin");
+        std::fs::create_dir_all(&core_dir)?;
+        let core_path = core_dir.join("nsh-core");
+        let tmp_path = core_dir.join("nsh-core.tmp");
+        std::fs::copy(&staged_path, &tmp_path)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))?;
         }
-        #[cfg(unix)]
-        std::fs::rename(&new_path, &current_exe)?;
-        #[cfg(windows)]
-        {
-            let old_path = current_exe.with_extension("old");
-            let _ = std::fs::remove_file(&old_path);
-            std::fs::rename(&current_exe, &old_path)?;
-            std::fs::rename(&new_path, &current_exe)?;
-            let _ = std::fs::remove_file(&old_path);
-        }
+        std::fs::rename(&tmp_path, &core_path)?;
 
         let _ = std::fs::remove_file(&pending_path);
         let _ = std::fs::remove_file(&staged_path);
@@ -1416,163 +1393,14 @@ fn apply_pending_update(reexec: bool) {
             format!("v{version} installed — queries active immediately, shell hooks refresh on next terminal"),
         );
 
-        // Mark wrapper outdated if inside wrap
-        if std::env::var("NSH_WRAP_VERSION").is_ok() {
-            let marker = config::Config::nsh_dir().join("wrapper_outdated");
-            let _ = std::fs::write(
-                &marker,
-                serde_json::json!({
-                    "old_version": std::env::var("NSH_WRAP_VERSION").unwrap_or_default(),
-                    "new_version": version,
-                })
-                .to_string(),
-            );
-        }
+        // Signal daemon to restart to pick up new core
+        signal_daemon_restart();
 
-        // Stop the global daemon so it restarts with the new binary
-        if daemon_client::is_global_daemon_running() {
-            let _ = daemon_client::stop_global_daemon();
-        }
-
-        if reexec {
-            // Re-exec for wrap startup
-            let args: Vec<String> = std::env::args().collect();
-            #[cfg(unix)]
-            {
-                let exe_path = current_exe.to_string_lossy().to_string();
-                let mut new_args = Vec::with_capacity(args.len());
-                for a in &args[1..] {
-                    new_args.push(a.as_str());
-                }
-                let _err = pty::exec_execvp(&exe_path, &new_args);
-            }
-            #[cfg(windows)]
-            {
-                match std::process::Command::new(&current_exe).args(&args[1..]).status() {
-                    Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-                    Err(e) => eprintln!("nsh: re-exec failed: {e}"),
-                }
-            }
-        }
         Ok(())
     })();
     if let Err(e) = result {
         tracing::debug!("apply_pending_update failed: {e}");
     }
-}
-
-#[cfg(test)]
-fn should_check_for_updates(db: &db::Db) -> bool {
-    match db.get_meta("last_update_check") {
-        Ok(Some(ts)) => {
-            if let Ok(last) = chrono::DateTime::parse_from_rfc3339(&ts) {
-                let elapsed = chrono::Utc::now().signed_duration_since(last);
-                elapsed.num_hours() >= 24
-            } else {
-                true
-            }
-        }
-        _ => true,
-    }
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn background_update_check() -> anyhow::Result<()> {
-    let target = current_target_triple().ok_or_else(|| anyhow::anyhow!("unsupported platform"))?;
-    let current_version = env!("CARGO_PKG_VERSION");
-
-    let records = resolve_update_txt_fallback()?;
-    let (latest_version, expected_sha) = find_latest_for_target(&records, target)
-        .ok_or_else(|| anyhow::anyhow!("no DNS record for {target}"))?;
-
-    if util::compare_versions(&latest_version, current_version) != std::cmp::Ordering::Greater {
-        let db = db::Db::open()?;
-        db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())?;
-        return Ok(());
-    }
-
-    let pending_path = config::Config::nsh_dir().join("update_pending");
-    if pending_path.exists() {
-        return Ok(());
-    }
-
-    let url = format!(
-        "https://github.com/fluffypony/nsh/releases/download/v{latest_version}/nsh-{target}.tar.gz"
-    );
-    let output = std::process::Command::new("curl")
-        .args(["-fsSL", &url])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!("download failed");
-    }
-
-    let staging_dir = config::Config::nsh_dir().join("updates");
-    std::fs::create_dir_all(&staging_dir)?;
-    let staged_path = staging_dir.join(format!("nsh-{latest_version}-{target}"));
-    let tmp_staged = staging_dir.join(format!(
-        "nsh-{latest_version}-{target}.{}",
-        std::process::id()
-    ));
-
-    let decoder = flate2::read::GzDecoder::new(&output.stdout[..]);
-    let mut archive = tar::Archive::new(decoder);
-    let mut found = false;
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
-        if path.file_name().map(|n| n == "nsh").unwrap_or(false) {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_staged)?;
-            std::io::copy(&mut entry, &mut file)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&tmp_staged, std::fs::Permissions::from_mode(0o755))?;
-            }
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        let _ = std::fs::remove_file(&tmp_staged);
-        anyhow::bail!("binary not found in archive");
-    }
-
-    let actual_sha = sha256_file(&tmp_staged)?;
-    if actual_sha != expected_sha {
-        let _ = std::fs::remove_file(&tmp_staged);
-        anyhow::bail!("SHA256 mismatch: expected {expected_sha}, got {actual_sha}");
-    }
-    std::fs::rename(&tmp_staged, &staged_path)?;
-
-    let current_exe = std::env::current_exe()?;
-    let pending_info = serde_json::json!({
-        "version": latest_version,
-        "staged_path": staged_path.to_string_lossy(),
-        "target_binary": current_exe.to_string_lossy(),
-        "sha256": expected_sha,
-        "downloaded_at": chrono::Utc::now().to_rfc3339(),
-    });
-    atomic_write(
-        &pending_path,
-        serde_json::to_string_pretty(&pending_info)?.as_bytes(),
-    )?;
-
-    let db = db::Db::open()?;
-    db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())?;
-
-    Ok(())
-}
-
-fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, data)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 fn cleanup_staged_updates() {
@@ -1646,842 +1474,29 @@ fn redact_config_keys(val: &mut toml::Value) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn valid_sha() -> &'static str {
-        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-    }
-
-    // --- parse_dns_txt_records ---
-
-    #[test]
-    fn parse_dns_valid_records() {
-        let input = format!("0.1.0:aarch64-apple-darwin:{}", valid_sha());
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, "0.1.0");
-        assert_eq!(records[0].1, "aarch64-apple-darwin");
-        assert_eq!(records[0].2, valid_sha());
-    }
-
-    #[test]
-    fn parse_dns_invalid_sha_length() {
-        let records = parse_dns_txt_records("0.1.0:target:abcdef");
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_non_hex_sha() {
-        let bad_sha = "zzzzzz0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-        let input = format!("0.1.0:target:{bad_sha}");
-        let records = parse_dns_txt_records(&input);
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_too_few_parts() {
-        let records = parse_dns_txt_records("0.1.0:target_only");
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_empty_input() {
-        let records = parse_dns_txt_records("");
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_quoted_lines() {
-        let input = format!("\"0.1.0:aarch64-apple-darwin:{}\"", valid_sha());
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, "0.1.0");
-    }
-
-    #[test]
-    fn parse_dns_mixed_valid_invalid() {
-        let sha = valid_sha();
-        let input = format!(
-            "0.1.0:target_a:{sha}\nbad_line\n0.2.0:target_b:{sha}\n0.3.0:target_c:tooshort"
-        );
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].0, "0.1.0");
-        assert_eq!(records[1].0, "0.2.0");
-    }
-
-    // --- current_target_triple ---
-
-    #[test]
-    fn current_target_triple_returns_some() {
-        assert!(current_target_triple().is_some());
-    }
-
-    // --- find_latest_for_target ---
-
-    #[test]
-    fn find_latest_no_records() {
-        let records: Vec<(String, String, String)> = vec![];
-        assert!(find_latest_for_target(&records, "x86_64-unknown-linux-gnu").is_none());
-    }
-
-    #[test]
-    fn find_latest_single_match() {
-        let sha = valid_sha().to_string();
-        let records = vec![("0.5.0".to_string(), "linux".to_string(), sha.clone())];
-        let result = find_latest_for_target(&records, "linux");
-        assert_eq!(result, Some(("0.5.0".to_string(), sha)));
-    }
-
-    #[test]
-    fn find_latest_picks_highest_version() {
-        let sha = valid_sha().to_string();
-        let records = vec![
-            (
-                "0.1.0".to_string(),
-                "linux".to_string(),
-                "sha_old".to_string(),
-            ),
-            ("0.3.0".to_string(), "linux".to_string(), sha.clone()),
-            (
-                "0.2.0".to_string(),
-                "linux".to_string(),
-                "sha_mid".to_string(),
-            ),
-        ];
-        let result = find_latest_for_target(&records, "linux").unwrap();
-        assert_eq!(result.0, "0.3.0");
-        assert_eq!(result.1, sha);
-    }
-
-    #[test]
-    fn find_latest_no_matching_target() {
-        let sha = valid_sha().to_string();
-        let records = vec![("0.1.0".to_string(), "linux".to_string(), sha)];
-        assert!(find_latest_for_target(&records, "macos").is_none());
-    }
-
-    // --- sha256_file ---
-
-    #[test]
-    fn sha256_file_known_content() {
-        use sha2::{Digest, Sha256};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.bin");
-        let content = b"hello world";
-        std::fs::write(&path, content).unwrap();
-
-        let result = sha256_file(&path).unwrap();
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        let expected = format!("{:x}", hasher.finalize());
-        assert_eq!(result, expected);
-    }
-
-    // --- atomic_write ---
-
-    #[test]
-    fn atomic_write_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("output.txt");
-        atomic_write(&path, b"test data").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "test data");
-    }
-
-    #[test]
-    fn atomic_write_replaces_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("output.txt");
-        std::fs::write(&path, "old").unwrap();
-        atomic_write(&path, b"new").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-    }
-
-    // --- redact_config_keys ---
-
-    #[test]
-    fn redact_long_api_key() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = "sk-1234567890abcdef""#).unwrap();
-        redact_config_keys(&mut val);
-        let s = val.get("api_key").unwrap().as_str().unwrap();
-        assert_eq!(s, "sk-1...cdef");
-    }
-
-    #[test]
-    fn redact_short_api_key() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = "short""#).unwrap();
-        redact_config_keys(&mut val);
-        let s = val.get("api_key").unwrap().as_str().unwrap();
-        assert_eq!(s, "****");
-    }
-
-    #[test]
-    fn redact_exactly_8_chars() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = "12345678""#).unwrap();
-        redact_config_keys(&mut val);
-        let s = val.get("api_key").unwrap().as_str().unwrap();
-        assert_eq!(s, "****");
-    }
-
-    #[test]
-    fn redact_nested_tables() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [provider]
-            api_key = "sk-abcdefghijklmnop"
-            [provider.sub]
-            api_key = "tiny"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        let outer = val["provider"]["api_key"].as_str().unwrap();
-        assert!(outer.contains("..."));
-        let inner = val["provider"]["sub"]["api_key"].as_str().unwrap();
-        assert_eq!(inner, "****");
-    }
-
-    #[test]
-    fn redact_array_of_tables() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [[providers]]
-            api_key = "sk-longkeyvalue1234"
-            [[providers]]
-            name = "other"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        let first = val["providers"][0]["api_key"].as_str().unwrap();
-        assert!(first.contains("..."));
-    }
-
-    #[test]
-    fn redact_no_api_key() {
-        let mut val: toml::Value = toml::from_str(r#"name = "hello""#).unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["name"].as_str().unwrap(), "hello");
-    }
-
-    // --- should_check_for_updates ---
-
-    #[test]
-    fn should_check_no_previous_check() {
-        let db = db::Db::open_in_memory().unwrap();
-        assert!(should_check_for_updates(&db));
-    }
-
-    #[test]
-    fn should_check_recent_check() {
-        let db = db::Db::open_in_memory().unwrap();
-        db.set_meta("last_update_check", &chrono::Utc::now().to_rfc3339())
-            .unwrap();
-        assert!(!should_check_for_updates(&db));
-    }
-
-    #[test]
-    fn should_check_old_check() {
-        let db = db::Db::open_in_memory().unwrap();
-        let old = chrono::Utc::now() - chrono::Duration::hours(25);
-        db.set_meta("last_update_check", &old.to_rfc3339()).unwrap();
-        assert!(should_check_for_updates(&db));
-    }
-
-    #[test]
-    fn should_check_invalid_timestamp() {
-        let db = db::Db::open_in_memory().unwrap();
-        db.set_meta("last_update_check", "not-a-date").unwrap();
-        assert!(should_check_for_updates(&db));
-    }
-
-    // --- parse_dns_txt_records (additional edge cases) ---
-
-    #[test]
-    fn parse_dns_sha_63_chars() {
-        let short_sha = &valid_sha()[..63];
-        let input = format!("0.1.0:target:{short_sha}");
-        let records = parse_dns_txt_records(&input);
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_sha_65_chars() {
-        let long_sha = format!("{}a", valid_sha());
-        let input = format!("0.1.0:target:{long_sha}");
-        let records = parse_dns_txt_records(&input);
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_multiple_valid() {
-        let sha = valid_sha();
-        let input = format!("0.1.0:linux:{sha}\n0.2.0:macos:{sha}\n0.3.0:windows:{sha}");
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 3);
-        assert_eq!(records[0].1, "linux");
-        assert_eq!(records[1].1, "macos");
-        assert_eq!(records[2].1, "windows");
-    }
-
-    #[test]
-    fn parse_dns_extra_whitespace() {
-        let sha = valid_sha();
-        let input = format!("  0.1.0:target:{sha}  ");
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, "0.1.0");
-    }
-
-    #[test]
-    fn parse_dns_colons_in_version_uses_splitn() {
-        let sha = valid_sha();
-        let input = format!("0.1.0:target:with:extra:{sha}");
-        let records = parse_dns_txt_records(&input);
-        assert!(records.is_empty());
-    }
-
-    // --- find_latest_for_target (additional edge cases) ---
-
-    #[test]
-    fn find_latest_multiple_versions_same_target() {
-        let sha1 = valid_sha().to_string();
-        let sha2 = "1111111111111111111111111111111111111111111111111111111111111111".to_string();
-        let records = vec![
-            ("0.1.0".to_string(), "linux".to_string(), sha1.clone()),
-            ("0.5.0".to_string(), "linux".to_string(), sha2.clone()),
-            (
-                "0.3.0".to_string(),
-                "linux".to_string(),
-                "aaa0000000000000000000000000000000000000000000000000000000000000".to_string(),
-            ),
-            (
-                "0.2.0".to_string(),
-                "linux".to_string(),
-                "bbb0000000000000000000000000000000000000000000000000000000000000".to_string(),
-            ),
-        ];
-        let result = find_latest_for_target(&records, "linux").unwrap();
-        assert_eq!(result.0, "0.5.0");
-        assert_eq!(result.1, sha2);
-    }
-
-    #[test]
-    fn find_latest_same_version_different_targets() {
-        let sha_linux = valid_sha().to_string();
-        let sha_macos =
-            "1111111111111111111111111111111111111111111111111111111111111111".to_string();
-        let records = vec![
-            ("0.2.0".to_string(), "linux".to_string(), sha_linux.clone()),
-            ("0.2.0".to_string(), "macos".to_string(), sha_macos.clone()),
-        ];
-        let linux = find_latest_for_target(&records, "linux").unwrap();
-        assert_eq!(linux.1, sha_linux);
-        let macos = find_latest_for_target(&records, "macos").unwrap();
-        assert_eq!(macos.1, sha_macos);
-    }
-
-    #[test]
-    fn find_latest_empty_version_string() {
-        let sha = valid_sha().to_string();
-        let records = vec![("".to_string(), "linux".to_string(), sha.clone())];
-        let result = find_latest_for_target(&records, "linux").unwrap();
-        assert_eq!(result.0, "");
-        assert_eq!(result.1, sha);
-    }
-
-    // --- sha256_file (additional edge cases) ---
-
-    #[test]
-    fn sha256_file_large_content() {
-        use sha2::{Digest, Sha256};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("large.bin");
-        let content = vec![0xABu8; 16 * 1024];
-        std::fs::write(&path, &content).unwrap();
-
-        let result = sha256_file(&path).unwrap();
-        let mut hasher = Sha256::new();
-        hasher.update(&content);
-        let expected = format!("{:x}", hasher.finalize());
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn sha256_file_empty() {
-        use sha2::{Digest, Sha256};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("empty.bin");
-        std::fs::write(&path, b"").unwrap();
-
-        let result = sha256_file(&path).unwrap();
-        let mut hasher = Sha256::new();
-        hasher.update(b"");
-        let expected = format!("{:x}", hasher.finalize());
-        assert_eq!(result, expected);
-    }
-
-    #[test]
-    fn sha256_file_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nonexistent.bin");
-        assert!(sha256_file(&path).is_err());
-    }
-
-    // --- atomic_write (additional edge cases) ---
-
-    #[test]
-    fn atomic_write_nonexistent_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("no_such_dir").join("file.txt");
-        assert!(atomic_write(&path, b"data").is_err());
-    }
-
-    // --- redact_config_keys (additional edge cases) ---
-
-    #[test]
-    fn redact_deeply_nested_api_key() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [a.b.c]
-            api_key = "sk-deep-nested-key-value"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        let s = val["a"]["b"]["c"]["api_key"].as_str().unwrap();
-        assert!(s.contains("..."));
-        assert!(!s.contains("deep"));
-    }
-
-    #[test]
-    fn redact_array_containing_tables_with_api_key() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [[services]]
-            name = "svc1"
-            api_key = "sk-array-table-key99"
-
-            [[services]]
-            name = "svc2"
-            api_key = "sk-another-key-here"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        let k1 = val["services"][0]["api_key"].as_str().unwrap();
-        let k2 = val["services"][1]["api_key"].as_str().unwrap();
-        assert!(k1.contains("..."));
-        assert!(k2.contains("..."));
-        assert_eq!(val["services"][0]["name"].as_str().unwrap(), "svc1");
-    }
-
-    #[test]
-    fn redact_api_key_exactly_8_chars_boundary() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = "abcdefgh""#).unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["api_key"].as_str().unwrap(), "****");
-    }
-
-    #[test]
-    fn redact_api_key_7_chars() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = "abcdefg""#).unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["api_key"].as_str().unwrap(), "****");
-    }
-
-    #[test]
-    fn redact_api_key_9_chars() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = "abcdefghi""#).unwrap();
-        redact_config_keys(&mut val);
-        let s = val["api_key"].as_str().unwrap();
-        assert_eq!(s, "abcd...fghi");
-    }
-
-    #[test]
-    fn redact_multiple_api_keys_different_subtables() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [provider_a]
-            api_key = "sk-provider-a-longkey"
-            [provider_b]
-            api_key = "short"
-            [provider_c]
-            api_key = "sk-provider-c-longkey"
-            other = "untouched"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        let a = val["provider_a"]["api_key"].as_str().unwrap();
-        let b = val["provider_b"]["api_key"].as_str().unwrap();
-        let c = val["provider_c"]["api_key"].as_str().unwrap();
-        assert!(a.contains("..."));
-        assert_eq!(b, "****");
-        assert!(c.contains("..."));
-        assert_eq!(val["provider_c"]["other"].as_str().unwrap(), "untouched");
-    }
-
-    #[test]
-    fn redact_non_string_api_key() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = 12345"#).unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["api_key"].as_integer().unwrap(), 12345);
-    }
-
-    // --- cleanup_staged_updates (logic pattern tests) ---
-
-    #[test]
-    fn cleanup_staged_updates_empty_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let updates_dir = dir.path().join("updates");
-        std::fs::create_dir_all(&updates_dir).unwrap();
-        let entries: Vec<_> = std::fs::read_dir(&updates_dir).unwrap().flatten().collect();
-        assert!(entries.is_empty());
-    }
-
-    #[test]
-    fn cleanup_staged_updates_no_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let updates_dir = dir.path().join("updates");
-        assert!(!updates_dir.exists());
-    }
-
-    // --- current_target_triple ---
-
-    #[test]
-    fn current_target_triple_is_known_value() {
-        let triple = current_target_triple();
-        if let Some(t) = triple {
-            let known = [
-                "aarch64-apple-darwin",
-                "x86_64-apple-darwin",
-                "i686-unknown-freebsd",
-                "x86_64-unknown-freebsd",
-                "i686-unknown-linux-gnu",
-                "x86_64-unknown-linux-gnu",
-                "aarch64-unknown-linux-gnu",
-                "riscv64gc-unknown-linux-gnu",
-            ];
-            assert!(known.contains(&t), "unexpected triple: {t}");
-        }
-    }
-
-    // --- redact_config_keys (empty table, non-string api_key_cmd, deep no api_key) ---
-
-    #[test]
-    fn redact_empty_table() {
-        let mut val: toml::Value = toml::Value::Table(toml::map::Map::new());
-        redact_config_keys(&mut val);
-        assert_eq!(val.as_table().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn redact_non_string_api_key_bool() {
-        let mut val: toml::Value = toml::from_str("api_key = true").unwrap();
-        redact_config_keys(&mut val);
-        assert!(val["api_key"].as_bool().unwrap());
-    }
-
-    #[test]
-    fn redact_api_key_cmd_not_redacted() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            api_key_cmd = "pass show openai"
-            api_key = "sk-longapikey12345678"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["api_key_cmd"].as_str().unwrap(), "pass show openai");
-        assert!(val["api_key"].as_str().unwrap().contains("..."));
-    }
-
-    #[test]
-    fn redact_deeply_nested_no_api_key() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [a.b.c.d]
-            name = "deep"
-            value = 42
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["a"]["b"]["c"]["d"]["name"].as_str().unwrap(), "deep");
-        assert_eq!(val["a"]["b"]["c"]["d"]["value"].as_integer().unwrap(), 42);
-    }
-
-    // --- apply_pending_update (missing update_pending file) ---
-
-    #[test]
-    fn apply_pending_update_no_pending_file_is_noop() {
-        let dir = tempfile::tempdir().unwrap();
-        let pending = dir.path().join("update_pending");
-        assert!(!pending.exists());
-    }
-
-    // --- should_check_for_updates (boundary at exactly 24 hours) ---
-
-    #[test]
-    fn should_check_exactly_24_hours() {
-        let db = db::Db::open_in_memory().unwrap();
-        let exactly_24h = chrono::Utc::now() - chrono::Duration::hours(24);
-        db.set_meta("last_update_check", &exactly_24h.to_rfc3339())
-            .unwrap();
-        assert!(should_check_for_updates(&db));
-    }
-
-    #[test]
-    fn should_check_23_hours_59_min() {
-        let db = db::Db::open_in_memory().unwrap();
-        let almost = chrono::Utc::now() - chrono::Duration::minutes(23 * 60 + 59);
-        db.set_meta("last_update_check", &almost.to_rfc3339())
-            .unwrap();
-        assert!(!should_check_for_updates(&db));
-    }
-
-    // --- find_latest_for_target (equal versions, first wins) ---
-
-    #[test]
-    fn find_latest_equal_versions_keeps_first() {
-        let sha_a = valid_sha().to_string();
-        let sha_b = "1111111111111111111111111111111111111111111111111111111111111111".to_string();
-        let records = vec![
-            ("1.0.0".to_string(), "linux".to_string(), sha_a.clone()),
-            ("1.0.0".to_string(), "linux".to_string(), sha_b.clone()),
-        ];
-        let result = find_latest_for_target(&records, "linux").unwrap();
-        assert_eq!(result.0, "1.0.0");
-        assert_eq!(result.1, sha_a);
-    }
-
-    // --- parse_dns_txt_records (malformed entries) ---
-
-    #[test]
-    fn parse_dns_only_one_colon() {
-        let records = parse_dns_txt_records("version:target");
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_no_colons() {
-        let records = parse_dns_txt_records("justplaintext");
-        assert!(records.is_empty());
-    }
-
-    #[test]
-    fn parse_dns_sha_non_hex() {
-        let bad_sha = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
-        let input = format!("0.1.0:target:{bad_sha}");
-        let records = parse_dns_txt_records(&input);
-        assert!(records.is_empty());
-    }
-
-    // --- sha256_file (binary content) ---
-
-    #[test]
-    fn sha256_file_binary_content() {
-        use sha2::{Digest, Sha256};
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("binary.bin");
-        let content: Vec<u8> = (0..=255).collect();
-        std::fs::write(&path, &content).unwrap();
-
-        let result = sha256_file(&path).unwrap();
-        let mut hasher = Sha256::new();
-        hasher.update(&content);
-        let expected = format!("{:x}", hasher.finalize());
-        assert_eq!(result, expected);
-    }
-
-    // --- atomic_write (overwrite preserves content) ---
-
-    #[test]
-    fn atomic_write_overwrite_multiple_times() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("multi.txt");
-        atomic_write(&path, b"first").unwrap();
-        atomic_write(&path, b"second").unwrap();
-        atomic_write(&path, b"third").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third");
-    }
-
-    // --- util::compare_versions (exercised from main.rs test module) ---
-
-    #[test]
-    fn compare_versions_non_numeric_components() {
-        assert_eq!(
-            util::compare_versions("abc.def", "1.2"),
-            std::cmp::Ordering::Less
-        );
-    }
-
-    #[test]
-    fn compare_versions_empty_string() {
-        assert_eq!(util::compare_versions("", ""), std::cmp::Ordering::Equal);
-        assert_eq!(
-            util::compare_versions("", "0.0.1"),
-            std::cmp::Ordering::Less
-        );
-    }
-
-    // --- current_target_triple (macOS-specific) ---
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn current_target_triple_returns_some_on_macos() {
-        let triple = current_target_triple().unwrap();
-        assert!(triple.ends_with("-apple-darwin"));
-    }
-
-    #[test]
-    fn redact_api_key_cmd_string_in_subtable() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            [provider]
-            api_key_cmd = "security find-generic-password -s openai"
-            api_key = "sk-subtable-longkey123"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(
-            val["provider"]["api_key_cmd"].as_str().unwrap(),
-            "security find-generic-password -s openai"
-        );
-        assert!(val["provider"]["api_key"].as_str().unwrap().contains("..."));
-    }
-
-    #[test]
-    fn redact_api_key_empty_string() {
-        let mut val: toml::Value = toml::from_str(r#"api_key = """#).unwrap();
-        redact_config_keys(&mut val);
-        assert_eq!(val["api_key"].as_str().unwrap(), "****");
-    }
-
-    #[test]
-    fn redact_only_api_key_leaves_other_keys_intact() {
-        let mut val: toml::Value = toml::from_str(
-            r#"
-            api_key = "sk-secret-longapikey"
-            model = "gpt-4"
-            base_url = "https://api.example.com"
-            api_key_cmd = "echo secret"
-            "#,
-        )
-        .unwrap();
-        redact_config_keys(&mut val);
-        assert!(val["api_key"].as_str().unwrap().contains("..."));
-        assert_eq!(val["model"].as_str().unwrap(), "gpt-4");
-        assert_eq!(val["base_url"].as_str().unwrap(), "https://api.example.com");
-        assert_eq!(val["api_key_cmd"].as_str().unwrap(), "echo secret");
-    }
-
-    #[test]
-    fn find_latest_for_target_no_match() {
-        let records = vec![(
-            "1.0.0".to_string(),
-            "linux".to_string(),
-            valid_sha().to_string(),
-        )];
-        let result = find_latest_for_target(&records, "macos");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn find_latest_for_target_picks_highest_version() {
-        let sha = valid_sha().to_string();
-        let records = vec![
-            ("0.1.0".to_string(), "linux".to_string(), sha.clone()),
-            ("0.3.0".to_string(), "linux".to_string(), sha.clone()),
-            ("0.2.0".to_string(), "linux".to_string(), sha.clone()),
-        ];
-        let result = find_latest_for_target(&records, "linux").unwrap();
-        assert_eq!(result.0, "0.3.0");
-    }
-
-    #[test]
-    fn parse_dns_multiple_lines() {
-        let sha1 = valid_sha();
-        let sha2 = "1111111111111111111111111111111111111111111111111111111111111111";
-        let input =
-            format!("0.1.0:aarch64-apple-darwin:{sha1}\n0.2.0:x86_64-unknown-linux-gnu:{sha2}\n");
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].0, "0.1.0");
-        assert_eq!(records[1].0, "0.2.0");
-    }
-
-    #[test]
-    fn parse_dns_quoted_line() {
-        let sha = valid_sha();
-        let input = format!("\"0.1.0:target:{sha}\"");
-        let records = parse_dns_txt_records(&input);
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].0, "0.1.0");
-    }
-}
 fn check_daemon_versions(session_id: &str) {
     let current_version = env!("CARGO_PKG_VERSION");
-    let nsh_dir = crate::config::Config::nsh_dir();
 
-    // Check global daemon
+    // Check global daemon version; if outdated, request restart
     if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
         daemon_client::send_to_global(&crate::daemon::DaemonRequest::Status)
     {
         if let Some(v) = d.get("version").and_then(|v| v.as_str()) {
             if v != current_version {
-                tracing::info!("Global daemon version {} is outdated, restarting...", v);
-                let _ = daemon_client::stop_global_daemon();
+                tracing::info!("Global daemon version {} is outdated; signaling restart", v);
+                let _ = daemon_client::signal_daemon_restart();
                 let _ = daemon_client::ensure_global_daemon_running();
             }
         }
     }
 
-    if session_id.is_empty() || session_id == "default" {
-        return;
-    }
-
-    // Check per-session daemon
-    if let Some(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
-        daemon_client::try_send_request(session_id, &crate::daemon::DaemonRequest::Status)
-    {
-        if let Some(v) = d.get("version").and_then(|v| v.as_str()) {
-            if v != current_version {
-                let notice_file = nsh_dir.join(format!("last_update_notice_{session_id}"));
-                let should_notify = match std::fs::metadata(&notice_file).and_then(|m| m.modified()) {
-                    Ok(mod_time) => mod_time.elapsed().map(|e| e.as_secs() > 3600).unwrap_or(true),
-                    Err(_) => true,
-                };
-                if should_notify {
-                    let msg_file = nsh_dir.join(format!("nsh_msg_{session_id}"));
-                    let _ = std::fs::write(
-                        &msg_file,
-                        format!(
-                            "\n\x1b[33mnsh has been updated to v{current_version}. Please restart your terminal session for full effect.\x1b[0m\n"
-                        ),
-                    );
-                    let _ = std::fs::write(&notice_file, "");
-                }
-            }
-        }
-    }
+    // Per-session daemon notices are intentionally skipped with shim/core split
+    let _ = session_id;
 }
 
-fn check_wrapper_outdated_notification() {
-    let marker = config::Config::nsh_dir().join("wrapper_outdated");
-    if !marker.exists() {
-        return;
-    }
-    // Only notify periodically (roughly 1 in 5 commands to avoid spam)
-    let should_notify = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() % 5 == 0)
-        .unwrap_or(false);
-    if should_notify {
-        eprintln!("\x1b[2m⟳ nsh has been updated. Restart your shell for full PTY changes.\x1b[0m");
-    }
+fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }

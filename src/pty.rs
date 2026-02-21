@@ -1,3 +1,7 @@
+//! # Stable Shim Boundary
+//!
+//! Part of the nsh stable shim boundary. See `src/shim.rs`.
+//! Changes here should be rare and backward-compatible.
 // unix-specific module; gated by cfg at inclusion site
 
 use rustix::pty::{grantpt, openpt, ptsname, unlockpt};

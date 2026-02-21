@@ -1,3 +1,10 @@
+//! # Stable Shim Boundary
+//!
+//! This module (pump loop + capture engine) is part of the stable shim boundary.
+//! When using the shim/core split, this remains within the `nsh` shim binary.
+//!
+//! Changes here should be rare and backward-compatible.
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

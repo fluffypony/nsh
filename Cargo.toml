@@ -6,6 +6,18 @@ description = "Natural Shell — AI-powered shell assistant"
 license = "BSD-3-Clause"
 repository = "https://github.com/fluffypony/nsh"
 
+[lib]
+name = "nsh"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nsh"
+path = "src/shim_main.rs"
+
+[[bin]]
+name = "nsh-core"
+path = "src/core_main.rs"
+
 [dependencies]
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -79,7 +91,7 @@ tar = "0.4"
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["termios", "pty", "process", "pipe", "event", "stdio", "fs"] }
 libc = "0.2"
-signal-hook = { version = "0.4", features = ["iterator"] }
+signal-hook = { version = "0.4", features = ["iterator", "extended-siginfo"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

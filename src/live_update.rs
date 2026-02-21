@@ -62,6 +62,7 @@ pub fn running_hook_hash() -> &'static str {
 pub enum UpdateAction {
     None,
     DaemonRestartOnly,
+    // With shim/core split the wrapper is frozen; terminal restart no longer required.
     TerminalRestartNeeded,
 }
 
@@ -71,6 +72,7 @@ pub fn classify_update(daemon_protocol: u64) -> UpdateAction {
     if daemon_protocol == our_protocol {
         UpdateAction::None
     } else {
+        // No-op with shim/core split; keep variant for compatibility
         UpdateAction::TerminalRestartNeeded
     }
 }

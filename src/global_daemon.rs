@@ -1,11 +1,10 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
-use std::sync::atomic::AtomicBool;
 
 // ── Memory background task types ──────────────────────
 enum MemoryTask {
@@ -139,36 +138,40 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
 
+    // Shared restart flag (SIGHUP and monitor thread can set this)
+    let restart_pending = Arc::new(AtomicBool::new(false));
+
     // Spawn system monitor thread — samples CPU/memory every 10 seconds. Also watches binary mtime.
-    let monitor_exe_path = std::env::current_exe().ok();
-    let monitor_initial_mtime = monitor_exe_path
-        .as_ref()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .and_then(|m| m.modified().ok());
-    std::thread::spawn(move || {
-        loop {
-            let _ = crate::context::sample_volatile_info();
-            let _ = crate::context::get_semi_dynamic_info();
-            if let Some(ref path) = monitor_exe_path {
-                if let Ok(meta) = std::fs::metadata(path) {
-                    if let Ok(mtime) = meta.modified() {
-                        if Some(mtime) != monitor_initial_mtime {
-                            tracing::info!("nshd: binary updated on disk, shutting down for restart");
-                            std::process::exit(0);
+    {
+        let monitor_exe_path = std::env::current_exe().ok();
+        let monitor_initial_mtime = monitor_exe_path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        let restart_flag = Arc::clone(&restart_pending);
+        std::thread::spawn(move || {
+            loop {
+                let _ = crate::context::sample_volatile_info();
+                let _ = crate::context::get_semi_dynamic_info();
+                if let Some(ref path) = monitor_exe_path {
+                    if let Ok(meta) = std::fs::metadata(path) {
+                        if let Ok(mtime) = meta.modified() {
+                            if Some(mtime) != monitor_initial_mtime {
+                                tracing::info!("nshd: binary updated on disk, scheduling graceful restart");
+                                restart_flag.store(true, Ordering::Relaxed);
+                                break;
+                            }
                         }
                     }
                 }
+                std::thread::sleep(Duration::from_secs(10));
             }
-            std::thread::sleep(Duration::from_secs(10));
-        }
-    });
+        });
+    }
 
     #[cfg(unix)]
     {
         listener.set_nonblocking(true)?;
-
-        use std::sync::Arc;
-        let restart_pending = Arc::new(AtomicBool::new(false));
         // Record the binary's mtime at daemon startup
         let exe_path = std::env::current_exe().ok();
         let exe_mtime_at_start = exe_path
@@ -176,6 +179,14 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             .and_then(|p| std::fs::metadata(p).ok())
             .and_then(|m| m.modified().ok());
         let mut last_binary_check = Instant::now();
+
+        // Handle SIGHUP for graceful restart
+        {
+            let hup_flag = Arc::clone(&restart_pending);
+            signal_hook::flag::register(signal_hook::consts::SIGHUP, hup_flag)?;
+        }
+
+        let mut restart_requested_at: Option<Instant> = None;
 
         loop {
             match listener.accept() {
@@ -223,15 +234,24 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    // Graceful restart: exit when no active connections
-                    if restart_pending.load(std::sync::atomic::Ordering::Relaxed)
-                        && active_conns.load(std::sync::atomic::Ordering::Relaxed) == 0
-                    {
-                        log_daemon(
-                            "server.lifecycle",
-                            "restarting: binary updated, 0 active connections",
-                        );
-                        break;
+                    // Graceful restart: drain with timeout
+                    if restart_pending.load(Ordering::Relaxed) {
+                        if restart_requested_at.is_none() {
+                            restart_requested_at = Some(Instant::now());
+                            log_daemon("server.lifecycle", "restart requested, draining connections...");
+                        }
+                        let drained = active_conns.load(Ordering::Relaxed) == 0;
+                        let timed_out = restart_requested_at
+                            .map(|t| t.elapsed() > Duration::from_secs(5))
+                            .unwrap_or(false);
+                        if drained || timed_out {
+                            if !drained {
+                                log_daemon("server.lifecycle", "drain timeout (5s), force exiting for restart");
+                            } else {
+                                log_daemon("server.lifecycle", "all connections drained, exiting for restart");
+                            }
+                            break;
+                        }
                     }
                     // Also check for the restart marker file from clients
                     let restart_marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
@@ -262,6 +282,26 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&pid_path);
     log_daemon("server.lifecycle", "stopped global daemon");
     drop(lock_file);
+
+    // Re-exec if restart was requested, so the new daemon starts immediately
+    if restart_pending.load(Ordering::Relaxed) {
+        let args: Vec<String> = std::env::args().collect();
+        let core_path = crate::config::Config::nsh_dir().join("bin").join("nsh-core");
+        let target = if core_path.exists() {
+            core_path
+        } else if let Ok(exe) = std::env::current_exe() {
+            exe
+        } else {
+            return Ok(());
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new(&target).args(&args[1..]).exec();
+            tracing::info!("nshd re-exec failed: {err}");
+        }
+    }
+
     Ok(())
 }
 

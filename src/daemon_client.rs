@@ -334,6 +334,60 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Send SIGHUP to the running global daemon to request a graceful restart.
+/// Returns true if the signal was sent successfully.
+pub fn signal_daemon_restart() -> bool {
+    #[cfg(unix)]
+    {
+        let pid_path = crate::daemon::global_daemon_pid_path();
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                return unsafe { libc::kill(pid, libc::SIGHUP) } == 0;
+            }
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Send a request to the global daemon with retry logic for transient failures
+/// (e.g., during daemon restarts). Auto-starts daemon on later retries.
+#[cfg(unix)]
+pub fn send_to_global_with_retry(request: DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let max_attempts = 6; // ~3s total with backoff
+    for attempt in 0..max_attempts {
+        match send_to_global(&request) {
+            Ok(resp) => return Ok(resp),
+            Err(e) if attempt < max_attempts - 1 => {
+                let msg = e.to_string();
+                let is_transient = msg.contains("Connection refused")
+                    || msg.contains("No such file")
+                    || msg.contains("broken pipe")
+                    || msg.contains("connection reset");
+                if !is_transient {
+                    return Err(e);
+                }
+                let delay = std::time::Duration::from_millis(200 * (attempt as u64 + 1));
+                std::thread::sleep(delay);
+                if attempt >= 1 {
+                    let _ = ensure_global_daemon_running();
+                }
+                tracing::debug!("daemon connection retry {}/{}: {}", attempt + 1, max_attempts, msg);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(not(unix))]
+pub fn send_to_global_with_retry(_request: DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    anyhow::bail!("global daemon not available on this platform")
+}
+
 // (Memory client helpers were removed; use DbAccess via DaemonDb instead.)
 
 #[cfg(test)]
