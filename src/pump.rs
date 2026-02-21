@@ -776,6 +776,9 @@ fn handle_daemon_connection_inner(
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
 
+    // Include session context in logs to aid debugging and ensure param is meaningful
+    tracing::trace!("daemon: handling per-session connection for session={}", session_id);
+
     // Allow larger responses without premature timeouts
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
