@@ -11,6 +11,11 @@ pub fn route(event: &ShellEvent) -> RoutingDecision {
             decision.reasoning = "Session lifecycle event".into();
             return decision;
         }
+        ShellEventType::ProjectSwitch => {
+            decision.update_semantic = true;
+            decision.reasoning = "Project switch may reveal project context".into();
+            return decision;
+        }
         ShellEventType::UserInstruction => {
             if let Some(ref text) = event.instruction {
                 if is_explicit_memory_directive(text) {

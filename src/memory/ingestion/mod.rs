@@ -52,7 +52,7 @@ impl IngestionBuffer {
 pub fn can_fast_path(event: &ShellEvent) -> bool {
     use crate::memory::types::ShellEventType;
     match event.event_type {
-        ShellEventType::SessionStart | ShellEventType::SessionEnd => true,
+        ShellEventType::SessionStart | ShellEventType::SessionEnd | ShellEventType::ProjectSwitch => true,
         ShellEventType::CommandExecution => {
             if let Some(ref cmd) = event.command {
                 classifier::is_low_signal(cmd) || event.exit_code == Some(0) && event.output.as_ref().map_or(true, |o| o.len() < 200)
@@ -103,6 +103,14 @@ pub fn fast_path_episodic(event: &ShellEvent) -> crate::memory::types::EpisodicE
             Actor::Assistant,
             event.instruction.clone().unwrap_or_else(|| "Assistant action".into()),
         ),
+        ShellEventType::ProjectSwitch => {
+            let dir = event.working_dir.as_deref().unwrap_or("unknown");
+            (
+                EventType::ProjectSwitch,
+                Actor::System,
+                format!("Switched to project at {dir}"),
+            )
+        }
     };
 
     let keywords = generate_fast_path_keywords(event);

@@ -210,6 +210,10 @@ fn run_write_thread(
     memory: Arc<crate::memory::MemorySystem>,
     memory_tx: MemoryTaskSender,
 ) {
+    // Track last known project root per session for ProjectSwitch detection
+    let mut session_project_roots: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
     loop {
         let first = match rx.recv() {
             Ok(cmd) => cmd,
@@ -231,7 +235,7 @@ fn run_write_thread(
             if let Ok(()) = db.conn_execute_batch("BEGIN IMMEDIATE;") {
                 let mut pending: Vec<(mpsc::Sender<DaemonResponse>, DaemonResponse)> = Vec::new();
                 for cmd in batch {
-                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx);
+                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx, &mut session_project_roots);
                     pending.push((cmd.reply, resp));
                 }
                 if db.conn_execute_batch("COMMIT;").is_err() {
@@ -246,13 +250,13 @@ fn run_write_thread(
                 }
             } else {
                 for cmd in batch {
-                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx);
+                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx, &mut session_project_roots);
                     let _ = cmd.reply.send(resp);
                 }
             }
         } else {
             let cmd = batch.into_iter().next().unwrap();
-            let resp = execute_write(&db, cmd.request, &memory, &memory_tx);
+            let resp = execute_write(&db, cmd.request, &memory, &memory_tx, &mut session_project_roots);
             let _ = cmd.reply.send(resp);
         }
     }
@@ -323,6 +327,7 @@ fn execute_write(
     request: DaemonRequest,
     memory: &crate::memory::MemorySystem,
     memory_tx: &MemoryTaskSender,
+    session_project_roots: &mut std::collections::HashMap<String, String>,
 ) -> DaemonResponse {
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_write.request", &req_dbg);
@@ -361,7 +366,31 @@ fn execute_write(
                     {
                         let _ = db.update_summary(id, &trivial);
                     }
-                    // memory system removed: no package association persistence
+                    // Detect project switches via CWD change
+                    if let Some(project_root) = detect_project_root_fast(&cwd) {
+                        let switched = match session_project_roots.get(&session) {
+                            Some(prev) => prev != &project_root,
+                            None => true, // first command in session, record but don't emit event
+                        };
+                        let is_first = !session_project_roots.contains_key(&session);
+                        session_project_roots.insert(session.clone(), project_root.clone());
+                        if switched && !is_first {
+                            let event = crate::memory::types::ShellEvent {
+                                event_type: crate::memory::types::ShellEventType::ProjectSwitch,
+                                command: None,
+                                output: None,
+                                exit_code: None,
+                                working_dir: Some(cwd.clone()),
+                                session_id: Some(session.clone()),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                git_context: None,
+                                instruction: None,
+                                file_path: None,
+                            };
+                            memory.record_event(event);
+                        }
+                    }
+
                     if let Ok(Some((conv_id, suggested_cmd))) =
                         db.find_pending_conversation(&session)
                     {
@@ -407,7 +436,10 @@ fn execute_write(
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::EndSession { session } => match db.end_session(&session) {
-            Ok(()) => DaemonResponse::ok(),
+            Ok(()) => {
+                session_project_roots.remove(&session);
+                DaemonResponse::ok()
+            }
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::SetSessionLabel { session, label } => {
@@ -1078,6 +1110,46 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::MemoryClearAll
             | DaemonRequest::MemoryClearByType { .. }
     )
+}
+
+/// Walk up from `cwd` to find a project root (directory containing `.git`, `Cargo.toml`,
+/// `package.json`, `go.mod`, `pyproject.toml`, etc.). Returns the root path string,
+/// or `None` if the CWD is at or above the home directory with no markers.
+fn detect_project_root_fast(cwd: &str) -> Option<String> {
+    use std::path::Path;
+
+    let markers = [
+        ".git",
+        "Cargo.toml",
+        "package.json",
+        "go.mod",
+        "pyproject.toml",
+        "setup.py",
+        "Makefile",
+        "CMakeLists.txt",
+        "pom.xml",
+        "build.gradle",
+    ];
+
+    let mut dir = Path::new(cwd);
+    let home = dirs::home_dir();
+    loop {
+        for marker in &markers {
+            if dir.join(marker).exists() {
+                return Some(dir.to_string_lossy().to_string());
+            }
+        }
+        // Stop at home directory or filesystem root
+        if let Some(ref h) = home {
+            if dir == h.as_path() {
+                return None;
+            }
+        }
+        match dir.parent() {
+            Some(p) if p != dir => dir = p,
+            _ => return None,
+        }
+    }
 }
 
 #[cfg(unix)]

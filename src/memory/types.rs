@@ -277,6 +277,7 @@ pub enum ShellEventType {
     AssistantAction,
     SessionStart,
     SessionEnd,
+    ProjectSwitch,
 }
 
 impl ShellEventType {
@@ -288,6 +289,7 @@ impl ShellEventType {
             ShellEventType::AssistantAction => "assistant_action",
             ShellEventType::SessionStart => "session_start",
             ShellEventType::SessionEnd => "session_end",
+            ShellEventType::ProjectSwitch => "project_switch",
         }
     }
 }
