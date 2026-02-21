@@ -135,4 +135,71 @@ mod tests {
         let items = list_all(&conn).unwrap();
         assert_eq!(items[0].summary, "new summary");
     }
+
+    #[test]
+    fn delete_removes_items() {
+        let conn = setup();
+        let id = insert(&conn, "workflow", "test", "test", "[]", "test").unwrap();
+        assert_eq!(count(&conn).unwrap(), 1);
+        delete(&conn, &[id]).unwrap();
+        assert_eq!(count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn increment_access_updates_count() {
+        let conn = setup();
+        let id = insert(&conn, "workflow", "deploy", "deploy flow", "[]", "deploy").unwrap();
+        increment_access(&conn, &id).unwrap();
+        increment_access(&conn, &id).unwrap();
+        increment_access(&conn, &id).unwrap();
+
+        let items = list_all(&conn).unwrap();
+        assert_eq!(items[0].access_count, 3);
+    }
+
+    #[test]
+    fn search_bm25_empty_returns_empty() {
+        let conn = setup();
+        insert(&conn, "workflow", "deploy", "deploy to prod", "[]", "deploy").unwrap();
+        let results = search_bm25(&conn, "", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn list_all_returns_in_order() {
+        let conn = setup();
+        insert(&conn, "workflow", "a", "first", "[]", "first").unwrap();
+        insert(&conn, "fix", "b", "second", "[]", "second").unwrap();
+
+        let items = list_all(&conn).unwrap();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn search_finds_by_steps_content() {
+        let conn = setup();
+        insert(
+            &conn,
+            "workflow",
+            "deploy",
+            "Deployment workflow",
+            r#"["run cargo build --release", "copy binary to server", "restart systemd service"]"#,
+            "deploy production release",
+        ).unwrap();
+
+        let results = search_bm25(&conn, "systemd service", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn update_preserves_type_and_trigger() {
+        let conn = setup();
+        let id = insert(&conn, "fix", "error-E0433", "fix missing import", "[]", "fix").unwrap();
+        update(&conn, &id, "fix missing import with use statement", r#"["add use crate::foo"]"#, "fix import").unwrap();
+
+        let items = list_all(&conn).unwrap();
+        assert_eq!(items[0].entry_type, "fix");
+        assert_eq!(items[0].trigger_pattern, "error-E0433");
+        assert_eq!(items[0].summary, "fix missing import with use statement");
+    }
 }

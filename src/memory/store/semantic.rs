@@ -176,4 +176,80 @@ mod tests {
         let items = list_all(&conn).unwrap();
         assert_eq!(items[0].access_count, 2);
     }
+
+    #[test]
+    fn delete_removes_items() {
+        let conn = setup();
+        let id = insert_or_update(&conn, "fact", "general", "test", None, "test").unwrap();
+        assert_eq!(count(&conn).unwrap(), 1);
+        delete(&conn, &[id]).unwrap();
+        assert_eq!(count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn list_recent_ordered_by_updated_at() {
+        let conn = setup();
+        insert_or_update(&conn, "first", "general", "first fact", None, "first").unwrap();
+        insert_or_update(&conn, "second", "general", "second fact", None, "second").unwrap();
+
+        let items = list_recent(&conn, 10).unwrap();
+        assert_eq!(items.len(), 2);
+        // Most recently updated should come first
+    }
+
+    #[test]
+    fn update_by_id_modifies_fields() {
+        let conn = setup();
+        let id = insert_or_update(&conn, "fact", "general", "old summary", None, "old").unwrap();
+        update_by_id(&conn, &id, "new summary", Some("new details"), "new keywords").unwrap();
+
+        let items = list_all(&conn).unwrap();
+        assert_eq!(items[0].summary, "new summary");
+        assert_eq!(items[0].details.as_ref().unwrap(), "new details");
+        assert_eq!(items[0].search_keywords, "new keywords");
+    }
+
+    #[test]
+    fn search_bm25_empty_query() {
+        let conn = setup();
+        insert_or_update(&conn, "fact", "general", "test", None, "test").unwrap();
+        let results = search_bm25(&conn, "", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn insert_or_update_preserves_category_on_update() {
+        let conn = setup();
+        insert_or_update(&conn, "fact", "tools", "original", None, "fact").unwrap();
+        insert_or_update(&conn, "fact", "knowledge", "updated", None, "fact").unwrap();
+
+        let items = list_all(&conn).unwrap();
+        assert_eq!(items[0].category, "knowledge", "category should be updated");
+        assert_eq!(items[0].summary, "updated");
+    }
+
+    #[test]
+    fn search_finds_by_name() {
+        let conn = setup();
+        insert_or_update(&conn, "Docker compose setup", "tools", "Uses docker-compose for local dev", None, "docker compose").unwrap();
+
+        let results = search_bm25(&conn, "Docker", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Docker compose setup");
+    }
+
+    #[test]
+    fn multiple_facts_searchable() {
+        let conn = setup();
+        insert_or_update(&conn, "Rust toolchain", "tools", "Uses Rust 2024 edition", None, "rust toolchain").unwrap();
+        insert_or_update(&conn, "Python environment", "tools", "Uses Python 3.12 with venv", None, "python venv").unwrap();
+
+        let rust = search_bm25(&conn, "rust", 10).unwrap();
+        assert_eq!(rust.len(), 1);
+        assert_eq!(rust[0].name, "Rust toolchain");
+
+        let python = search_bm25(&conn, "python", 10).unwrap();
+        assert_eq!(python.len(), 1);
+        assert_eq!(python[0].name, "Python environment");
+    }
 }

@@ -177,4 +177,79 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Cargo");
     }
+
+    #[test]
+    fn delete_removes_items() {
+        let conn = setup();
+        let id = insert(&conn, "file", Some("/tmp/f"), None, "test", "test", None, "test").unwrap();
+        assert_eq!(count(&conn).unwrap(), 1);
+        delete(&conn, &[id]).unwrap();
+        assert_eq!(count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn search_bm25_empty_returns_empty() {
+        let conn = setup();
+        insert(&conn, "config", Some("/etc/test"), None, "Test Config", "test config", None, "test config").unwrap();
+        let results = search_bm25(&conn, "", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_bm25_finds_by_content() {
+        let conn = setup();
+        insert(
+            &conn,
+            "config",
+            Some("/home/user/.gitconfig"),
+            None,
+            "Git config",
+            "Git configuration",
+            Some("[alias]\nco = checkout\nbr = branch"),
+            "git config alias",
+        ).unwrap();
+
+        let results = search_bm25(&conn, "checkout branch", 10).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn insert_with_all_fields() {
+        let conn = setup();
+        let id = insert(
+            &conn,
+            "doc",
+            Some("/home/user/project/README.md"),
+            Some("hash123"),
+            "Project README",
+            "Main project documentation",
+            Some("# My Project\n\nThis is a cool project."),
+            "readme project documentation",
+        ).unwrap();
+        assert!(id.starts_with("res_"));
+
+        let results = search_bm25(&conn, "project documentation", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_path.as_ref().unwrap(), "/home/user/project/README.md");
+    }
+
+    #[test]
+    fn upsert_preserves_resource_type() {
+        let conn = setup();
+        upsert_by_path(&conn, "config", "/etc/test", "h1", "Test", "v1", None, "test").unwrap();
+        upsert_by_path(&conn, "config", "/etc/test", "h2", "Test Updated", "v2", None, "test").unwrap();
+
+        let results = get_for_cwd(&conn, "/etc", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Test Updated");
+    }
+
+    #[test]
+    fn get_for_cwd_no_match() {
+        let conn = setup();
+        insert(&conn, "file", Some("/home/other/file"), None, "File", "test", None, "test").unwrap();
+
+        let results = get_for_cwd(&conn, "/home/user", 10).unwrap();
+        assert!(results.is_empty());
+    }
 }

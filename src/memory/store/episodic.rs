@@ -259,4 +259,211 @@ mod tests {
         let uncons = list_unconsolidated(&conn, 10).unwrap();
         assert_eq!(uncons.len(), 0);
     }
+
+    #[test]
+    fn merge_appends_details() {
+        let conn = setup();
+        let event = EpisodicEventCreate {
+            event_type: EventType::CommandExecution,
+            actor: Actor::User,
+            summary: "Original summary".into(),
+            details: Some("Original details".into()),
+            command: Some("cargo build".into()),
+            exit_code: Some(0),
+            working_dir: None,
+            project_context: None,
+            search_keywords: "cargo build".into(),
+        };
+        let id = insert(&conn, &event).unwrap();
+
+        merge(&conn, &id, "Updated summary", Some("Additional info"), "cargo build updated").unwrap();
+
+        let events = list_recent(&conn, 10, None, None).unwrap();
+        assert_eq!(events[0].summary, "Updated summary");
+        assert!(events[0].details.as_ref().unwrap().contains("Original details"));
+        assert!(events[0].details.as_ref().unwrap().contains("Additional info"));
+    }
+
+    #[test]
+    fn merge_preserves_existing_details_when_none_added() {
+        let conn = setup();
+        let event = EpisodicEventCreate {
+            event_type: EventType::CommandExecution,
+            actor: Actor::User,
+            summary: "test".into(),
+            details: Some("existing details".into()),
+            command: None,
+            exit_code: None,
+            working_dir: None,
+            project_context: None,
+            search_keywords: "test".into(),
+        };
+        let id = insert(&conn, &event).unwrap();
+
+        merge(&conn, &id, "updated", None, "test").unwrap();
+
+        let events = list_recent(&conn, 10, None, None).unwrap();
+        assert_eq!(events[0].details.as_ref().unwrap(), "existing details");
+    }
+
+    #[test]
+    fn search_bm25_finds_by_keywords() {
+        let conn = setup();
+        let event = EpisodicEventCreate {
+            event_type: EventType::CommandExecution,
+            actor: Actor::User,
+            summary: "Built the project".into(),
+            details: None,
+            command: Some("cargo build".into()),
+            exit_code: Some(0),
+            working_dir: None,
+            project_context: None,
+            search_keywords: "cargo build rust compile".into(),
+        };
+        insert(&conn, &event).unwrap();
+
+        let results = search_bm25(&conn, "rust compile", 10, None, None).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_bm25_empty_query() {
+        let conn = setup();
+        insert(&conn, &EpisodicEventCreate {
+            event_type: EventType::CommandExecution,
+            actor: Actor::User,
+            summary: "test".into(),
+            details: None,
+            command: None,
+            exit_code: None,
+            working_dir: None,
+            project_context: None,
+            search_keywords: "test".into(),
+        }).unwrap();
+
+        let results = search_bm25(&conn, "", 10, None, None).unwrap();
+        assert!(results.is_empty(), "empty query should return no results");
+    }
+
+    #[test]
+    fn search_bm25_with_fade_cutoff() {
+        let conn = setup();
+        // Insert old and new events
+        conn.execute(
+            "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords, occurred_at)
+             VALUES ('ep_VOLD', 'command_execution', 'user', 'old cargo build', 'cargo build', datetime('now', '-60 days'))",
+            [],
+        ).unwrap();
+        insert(&conn, &EpisodicEventCreate {
+            event_type: EventType::CommandExecution,
+            actor: Actor::User,
+            summary: "new cargo build".into(),
+            details: None,
+            command: None,
+            exit_code: None,
+            working_dir: None,
+            project_context: None,
+            search_keywords: "cargo build".into(),
+        }).unwrap();
+
+        let cutoff = crate::memory::decay::get_fade_cutoff(&conn, 30).unwrap();
+        let results = search_bm25(&conn, "cargo build", 10, Some(&cutoff), None).unwrap();
+        assert_eq!(results.len(), 1, "should only find recent event after fade cutoff");
+        assert_eq!(results[0].summary, "new cargo build");
+    }
+
+    #[test]
+    fn list_recent_respects_limit() {
+        let conn = setup();
+        for i in 0..5 {
+            insert(&conn, &EpisodicEventCreate {
+                event_type: EventType::CommandExecution,
+                actor: Actor::User,
+                summary: format!("event {i}"),
+                details: None,
+                command: None,
+                exit_code: None,
+                working_dir: None,
+                project_context: None,
+                search_keywords: "test".into(),
+            }).unwrap();
+        }
+
+        let recent = list_recent(&conn, 3, None, None).unwrap();
+        assert_eq!(recent.len(), 3);
+    }
+
+    #[test]
+    fn list_unconsolidated_only_returns_unconsolidated() {
+        let conn = setup();
+        let event = EpisodicEventCreate {
+            event_type: EventType::CommandExecution,
+            actor: Actor::User,
+            summary: "test".into(),
+            details: None,
+            command: None,
+            exit_code: None,
+            working_dir: None,
+            project_context: None,
+            search_keywords: "test".into(),
+        };
+        let id1 = insert(&conn, &event).unwrap();
+        let _id2 = insert(&conn, &event).unwrap();
+
+        mark_consolidated(&conn, &[id1]).unwrap();
+
+        let uncons = list_unconsolidated(&conn, 10).unwrap();
+        assert_eq!(uncons.len(), 1, "should only return unconsolidated events");
+    }
+
+    #[test]
+    fn count_tracks_insertions_and_deletions() {
+        let conn = setup();
+        assert_eq!(count(&conn).unwrap(), 0);
+
+        let id = insert(&conn, &EpisodicEventCreate {
+            event_type: EventType::SessionStart,
+            actor: Actor::System,
+            summary: "session".into(),
+            details: None,
+            command: None,
+            exit_code: None,
+            working_dir: None,
+            project_context: None,
+            search_keywords: "session".into(),
+        }).unwrap();
+        assert_eq!(count(&conn).unwrap(), 1);
+
+        delete(&conn, &[id]).unwrap();
+        assert_eq!(count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn delete_nonexistent_is_noop() {
+        let conn = setup();
+        let deleted = delete(&conn, &["ep_NONEXIST".into()]).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn parse_event_type_all_variants() {
+        assert_eq!(parse_event_type("command_execution"), EventType::CommandExecution);
+        assert_eq!(parse_event_type("command_error"), EventType::CommandError);
+        assert_eq!(parse_event_type("user_instruction"), EventType::UserInstruction);
+        assert_eq!(parse_event_type("assistant_action"), EventType::AssistantAction);
+        assert_eq!(parse_event_type("file_edit"), EventType::FileEdit);
+        assert_eq!(parse_event_type("session_start"), EventType::SessionStart);
+        assert_eq!(parse_event_type("session_end"), EventType::SessionEnd);
+        assert_eq!(parse_event_type("project_switch"), EventType::ProjectSwitch);
+        assert_eq!(parse_event_type("system_event"), EventType::SystemEvent);
+        assert_eq!(parse_event_type("unknown_type"), EventType::SystemEvent);
+    }
+
+    #[test]
+    fn parse_actor_all_variants() {
+        assert_eq!(parse_actor("user"), Actor::User);
+        assert_eq!(parse_actor("assistant"), Actor::Assistant);
+        assert_eq!(parse_actor("system"), Actor::System);
+        assert_eq!(parse_actor("unknown"), Actor::User);
+    }
 }

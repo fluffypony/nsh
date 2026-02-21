@@ -265,4 +265,123 @@ mod tests {
         let all = search_bm25(&conn, "test", 10, Sensitivity::High).unwrap();
         assert_eq!(all.len(), 2);
     }
+
+    #[test]
+    fn delete_removes_entries() {
+        let conn = setup();
+        let id = insert(&conn, "cred", "test secret", "value", Sensitivity::Low, "test").unwrap();
+        assert_eq!(count(&conn).unwrap(), 1);
+        delete(&conn, &[id]).unwrap();
+        assert_eq!(count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn multiple_secrets_independent() {
+        let conn = setup();
+        let id1 = insert(&conn, "api_key", "GitHub token", "ghp_abc123", Sensitivity::High, "github token").unwrap();
+        let id2 = insert(&conn, "password", "DB password", "supersecret", Sensitivity::Medium, "database password").unwrap();
+
+        assert_ne!(id1, id2);
+        assert_eq!(count(&conn).unwrap(), 2);
+
+        let secret1 = retrieve_secret(&conn, &id1).unwrap();
+        let secret2 = retrieve_secret(&conn, &id2).unwrap();
+        assert_eq!(secret1, "ghp_abc123");
+        assert_eq!(secret2, "supersecret");
+    }
+
+    #[test]
+    fn encrypt_different_each_time() {
+        // Same plaintext should produce different ciphertext due to random nonce
+        let enc1 = encrypt_secret("test-value").unwrap();
+        let enc2 = encrypt_secret("test-value").unwrap();
+        assert_ne!(enc1, enc2, "encryption should use random nonce");
+
+        // But both should decrypt to the same value
+        let dec1 = decrypt_secret(&enc1).unwrap();
+        let dec2 = decrypt_secret(&enc2).unwrap();
+        assert_eq!(dec1, dec2);
+        assert_eq!(dec1, "test-value");
+    }
+
+    #[test]
+    fn encrypt_empty_string() {
+        let encrypted = encrypt_secret("").unwrap();
+        let decrypted = decrypt_secret(&encrypted).unwrap();
+        assert_eq!(decrypted, "");
+    }
+
+    #[test]
+    fn encrypt_long_secret() {
+        let long_secret = "a".repeat(10000);
+        let encrypted = encrypt_secret(&long_secret).unwrap();
+        let decrypted = decrypt_secret(&encrypted).unwrap();
+        assert_eq!(decrypted, long_secret);
+    }
+
+    #[test]
+    fn encrypt_special_characters() {
+        let special = "p@$$w0rd!#%^&*()_+-=[]{}|;':\",./<>?";
+        let encrypted = encrypt_secret(special).unwrap();
+        let decrypted = decrypt_secret(&encrypted).unwrap();
+        assert_eq!(decrypted, special);
+    }
+
+    #[test]
+    fn encrypt_unicode() {
+        let unicode = "密码 пароль パスワード 🔑🔐";
+        let encrypted = encrypt_secret(unicode).unwrap();
+        let decrypted = decrypt_secret(&encrypted).unwrap();
+        assert_eq!(decrypted, unicode);
+    }
+
+    #[test]
+    fn decrypt_invalid_hex_fails() {
+        let result = decrypt_secret("not_valid_hex!");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decrypt_too_short_fails() {
+        let result = decrypt_secret("aabbccdd");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn search_bm25_empty_query() {
+        let conn = setup();
+        insert(&conn, "cred", "test", "val", Sensitivity::Low, "test").unwrap();
+        let results = search_bm25(&conn, "", 10, Sensitivity::High).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn sensitivity_low_only_excludes_medium_high() {
+        let conn = setup();
+        insert(&conn, "cred", "Low item", "val", Sensitivity::Low, "shared keyword").unwrap();
+        insert(&conn, "cred", "Medium item", "val", Sensitivity::Medium, "shared keyword").unwrap();
+        insert(&conn, "cred", "High item", "val", Sensitivity::High, "shared keyword").unwrap();
+
+        let results = search_bm25(&conn, "shared keyword", 10, Sensitivity::Low).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].caption, "Low item");
+    }
+
+    #[test]
+    fn sensitivity_medium_includes_low_and_medium() {
+        let conn = setup();
+        insert(&conn, "cred", "Low item", "val", Sensitivity::Low, "shared keyword").unwrap();
+        insert(&conn, "cred", "Medium item", "val", Sensitivity::Medium, "shared keyword").unwrap();
+        insert(&conn, "cred", "High item", "val", Sensitivity::High, "shared keyword").unwrap();
+
+        let results = search_bm25(&conn, "shared keyword", 10, Sensitivity::Medium).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn retrieve_nonexistent_fails() {
+        let conn = setup();
+        let result = retrieve_secret(&conn, "kv_NONEXIST");
+        assert!(result.is_err());
+    }
 }
