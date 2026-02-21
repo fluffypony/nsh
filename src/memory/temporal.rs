@@ -1,4 +1,6 @@
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+#[cfg(test)]
+use chrono::Timelike;
 
 pub fn parse_temporal_expression(
     expr: &str,

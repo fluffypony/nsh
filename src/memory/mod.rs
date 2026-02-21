@@ -312,7 +312,19 @@ impl MemorySystem {
 
     pub fn run_decay(&self) -> anyhow::Result<DecayReport> {
         let conn = self.db.lock().unwrap();
-        decay::run_decay(&conn, self.config.fade_after_days, self.config.expire_after_days)
+        let report = decay::run_decay(&conn, self.config.fade_after_days, self.config.expire_after_days)?;
+        // Telemetry counters and timestamps
+        let _ = conn.execute(
+            "INSERT INTO memory_config(key, value) VALUES('last_decay_at', datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![],
+        );
+        let _ = conn.execute(
+            "INSERT INTO memory_config(key, value) VALUES('decay_runs', '1') \
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+            rusqlite::params![],
+        );
+        Ok(report)
     }
 
     pub async fn run_reflection(
@@ -320,7 +332,19 @@ impl MemorySystem {
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<ReflectionReport> {
         let conn = self.db.lock().unwrap();
-        reflection::run_reflection(&conn, llm).await
+        let report = reflection::run_reflection(&conn, llm).await?;
+        // Telemetry counters and timestamps
+        let _ = conn.execute(
+            "INSERT INTO memory_config(key, value) VALUES('last_reflection_at', datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![],
+        );
+        let _ = conn.execute(
+            "INSERT INTO memory_config(key, value) VALUES('reflection_runs', '1') \
+             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+            rusqlite::params![],
+        );
+        Ok(report)
     }
 
     pub async fn bootstrap_scan(
@@ -345,10 +369,6 @@ impl MemorySystem {
         Ok(())
     }
 
-    pub fn is_incognito(&self) -> bool {
-        self.config.incognito
-    }
-
     pub fn has_bootstrapped(&self) -> bool {
         let conn = self.db.lock().unwrap();
         bootstrap::has_bootstrapped(&conn)
@@ -364,6 +384,21 @@ impl MemorySystem {
         decay::should_run_decay(&conn)
     }
 
+    pub fn should_flush_ingestion(&self) -> bool {
+        self.ingestion_buffer.lock().unwrap().should_flush()
+    }
+
+    #[cfg(test)]
+    pub fn is_incognito(&self) -> bool {
+        self.config.incognito
+    }
+
+    pub fn is_ignored_path(&self, path: &Path) -> bool {
+        let path_str = path.to_string_lossy();
+        privacy::is_ignored_path(&path_str, &self.ignore_patterns)
+    }
+
+    #[cfg(test)]
     pub fn set_config(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let conn = self.db.lock().unwrap();
         conn.execute(
@@ -373,23 +408,10 @@ impl MemorySystem {
         Ok(())
     }
 
-    pub fn should_flush_ingestion(&self) -> bool {
-        self.ingestion_buffer.lock().unwrap().should_flush()
-    }
-
-    pub fn is_ignored_path(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-        privacy::is_ignored_path(&path_str, &self.ignore_patterns)
-    }
-
+    #[cfg(test)]
     pub fn resource_exists_with_hash(&self, path: &Path, hash: &str) -> anyhow::Result<bool> {
         let conn = self.db.lock().unwrap();
-        store::resource::exists_with_hash(&conn, &path.to_string_lossy(), hash)
-    }
-
-    pub fn queue_resource_scan(&self, _path: std::path::PathBuf, _content: String, _hash: String) {
-        // Resource scanning is deferred to the ingestion pipeline
-        // Will be implemented when resource scanning is wired into the daemon
+        crate::memory::store::resource::exists_with_hash(&conn, &path.to_string_lossy(), hash)
     }
 
     fn apply_op(&self, conn: &Connection, op: &MemoryOp) -> anyhow::Result<()> {

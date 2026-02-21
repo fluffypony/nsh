@@ -323,6 +323,7 @@ mod tests {
         assert!(!SPINNER_ACTIVE.load(Ordering::SeqCst));
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_spinner_guard_second_is_noop() {
         SPINNER_ACTIVE.store(false, Ordering::SeqCst);

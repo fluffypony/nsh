@@ -872,6 +872,7 @@ pub fn redact_url(url: &str) -> String {
 
 /// A detected secret with metadata for routing to Knowledge Vault.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DetectedSecret {
     pub label: String,
     pub value: String,
@@ -881,6 +882,7 @@ pub struct DetectedSecret {
 /// Detect secrets in text and return structured matches for Knowledge Vault routing.
 /// Unlike `redact_secrets` which replaces matches, this returns the matched values
 /// and their pattern labels so the memory ingestion can route them to encrypted storage.
+#[allow(dead_code)]
 pub fn detect_secrets_for_vault(text: &str) -> Vec<DetectedSecret> {
     let mut detected = Vec::new();
     let text_lower = text.to_lowercase();

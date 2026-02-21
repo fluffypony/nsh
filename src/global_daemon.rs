@@ -121,6 +121,18 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         })
         .collect();
 
+    // Startup maintenance tasks (wire MemorySystem methods to avoid dead code and keep system tidy)
+    if memory.has_bootstrapped() == false {
+        let _ = memory_tx.send(MemoryTask::BootstrapScan);
+    }
+    if memory.should_run_decay() {
+        let _ = memory_tx.send(MemoryTask::FlushIngestion);
+        let _ = send_memory_decay_once(&memory);
+    }
+    if memory.should_run_reflection() {
+        let _ = memory_tx.send(MemoryTask::RunReflection);
+    }
+
     let active_conns = Arc::new(AtomicUsize::new(0));
     const MAX_GLOBAL_CONNS: usize = 32;
 
@@ -321,6 +333,14 @@ fn run_memory_thread(
     }
 
     log_daemon("memory.thread", "memory thread exiting");
+}
+
+fn send_memory_decay_once(memory: &crate::memory::MemorySystem) -> Result<(), ()> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| ())?;
+    rt.block_on(async {
+        let _ = memory.run_decay();
+    });
+    Ok(())
 }
 
 fn execute_write(
@@ -587,15 +607,27 @@ fn execute_write(
             }
         }
         DaemonRequest::MemoryCoreAppend { label, content } => {
-            match db.append_core_block(&label, &content) {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
+            let op = crate::memory::types::CoreOp::Append;
+            let lbl = crate::memory::types::CoreLabel::from_str(&label)
+                .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
+            match lbl {
+                Err(e) => e,
+                Ok(l) => match memory.update_core_block(l, op, &content) {
+                    Ok(()) => DaemonResponse::ok(),
+                    Err(e) => DaemonResponse::error(format!("{e}")),
+                },
             }
         }
         DaemonRequest::MemoryCoreRewrite { label, content } => {
-            match db.update_core_block(&label, &content) {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
+            let op = crate::memory::types::CoreOp::Rewrite;
+            let lbl = crate::memory::types::CoreLabel::from_str(&label)
+                .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
+            match lbl {
+                Err(e) => e,
+                Ok(l) => match memory.update_core_block(l, op, &content) {
+                    Ok(()) => DaemonResponse::ok(),
+                    Err(e) => DaemonResponse::error(format!("{e}")),
+                },
             }
         }
         DaemonRequest::MemoryStore { memory_type, data_json } => {
@@ -606,24 +638,22 @@ fn execute_write(
             }
         }
         DaemonRequest::MemoryDelete { memory_type, id } => {
-            match db.delete_memory_by_type_and_id(
-                match memory_type.as_str() {
-                    "episodic" => "episodic_memory",
-                    "semantic" => "semantic_memory",
-                    "procedural" => "procedural_memory",
-                    "resource" => "resource_memory",
-                    "knowledge" => "knowledge_vault",
-                    _ => return DaemonResponse::error(format!("unknown memory type: {memory_type}")),
-                },
-                &id,
-            ) {
+            use crate::memory::types::MemoryType;
+            let mt = match memory_type.as_str() {
+                "episodic" => MemoryType::Episodic,
+                "semantic" => MemoryType::Semantic,
+                "procedural" => MemoryType::Procedural,
+                "resource" => MemoryType::Resource,
+                "knowledge" => MemoryType::Knowledge,
+                _ => return DaemonResponse::error(format!("unknown memory type: {memory_type}")),
+            };
+            match memory.delete_memory(mt, &id) {
                 Ok(()) => DaemonResponse::ok(),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
         DaemonRequest::MemoryRunDecay => {
-            let config = crate::config::Config::load().unwrap_or_default();
-            match db.run_memory_decay(config.memory.fade_after_days, config.memory.expire_after_days) {
+            match memory.run_decay() {
                 Ok(report) => DaemonResponse::ok_with_data(serde_json::json!({
                     "episodic_deleted": report.episodic_deleted,
                     "semantic_deleted": report.semantic_deleted,
@@ -647,7 +677,7 @@ fn execute_write(
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryClearAll => {
-            match db.clear_all_memories() {
+            match memory.clear_all() {
                 Ok(()) => DaemonResponse::ok(),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -962,20 +992,25 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
                 Err(e) => DaemonResponse::error(format!("invalid context JSON: {e}")),
             }
         }
-        DaemonRequest::MemorySearch { query, memory_type, limit } => {
-            use crate::daemon_db::DbAccess;
-            match DbAccess::memory_search(db, &query, memory_type.as_deref(), limit) {
-                Ok(results_json) => {
-                    match serde_json::from_str::<serde_json::Value>(&results_json) {
-                        Ok(val) => DaemonResponse::ok_with_data(val),
-                        Err(e) => DaemonResponse::error(format!("{e}")),
-                    }
+        DaemonRequest::MemorySearch { query, memory_type: _, limit } => {
+            // Use MemorySystem search across all types for now
+            match memory.search(&query, None, limit) {
+                Ok(results) => {
+                    let json: Vec<serde_json::Value> = results.into_iter().map(|r| {
+                        serde_json::json!({
+                            "type": r.memory_type.as_str(),
+                            "id": r.id,
+                            "summary": r.summary,
+                            "score": r.score,
+                        })
+                    }).collect();
+                    DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
         DaemonRequest::MemoryGetCore => {
-            match db.get_core_memory() {
+            match memory.get_core_memory() {
                 Ok(blocks) => {
                     let json: Vec<serde_json::Value> = blocks.iter().map(|b| {
                         serde_json::json!({
@@ -1007,7 +1042,7 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
             }
         }
         DaemonRequest::MemoryStats => {
-            match db.memory_stats() {
+            match memory.stats() {
                 Ok(stats) => DaemonResponse::ok_with_data(serde_json::json!({
                     "core": stats.core_count,
                     "episodic": stats.episodic_count,

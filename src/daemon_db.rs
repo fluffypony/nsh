@@ -66,14 +66,11 @@ pub trait DbAccess {
     // ── Memory system ──────────────────────────────────
     fn memory_retrieve_prompt(&self, ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String>;
     fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String>;
-    fn memory_core_get(&self) -> anyhow::Result<String>;
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String>;
-    fn memory_delete(&self, memory_type: &str, id: &str) -> anyhow::Result<()>;
     fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String>;
-    fn memory_stats(&self) -> anyhow::Result<String>;
-    fn memory_record_event(&self, event_json: &str) -> anyhow::Result<()>;
+    // Note: event recording is routed via daemon requests from query flow; no direct trait use required.
 }
 
 impl DbAccess for Db {
@@ -242,11 +239,6 @@ impl DbAccess for Db {
         Ok(serde_json::to_string(&results)?)
     }
 
-    fn memory_core_get(&self) -> anyhow::Result<String> {
-        let blocks = self.get_core_memory()?;
-        Ok(serde_json::to_string(&blocks)?)
-    }
-
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
         Ok(self.append_core_block(label, content)?)
     }
@@ -286,40 +278,12 @@ impl DbAccess for Db {
         Ok(id)
     }
 
-    fn memory_delete(&self, memory_type: &str, id: &str) -> anyhow::Result<()> {
-        let table = match memory_type {
-            "episodic" => "episodic_memory",
-            "semantic" => "semantic_memory",
-            "procedural" => "procedural_memory",
-            "resource" => "resource_memory",
-            "knowledge" => "knowledge_vault",
-            _ => anyhow::bail!("unknown memory type: {memory_type}"),
-        };
-        Ok(self.delete_memory_by_type_and_id(table, id)?)
-    }
-
     fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
         let results = self.search_knowledge_fts(caption_query, 3, &["low", "medium", "high"])?;
         Ok(serde_json::to_string(&results)?)
     }
 
-    fn memory_stats(&self) -> anyhow::Result<String> {
-        let stats = Db::memory_stats(self)?;
-        Ok(serde_json::to_string(&serde_json::json!({
-            "core": stats.core_count,
-            "episodic": stats.episodic_count,
-            "semantic": stats.semantic_count,
-            "procedural": stats.procedural_count,
-            "resource": stats.resource_count,
-            "knowledge": stats.knowledge_count,
-        }))?)
-    }
-
-    fn memory_record_event(&self, _event_json: &str) -> anyhow::Result<()> {
-        // Direct DB access doesn't buffer events — this is handled by the MemorySystem
-        // via the daemon. This is a no-op for direct Db access.
-        Ok(())
-    }
+    // memory_record_event removed from trait
 }
 
 #[derive(Default)]
@@ -800,10 +764,6 @@ impl DbAccess for DaemonDb {
         Ok(serde_json::to_string(&data)?)
     }
 
-    fn memory_core_get(&self) -> anyhow::Result<String> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryGetCore)?);
-        Ok(serde_json::to_string(&data)?)
-    }
 
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
         self.request(DaemonRequest::MemoryCoreAppend {
@@ -829,13 +789,6 @@ impl DbAccess for DaemonDb {
         Ok(data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
     }
 
-    fn memory_delete(&self, memory_type: &str, id: &str) -> anyhow::Result<()> {
-        self.request(DaemonRequest::MemoryDelete {
-            memory_type: memory_type.to_string(),
-            id: id.to_string(),
-        })?;
-        Ok(())
-    }
 
     fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieveSecret {
@@ -844,17 +797,8 @@ impl DbAccess for DaemonDb {
         Ok(serde_json::to_string(&data)?)
     }
 
-    fn memory_stats(&self) -> anyhow::Result<String> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryStats)?);
-        Ok(serde_json::to_string(&data)?)
-    }
 
-    fn memory_record_event(&self, event_json: &str) -> anyhow::Result<()> {
-        self.request(DaemonRequest::MemoryRecordEvent {
-            event_json: event_json.to_string(),
-        })?;
-        Ok(())
-    }
+    // memory_record_event removed from trait
 }
 
 #[cfg(all(test, unix))]
@@ -1116,4 +1060,56 @@ mod tests {
     }
 
     
+    #[test]
+    #[serial]
+    fn memory_retrieve_prompt_sends_context_and_maps_prompt() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "prompt": "<core_memory>...</core_memory>"
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let ctx = crate::memory::types::MemoryQueryContext {
+            query: "how to build".into(),
+            cwd: Some("/tmp".into()),
+            session_id: Some("sess-xyz".into()),
+            interaction_mode: crate::memory::types::InteractionMode::NaturalLanguage,
+            error_context: None,
+        };
+        let prompt = db.memory_retrieve_prompt(&ctx).expect("memory_retrieve_prompt should succeed");
+        assert!(prompt.contains("<core_memory>"));
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "memory_retrieve");
+        assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn memory_search_maps_results() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "results": [
+                    {"type": "semantic", "id": "sem_1234", "summary": "Uses cargo", "score": 0.0}
+                ]
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let json = db.memory_search("cargo", None, 5).expect("memory_search should succeed");
+        assert!(json.contains("results"));
+        assert!(json.contains("sem_1234"));
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "memory_search");
+        assert_eq!(request["query"], "cargo");
+        assert_eq!(request["limit"], 5);
+        handle.join().expect("join daemon thread");
+    }
 }

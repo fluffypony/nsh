@@ -15,9 +15,8 @@ pub fn search_all(
             results.push(SearchResult {
                 memory_type: MemoryType::Episodic,
                 id: e.id,
-                title: e.summary.clone(),
-                summary: e.details.unwrap_or_default(),
-                relevance_score: 0.0,
+                summary: e.details.unwrap_or_else(|| e.summary.clone()),
+                score: 0.0,
             });
         }
     }
@@ -27,9 +26,8 @@ pub fn search_all(
             results.push(SearchResult {
                 memory_type: MemoryType::Semantic,
                 id: s.id,
-                title: s.name,
                 summary: s.summary,
-                relevance_score: 0.0,
+                score: 0.0,
             });
         }
     }
@@ -39,9 +37,8 @@ pub fn search_all(
             results.push(SearchResult {
                 memory_type: MemoryType::Procedural,
                 id: p.id,
-                title: p.summary.clone(),
                 summary: p.steps,
-                relevance_score: 0.0,
+                score: 0.0,
             });
         }
     }
@@ -51,9 +48,8 @@ pub fn search_all(
             results.push(SearchResult {
                 memory_type: MemoryType::Resource,
                 id: r.id,
-                title: r.title,
                 summary: r.summary,
-                relevance_score: 0.0,
+                score: 0.0,
             });
         }
     }
@@ -63,9 +59,8 @@ pub fn search_all(
             results.push(SearchResult {
                 memory_type: MemoryType::Knowledge,
                 id: k.id,
-                title: k.caption,
-                summary: String::new(),
-                relevance_score: 0.0,
+                summary: String::from("sensitive secret (caption only)"),
+                score: 0.0,
             });
         }
     }

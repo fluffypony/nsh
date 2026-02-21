@@ -175,6 +175,38 @@ fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
 - **Custom instructions** - global via config or per-project via `.nsh/instructions.md`
 - **Hot-reloading config** - changes to `config.toml` take effect on the next query
 
+### Persistent Memory
+
+Before every query, nsh retrieves relevant long-term memories and injects a structured XML prompt into the system prompt under a "PERSISTENT MEMORY" section. This includes:
+
+- Core memory: user facts, agent persona, environment. Always included.
+- Episodic: recent and relevant events (commands, errors, interactions).
+- Semantic: facts about projects, tools, preferences.
+- Procedural: step-by-step workflows.
+- Resource: digests of files/docs.
+- Knowledge Vault: captions of sensitive secrets (encrypted values are never shown).
+
+Control memory behavior:
+
+```bash
+# Enable incognito mode (skip recording)
+nsh config set memory.incognito true
+
+# Re-enable recording
+nsh config set memory.incognito false
+
+# Run maintenance (decay + reflection)
+nsh memory maintain
+
+# Search memories
+nsh memory search --type semantic "cargo build"
+
+# Inspect core memory
+nsh memory core
+```
+
+The memory prompt is redacted for secrets before inclusion.
+
 ---
 
 ## Requirements

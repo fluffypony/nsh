@@ -68,6 +68,7 @@ pub fn search_bm25(conn: &Connection, query: &str, limit: usize) -> anyhow::Resu
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[allow(dead_code)]
 pub fn list_recent(conn: &Connection, limit: usize) -> anyhow::Result<Vec<SemanticItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, category, summary, details, search_keywords, access_count, last_accessed, created_at, updated_at

@@ -356,6 +356,7 @@ pub struct Db {
     max_output_bytes: usize,
 }
 
+#[allow(dead_code)]
 impl Db {
     fn to_fts_literal_query(query: &str) -> String {
         let terms: Vec<String> = query

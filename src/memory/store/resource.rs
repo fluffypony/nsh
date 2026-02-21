@@ -96,6 +96,7 @@ pub fn get_for_cwd(conn: &Connection, cwd: &str, limit: usize) -> anyhow::Result
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[allow(dead_code)]
 pub fn exists_with_hash(conn: &Connection, path: &str, hash: &str) -> anyhow::Result<bool> {
     let exists: bool = conn
         .query_row(

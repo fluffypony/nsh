@@ -46,6 +46,7 @@ impl CoreLabel {
         }
     }
 
+    #[allow(dead_code)]
     pub fn default_limit(&self) -> usize {
         match self {
             CoreLabel::Human => 5000,
@@ -361,6 +362,7 @@ pub struct CoreUpdateDecision {
 }
 
 impl RoutingDecision {
+    #[allow(dead_code)]
     pub fn has_any_updates(&self) -> bool {
         self.update_core.is_some()
             || self.update_episodic
@@ -413,6 +415,7 @@ pub struct ContextBudget {
 }
 
 impl ContextBudget {
+    #[allow(dead_code)]
     pub fn memory_budget(&self) -> usize {
         let used = self.system_prompt_tokens + self.conversation_tokens;
         if self.total_tokens > used {
@@ -488,18 +491,18 @@ pub struct BootstrapReport {
 
 // ── Search Result ──
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub memory_type: MemoryType,
     pub id: String,
-    pub title: String,
     pub summary: String,
-    pub relevance_score: f64,
+    pub score: f32,
 }
 
 // ── Detected Secret ──
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DetectedSecret {
     pub label: String,
     pub value: String,

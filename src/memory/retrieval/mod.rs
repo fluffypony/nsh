@@ -17,6 +17,7 @@ pub fn needs_full_retrieval(mode: InteractionMode) -> bool {
     )
 }
 
+#[allow(dead_code)]
 pub async fn retrieve_for_query(
     conn: &Connection,
     ctx: &MemoryQueryContext,
