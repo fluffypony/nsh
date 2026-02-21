@@ -289,6 +289,8 @@ pub enum MemoryAction {
         #[arg(long)]
         format: Option<String>,
     },
+    /// Show memory maintenance telemetry only
+    Telemetry,
 }
 
 #[derive(Subcommand)]

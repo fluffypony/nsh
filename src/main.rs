@@ -840,6 +840,21 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         resp => eprintln!("{resp:?}"),
                     }
                 }
+                MemoryAction::Telemetry => {
+                    let request = daemon::DaemonRequest::MemoryStats;
+                    match send_to_global_or_fallback(&request)? {
+                        daemon::DaemonResponse::Ok { data: Some(d) } => {
+                            let telem = serde_json::json!({
+                                "decay_runs": d.get("decay_runs").cloned().unwrap_or(serde_json::json!(0)),
+                                "last_decay_at": d.get("last_decay_at").cloned().unwrap_or(serde_json::json!("")),
+                                "reflection_runs": d.get("reflection_runs").cloned().unwrap_or(serde_json::json!(0)),
+                                "last_reflection_at": d.get("last_reflection_at").cloned().unwrap_or(serde_json::json!("")),
+                            });
+                            println!("{}", serde_json::to_string_pretty(&telem)?);
+                        }
+                        resp => eprintln!("{resp:?}"),
+                    }
+                }
             }
         }
 
