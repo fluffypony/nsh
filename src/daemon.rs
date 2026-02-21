@@ -194,6 +194,48 @@ pub enum DaemonRequest {
     MarkUnsummarizedForLlm,
     BackfillEntities,
     GenerateSummaries,
+    // ── Memory system ──────────────────────────────────
+    MemoryRecordEvent {
+        event_json: String,
+    },
+    MemoryFlushIngestion,
+    MemoryIngestBatch {
+        events_json: String,
+    },
+    MemoryRetrieve {
+        context_json: String,
+    },
+    MemorySearch {
+        query: String,
+        memory_type: Option<String>,
+        #[serde(default = "default_limit")]
+        limit: usize,
+    },
+    MemoryGetCore,
+    MemoryCoreAppend {
+        label: String,
+        content: String,
+    },
+    MemoryCoreRewrite {
+        label: String,
+        content: String,
+    },
+    MemoryStore {
+        memory_type: String,
+        data_json: String,
+    },
+    MemoryDelete {
+        memory_type: String,
+        id: String,
+    },
+    MemoryRetrieveSecret {
+        caption_query: String,
+    },
+    MemoryRunDecay,
+    MemoryRunReflection,
+    MemoryBootstrapScan,
+    MemoryStats,
+    MemoryClearAll,
 }
 
 fn default_max_lines() -> usize {

@@ -1,6 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 const COMMAND_ENTITY_BACKFILL_MAX_ID_KEY: &str = "command_entities_backfilled_max_id_v1";
 pub const IMPORT_SESSION_PREFIX: &str = "imported_";
 // Must stay in sync with IMPORT_SESSION_PREFIX above
@@ -18,7 +18,7 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     PRAGMA wal_autocheckpoint = 1000;
     PRAGMA journal_size_limit = 6144000;
     PRAGMA temp_store = MEMORY;
-    PRAGMA cache_size = -2000;
+    PRAGMA cache_size = -64000;
     PRAGMA mmap_size = 268435456;
 ",
     )?;
@@ -846,6 +846,479 @@ impl Db {
         Ok(())
     }
 
+    // ── Memory operations ──────────────────────────────────────────
+
+    pub fn get_core_memory(&self) -> rusqlite::Result<Vec<crate::memory::types::CoreBlock>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT label, value, char_limit, updated_at FROM core_memory ORDER BY label",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let label_str: String = row.get(0)?;
+            let label = crate::memory::types::CoreLabel::from_str(&label_str)
+                .unwrap_or(crate::memory::types::CoreLabel::Human);
+            Ok(crate::memory::types::CoreBlock {
+                label,
+                value: row.get(1)?,
+                char_limit: row.get::<_, i64>(2)? as usize,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn update_core_block(&self, label: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE core_memory SET value = ?, updated_at = datetime('now') WHERE label = ?",
+            params![value, label],
+        )?;
+        Ok(())
+    }
+
+    pub fn append_core_block(&self, label: &str, content: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE core_memory SET value = CASE WHEN value = '' THEN ? ELSE value || '\n' || ? END, updated_at = datetime('now') WHERE label = ?",
+            params![content, content, label],
+        )?;
+        Ok(())
+    }
+
+    pub fn search_episodic_fts(
+        &self,
+        query: &str,
+        limit: usize,
+        fade_cutoff: Option<&str>,
+    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
+        let fts_query = Self::to_fts_literal_query(query);
+        let sql = if let Some(cutoff) = fade_cutoff {
+            format!(
+                "SELECT e.id, e.event_type, e.actor, e.summary, e.details, e.command, e.exit_code, \
+                 e.working_dir, e.project_context, e.search_keywords, e.occurred_at, e.is_consolidated \
+                 FROM episodic_memory e \
+                 JOIN episodic_memory_fts f ON e.rowid = f.rowid \
+                 WHERE episodic_memory_fts MATCH ?1 AND e.occurred_at >= '{cutoff}' \
+                 ORDER BY bm25(episodic_memory_fts, 10.0, 5.0, 2.0) \
+                 LIMIT ?2"
+            )
+        } else {
+            "SELECT e.id, e.event_type, e.actor, e.summary, e.details, e.command, e.exit_code, \
+             e.working_dir, e.project_context, e.search_keywords, e.occurred_at, e.is_consolidated \
+             FROM episodic_memory e \
+             JOIN episodic_memory_fts f ON e.rowid = f.rowid \
+             WHERE episodic_memory_fts MATCH ?1 \
+             ORDER BY bm25(episodic_memory_fts, 10.0, 5.0, 2.0) \
+             LIMIT ?2".to_string()
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+            Self::row_to_episodic(row)
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_recent_episodic(
+        &self,
+        limit: usize,
+        fade_cutoff: Option<&str>,
+    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
+        let sql = if let Some(cutoff) = fade_cutoff {
+            format!(
+                "SELECT id, event_type, actor, summary, details, command, exit_code, \
+                 working_dir, project_context, search_keywords, occurred_at, is_consolidated \
+                 FROM episodic_memory WHERE occurred_at >= '{cutoff}' \
+                 ORDER BY occurred_at DESC LIMIT ?1"
+            )
+        } else {
+            "SELECT id, event_type, actor, summary, details, command, exit_code, \
+             working_dir, project_context, search_keywords, occurred_at, is_consolidated \
+             FROM episodic_memory ORDER BY occurred_at DESC LIMIT ?1".to_string()
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit as i64], |row| Self::row_to_episodic(row))?;
+        rows.collect()
+    }
+
+    pub fn get_unconsolidated_episodic(
+        &self,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, event_type, actor, summary, details, command, exit_code, \
+             working_dir, project_context, search_keywords, occurred_at, is_consolidated \
+             FROM episodic_memory WHERE is_consolidated = 0 \
+             ORDER BY occurred_at ASC LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| Self::row_to_episodic(row))?;
+        rows.collect()
+    }
+
+    pub fn search_semantic_fts(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
+        let fts_query = Self::to_fts_literal_query(query);
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.name, s.category, s.summary, s.details, s.search_keywords, \
+             s.access_count, s.last_accessed, s.created_at, s.updated_at \
+             FROM semantic_memory s \
+             JOIN semantic_memory_fts f ON s.rowid = f.rowid \
+             WHERE semantic_memory_fts MATCH ?1 \
+             ORDER BY bm25(semantic_memory_fts, 10.0, 8.0, 5.0, 2.0) \
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+            Ok(crate::memory::types::SemanticItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                summary: row.get(3)?,
+                details: row.get(4)?,
+                search_keywords: row.get(5)?,
+                access_count: row.get(6)?,
+                last_accessed: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_all_semantic(&self) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, category, summary, details, search_keywords, \
+             access_count, last_accessed, created_at, updated_at \
+             FROM semantic_memory ORDER BY last_accessed DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::memory::types::SemanticItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                summary: row.get(3)?,
+                details: row.get(4)?,
+                search_keywords: row.get(5)?,
+                access_count: row.get(6)?,
+                last_accessed: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn search_procedural_fts(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<crate::memory::types::ProceduralItem>> {
+        let fts_query = Self::to_fts_literal_query(query);
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.entry_type, p.trigger_pattern, p.summary, p.steps, p.search_keywords, \
+             p.access_count, p.last_accessed, p.created_at, p.updated_at \
+             FROM procedural_memory p \
+             JOIN procedural_memory_fts f ON p.rowid = f.rowid \
+             WHERE procedural_memory_fts MATCH ?1 \
+             ORDER BY bm25(procedural_memory_fts, 10.0, 5.0, 2.0) \
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+            Ok(crate::memory::types::ProceduralItem {
+                id: row.get(0)?,
+                entry_type: row.get(1)?,
+                trigger_pattern: row.get(2)?,
+                summary: row.get(3)?,
+                steps: row.get(4)?,
+                search_keywords: row.get(5)?,
+                access_count: row.get(6)?,
+                last_accessed: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn list_all_procedural(
+        &self,
+    ) -> rusqlite::Result<Vec<crate::memory::types::ProceduralItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, entry_type, trigger_pattern, summary, steps, search_keywords, \
+             access_count, last_accessed, created_at, updated_at \
+             FROM procedural_memory ORDER BY last_accessed DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::memory::types::ProceduralItem {
+                id: row.get(0)?,
+                entry_type: row.get(1)?,
+                trigger_pattern: row.get(2)?,
+                summary: row.get(3)?,
+                steps: row.get(4)?,
+                search_keywords: row.get(5)?,
+                access_count: row.get(6)?,
+                last_accessed: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn search_resource_fts(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<crate::memory::types::ResourceItem>> {
+        let fts_query = Self::to_fts_literal_query(query);
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.resource_type, r.file_path, r.file_hash, r.title, r.summary, \
+             r.content, r.search_keywords, r.created_at, r.updated_at \
+             FROM resource_memory r \
+             JOIN resource_memory_fts f ON r.rowid = f.rowid \
+             WHERE resource_memory_fts MATCH ?1 \
+             ORDER BY bm25(resource_memory_fts, 10.0, 8.0, 5.0, 2.0) \
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
+            Self::row_to_resource(row)
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_resources_for_cwd(
+        &self,
+        cwd: &str,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<crate::memory::types::ResourceItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, resource_type, file_path, file_hash, title, summary, \
+             content, search_keywords, created_at, updated_at \
+             FROM resource_memory WHERE file_path LIKE ?1 \
+             ORDER BY updated_at DESC LIMIT ?2",
+        )?;
+        let pattern = format!("{cwd}%");
+        let rows = stmt.query_map(params![pattern, limit as i64], |row| {
+            Self::row_to_resource(row)
+        })?;
+        rows.collect()
+    }
+
+    pub fn resource_exists_with_hash(&self, path: &str, hash: &str) -> rusqlite::Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM resource_memory WHERE file_path = ? AND file_hash = ?",
+                params![path, hash],
+                |row| row.get(0),
+            )
+            .or(Ok(false))
+    }
+
+    pub fn search_knowledge_fts(
+        &self,
+        query: &str,
+        limit: usize,
+        allowed_sensitivity: &[&str],
+    ) -> rusqlite::Result<Vec<crate::memory::types::KnowledgeEntry>> {
+        let fts_query = Self::to_fts_literal_query(query);
+        let placeholders: Vec<String> = (0..allowed_sensitivity.len())
+            .map(|i| format!("?{}", i + 3))
+            .collect();
+        let sensitivity_clause = if allowed_sensitivity.is_empty() {
+            "1=1".to_string()
+        } else {
+            format!("k.sensitivity IN ({})", placeholders.join(","))
+        };
+        let sql = format!(
+            "SELECT k.id, k.entry_type, k.caption, k.secret_value, k.sensitivity, \
+             k.search_keywords, k.created_at, k.updated_at \
+             FROM knowledge_vault k \
+             JOIN knowledge_vault_fts f ON k.rowid = f.rowid \
+             WHERE knowledge_vault_fts MATCH ?1 AND {sensitivity_clause} \
+             ORDER BY bm25(knowledge_vault_fts, 10.0, 2.0) \
+             LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        all_params.push(Box::new(fts_query));
+        all_params.push(Box::new(limit as i64));
+        for s in allowed_sensitivity {
+            all_params.push(Box::new(s.to_string()));
+        }
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            let sensitivity_str: String = row.get(4)?;
+            Ok(crate::memory::types::KnowledgeEntry {
+                id: row.get(0)?,
+                entry_type: row.get(1)?,
+                caption: row.get(2)?,
+                secret_value: row.get(3)?,
+                sensitivity: crate::memory::types::Sensitivity::from_str(&sensitivity_str),
+                search_keywords: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn get_memory_config(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT value FROM memory_config WHERE key = ?",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    pub fn set_memory_config(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO memory_config(key, value) VALUES (?, ?)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn memory_stats(&self) -> rusqlite::Result<crate::memory::types::MemoryStats> {
+        let ep: i64 = self.conn.query_row("SELECT COUNT(*) FROM episodic_memory", [], |r| r.get(0))?;
+        let sem: i64 = self.conn.query_row("SELECT COUNT(*) FROM semantic_memory", [], |r| r.get(0))?;
+        let proc: i64 = self.conn.query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))?;
+        let res: i64 = self.conn.query_row("SELECT COUNT(*) FROM resource_memory", [], |r| r.get(0))?;
+        let kv: i64 = self.conn.query_row("SELECT COUNT(*) FROM knowledge_vault", [], |r| r.get(0))?;
+        Ok(crate::memory::types::MemoryStats {
+            core_count: 3,
+            episodic_count: ep as usize,
+            semantic_count: sem as usize,
+            procedural_count: proc as usize,
+            resource_count: res as usize,
+            knowledge_count: kv as usize,
+        })
+    }
+
+    pub fn clear_all_memories(&self) -> rusqlite::Result<()> {
+        self.conn.execute_batch(
+            "DELETE FROM episodic_memory;
+             DELETE FROM semantic_memory;
+             DELETE FROM procedural_memory;
+             DELETE FROM resource_memory;
+             DELETE FROM knowledge_vault;
+             UPDATE core_memory SET value = '', updated_at = datetime('now');
+             DELETE FROM memory_config WHERE key IN ('last_decay_at', 'last_reflection_at', 'last_bootstrap_at');",
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_memory_by_type_and_id(&self, table: &str, id: &str) -> rusqlite::Result<()> {
+        let valid_tables = [
+            "episodic_memory",
+            "semantic_memory",
+            "procedural_memory",
+            "resource_memory",
+            "knowledge_vault",
+        ];
+        if !valid_tables.contains(&table) {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "invalid memory table: {table}"
+            )));
+        }
+        self.conn.execute(
+            &format!("DELETE FROM {table} WHERE id = ?"),
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn run_memory_decay(
+        &self,
+        fade_days: u32,
+        expire_days: u32,
+    ) -> rusqlite::Result<crate::memory::types::DecayReport> {
+        let cutoff = chrono::Utc::now()
+            - chrono::Duration::days(expire_days as i64);
+        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+        let ep_del = self.conn.execute(
+            "DELETE FROM episodic_memory WHERE occurred_at < ?",
+            params![cutoff_str],
+        )? as usize;
+        let sem_del = self.conn.execute(
+            "DELETE FROM semantic_memory WHERE updated_at < ? AND access_count < 3",
+            params![cutoff_str],
+        )? as usize;
+        let proc_del = self.conn.execute(
+            "DELETE FROM procedural_memory WHERE updated_at < ? AND access_count < 2",
+            params![cutoff_str],
+        )? as usize;
+        let res_del = self.conn.execute(
+            "DELETE FROM resource_memory WHERE updated_at < ?",
+            params![cutoff_str],
+        )? as usize;
+        let kv_del = self.conn.execute(
+            "DELETE FROM knowledge_vault WHERE updated_at < ?",
+            params![cutoff_str],
+        )? as usize;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let _ = self.set_memory_config("last_decay_at", &now);
+
+        Ok(crate::memory::types::DecayReport {
+            episodic_deleted: ep_del,
+            semantic_deleted: sem_del,
+            procedural_deleted: proc_del,
+            resource_deleted: res_del,
+            knowledge_deleted: kv_del,
+        })
+    }
+
+    fn row_to_episodic(row: &rusqlite::Row) -> rusqlite::Result<crate::memory::types::EpisodicEvent> {
+        let event_type_str: String = row.get(1)?;
+        let actor_str: String = row.get(2)?;
+        let event_type = match event_type_str.as_str() {
+            "command_execution" => crate::memory::types::EventType::CommandExecution,
+            "command_error" => crate::memory::types::EventType::CommandError,
+            "user_instruction" => crate::memory::types::EventType::UserInstruction,
+            "assistant_action" => crate::memory::types::EventType::AssistantAction,
+            "file_edit" => crate::memory::types::EventType::FileEdit,
+            "session_start" => crate::memory::types::EventType::SessionStart,
+            "session_end" => crate::memory::types::EventType::SessionEnd,
+            "project_switch" => crate::memory::types::EventType::ProjectSwitch,
+            _ => crate::memory::types::EventType::SystemEvent,
+        };
+        let actor = match actor_str.as_str() {
+            "assistant" => crate::memory::types::Actor::Assistant,
+            "system" => crate::memory::types::Actor::System,
+            _ => crate::memory::types::Actor::User,
+        };
+        Ok(crate::memory::types::EpisodicEvent {
+            id: row.get(0)?,
+            event_type,
+            actor,
+            summary: row.get(3)?,
+            details: row.get(4)?,
+            command: row.get(5)?,
+            exit_code: row.get(6)?,
+            working_dir: row.get(7)?,
+            project_context: row.get(8)?,
+            search_keywords: row.get(9)?,
+            occurred_at: row.get(10)?,
+            is_consolidated: row.get::<_, i32>(11)? != 0,
+        })
+    }
+
+    fn row_to_resource(row: &rusqlite::Row) -> rusqlite::Result<crate::memory::types::ResourceItem> {
+        Ok(crate::memory::types::ResourceItem {
+            id: row.get(0)?,
+            resource_type: row.get(1)?,
+            file_path: row.get(2)?,
+            file_hash: row.get(3)?,
+            title: row.get(4)?,
+            summary: row.get(5)?,
+            content: row.get(6)?,
+            search_keywords: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    }
+
     #[allow(dead_code)]
     pub fn command_count(&self) -> rusqlite::Result<usize> {
         self.conn
@@ -1647,6 +2120,51 @@ impl Db {
             eprintln!("none");
         }
 
+        // Memory system check
+        eprint!("  Memory tables... ");
+        let memory_count: i64 = self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM episodic_memory) + \
+                    (SELECT COUNT(*) FROM semantic_memory) + \
+                    (SELECT COUNT(*) FROM procedural_memory) + \
+                    (SELECT COUNT(*) FROM resource_memory) + \
+                    (SELECT COUNT(*) FROM knowledge_vault)",
+            [], |row| row.get(0),
+        ).unwrap_or(0);
+        eprintln!("{memory_count} total memory entries");
+
+        eprint!("  Core memory... ");
+        let core_count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM core_memory", [], |row| row.get(0)
+        ).unwrap_or(0);
+        eprintln!("{core_count} blocks");
+
+        eprint!("  Memory FTS5 integrity... ");
+        let mut mem_fts_ok = true;
+        for table in ["episodic_memory_fts", "semantic_memory_fts", "procedural_memory_fts",
+                       "resource_memory_fts", "knowledge_vault_fts"] {
+            if let Err(e) = self.conn.execute(
+                &format!("INSERT INTO {table}({table}) VALUES('integrity-check')"), []
+            ) {
+                eprintln!("FAILED ({table}): {e}");
+                let _ = self.conn.execute_batch(&format!("INSERT INTO {table}({table}) VALUES('rebuild')"));
+                mem_fts_ok = false;
+            }
+        }
+        if mem_fts_ok {
+            eprintln!("OK");
+        }
+
+        eprint!("  Core memory usage... ");
+        for block in self.get_core_memory().unwrap_or_default() {
+            let pct = if block.char_limit > 0 {
+                (block.value.len() as f64 / block.char_limit as f64 * 100.0) as usize
+            } else {
+                0
+            };
+            eprint!("{}={}% ", block.label, pct);
+        }
+        eprintln!();
+
         // 8. Orphaned socket/PID files
         eprint!("  Orphaned files... ");
         let nsh_dir = crate::config::Config::nsh_dir();
@@ -1757,7 +2275,7 @@ impl Db {
             "
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;
-            PRAGMA cache_size = -2000;
+            PRAGMA cache_size = -64000;
             PRAGMA temp_store = MEMORY;
             PRAGMA mmap_size = 268435456;
             PRAGMA query_only = ON;

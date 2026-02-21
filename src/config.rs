@@ -33,6 +33,8 @@ pub struct Config {
     #[allow(dead_code)]
     #[serde(default)]
     pub execution: ExecutionConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 pub const DEFAULT_SUPPRESSED_EXIT_CODES: &[i32] = &[130, 137, 141, 143];
@@ -330,6 +332,9 @@ pub const TOOL_BLOCKED_KEYS: &[&str] = &[
     "tools.run_command_allowlist",
     "redaction.enabled",
     "redaction.disable_builtin",
+    "memory.enabled",
+    "memory.incognito",
+    "memory.ignore_paths",
 ];
 
 const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &["api_key", "api_key_cmd", "base_url"];
@@ -473,6 +478,44 @@ impl Default for DbConfig {
     fn default() -> Self {
         Self {
             busy_timeout_ms: 5000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    pub enabled: bool,
+    pub fade_after_days: u32,
+    pub expire_after_days: u32,
+    pub max_retrieval_per_type: usize,
+    pub core_human_char_limit: usize,
+    pub core_persona_char_limit: usize,
+    pub core_environment_char_limit: usize,
+    pub ingestion_buffer_size: usize,
+    pub ingestion_buffer_age_secs: u64,
+    pub consolidation_threshold: usize,
+    pub reflection_interval_hours: u32,
+    pub incognito: bool,
+    pub ignore_paths: Vec<String>,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            fade_after_days: 30,
+            expire_after_days: 90,
+            max_retrieval_per_type: 10,
+            core_human_char_limit: 5000,
+            core_persona_char_limit: 2000,
+            core_environment_char_limit: 3000,
+            ingestion_buffer_size: 15,
+            ingestion_buffer_age_secs: 60,
+            consolidation_threshold: 50,
+            reflection_interval_hours: 24,
+            incognito: false,
+            ignore_paths: Vec::new(),
         }
     }
 }
@@ -1194,6 +1237,60 @@ pub fn build_config_xml(
         ));
     }
     x.push_str("  </installed_skills>\n");
+
+    // ── Memory ──────────────────────────────────────────
+    x.push_str("  <section name=\"memory\">\n");
+    opt(
+        &mut x,
+        "enabled",
+        &config.memory.enabled.to_string(),
+        "Enable/disable persistent memory system",
+        Some("true,false"),
+    );
+    x.push_str(&format!(
+        "    <option key=\"incognito\" value=\"{}\" description=\"When true, no new memories are stored\" protected=\"true\" />\n",
+        config.memory.incognito
+    ));
+    opt(
+        &mut x,
+        "fade_after_days",
+        &config.memory.fade_after_days.to_string(),
+        "Days before memories start fading",
+        None,
+    );
+    opt(
+        &mut x,
+        "expire_after_days",
+        &config.memory.expire_after_days.to_string(),
+        "Days before memories are deleted",
+        None,
+    );
+    opt(
+        &mut x,
+        "max_retrieval_per_type",
+        &config.memory.max_retrieval_per_type.to_string(),
+        "Max memories retrieved per type per query",
+        None,
+    );
+    opt(
+        &mut x,
+        "consolidation_threshold",
+        &config.memory.consolidation_threshold.to_string(),
+        "Number of episodic events before triggering reflection",
+        None,
+    );
+    opt(
+        &mut x,
+        "reflection_interval_hours",
+        &config.memory.reflection_interval_hours.to_string(),
+        "Hours between automatic reflection runs",
+        None,
+    );
+    x.push_str(&format!(
+        "    <option key=\"ignore_paths\" value=\"({} patterns)\" description=\"Glob patterns for directories excluded from memory\" protected=\"true\" />\n",
+        config.memory.ignore_paths.len()
+    ));
+    x.push_str("  </section>\n");
 
     x.push_str("</nsh_configuration>");
     x
