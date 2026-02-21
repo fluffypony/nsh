@@ -168,4 +168,53 @@ mod tests {
         assert_eq!(h1, h2);
         assert_ne!(compute_hash("hello"), compute_hash("world"));
     }
+
+    #[test]
+    fn has_bootstrapped_false_initially() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::memory::schema::create_memory_tables(&conn).unwrap();
+        assert!(!has_bootstrapped(&conn));
+    }
+
+    #[test]
+    fn has_bootstrapped_true_after_marking() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::memory::schema::create_memory_tables(&conn).unwrap();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_bootstrap_at', datetime('now'))",
+            [],
+        ).unwrap();
+
+        assert!(has_bootstrapped(&conn));
+    }
+
+    #[test]
+    fn parse_bootstrap_response_partial() {
+        let resp = r#"{"summary": "has aliases"}"#;
+        let (summary, keywords) = parse_bootstrap_response(resp, "default");
+        assert_eq!(summary, "has aliases");
+        assert!(keywords.is_empty());
+    }
+
+    #[test]
+    fn compute_hash_different_inputs() {
+        let h1 = compute_hash("hello world");
+        let h2 = compute_hash("hello world!");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn compute_hash_empty() {
+        let h = compute_hash("");
+        assert!(!h.is_empty());
+        assert_eq!(h.len(), 64); // SHA-256 hex is 64 chars
+    }
+
+    #[test]
+    fn compute_hash_unicode() {
+        let h = compute_hash("こんにちは");
+        assert!(!h.is_empty());
+        assert_eq!(h.len(), 64);
+    }
 }

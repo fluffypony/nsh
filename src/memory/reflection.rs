@@ -297,4 +297,89 @@ mod tests {
         let ops = parse_reflection_response("not json");
         assert!(ops.is_empty());
     }
+
+    #[test]
+    fn should_run_reflection_threshold_reached() {
+        let conn = setup();
+        // Insert enough unconsolidated events to meet the threshold
+        for i in 0..50 {
+            conn.execute(
+                &format!(
+                    "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords)
+                     VALUES ('ep_{i}', 'command_execution', 'user', 'event {i}', 'test')"
+                ),
+                [],
+            ).unwrap();
+        }
+        assert!(should_run_reflection(&conn, 50), "should run when threshold reached");
+    }
+
+    #[test]
+    fn should_run_reflection_under_threshold_recent() {
+        let conn = setup();
+        // Insert a few events
+        for i in 0..5 {
+            conn.execute(
+                &format!(
+                    "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords)
+                     VALUES ('ep_{i}', 'command_execution', 'user', 'event {i}', 'test')"
+                ),
+                [],
+            ).unwrap();
+        }
+        // Mark reflection as recently run
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_reflection_at', datetime('now'))",
+            [],
+        ).unwrap();
+        assert!(!should_run_reflection(&conn, 50), "should not run under threshold with recent reflection");
+    }
+
+    #[test]
+    fn should_run_reflection_under_threshold_overdue() {
+        let conn = setup();
+        // Insert a few events
+        conn.execute(
+            "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords)
+             VALUES ('ep_1', 'command_execution', 'user', 'event', 'test')",
+            [],
+        ).unwrap();
+        // Mark reflection as long ago
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_reflection_at', datetime('now', '-48 hours'))",
+            [],
+        ).unwrap();
+        assert!(should_run_reflection(&conn, 50), "should run when overdue and has events");
+    }
+
+    #[test]
+    fn parse_reflection_response_semantic_insert() {
+        let resp = r#"[{"op": "SemanticInsert", "name": "Docker usage", "category": "tools", "summary": "Uses Docker for containerization", "search_keywords": "docker container"}]"#;
+        let ops = parse_reflection_response(resp);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(&ops[0], MemoryOp::SemanticInsert { .. }));
+    }
+
+    #[test]
+    fn parse_reflection_response_mixed_ops() {
+        let resp = r#"[
+            {"op": "SemanticInsert", "name": "fact", "category": "general", "summary": "test", "search_keywords": "test"},
+            {"op": "EpisodicDelete", "ids": ["ep_1", "ep_2"]},
+            {"op": "CoreAppend", "label": "human", "content": "prefers vim"}
+        ]"#;
+        let ops = parse_reflection_response(resp);
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn parse_reflection_adds_missing_keywords() {
+        let resp = r#"[{"op": "SemanticInsert", "name": "fact", "category": "general", "summary": "Uses Docker for development workflow", "search_keywords": ""}]"#;
+        let ops = parse_reflection_response(resp);
+        match &ops[0] {
+            MemoryOp::SemanticInsert { search_keywords, .. } => {
+                assert!(!search_keywords.is_empty(), "should fill in fallback keywords");
+            }
+            _ => panic!("expected SemanticInsert"),
+        }
+    }
 }
