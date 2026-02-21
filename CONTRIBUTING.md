@@ -86,7 +86,9 @@ Understanding the codebase helps you contribute effectively:
 
 ```
 src/
-├── main.rs          # CLI entry point, command routing
+├── shim_main.rs     # Shim entry point (stable, handles `nsh wrap`, execs nsh-core)
+├── core_main.rs     # Core entry point (calls lib::main_inner)
+├── lib.rs           # Shared main_inner entry point and modules
 ├── cli.rs           # Clap argument definitions
 ├── config.rs        # Configuration loading, merging, validation
 ├── context.rs       # Query context building (env, project, git, scrollback)
@@ -104,9 +106,10 @@ src/
 │   ├── search_history.rs # FTS5 + entity-aware history search
 │   ├── write_file.rs / patch_file.rs # File editing with diff preview
 │   └── ...          # Other tools
-├── pump.rs          # PTY I/O pump, scrollback capture, daemon socket handler
-├── pty.rs           # PTY creation, raw mode, fork/exec
+├── pump.rs          # PTY I/O pump, scrollback capture (stable shim boundary)
+├── pty.rs           # PTY creation, raw mode, fork/exec (stable shim boundary)
 ├── daemon.rs        # Daemon protocol, DB command thread
+├── global_daemon.rs # Global daemon: SIGHUP drain+reexec, multi-threaded workers
 ├── redact.rs        # Secret detection and redaction engine
 ├── security.rs      # Command risk assessment, injection filtering
 ├── mcp.rs           # MCP client (stdio + HTTP transports)
@@ -118,7 +121,9 @@ src/
 
 ### Key Design Decisions
 
-- **PTY wrapper** - `nsh wrap` runs the user's shell inside a PTY so nsh can capture all terminal output without modifying the shell itself
+- **Shim/Core split** - `nsh` is a frozen shim; it handles `wrap` directly and otherwise execs the latest `nsh-core`. Updates never require restarting terminals.
+- **PTY wrapper** - `nsh wrap` runs the user's shell inside a PTY so nsh can capture all terminal output without modifying the shell itself. PTY code is part of the shim and changes extremely rarely.
+- **Global daemon** - The background daemon handles writes, reads, and memory processing. On updates it receives SIGHUP, drains current connections (with timeout), then re-execs to the latest core binary.
 - **Daemon thread** - DB writes and command recording happen on a dedicated thread via `daemon.rs` to avoid blocking the shell
 - **Tool-call-only responses** - the LLM must always respond via tool calls, never plain text. This ensures structured, actionable responses
 - **Boundary tokens** - tool results are wrapped in random boundary tokens to prevent prompt injection from tool output

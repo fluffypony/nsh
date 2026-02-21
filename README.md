@@ -241,6 +241,7 @@ Use this on native Windows PowerShell (not WSL/MSYS).
 ```bash
 git clone https://github.com/fluffypony/nsh.git
 cd nsh
+# Installs both binaries: nsh (shim) and nsh-core
 cargo install --path . --locked
 ```
 
@@ -248,8 +249,19 @@ cargo install --path . --locked
 
 ```bash
 cargo build --release
-# Binary at target/release/nsh
+# Binaries at target/release/: nsh (shim), nsh-core (core)
 ```
+
+### Shim/Core Split
+
+nsh ships as two binaries:
+
+- `nsh` — the stable shim. It handles `nsh wrap` directly so your long-lived terminal session uses frozen, stable PTY code. For all other commands, it resolves and `exec`s the latest `nsh-core` at `~/.nsh/bin/nsh-core`.
+- `nsh-core` — the full implementation binary. This is what updates frequently.
+
+Installers place the shim once into your cargo bin if it’s missing, and always update `~/.nsh/bin/nsh-core`. During an update, existing terminals do not need to restart. The next `nsh` invocation transparently runs the new core.
+
+Daemon restarts are graceful: `nsh` signals SIGHUP to the daemon, which drains existing connections with a short timeout and re-execs itself using the latest core.
 
 ---
 
@@ -292,7 +304,7 @@ nsh init fish | source
 Invoke-Expression (nsh init powershell)
 ```
 
-`nsh wrap` runs your shell inside a PTY wrapper for scrollback capture. It's optional but recommended.
+`nsh wrap` runs your shell inside a PTY wrapper for scrollback capture. It's optional but recommended. The PTY wrapper lives in the stable `nsh` shim, so it never needs to be restarted for updates.
 
 ### 3. Use It
 
@@ -495,10 +507,11 @@ All data is stored in `~/.nsh/`:
 ## Development
 
 ```bash
-cargo fmt -- --check        # format check
+cargo fmt -- --check                    # format check
 cargo clippy --all-targets -- -D warnings  # lint
-cargo test                  # full test suite
-cargo run -- status         # run local binary
+cargo test                              # full test suite
+cargo run --bin nsh -- status           # run shim
+cargo run --bin nsh-core -- status      # run core directly
 ```
 
 `cargo-make` tasks are defined in `Makefile.toml`:
@@ -534,6 +547,9 @@ cargo make sync-site-install
 2. Build release artifacts:
 
 ```bash
+# Builds per-target archives containing both binaries:
+#   - nsh         (core binary used by auto-update)
+#   - nsh-shim    (shim; installed once if missing)
 scripts/release-builds.sh --version 1.0.0
 ```
 
@@ -547,8 +563,8 @@ gh release create v1.0.0 dist/nsh-*.tar.gz dist/nsh-*.tar.gz.sha256 \
 4. Publish updater DNS TXT records for `update.nsh.tools` from `dist/update-records.txt`:
 
 ```text
-1.0.0:x86_64-unknown-linux-gnu:<sha256-of-binary>
-1.0.0:aarch64-unknown-linux-gnu:<sha256-of-binary>
+1.0.0:x86_64-unknown-linux-gnu:<sha256-of-core-binary>
+1.0.0:aarch64-unknown-linux-gnu:<sha256-of-core-binary>
 ...
 ```
 

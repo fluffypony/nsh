@@ -57,22 +57,3 @@ pub fn running_wrapper_protocol() -> &'static str {
 pub fn running_hook_hash() -> &'static str {
     env!("NSH_HOOK_HASH")
 }
-
-/// Determine what kind of restart is needed based on daemon response data
-pub enum UpdateAction {
-    None,
-    DaemonRestartOnly,
-    // With shim/core split the wrapper is frozen; terminal restart no longer required.
-    TerminalRestartNeeded,
-}
-
-/// Compare a daemon's reported protocol version against ours
-pub fn classify_update(daemon_protocol: u64) -> UpdateAction {
-    let our_protocol: u64 = env!("NSH_WRAPPER_PROTOCOL_VERSION").parse().unwrap_or(1);
-    if daemon_protocol == our_protocol {
-        UpdateAction::None
-    } else {
-        // No-op with shim/core split; keep variant for compatibility
-        UpdateAction::TerminalRestartNeeded
-    }
-}
