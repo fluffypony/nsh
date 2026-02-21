@@ -1,54 +1,10 @@
 use rusqlite::{Connection, params};
 
-use crate::memory::llm_adapter::MemoryLlmClient;
-use crate::memory::types::{MemoryOp, ReflectionReport};
+use crate::memory::types::MemoryOp;
 
-pub async fn run_reflection(
-    conn: &Connection,
-    llm: &dyn MemoryLlmClient,
-) -> anyhow::Result<ReflectionReport> {
-    let mut report = ReflectionReport::default();
+// Reflection orchestration moved into MemorySystem::run_reflection to avoid holding locks across awaits
 
-    // Fetch unconsolidated episodic events
-    let unconsolidated =
-        crate::memory::store::episodic::list_unconsolidated(conn, 100)?;
-    if unconsolidated.is_empty() {
-        return Ok(report);
-    }
-
-    // Fetch current state for context
-    let core = crate::memory::store::core::get_all(conn)?;
-    let semantic = crate::memory::store::semantic::list_all(conn)?;
-    let procedural = crate::memory::store::procedural::list_all(conn)?;
-
-    // Build reflection prompt
-    let prompt = build_reflection_prompt(&unconsolidated, &core, &semantic, &procedural);
-
-    // Execute single LLM call
-    let response = llm.complete_json(&prompt).await?;
-    let ops = parse_reflection_response(&response);
-
-    // Apply operations
-    for op in &ops {
-        if apply_op(conn, op).is_ok() {
-            report.ops_applied += 1;
-        }
-    }
-
-    // Mark events as consolidated
-    let ids: Vec<String> = unconsolidated.iter().map(|e| e.id.clone()).collect();
-    crate::memory::store::episodic::mark_consolidated(conn, &ids)?;
-
-    // Record last reflection time
-    conn.execute(
-        "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_reflection_at', datetime('now'))",
-        [],
-    )?;
-
-    Ok(report)
-}
-
-fn build_reflection_prompt(
+pub fn build_reflection_prompt(
     unconsolidated: &[crate::memory::types::EpisodicEvent],
     core: &[crate::memory::types::CoreBlock],
     semantic: &[crate::memory::types::SemanticItem],
@@ -122,7 +78,7 @@ Respond ONLY with the JSON array.
     prompt
 }
 
-fn parse_reflection_response(response: &str) -> Vec<MemoryOp> {
+pub fn parse_reflection_response(response: &str) -> Vec<MemoryOp> {
     let trimmed = response.trim();
     let json_str = if let Some(start) = trimmed.find('[') {
         if let Some(end) = trimmed.rfind(']') {
@@ -143,79 +99,7 @@ fn parse_reflection_response(response: &str) -> Vec<MemoryOp> {
     }
 }
 
-fn apply_op(conn: &Connection, op: &MemoryOp) -> anyhow::Result<()> {
-    use crate::memory::types::CoreLabel;
-
-    match op {
-        MemoryOp::CoreAppend { label, content } => {
-            if let Some(l) = CoreLabel::from_str(label) {
-                crate::memory::store::core::append(conn, l, content)?;
-            }
-        }
-        MemoryOp::CoreRewrite { label, content } => {
-            if let Some(l) = CoreLabel::from_str(label) {
-                crate::memory::store::core::rewrite(conn, l, content)?;
-            }
-        }
-        MemoryOp::SemanticInsert {
-            name,
-            category,
-            summary,
-            details,
-            search_keywords,
-        } => {
-            crate::memory::store::semantic::insert_or_update(
-                conn,
-                name,
-                category,
-                summary,
-                details.as_deref(),
-                search_keywords,
-            )?;
-        }
-        MemoryOp::SemanticUpdate {
-            id,
-            summary,
-            details,
-            search_keywords,
-        } => {
-            crate::memory::store::semantic::update_by_id(
-                conn,
-                id,
-                summary,
-                details.as_deref(),
-                search_keywords,
-            )?;
-        }
-        MemoryOp::SemanticDelete { ids } => {
-            crate::memory::store::semantic::delete(conn, ids)?;
-        }
-        MemoryOp::ProceduralInsert {
-            entry_type,
-            trigger_pattern,
-            summary,
-            steps,
-            search_keywords,
-        } => {
-            crate::memory::store::procedural::insert(
-                conn,
-                entry_type,
-                trigger_pattern,
-                summary,
-                steps,
-                search_keywords,
-            )?;
-        }
-        MemoryOp::EpisodicDelete { ids } => {
-            crate::memory::store::episodic::delete(conn, ids)?;
-        }
-        MemoryOp::NoOp { .. } => {}
-        _ => {
-            tracing::debug!("Unhandled reflection op: {:?}", op);
-        }
-    }
-    Ok(())
-}
+// Apply-op is handled by MemorySystem::apply_op
 
 pub fn should_run_reflection(conn: &Connection, consolidation_threshold: usize) -> bool {
     // Check unconsolidated count

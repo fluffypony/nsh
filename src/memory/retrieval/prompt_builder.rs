@@ -141,12 +141,7 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
     parts.join("\n")
 }
 
-#[cfg(test)]
-pub fn compile_core_memory(
-    conn: &rusqlite::Connection,
-) -> anyhow::Result<String> {
-    crate::memory::store::core::compile_for_prompt(conn)
-}
+// removed unused test-only helper compile_core_memory()
 
 #[cfg(test)]
 mod tests {

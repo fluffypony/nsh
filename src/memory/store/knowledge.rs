@@ -2,19 +2,7 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{KnowledgeEntry, Sensitivity, generate_id};
 
-#[cfg(test)]
-fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeEntry> {
-    Ok(KnowledgeEntry {
-        id: row.get(0)?,
-        entry_type: row.get(1)?,
-        caption: row.get(2)?,
-        secret_value: row.get(3)?,
-        sensitivity: Sensitivity::from_str(&row.get::<_, String>(4)?),
-        search_keywords: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
-    })
-}
+// removed unused test-only row_to_entry helper
 
 pub fn insert(
     conn: &Connection,

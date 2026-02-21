@@ -1207,12 +1207,8 @@ mod tests {
         assert!(vals.contains(&"stdio"));
         assert!(vals.contains(&"http"));
     }
-
     #[test]
-    
-
-    #[test]
-    fn test_all_tools_have_properties_object() {
+fn test_all_tools_have_properties_object() {
         let tools = all_tool_definitions();
         for tool in &tools {
             let props = tool.parameters.get("properties");

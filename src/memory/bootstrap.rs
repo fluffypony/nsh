@@ -1,95 +1,10 @@
 use rusqlite::Connection;
 
-use crate::memory::llm_adapter::MemoryLlmClient;
-use crate::memory::types::BootstrapReport;
+// no direct imports needed now; helpers below are used by MemorySystem
 
-pub async fn bootstrap_scan(
-    conn: &Connection,
-    llm: &dyn MemoryLlmClient,
-) -> anyhow::Result<BootstrapReport> {
-    let mut report = BootstrapReport::default();
+// Active bootstrap scan is orchestrated by MemorySystem::bootstrap_scan to avoid holding locks across awaits
 
-    let home = dirs::home_dir().unwrap_or_default();
-
-    let config_files = [
-        (".zshrc", "Zsh configuration"),
-        (".bashrc", "Bash configuration"),
-        (".bash_profile", "Bash profile"),
-        (".profile", "Shell profile"),
-        (".gitconfig", "Git configuration"),
-        (".ssh/config", "SSH configuration"),
-        (".cargo/config.toml", "Cargo configuration"),
-        (".npmrc", "npm configuration"),
-        (".docker/config.json", "Docker configuration"),
-    ];
-
-    for (filename, description) in &config_files {
-        let path = home.join(filename);
-        if !path.exists() {
-            continue;
-        }
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        // Skip very large files
-        if content.len() > 50_000 {
-            continue;
-        }
-
-        // Redact secrets before sending to LLM
-        let (redacted, _) = crate::memory::privacy::redact_secrets_for_memory(&content);
-
-        let prompt = format!(
-            "Summarize this config file in 2-3 sentences. What tools, settings, and preferences does it reveal?\n\nFile: {filename} ({description})\n\n```\n{redacted}\n```\n\nAlso provide 5-10 search keywords as a space-separated string.\n\nRespond with JSON: {{\"summary\": \"...\", \"keywords\": \"...\"}}"
-        );
-
-        match llm.complete_json(&prompt).await {
-            Ok(response) => {
-                let (summary, keywords) = parse_bootstrap_response(&response, description);
-                let path_str = path.to_string_lossy().to_string();
-                let hash = compute_hash(&content);
-                crate::memory::store::resource::upsert_by_path(
-                    conn,
-                    "config",
-                    &path_str,
-                    &hash,
-                    description,
-                    &summary,
-                    None,
-                    &keywords,
-                )?;
-                report.files_scanned += 1;
-            }
-            Err(e) => {
-                tracing::warn!("Bootstrap scan failed for {filename}: {e}");
-            }
-        }
-    }
-
-    // Detect installed tools for Environment core block
-    let tools = detect_installed_tools();
-    if !tools.is_empty() {
-        let env_text = format!("Installed tools: {}", tools.join(", "));
-        crate::memory::store::core::append(
-            conn,
-            crate::memory::types::CoreLabel::Environment,
-            &env_text,
-        )?;
-    }
-
-    // Record bootstrap completion
-    conn.execute(
-        "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_bootstrap_at', datetime('now'))",
-        [],
-    )?;
-
-    Ok(report)
-}
-
-fn parse_bootstrap_response(response: &str, default_desc: &str) -> (String, String) {
+pub fn parse_bootstrap_response(response: &str, default_desc: &str) -> (String, String) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(response.trim()) {
         let summary = v["summary"]
             .as_str()
@@ -102,7 +17,7 @@ fn parse_bootstrap_response(response: &str, default_desc: &str) -> (String, Stri
     }
 }
 
-fn detect_installed_tools() -> Vec<String> {
+pub fn detect_installed_tools() -> Vec<String> {
     let tools_to_check = [
         "git", "cargo", "rustc", "node", "npm", "python3", "pip3",
         "docker", "kubectl", "terraform", "go", "java", "ruby",
@@ -116,7 +31,7 @@ fn detect_installed_tools() -> Vec<String> {
         .collect()
 }
 
-fn compute_hash(content: &str) -> String {
+pub fn compute_hash(content: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
@@ -157,8 +72,8 @@ mod tests {
     fn detect_installed_tools_runs() {
         let tools = detect_installed_tools();
         // At minimum, we should find some common tools
-        // This test just verifies it doesn't panic
-        assert!(tools.len() >= 0);
+        // This test just verifies it doesn't panic and returns valid strings
+        assert!(tools.iter().all(|t| !t.is_empty()));
     }
 
     #[test]

@@ -331,9 +331,34 @@ impl MemorySystem {
         &self,
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<ReflectionReport> {
+        // Phase 1: snapshot state under lock
+        let (unconsolidated, core, semantic, procedural) = {
+            let conn = self.db.lock().unwrap();
+            let uncon = crate::memory::store::episodic::list_unconsolidated(&conn, 100)?;
+            if uncon.is_empty() {
+                return Ok(ReflectionReport::default());
+            }
+            let core = crate::memory::store::core::get_all(&conn)?;
+            let semantic = crate::memory::store::semantic::list_all(&conn)?;
+            let procedural = crate::memory::store::procedural::list_all(&conn)?;
+            (uncon, core, semantic, procedural)
+        };
+
+        // Phase 2: LLM call without holding the DB lock
+        let prompt = reflection::build_reflection_prompt(&unconsolidated, &core, &semantic, &procedural);
+        let response = llm.complete_json(&prompt).await?;
+        let ops = reflection::parse_reflection_response(&response);
+
+        // Phase 3: apply ops and mark consolidated under lock
+        let mut report = ReflectionReport::default();
+        let ids: Vec<String> = unconsolidated.iter().map(|e| e.id.clone()).collect();
         let conn = self.db.lock().unwrap();
-        let report = reflection::run_reflection(&conn, llm).await?;
-        // Telemetry counters and timestamps
+        for op in &ops {
+            if self.apply_op(&conn, op).is_ok() {
+                report.ops_applied += 1;
+            }
+        }
+        crate::memory::store::episodic::mark_consolidated(&conn, &ids)?;
         let _ = conn.execute(
             "INSERT INTO memory_config(key, value) VALUES('last_reflection_at', datetime('now')) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -351,8 +376,60 @@ impl MemorySystem {
         &self,
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<BootstrapReport> {
+        // Implement without holding the DB lock across awaits
+        let home = dirs::home_dir().unwrap_or_default();
+        let config_files = [
+            (".zshrc", "Zsh configuration"),
+            (".bashrc", "Bash configuration"),
+            (".bash_profile", "Bash profile"),
+            (".profile", "Shell profile"),
+            (".gitconfig", "Git configuration"),
+            (".ssh/config", "SSH configuration"),
+            (".cargo/config.toml", "Cargo configuration"),
+            (".npmrc", "npm configuration"),
+            (".docker/config.json", "Docker configuration"),
+        ];
+
+        let mut report = BootstrapReport::default();
+
+        for (filename, description) in &config_files {
+            let path = home.join(filename);
+            if !path.exists() { continue; }
+            let content = match std::fs::read_to_string(&path) { Ok(c) => c, Err(_) => continue };
+            if content.len() > 50_000 { continue; }
+            let (redacted, _) = crate::memory::privacy::redact_secrets_for_memory(&content);
+            let prompt = format!(
+                "Summarize this config file in 2-3 sentences. What tools, settings, and preferences does it reveal?\n\nFile: {filename} ({description})\n\n```\n{redacted}\n```\n\nAlso provide 5-10 search keywords as a space-separated string.\n\nRespond with JSON: {{\"summary\": \"...\", \"keywords\": \"...\"}}"
+            );
+
+            if let Ok(response) = llm.complete_json(&prompt).await {
+                let (summary, keywords) = crate::memory::bootstrap::parse_bootstrap_response(&response, description);
+                let path_str = path.to_string_lossy().to_string();
+                let hash = crate::memory::bootstrap::compute_hash(&content);
+                let conn = self.db.lock().unwrap();
+                crate::memory::store::resource::upsert_by_path(
+                    &conn, "config", &path_str, &hash, description, &summary, None, &keywords,
+                )?;
+                report.files_scanned += 1;
+            }
+        }
+
+        // Detect installed tools for Environment core block
+        let tools = crate::memory::bootstrap::detect_installed_tools();
+        if !tools.is_empty() {
+            let env_text = format!("Installed tools: {}", tools.join(", "));
+            let conn = self.db.lock().unwrap();
+            crate::memory::store::core::append(&conn, crate::memory::types::CoreLabel::Environment, &env_text)?;
+        }
+
+        // Record bootstrap completion
         let conn = self.db.lock().unwrap();
-        bootstrap::bootstrap_scan(&conn, llm).await
+        conn.execute(
+            "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_bootstrap_at', datetime('now'))",
+            [],
+        )?;
+
+        Ok(report)
     }
 
     pub fn clear_all(&self) -> anyhow::Result<()> {

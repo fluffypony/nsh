@@ -10835,12 +10835,11 @@ mod tests {
 
     #[test]
     fn test_get_memories_respects_limit_ordering() {
-        let db = test_db();
+        let _db = test_db();
         // removed legacy memory limit/ordering test
     }
 
-    // #[test]
-    fn test_memory_update_value_only_preserves_key() {}
+    // legacy placeholder test removed
 
     #[test]
     fn test_find_pending_conversation_returns_latest_command() {

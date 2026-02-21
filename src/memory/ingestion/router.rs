@@ -200,7 +200,6 @@ fn looks_like_config_or_doc(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::types::GitContext;
 
     fn make_cmd_event(cmd: &str) -> ShellEvent {
         ShellEvent {
