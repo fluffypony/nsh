@@ -831,7 +831,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     eprintln!("Memory reflection complete.");
                 }
                 MemoryAction::Export { format: _ } => {
-                    let request = daemon::DaemonRequest::MemoryStats;
+                    let request = daemon::DaemonRequest::MemoryExportAll;
                     match send_to_global_or_fallback(&request)? {
                         daemon::DaemonResponse::Ok { data: Some(d) } => {
                             println!("{}", serde_json::to_string_pretty(&d)?);

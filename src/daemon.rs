@@ -235,6 +235,7 @@ pub enum DaemonRequest {
     MemoryRunReflection,
     MemoryBootstrapScan,
     MemoryStats,
+    MemoryExportAll,
     MemoryClearAll,
     MemoryClearByType {
         memory_type: String,
@@ -447,6 +448,7 @@ pub fn handle_daemon_request(
         | DaemonRequest::MemoryRunReflection
         | DaemonRequest::MemoryBootstrapScan
         | DaemonRequest::MemoryStats
+        | DaemonRequest::MemoryExportAll
         | DaemonRequest::MemoryClearAll
         | DaemonRequest::MemoryClearByType { .. } => {
             DaemonResponse::error("operation must be routed through global daemon")

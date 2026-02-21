@@ -128,6 +128,16 @@ pub fn list_recent(conn: &Connection, limit: usize, fade_cutoff: Option<&str>, s
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<EpisodicEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, event_type, actor, summary, details, command, exit_code, working_dir, project_context, search_keywords, occurred_at, is_consolidated
+         FROM episodic_memory
+         ORDER BY occurred_at DESC",
+    )?;
+    let rows = stmt.query_map([], row_to_event)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 pub fn list_unconsolidated(conn: &Connection, limit: usize) -> anyhow::Result<Vec<EpisodicEvent>> {
     let mut stmt = conn.prepare(
         "SELECT id, event_type, actor, summary, details, command, exit_code, working_dir, project_context, search_keywords, occurred_at, is_consolidated

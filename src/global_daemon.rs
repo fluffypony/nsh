@@ -1041,6 +1041,12 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
+        DaemonRequest::MemoryExportAll => {
+            match memory.export_all() {
+                Ok(data) => DaemonResponse::ok_with_data(data),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::MemoryStats => {
             match memory.stats() {
                 Ok(stats) => {

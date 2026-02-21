@@ -96,6 +96,16 @@ pub fn get_for_cwd(conn: &Connection, cwd: &str, limit: usize) -> anyhow::Result
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<ResourceItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, resource_type, file_path, file_hash, title, summary, content, search_keywords, created_at, updated_at
+         FROM resource_memory
+         ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], row_to_item)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 #[allow(dead_code)]
 pub fn exists_with_hash(conn: &Connection, path: &str, hash: &str) -> anyhow::Result<bool> {
     let exists: bool = conn

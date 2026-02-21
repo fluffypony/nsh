@@ -298,6 +298,25 @@ impl MemorySystem {
         Ok(())
     }
 
+    pub fn export_all(&self) -> anyhow::Result<serde_json::Value> {
+        let conn = self.db.lock().unwrap();
+        let core = store::core::get_all(&conn)?;
+        let episodic = store::episodic::list_all(&conn)?;
+        let semantic = store::semantic::list_all(&conn)?;
+        let procedural = store::procedural::list_all(&conn)?;
+        let resource = store::resource::list_all(&conn)?;
+        let knowledge = store::knowledge::list_all(&conn)?;
+
+        Ok(serde_json::json!({
+            "core": core,
+            "episodic": episodic,
+            "semantic": semantic,
+            "procedural": procedural,
+            "resource": resource,
+            "knowledge": knowledge,
+        }))
+    }
+
     pub fn stats(&self) -> anyhow::Result<MemoryStats> {
         let conn = self.db.lock().unwrap();
         Ok(MemoryStats {

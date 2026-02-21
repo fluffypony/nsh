@@ -79,6 +79,29 @@ pub fn search_bm25(
     Ok(results)
 }
 
+pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<KnowledgeEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, entry_type, caption, '' as secret_value, sensitivity, search_keywords, created_at, updated_at
+         FROM knowledge_vault
+         ORDER BY created_at DESC",
+    )?;
+    let mut results = Vec::new();
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        results.push(KnowledgeEntry {
+            id: row.get(0)?,
+            entry_type: row.get(1)?,
+            caption: row.get(2)?,
+            secret_value: String::new(),
+            sensitivity: Sensitivity::from_str(&row.get::<_, String>(4)?),
+            search_keywords: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        });
+    }
+    Ok(results)
+}
+
 #[cfg(test)]
 pub fn retrieve_secret(conn: &Connection, id: &str) -> anyhow::Result<String> {
     let encrypted: String = conn.query_row(
