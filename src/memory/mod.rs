@@ -357,6 +357,10 @@ impl MemorySystem {
         Ok(())
     }
 
+    pub fn should_flush_ingestion(&self) -> bool {
+        self.ingestion_buffer.lock().unwrap().should_flush()
+    }
+
     pub fn is_ignored_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         privacy::is_ignored_path(&path_str, &self.ignore_patterns)

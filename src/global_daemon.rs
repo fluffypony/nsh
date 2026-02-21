@@ -6,6 +6,16 @@ use std::time::{Duration, Instant};
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
 
+// ── Memory background task types ──────────────────────
+enum MemoryTask {
+    FlushIngestion,
+    IngestBatch { events: Vec<crate::memory::types::ShellEvent> },
+    RunReflection,
+    BootstrapScan,
+}
+
+type MemoryTaskSender = mpsc::Sender<MemoryTask>;
+
 fn log_daemon(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
 }
@@ -58,14 +68,42 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         anyhow::bail!("nshd: failed to open any read-only DB connections");
     }
 
+    // ── Memory system ──────────────────────────────────
+    let config = crate::config::Config::load().unwrap_or_default();
+    let db_path = crate::config::Config::nsh_dir().join("nsh.db");
+    let memory = Arc::new(
+        crate::memory::MemorySystem::open(config.memory.clone(), db_path)
+            .unwrap_or_else(|e| {
+                log_daemon("memory.init.error", &e.to_string());
+                // Fall back to in-memory (will lose data on restart, but won't crash)
+                crate::memory::MemorySystem::open(
+                    config.memory.clone(),
+                    ":memory:".into(),
+                )
+                .expect("in-memory MemorySystem must succeed")
+            }),
+    );
+
+    // Background async thread for LLM-dependent memory operations
+    let (memory_tx, memory_rx) = mpsc::channel::<MemoryTask>();
+    let memory_for_thread = Arc::clone(&memory);
+    let config_for_memory = config.clone();
+    let memory_thread = std::thread::Builder::new()
+        .name("nshd-memory".into())
+        .spawn(move || {
+            run_memory_thread(memory_for_thread, memory_rx, config_for_memory);
+        })?;
+
     let (write_tx, write_rx) = mpsc::channel::<WriteCommand>();
     let (read_tx, read_rx) = mpsc::channel::<ReadCommand>();
     let read_rx = Arc::new(Mutex::new(read_rx));
 
+    let memory_for_writer = Arc::clone(&memory);
+    let memory_tx_for_writer = memory_tx.clone();
     let write_thread = std::thread::Builder::new()
         .name("nshd-writer".into())
         .spawn(move || {
-            run_write_thread(write_db, write_rx);
+            run_write_thread(write_db, write_rx, memory_for_writer, memory_tx_for_writer);
         })?;
 
     let read_threads: Vec<_> = read_dbs
@@ -143,7 +181,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     drop(write_tx);
     drop(read_tx);
+    drop(memory_tx);
     let _ = write_thread.join();
+    let _ = memory_thread.join();
     for t in read_threads {
         let _ = t.join();
     }
@@ -164,7 +204,12 @@ struct ReadCommand {
     reply: mpsc::Sender<DaemonResponse>,
 }
 
-fn run_write_thread(db: crate::db::Db, rx: mpsc::Receiver<WriteCommand>) {
+fn run_write_thread(
+    db: crate::db::Db,
+    rx: mpsc::Receiver<WriteCommand>,
+    memory: Arc<crate::memory::MemorySystem>,
+    memory_tx: MemoryTaskSender,
+) {
     loop {
         let first = match rx.recv() {
             Ok(cmd) => cmd,
@@ -186,7 +231,7 @@ fn run_write_thread(db: crate::db::Db, rx: mpsc::Receiver<WriteCommand>) {
             if let Ok(()) = db.conn_execute_batch("BEGIN IMMEDIATE;") {
                 let mut pending: Vec<(mpsc::Sender<DaemonResponse>, DaemonResponse)> = Vec::new();
                 for cmd in batch {
-                    let resp = execute_write(&db, cmd.request);
+                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx);
                     pending.push((cmd.reply, resp));
                 }
                 if db.conn_execute_batch("COMMIT;").is_err() {
@@ -201,19 +246,84 @@ fn run_write_thread(db: crate::db::Db, rx: mpsc::Receiver<WriteCommand>) {
                 }
             } else {
                 for cmd in batch {
-                    let resp = execute_write(&db, cmd.request);
+                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx);
                     let _ = cmd.reply.send(resp);
                 }
             }
         } else {
             let cmd = batch.into_iter().next().unwrap();
-            let resp = execute_write(&db, cmd.request);
+            let resp = execute_write(&db, cmd.request, &memory, &memory_tx);
             let _ = cmd.reply.send(resp);
         }
     }
 }
 
-fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
+fn run_memory_thread(
+    memory: Arc<crate::memory::MemorySystem>,
+    rx: mpsc::Receiver<MemoryTask>,
+    config: crate::config::Config,
+) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            log_daemon("memory.thread.error", &format!("failed to create tokio runtime: {e}"));
+            return;
+        }
+    };
+
+    let llm = crate::memory::llm_adapter::ProviderLlmClient::new(&config);
+
+    // Process tasks: recv() blocks this thread until a task arrives (or channel closes).
+    // Each task is executed via block_on for the async LLM calls.
+    while let Ok(task) = rx.recv() {
+        match task {
+            MemoryTask::FlushIngestion => {
+                rt.block_on(async {
+                    if let Err(e) = memory.flush_ingestion(&llm).await {
+                        tracing::debug!("memory flush_ingestion error: {e}");
+                        log_daemon("memory.flush.error", &e.to_string());
+                    }
+                });
+            }
+            MemoryTask::IngestBatch { events } => {
+                rt.block_on(async {
+                    if let Err(e) = memory.ingest_batch(&events, &llm).await {
+                        tracing::debug!("memory ingest_batch error: {e}");
+                        log_daemon("memory.ingest.error", &e.to_string());
+                    }
+                });
+            }
+            MemoryTask::RunReflection => {
+                rt.block_on(async {
+                    if let Err(e) = memory.run_reflection(&llm).await {
+                        tracing::debug!("memory run_reflection error: {e}");
+                        log_daemon("memory.reflection.error", &e.to_string());
+                    }
+                });
+            }
+            MemoryTask::BootstrapScan => {
+                rt.block_on(async {
+                    if let Err(e) = memory.bootstrap_scan(&llm).await {
+                        tracing::debug!("memory bootstrap_scan error: {e}");
+                        log_daemon("memory.bootstrap.error", &e.to_string());
+                    }
+                });
+            }
+        }
+    }
+
+    log_daemon("memory.thread", "memory thread exiting");
+}
+
+fn execute_write(
+    db: &crate::db::Db,
+    request: DaemonRequest,
+    memory: &crate::memory::MemorySystem,
+    memory_tx: &MemoryTaskSender,
+) -> DaemonResponse {
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_write.request", &req_dbg);
     match request {
@@ -412,16 +522,30 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
         }
         // ── Memory write operations ──────────────────────
         DaemonRequest::MemoryRecordEvent { event_json } => {
-            tracing::debug!("memory: record_event (len={})", event_json.len());
-            DaemonResponse::ok()
+            match serde_json::from_str::<crate::memory::types::ShellEvent>(&event_json) {
+                Ok(event) => {
+                    memory.record_event(event);
+                    // Auto-flush when buffer is ready
+                    if memory.should_flush_ingestion() {
+                        let _ = memory_tx.send(MemoryTask::FlushIngestion);
+                    }
+                    DaemonResponse::ok()
+                }
+                Err(e) => DaemonResponse::error(format!("invalid event JSON: {e}")),
+            }
         }
         DaemonRequest::MemoryFlushIngestion => {
-            tracing::debug!("memory: flush_ingestion");
+            let _ = memory_tx.send(MemoryTask::FlushIngestion);
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryIngestBatch { events_json } => {
-            tracing::debug!("memory: ingest_batch (len={})", events_json.len());
-            DaemonResponse::ok()
+            match serde_json::from_str::<Vec<crate::memory::types::ShellEvent>>(&events_json) {
+                Ok(events) => {
+                    let _ = memory_tx.send(MemoryTask::IngestBatch { events });
+                    DaemonResponse::ok()
+                }
+                Err(e) => DaemonResponse::error(format!("invalid events JSON: {e}")),
+            }
         }
         DaemonRequest::MemoryCoreAppend { label, content } => {
             match db.append_core_block(&label, &content) {
@@ -472,11 +596,11 @@ fn execute_write(db: &crate::db::Db, request: DaemonRequest) -> DaemonResponse {
             }
         }
         DaemonRequest::MemoryRunReflection => {
-            tracing::debug!("memory: run_reflection (requires LLM, skipping in daemon)");
+            let _ = memory_tx.send(MemoryTask::RunReflection);
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryBootstrapScan => {
-            tracing::debug!("memory: bootstrap_scan (requires LLM, skipping in daemon)");
+            let _ = memory_tx.send(MemoryTask::BootstrapScan);
             DaemonResponse::ok()
         }
         DaemonRequest::MemoryClearAll => {
