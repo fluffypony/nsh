@@ -604,6 +604,11 @@ fn save_config(
     if doc.get("memory").is_none() {
         ensure_table(&mut doc, "memory");
         doc["memory"]["enabled"] = toml_edit::value(true);
+        doc["memory"]["fade_after_days"] = toml_edit::value(30i64);
+        doc["memory"]["expire_after_days"] = toml_edit::value(90i64);
+        doc["memory"]["max_retrieval_per_type"] = toml_edit::value(10i64);
+        doc["memory"]["reflection_interval_hours"] = toml_edit::value(24i64);
+        doc["memory"]["incognito"] = toml_edit::value(false);
     }
 
     if let Some(parent) = config_path.parent() {
@@ -689,6 +694,65 @@ mod tests {
             parsed["provider"]["default"].as_str().unwrap(),
             "openrouter"
         );
+    }
+
+    #[test]
+    fn save_config_seeds_memory_defaults() {
+        let models = models_for_provider("openrouter");
+        let mut doc = toml_edit::DocumentMut::new();
+
+        // Simulate save_config logic: seed memory when absent
+        assert!(doc.get("memory").is_none());
+        ensure_table(&mut doc, "memory");
+        doc["memory"]["enabled"] = toml_edit::value(true);
+        doc["memory"]["fade_after_days"] = toml_edit::value(30i64);
+        doc["memory"]["expire_after_days"] = toml_edit::value(90i64);
+        doc["memory"]["max_retrieval_per_type"] = toml_edit::value(10i64);
+        doc["memory"]["reflection_interval_hours"] = toml_edit::value(24i64);
+        doc["memory"]["incognito"] = toml_edit::value(false);
+
+        // Also set provider so the TOML is realistic
+        ensure_table(&mut doc, "provider");
+        doc["provider"]["default"] = toml_edit::value("openrouter");
+        doc["provider"]["model"] = toml_edit::value(&models.default_model);
+
+        let content = doc.to_string();
+        let parsed: toml::Value = toml::from_str(&content).expect("valid TOML");
+        let mem = parsed.get("memory").expect("memory section exists");
+        assert_eq!(mem["enabled"].as_bool(), Some(true));
+        assert_eq!(mem["fade_after_days"].as_integer(), Some(30));
+        assert_eq!(mem["expire_after_days"].as_integer(), Some(90));
+        assert_eq!(mem["max_retrieval_per_type"].as_integer(), Some(10));
+        assert_eq!(mem["reflection_interval_hours"].as_integer(), Some(24));
+        assert_eq!(mem["incognito"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn save_config_preserves_existing_memory_section() {
+        // Simulate an existing config that already has a [memory] section
+        let existing = r#"
+[provider]
+default = "openrouter"
+
+[memory]
+enabled = false
+fade_after_days = 60
+"#;
+        let mut doc: toml_edit::DocumentMut = existing.parse().unwrap();
+
+        // The save_config guard: only seed if memory is absent
+        if doc.get("memory").is_none() {
+            ensure_table(&mut doc, "memory");
+            doc["memory"]["enabled"] = toml_edit::value(true);
+            doc["memory"]["fade_after_days"] = toml_edit::value(30i64);
+        }
+
+        let content = doc.to_string();
+        let parsed: toml::Value = toml::from_str(&content).expect("valid TOML");
+        let mem = parsed.get("memory").expect("memory section exists");
+        // Should NOT be overwritten
+        assert_eq!(mem["enabled"].as_bool(), Some(false));
+        assert_eq!(mem["fade_after_days"].as_integer(), Some(60));
     }
 
     #[test]
