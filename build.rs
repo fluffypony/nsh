@@ -28,6 +28,44 @@ fn main() {
 
     println!("cargo:rustc-env=NSH_BUILD_VERSION={short}");
     println!("cargo:rustc-env=NSH_BUILD_LONG_VERSION={long}");
+
+    // Per-build timestamp so even non-git builds get a unique fingerprint
+    let build_nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| format!("{}", d.as_millis()))
+        .unwrap_or_else(|_| "0".to_string());
+    println!("cargo:rustc-env=NSH_BUILD_NONCE={build_nonce}");
+
+    // Composite fingerprint: git_sha + dirty + timestamp
+    println!(
+        "cargo:rustc-env=NSH_BUILD_FINGERPRINT={git_sha}{dirty_suffix}.{build_nonce}"
+    );
+
+    // Manually bump when wrapper protocol changes
+    println!("cargo:rustc-env=NSH_WRAPPER_PROTOCOL_VERSION=1");
+
+    // Compute a hash of shell hook templates so we can detect when hooks changed
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    for shell_file in &[
+        "shell/nsh.zsh",
+        "shell/nsh.bash",
+        "shell/nsh.fish",
+        "shell/nsh.ps1",
+    ] {
+        if let Ok(content) = std::fs::read_to_string(shell_file) {
+            content.hash(&mut hasher);
+        }
+    }
+    let hook_hash = format!("{:016x}", hasher.finish());
+    println!("cargo:rustc-env=NSH_HOOK_HASH={hook_hash}");
+
+    // Re-run build script if shell scripts change
+    println!("cargo:rerun-if-changed=shell/nsh.zsh");
+    println!("cargo:rerun-if-changed=shell/nsh.bash");
+    println!("cargo:rerun-if-changed=shell/nsh.fish");
+    println!("cargo:rerun-if-changed=shell/nsh.ps1");
 }
 
 fn git_short_sha() -> Option<String> {

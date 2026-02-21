@@ -19,6 +19,11 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("daemon_{session_id}.pid")));
     let _ = std::fs::remove_file(dir.join(format!("redact_next_{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("redact_active_{session_id}")));
+    let _ = std::fs::remove_file(dir.join(format!("restart_needed_{session_id}")));
+    let _ = std::fs::remove_file(dir.join(format!("notify_restart_{session_id}")));
+    let _ = std::fs::remove_file(dir.join(format!("update_available_{session_id}")));
+    let _ = std::fs::remove_file(dir.join(format!("nsh_msg_{session_id}")));
+    let _ = std::fs::remove_file(dir.join(format!("last_update_notice_{session_id}")));
 
     // Clean up per-TTY CWD file (only if this process owns the session)
     if let Ok(env_session) = std::env::var("NSH_SESSION_ID") {

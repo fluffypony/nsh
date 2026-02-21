@@ -542,7 +542,7 @@ pub fn pump_loop(
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
                     if poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_daemon_connection(l, &capture, max_output_bytes, &active_conns);
+                        handle_daemon_connection(l, &capture, max_output_bytes, &active_conns, &session_id);
                     }
                 }
             }
@@ -725,6 +725,7 @@ fn handle_daemon_connection(
     capture: &Arc<Mutex<CaptureEngine>>,
     max_output_bytes: usize,
     active_conns: &Arc<AtomicUsize>,
+    session_id: &str,
 ) {
     const MAX_CONCURRENT: usize = 8;
 
@@ -744,10 +745,12 @@ fn handle_daemon_connection(
 
         match std::thread::Builder::new()
             .name("nsh-daemon-conn".into())
-            .spawn(move || {
-                handle_daemon_connection_inner(stream, &capture, max_output_bytes);
+            .spawn({
+                let session = session_id.to_string();
+                move || {
+                    handle_daemon_connection_inner(stream, &capture, max_output_bytes, &session);
                 active.fetch_sub(1, Ordering::Relaxed);
-            }) {
+            }}) {
             Ok(_) => {}
             Err(e) => {
                 tracing::warn!("daemon: failed to spawn connection handler thread: {e}");
@@ -762,6 +765,7 @@ fn handle_daemon_connection_inner(
     stream: std::os::unix::net::UnixStream,
     capture: &Mutex<CaptureEngine>,
     max_output_bytes: usize,
+    session_id: &str,
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
 
@@ -795,6 +799,10 @@ fn handle_daemon_connection_inner(
                     "daemon: client protocol version {client_version} > server {}",
                     crate::daemon::DAEMON_PROTOCOL_VERSION
                 );
+                // Write a flag so shell hooks can notify user
+                let flag_path = crate::config::Config::nsh_dir()
+                    .join(format!("restart_needed_{session_id}"));
+                let _ = std::fs::write(&flag_path, "");
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
                 Ok(request) => {
@@ -829,6 +837,14 @@ fn handle_daemon_connection_inner(
             map.insert(
                 "v".into(),
                 serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
+            );
+            map.insert(
+                "daemon_version".into(),
+                serde_json::json!(env!("CARGO_PKG_VERSION")),
+            );
+            map.insert(
+                "daemon_fingerprint".into(),
+                serde_json::json!(env!("NSH_BUILD_FINGERPRINT")),
             );
         }
         if let Ok(json) = serde_json::to_string(&json_val) {

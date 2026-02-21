@@ -203,6 +203,15 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     add-zsh-hook precmd __nsh_run_deferred
     add-zsh-hook precmd __nsh_precmd
     add-zsh-hook precmd __nsh_check_pending
+    # Periodic hook version check (~every 100 commands)
+    (( __nsh_cmd_counter = ${__nsh_cmd_counter:-0} + 1 ))
+    if (( __nsh_cmd_counter % 100 == 0 )); then
+        local _disk_hook_hash
+        _disk_hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
+        if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
+            printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+        fi
+    fi
     return 0
 fi
 
@@ -210,6 +219,8 @@ fi
 export NSH_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
 export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
 export NSH_HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
+export NSH_HOOK_HASH="__HOOK_HASH__"
+export NSH_HOOKS_VERSION="__NSH_VERSION__"
 __nsh_load_suppressed_exit_codes
 
 __nsh_restore_last_cwd() {
@@ -355,6 +366,34 @@ __nsh_precmd() {
             __NSH_PENDING_CMD=""
             nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &!
         fi
+    fi
+
+    # --- Update notifications ---
+    local msg_file="$HOME/.nsh/nsh_msg_${NSH_SESSION_ID}"
+    if [[ -f "$msg_file" ]]; then
+        command cat "$msg_file" >&2
+        command rm -f "$msg_file" 2>/dev/null
+    fi
+    local restart_flag="$HOME/.nsh/restart_needed_${NSH_SESSION_ID}"
+    if [[ -f "$restart_flag" ]]; then
+        local now=$(date +%s)
+        if (( now - ${__NSH_LAST_RESTART_WARN:-0} > 3600 )); then
+            printf '\x1b[33m  nsh: A protocol update requires you to restart this terminal session for full functionality.\x1b[0m\n' >&2
+            typeset -g __NSH_LAST_RESTART_WARN=$now
+        fi
+    fi
+    local update_flag="$HOME/.nsh/update_available_${NSH_SESSION_ID}"
+    if [[ -f "$update_flag" ]]; then
+        local now=$(date +%s)
+        if (( now - ${__NSH_LAST_UPDATE_NOTIFY:-0} > 3600 )); then
+            command cat "$update_flag" >&2
+            typeset -g __NSH_LAST_UPDATE_NOTIFY=$now
+        fi
+    fi
+    local notice_file="$HOME/.nsh/update_notice"
+    if [[ -f "$notice_file" ]]; then
+        printf '\x1b[2m  nsh: %s\x1b[0m\n' "$(command cat "$notice_file" 2>/dev/null)" >&2
+        command rm -f "$notice_file" 2>/dev/null
     fi
 
     # ── Project switch detection for memory system ────

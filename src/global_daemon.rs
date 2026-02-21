@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
+use std::sync::atomic::AtomicBool;
 
 // ── Memory background task types ──────────────────────
 enum MemoryTask {
@@ -138,11 +139,26 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
 
-    // Spawn system monitor thread — samples CPU/memory every 10 seconds.
-    std::thread::spawn(|| {
+    // Spawn system monitor thread — samples CPU/memory every 10 seconds. Also watches binary mtime.
+    let monitor_exe_path = std::env::current_exe().ok();
+    let monitor_initial_mtime = monitor_exe_path
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+    std::thread::spawn(move || {
         loop {
             let _ = crate::context::sample_volatile_info();
             let _ = crate::context::get_semi_dynamic_info();
+            if let Some(ref path) = monitor_exe_path {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    if let Ok(mtime) = meta.modified() {
+                        if Some(mtime) != monitor_initial_mtime {
+                            tracing::info!("nshd: binary updated on disk, shutting down for restart");
+                            std::process::exit(0);
+                        }
+                    }
+                }
+            }
             std::thread::sleep(Duration::from_secs(10));
         }
     });
@@ -150,6 +166,16 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         listener.set_nonblocking(true)?;
+
+        use std::sync::Arc;
+        let restart_pending = Arc::new(AtomicBool::new(false));
+        // Record the binary's mtime at daemon startup
+        let exe_path = std::env::current_exe().ok();
+        let exe_mtime_at_start = exe_path
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        let mut last_binary_check = Instant::now();
 
         loop {
             match listener.accept() {
@@ -180,6 +206,38 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                         tracing::info!("nshd: idle timeout, shutting down");
                         log_daemon("server.lifecycle", "idle timeout reached; shutting down");
                         break;
+                    }
+                    // Binary change detection (every 30 seconds)
+                    if last_binary_check.elapsed() > Duration::from_secs(30) {
+                        last_binary_check = Instant::now();
+                        if let Some(ref exe) = exe_path {
+                            let current_mtime = std::fs::metadata(exe)
+                                .ok()
+                                .and_then(|m| m.modified().ok());
+                            if exe_mtime_at_start.is_some() && current_mtime != exe_mtime_at_start {
+                                log_daemon(
+                                    "server.lifecycle",
+                                    "binary changed on disk, scheduling graceful restart",
+                                );
+                                restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    // Graceful restart: exit when no active connections
+                    if restart_pending.load(std::sync::atomic::Ordering::Relaxed)
+                        && active_conns.load(std::sync::atomic::Ordering::Relaxed) == 0
+                    {
+                        log_daemon(
+                            "server.lifecycle",
+                            "restarting: binary updated, 0 active connections",
+                        );
+                        break;
+                    }
+                    // Also check for the restart marker file from clients
+                    let restart_marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
+                    if restart_marker.exists() {
+                        log_daemon("server.lifecycle", "restart marker detected, shutting down");
+                        restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -353,6 +411,20 @@ fn execute_write(
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_write.request", &req_dbg);
     match request {
+        DaemonRequest::Restart => {
+            // Handled in accept loop via marker file; acknowledge
+            let marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
+            let _ = std::fs::write(&marker, "");
+            DaemonResponse::ok()
+        }
+        DaemonRequest::GetVersion => {
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "build_version": env!("NSH_BUILD_VERSION"),
+                "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
+                "protocol_version": crate::daemon::DAEMON_PROTOCOL_VERSION,
+            }))
+        }
         DaemonRequest::Record {
             session,
             command,
@@ -1376,7 +1448,23 @@ fn write_response(
     resp: &DaemonResponse,
 ) -> std::io::Result<()> {
     let mut w = std::io::BufWriter::with_capacity(256 * 1024, stream);
-    let mut json = serde_json::to_string(resp)
+    let mut json_val = serde_json::to_value(resp)
+        .unwrap_or_else(|_| serde_json::json!({"status":"error"}));
+    if let serde_json::Value::Object(ref mut map) = json_val {
+        map.insert(
+            "v".into(),
+            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
+        );
+        map.insert(
+            "daemon_version".into(),
+            serde_json::json!(env!("CARGO_PKG_VERSION")),
+        );
+        map.insert(
+            "daemon_fingerprint".into(),
+            serde_json::json!(env!("NSH_BUILD_FINGERPRINT")),
+        );
+    }
+    let mut json = serde_json::to_string(&json_val)
         .unwrap_or_else(|_| r#"{"status":"error","message":"serialize error"}"#.into());
     json.push('\n');
     w.write_all(json.as_bytes())?;

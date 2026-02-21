@@ -131,6 +131,11 @@ else
     set -gx NSH_TTY (tty)
 end
 set -gx NSH_HISTFILE ~/.local/share/fish/fish_history
+set -gx NSH_HOOK_HASH "__HOOK_HASH__"
+set -gx NSH_HOOKS_VERSION "__NSH_VERSION__"
+set -g __nsh_last_restart_warn 0
+set -g __nsh_last_update_notify 0
+set -g __nsh_cmd_counter 0
 __nsh_load_suppressed_exit_codes
 
 function __nsh_restore_last_cwd
@@ -277,6 +282,34 @@ function __nsh_postexec --on-event fish_postexec
             nsh query -- "__NSH_CONTINUE__" &>/dev/null &
             disown 2>/dev/null
         end
+    end
+
+    # --- Update notifications ---
+    set -l msg_file "$HOME/.nsh/nsh_msg_$NSH_SESSION_ID"
+    if test -f $msg_file
+        command cat $msg_file >&2
+        command rm -f $msg_file 2>/dev/null
+    end
+    set -l restart_flag "$HOME/.nsh/restart_needed_$NSH_SESSION_ID"
+    if test -f $restart_flag
+        set -l now (date +%s)
+        if test (math "$now - $__nsh_last_restart_warn") -gt 3600
+            printf '\x1b[33m  nsh: A protocol update requires you to restart this terminal session for full functionality.\x1b[0m\n' >&2
+            set -g __nsh_last_restart_warn $now
+        end
+    end
+    set -l update_flag "$HOME/.nsh/update_available_$NSH_SESSION_ID"
+    if test -f $update_flag
+        set -l now (date +%s)
+        if test (math "$now - $__nsh_last_update_notify") -gt 3600
+            command cat $update_flag >&2
+            set -g __nsh_last_update_notify $now
+        end
+    end
+    set -l notice_file "$HOME/.nsh/update_notice"
+    if test -f $notice_file
+        printf '\x1b[2m  nsh: %s\x1b[0m\n' (command cat $notice_file 2>/dev/null) >&2
+        command rm -f $notice_file 2>/dev/null
     end
 
     # ── Project switch detection for memory system ────

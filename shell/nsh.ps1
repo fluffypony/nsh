@@ -17,6 +17,11 @@ if ($env:NSH_SESSION_ID) {
 
 $env:NSH_SESSION_ID = if ($env:NSH_WRAP_SESSION_ID) { $env:NSH_WRAP_SESSION_ID } else { "__SESSION_ID__" }
 $env:NSH_PTY_ACTIVE = "0"
+$env:NSH_HOOK_HASH = "__HOOK_HASH__"
+$env:NSH_HOOKS_VERSION = "__NSH_VERSION__"
+$global:NshLastRestartWarn = $null
+$global:NshLastUpdateNotify = $null
+$global:NshCmdCounter = 0
 
 function global:? {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$args)
@@ -37,6 +42,35 @@ function global:prompt {
             nsh daemon-send record --session "$env:NSH_SESSION_ID" --command "$($h.CommandLine)" --cwd "$pwd" --exit-code 0 --started-at "$(Get-Date -Format o)" --tty "" --pid $PID --shell "pwsh" 2>$null
         }
     } catch {}
+
+    # --- Update notifications ---
+    $msgFile = Join-Path $HOME ".nsh\nsh_msg_$env:NSH_SESSION_ID"
+    if (Test-Path $msgFile) {
+        Get-Content $msgFile | Write-Host
+        Remove-Item $msgFile -Force -ErrorAction SilentlyContinue
+    }
+    $restartFlag = Join-Path $HOME ".nsh\restart_needed_$env:NSH_SESSION_ID"
+    if (Test-Path $restartFlag) {
+        $now = Get-Date
+        if (-not $global:NshLastRestartWarn -or ($now - $global:NshLastRestartWarn).TotalSeconds -gt 3600) {
+            Write-Host "  nsh: A protocol update requires you to restart this terminal session for full functionality." -ForegroundColor Yellow
+            $global:NshLastRestartWarn = $now
+        }
+    }
+    $updateFlag = Join-Path $HOME ".nsh\update_available_$env:NSH_SESSION_ID"
+    if (Test-Path $updateFlag) {
+        $now = Get-Date
+        if (-not $global:NshLastUpdateNotify -or ($now - $global:NshLastUpdateNotify).TotalSeconds -gt 3600) {
+            Get-Content $updateFlag | Write-Host -ForegroundColor DarkGray
+            $global:NshLastUpdateNotify = $now
+        }
+    }
+    $noticeFile = Join-Path $HOME ".nsh\update_notice"
+    if (Test-Path $noticeFile) {
+        $msg = Get-Content $noticeFile -Raw
+        Write-Host "  nsh: $msg" -ForegroundColor DarkGray
+        Remove-Item $noticeFile -Force -ErrorAction SilentlyContinue
+    }
     "PS $pwd> "
 }
 

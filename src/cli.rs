@@ -19,6 +19,9 @@ pub enum Commands {
     Init {
         /// Shell type: zsh, bash, fish, powershell, pwsh, or cmd
         shell: String,
+        /// Print only the hook content hash (for shell-side comparison)
+        #[arg(long, default_value_t = false)]
+        hash: bool,
     },
 
     /// Start PTY wrapper (called by init script)

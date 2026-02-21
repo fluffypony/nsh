@@ -7,6 +7,10 @@ pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonRequest {
+    /// Request the daemon to gracefully restart itself
+    Restart,
+    /// Get the daemon's compiled version info
+    GetVersion,
     Record {
         session: String,
         command: String,
@@ -294,6 +298,13 @@ pub fn handle_daemon_request(
     max_output_bytes: usize,
 ) -> DaemonResponse {
     match request {
+        DaemonRequest::Restart => DaemonResponse::ok(),
+        DaemonRequest::GetVersion => DaemonResponse::ok_with_data(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "build_version": env!("NSH_BUILD_VERSION"),
+            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
+            "protocol_version": DAEMON_PROTOCOL_VERSION,
+        })),
         DaemonRequest::Record {
             session,
             command,
@@ -387,7 +398,12 @@ pub fn handle_daemon_request(
 
         DaemonRequest::Status => DaemonResponse::ok_with_data(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "build_version": env!("NSH_BUILD_VERSION"),
+            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
+            "protocol_version": DAEMON_PROTOCOL_VERSION,
+            "wrapper_protocol_version": env!("NSH_WRAPPER_PROTOCOL_VERSION"),
             "pid": std::process::id(),
+            "daemon_type": "per_session",
         })),
 
         DaemonRequest::SummarizeCheck { .. } => {

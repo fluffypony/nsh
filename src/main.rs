@@ -21,6 +21,7 @@ mod json_extract;
 #[allow(dead_code)]
 mod mcp;
 mod memory;
+mod live_update;
 mod provider;
 #[cfg(unix)]
 mod pty;
@@ -49,6 +50,8 @@ use sha2::{Digest, Sha256};
 
 fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
     if daemon_client::is_global_daemon_running() {
+        // Ensure running daemon version matches our binary
+        let _ = daemon_client::ensure_daemon_version_matches();
         return Ok(true);
     }
     let _ = daemon_client::ensure_global_daemon_running();
@@ -85,6 +88,9 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Capture binary state early
+    live_update::snapshot_binary_meta();
+
     security::secure_nsh_directory();
 
     let cli = Cli::parse();
@@ -110,11 +116,13 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(0);
         }
 
-        apply_pending_update();
+        // Set wrapper version for notifications and clear any stale markers
+        unsafe { std::env::set_var("NSH_WRAP_VERSION", env!("CARGO_PKG_VERSION")); }
+        let marker = config::Config::nsh_dir().join("wrapper_outdated");
+        let _ = std::fs::remove_file(&marker);
 
-        if config::Config::nsh_dir().join("update_pending").exists() {
-            eprintln!("\x1b[2mnsh: update ready, will apply on next shell start\x1b[0m");
-        }
+        // Apply pending update now and re-exec for wrap
+        apply_pending_update(true);
 
         let shell = if shell.is_empty() {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
@@ -123,6 +131,9 @@ fn main() -> anyhow::Result<()> {
         };
         return pty::run_wrapped_shell(&shell);
     }
+
+    // Apply pending update for all other commands without re-exec
+    apply_pending_update(false);
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -137,7 +148,15 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::Wrap { .. } => unreachable!(),
         Commands::Nshd => unreachable!(),
 
-        Commands::Init { shell } => {
+        Commands::Init { shell, hash } => {
+            if hash {
+                println!("{}", env!("NSH_HOOK_HASH"));
+                return Ok(());
+            }
+            // Clear stale update markers since this is a fresh shell session
+            let nsh_dir = config::Config::nsh_dir();
+            let _ = std::fs::remove_file(nsh_dir.join("update_notice"));
+            let _ = std::fs::remove_file(nsh_dir.join("wrapper_outdated"));
             let script = init::generate_init_script(&shell);
             print!("{script}");
         }
@@ -221,6 +240,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             result?;
+            check_wrapper_outdated_notification();
         }
 
         Commands::Record {
@@ -234,8 +254,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             pid,
             shell,
         } => {
+            let session_for_checks = session.clone();
             let request = daemon::DaemonRequest::Record {
-                session,
+                session: session.clone(),
                 command,
                 cwd,
                 exit_code,
@@ -258,6 +279,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
                 _ => {}
             }
+            check_daemon_versions(&session_for_checks);
+            check_wrapper_outdated_notification();
         }
 
         Commands::Session { action } => match action {
@@ -579,6 +602,16 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         "not running"
                     }
                 );
+                eprint!("  Shell hooks version... ");
+                match std::env::var("NSH_HOOK_HASH") {
+                    Ok(v) if v == env!("NSH_HOOK_HASH") => eprintln!("OK"),
+                    Ok(v) => eprintln!(
+                        "OUTDATED (hooks={}, binary={})",
+                        &v[..8],
+                        &env!("NSH_HOOK_HASH")[..8]
+                    ),
+                    Err(_) => eprintln!("unknown (not in an nsh-wrapped shell)"),
+                }
                 let retention = prune_days.unwrap_or(config.context.retention_days);
                 let request = daemon::DaemonRequest::RunDoctor {
                     retention_days: retention,
@@ -956,6 +989,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
             }
+            check_daemon_versions(&session_id);
+            check_wrapper_outdated_notification();
         }
 
         Commands::DaemonRead { action } => {
@@ -1016,6 +1051,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 .and_then(|m| m.modified())
                 .ok();
             let mut config = config;
+            let mut version_warning_shown = false;
             loop {
                 eprint!("\x1b[1;36m?\x1b[0m ");
                 std::io::stderr().flush()?;
@@ -1026,6 +1062,15 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 let line = line.trim();
                 if line.is_empty() {
                     continue;
+                }
+                if !version_warning_shown {
+                    let marker = config::Config::nsh_dir().join("wrapper_outdated");
+                    if marker.exists() {
+                        eprintln!(
+                            "\x1b[2m⟳ nsh updated — exit and re-run for latest features\x1b[0m"
+                        );
+                        version_warning_shown = true;
+                    }
                 }
                 match line {
                     "exit" | "quit" => break,
@@ -1154,6 +1199,17 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             eprintln!("  Model:      {}", config.provider.model);
             eprintln!("  DB path:    {}", db_path.display());
             eprintln!("  DB size:    {db_size_str}");
+            let hooks_outdated = std::env::var("NSH_HOOK_HASH")
+                .map(|h| h != env!("NSH_HOOK_HASH"))
+                .unwrap_or(false);
+            eprintln!(
+                "  Hooks:      {}",
+                if hooks_outdated {
+                    "outdated (run `exec $SHELL` or open new terminal)"
+                } else {
+                    "current"
+                }
+            );
         }
         Commands::Completions { shell } => {
             use clap::CommandFactory;
@@ -1293,7 +1349,7 @@ fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn apply_pending_update() {
+fn apply_pending_update(reexec: bool) {
     let result = (|| -> anyhow::Result<()> {
         let pending_path = config::Config::nsh_dir().join("update_pending");
         if !pending_path.exists() {
@@ -1353,20 +1409,50 @@ fn apply_pending_update() {
 
         eprintln!("nsh: updated to v{version}");
 
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        #[cfg(unix)]
-        {
-            let exe_path = current_exe.to_string_lossy().to_string();
-            let mut new_args = vec![exe_path.as_str()];
-            for a in &args {
-                new_args.push(a.as_str());
-            }
-            let _err = pty::exec_execvp(&exe_path, &new_args);
+        // Write an update notice for shell hooks
+        let notice_path = config::Config::nsh_dir().join("update_notice");
+        let _ = std::fs::write(
+            &notice_path,
+            format!("v{version} installed — queries active immediately, shell hooks refresh on next terminal"),
+        );
+
+        // Mark wrapper outdated if inside wrap
+        if std::env::var("NSH_WRAP_VERSION").is_ok() {
+            let marker = config::Config::nsh_dir().join("wrapper_outdated");
+            let _ = std::fs::write(
+                &marker,
+                serde_json::json!({
+                    "old_version": std::env::var("NSH_WRAP_VERSION").unwrap_or_default(),
+                    "new_version": version,
+                })
+                .to_string(),
+            );
         }
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new(&current_exe).args(&args).spawn();
-            std::process::exit(0);
+
+        // Stop the global daemon so it restarts with the new binary
+        if daemon_client::is_global_daemon_running() {
+            let _ = daemon_client::stop_global_daemon();
+        }
+
+        if reexec {
+            // Re-exec for wrap startup
+            let args: Vec<String> = std::env::args().collect();
+            #[cfg(unix)]
+            {
+                let exe_path = current_exe.to_string_lossy().to_string();
+                let mut new_args = Vec::with_capacity(args.len());
+                for a in &args[1..] {
+                    new_args.push(a.as_str());
+                }
+                let _err = pty::exec_execvp(&exe_path, &new_args);
+            }
+            #[cfg(windows)]
+            {
+                match std::process::Command::new(&current_exe).args(&args[1..]).status() {
+                    Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                    Err(e) => eprintln!("nsh: re-exec failed: {e}"),
+                }
+            }
         }
         Ok(())
     })();
@@ -2336,5 +2422,66 @@ mod tests {
         let records = parse_dns_txt_records(&input);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].0, "0.1.0");
+    }
+}
+fn check_daemon_versions(session_id: &str) {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let nsh_dir = crate::config::Config::nsh_dir();
+
+    // Check global daemon
+    if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
+        daemon_client::send_to_global(&crate::daemon::DaemonRequest::Status)
+    {
+        if let Some(v) = d.get("version").and_then(|v| v.as_str()) {
+            if v != current_version {
+                tracing::info!("Global daemon version {} is outdated, restarting...", v);
+                let _ = daemon_client::stop_global_daemon();
+                let _ = daemon_client::ensure_global_daemon_running();
+            }
+        }
+    }
+
+    if session_id.is_empty() || session_id == "default" {
+        return;
+    }
+
+    // Check per-session daemon
+    if let Some(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
+        daemon_client::try_send_request(session_id, &crate::daemon::DaemonRequest::Status)
+    {
+        if let Some(v) = d.get("version").and_then(|v| v.as_str()) {
+            if v != current_version {
+                let notice_file = nsh_dir.join(format!("last_update_notice_{session_id}"));
+                let should_notify = match std::fs::metadata(&notice_file).and_then(|m| m.modified()) {
+                    Ok(mod_time) => mod_time.elapsed().map(|e| e.as_secs() > 3600).unwrap_or(true),
+                    Err(_) => true,
+                };
+                if should_notify {
+                    let msg_file = nsh_dir.join(format!("nsh_msg_{session_id}"));
+                    let _ = std::fs::write(
+                        &msg_file,
+                        format!(
+                            "\n\x1b[33mnsh has been updated to v{current_version}. Please restart your terminal session for full effect.\x1b[0m\n"
+                        ),
+                    );
+                    let _ = std::fs::write(&notice_file, "");
+                }
+            }
+        }
+    }
+}
+
+fn check_wrapper_outdated_notification() {
+    let marker = config::Config::nsh_dir().join("wrapper_outdated");
+    if !marker.exists() {
+        return;
+    }
+    // Only notify periodically (roughly 1 in 5 commands to avoid spam)
+    let should_notify = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() % 5 == 0)
+        .unwrap_or(false);
+    if should_notify {
+        eprintln!("\x1b[2m⟳ nsh has been updated. Restart your shell for full PTY changes.\x1b[0m");
     }
 }

@@ -13,7 +13,10 @@ pub fn generate_init_script(shell: &str) -> String {
             );
         }
     };
-    template.replace("__SESSION_ID__", &session_id)
+    template
+        .replace("__SESSION_ID__", &session_id)
+        .replace("__NSH_VERSION__", env!("CARGO_PKG_VERSION"))
+        .replace("__HOOK_HASH__", env!("NSH_HOOK_HASH"))
 }
 
 #[cfg(test)]

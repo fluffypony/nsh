@@ -93,17 +93,42 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
     stream.flush()?;
 
     let response_line = read_daemon_response(&mut stream)?;
+    // Parse generically to inspect daemon version fields
+    let json_val: serde_json::Value = serde_json::from_str(&response_line)
+        .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
+
+    // Check if the per-session daemon (PTY wrapper) is outdated
+    let daemon_v = json_val.get("v").and_then(|val| val.as_u64()).unwrap_or(1);
+    let daemon_version = json_val.get("daemon_version").and_then(|v| v.as_str());
+    if daemon_version != Some(env!("CARGO_PKG_VERSION")) {
+        let notify_path = crate::config::Config::nsh_dir()
+            .join(format!("notify_restart_{session_id}"));
+        let our_proto: u64 = crate::daemon::DAEMON_PROTOCOL_VERSION as u64;
+        if daemon_v < our_proto {
+            let _ = std::fs::write(
+                &notify_path,
+                "\x1b[33m⚠ nsh has been updated with protocol changes. Please restart your terminal session to fully apply the update.\x1b[0m",
+            );
+        } else {
+            let general_path = crate::config::Config::nsh_dir()
+                .join(format!("update_available_{session_id}"));
+            let _ = std::fs::write(
+                &general_path,
+                format!(
+                    "\x1b[2m⟳ nsh updated to v{} — restart your terminal when convenient for full effect\x1b[0m",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
+        }
+    }
+
     log_daemon_client(
         "client.send_request.response",
         &format!("session={session_id}\nresponse={response_line}"),
     );
 
-    serde_json::from_str(&response_line).map_err(|e| {
-        anyhow::anyhow!(
-            "daemon response JSON parse failed ({} bytes): {e}",
-            response_line.len()
-        )
-    })
+    serde_json::from_value(json_val)
+        .map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
 }
 
 pub fn get_system_info(_session_id: &str) -> anyhow::Result<crate::context::SystemInfoBundle> {
@@ -172,13 +197,14 @@ pub fn is_global_daemon_running() -> bool {
 #[cfg(unix)]
 pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
     let mut last_err = None;
-    for attempt in 0..2 {
+    for attempt in 0..3 {
         match send_to_global_once(request) {
             Ok(resp) => return Ok(resp),
             Err(e) => {
-                if attempt == 0 {
-                    tracing::debug!("send_to_global attempt 0 failed: {e}, retrying...");
-                    std::thread::sleep(Duration::from_millis(100));
+                if attempt < 2 {
+                    tracing::debug!("send_to_global attempt {attempt} failed: {e}, retrying...");
+                    let _ = ensure_global_daemon_running();
+                    std::thread::sleep(Duration::from_millis(200));
                 }
                 last_err = Some(e);
             }
@@ -211,17 +237,32 @@ fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse
     stream.flush()?;
 
     let response_line = read_daemon_response(&mut stream)?;
+    // Parse generically first to detect version
+    let json_val: serde_json::Value = serde_json::from_str(&response_line)
+        .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
+
+    // Check if the global daemon is outdated
+    let daemon_version = json_val.get("daemon_version").and_then(|v| v.as_str());
+    if daemon_version != Some(env!("CARGO_PKG_VERSION")) {
+        tracing::info!(
+            "Global daemon is outdated (running: {:?}, current: {}). Restarting...",
+            daemon_version,
+            env!("CARGO_PKG_VERSION")
+        );
+        // Restart asynchronously so we don't block this response
+        std::thread::spawn(|| {
+            stop_global_daemon();
+            let _ = ensure_global_daemon_running();
+        });
+    }
+
     log_daemon_client(
         "client.send_to_global.response",
         &format!("response={response_line}"),
     );
 
-    serde_json::from_str(&response_line).map_err(|e| {
-        anyhow::anyhow!(
-            "daemon response JSON parse failed ({} bytes): {e}",
-            response_line.len()
-        )
-    })
+    serde_json::from_value(json_val)
+        .map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
 }
 
 #[cfg(not(unix))]
@@ -267,6 +308,27 @@ pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(50));
         if is_global_daemon_running() {
             return Ok(());
+        }
+    }
+    Ok(())
+}
+
+/// Ensure the global daemon binary version matches ours; restart if not.
+pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
+    let our_version = env!("CARGO_PKG_VERSION");
+    if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
+        send_to_global(&crate::daemon::DaemonRequest::Status)
+    {
+        if let Some(daemon_ver) = d.get("version").and_then(|v| v.as_str()) {
+            if daemon_ver != our_version {
+                tracing::info!(
+                    "daemon version {daemon_ver} != our version {our_version}, restarting"
+                );
+                stop_global_daemon();
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                ensure_global_daemon_running()?;
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
         }
     }
     Ok(())
