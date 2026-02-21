@@ -108,4 +108,57 @@ mod tests {
         assert!(important[0].contains("error"));
         assert!(important[1].contains("warning"));
     }
+
+    #[test]
+    fn important_lines_max_10() {
+        let lines: Vec<&str> = (0..20)
+            .map(|_| "error: something went wrong")
+            .collect();
+        let important = extract_important_lines(&lines);
+        assert!(important.len() <= 10, "should cap at 10 important lines");
+    }
+
+    #[test]
+    fn truncate_preserves_all_if_few_lines() {
+        let output = (0..25).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let result = truncate_output(&output, Some(0), 100000);
+        // 25 lines < head(20) + tail(10), so should not truncate
+        assert!(!result.contains("omitted"));
+    }
+
+    #[test]
+    fn truncate_includes_error_lines() {
+        let mut lines: Vec<String> = (0..100).map(|i| format!("line {i}: normal output")).collect();
+        lines[50] = "error: compilation failed".into();
+        lines[60] = "warning: unused variable".into();
+        let output = lines.join("\n");
+        let result = truncate_output(&output, Some(1), 5000);
+        assert!(result.contains("error: compilation failed") || result.contains("Key lines"));
+    }
+
+    #[test]
+    fn truncate_hard_budget() {
+        let lines: Vec<String> = (0..500).map(|i| format!("line {i}: {}", "x".repeat(100))).collect();
+        let output = lines.join("\n");
+        let result = truncate_output(&output, Some(0), 1000);
+        assert!(result.len() <= 1100, "should respect budget with small overhead");
+    }
+
+    #[test]
+    fn important_lines_all_types() {
+        let lines = vec![
+            "error: failed to compile",
+            "warning: deprecated function",
+            "fatal: not a git repository",
+            "panic: runtime error",
+            "Traceback (most recent call last):",
+            "exception: division by zero",
+            "compiled successfully",
+            "installed 5 packages",
+            "created new file",
+            "built target release",
+        ];
+        let important = extract_important_lines(&lines);
+        assert_eq!(important.len(), 10, "all lines should be considered important");
+    }
 }

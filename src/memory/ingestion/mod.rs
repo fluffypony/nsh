@@ -226,4 +226,258 @@ mod tests {
         let kw = generate_fast_path_keywords(&event);
         assert!(kw.contains("project"), "keywords were: {kw}");
     }
+
+    #[test]
+    fn can_fast_path_session_events() {
+        let session_start = ShellEvent {
+            event_type: ShellEventType::SessionStart,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        assert!(can_fast_path(&session_start));
+
+        let session_end = ShellEvent {
+            event_type: ShellEventType::SessionEnd,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        assert!(can_fast_path(&session_end));
+    }
+
+    #[test]
+    fn can_fast_path_project_switch() {
+        let event = ShellEvent {
+            event_type: ShellEventType::ProjectSwitch,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: Some("/home/user/new-project".into()),
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        assert!(can_fast_path(&event));
+    }
+
+    #[test]
+    fn can_fast_path_simple_success_short_output() {
+        let event = ShellEvent {
+            event_type: ShellEventType::CommandExecution,
+            command: Some("echo hello".into()),
+            output: Some("hello".into()),
+            exit_code: Some(0),
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        assert!(can_fast_path(&event));
+    }
+
+    #[test]
+    fn cannot_fast_path_user_instruction() {
+        let event = ShellEvent {
+            event_type: ShellEventType::UserInstruction,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: Some("how do I build this".into()),
+            file_path: None,
+        };
+        assert!(!can_fast_path(&event));
+    }
+
+    #[test]
+    fn cannot_fast_path_assistant_action() {
+        let event = ShellEvent {
+            event_type: ShellEventType::AssistantAction,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: Some("suggested fix".into()),
+            file_path: None,
+        };
+        assert!(!can_fast_path(&event));
+    }
+
+    #[test]
+    fn fast_path_episodic_session_start() {
+        let event = ShellEvent {
+            event_type: ShellEventType::SessionStart,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        let ep = fast_path_episodic(&event);
+        assert_eq!(ep.summary, "Session started");
+        assert_eq!(ep.event_type, crate::memory::types::EventType::SessionStart);
+        assert_eq!(ep.actor, crate::memory::types::Actor::System);
+    }
+
+    #[test]
+    fn fast_path_episodic_session_end() {
+        let event = ShellEvent {
+            event_type: ShellEventType::SessionEnd,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        let ep = fast_path_episodic(&event);
+        assert_eq!(ep.summary, "Session ended");
+    }
+
+    #[test]
+    fn fast_path_episodic_error_command() {
+        let event = make_event("cargo test", 1);
+        let ep = fast_path_episodic(&event);
+        assert_eq!(ep.event_type, crate::memory::types::EventType::CommandError);
+        assert!(ep.summary.contains("exit 1"));
+    }
+
+    #[test]
+    fn fast_path_episodic_project_switch() {
+        let event = ShellEvent {
+            event_type: ShellEventType::ProjectSwitch,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: Some("/home/user/new-project".into()),
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        let ep = fast_path_episodic(&event);
+        assert!(ep.summary.contains("new-project"));
+        assert_eq!(ep.event_type, crate::memory::types::EventType::ProjectSwitch);
+    }
+
+    #[test]
+    fn fast_path_episodic_file_edit() {
+        let event = ShellEvent {
+            event_type: ShellEventType::FileEdit,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: None,
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: Some("src/main.rs".into()),
+        };
+        let ep = fast_path_episodic(&event);
+        assert!(ep.summary.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn fast_path_episodic_preserves_working_dir() {
+        let event = make_event("ls", 0);
+        let ep = fast_path_episodic(&event);
+        assert_eq!(ep.working_dir.as_deref(), Some("/home/user"));
+    }
+
+    #[test]
+    fn fast_path_episodic_with_git_context() {
+        let mut event = make_event("git status", 0);
+        event.git_context = Some(crate::memory::types::GitContext {
+            branch: Some("main".into()),
+            repo_root: Some("/home/user/project".into()),
+        });
+        let ep = fast_path_episodic(&event);
+        assert_eq!(ep.project_context.as_deref(), Some("/home/user/project"));
+    }
+
+    #[test]
+    fn fast_path_keywords_skip_flags() {
+        let event = make_event("cargo build --release --target x86_64", 0);
+        let kw = generate_fast_path_keywords(&event);
+        // Flags starting with - should be skipped
+        assert!(!kw.contains("--release"));
+        assert!(!kw.contains("--target"));
+    }
+
+    #[test]
+    fn fast_path_keywords_skip_short_args() {
+        let event = make_event("ls -l -a", 0);
+        let kw = generate_fast_path_keywords(&event);
+        // Short args like "-l" should be skipped (starts with -)
+        assert!(kw.contains("ls"));
+    }
+
+    #[test]
+    fn buffer_flush_resets_timer() {
+        let mut buf = IngestionBuffer::new(10, 60);
+        buf.push(make_event("ls", 0));
+        let events = buf.flush();
+        assert_eq!(events.len(), 1);
+        assert!(buf.is_empty());
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn fast_path_keywords_no_command() {
+        let event = ShellEvent {
+            event_type: ShellEventType::SessionStart,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: Some("/home/user".into()),
+            session_id: None,
+            timestamp: String::new(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        };
+        let kw = generate_fast_path_keywords(&event);
+        assert!(kw.contains("user"), "should still extract from working_dir: {kw}");
+    }
+
+    #[test]
+    fn fast_path_keywords_root_path() {
+        let mut event = make_event("ls", 0);
+        event.working_dir = Some("/".into());
+        let kw = generate_fast_path_keywords(&event);
+        // Root path should not crash
+        assert!(kw.contains("ls"));
+    }
 }

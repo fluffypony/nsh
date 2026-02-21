@@ -187,4 +187,61 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn extract_error_keywords_empty_stderr() {
+        let kw = extract_error_keywords(None);
+        assert!(kw.is_empty());
+    }
+
+    #[test]
+    fn extract_error_keywords_no_error_lines() {
+        let kw = extract_error_keywords(Some("all good\nno problems\neverything fine"));
+        assert!(kw.is_empty(), "should only extract from error-containing lines");
+    }
+
+    #[test]
+    fn extract_error_keywords_not_found() {
+        let kw = extract_error_keywords(Some("command not found: foobar"));
+        assert!(!kw.is_empty());
+        assert!(kw.iter().any(|k| k.contains("foobar") || k.contains("found")));
+    }
+
+    #[test]
+    fn extract_error_keywords_max_5() {
+        let stderr = "error: failed to compile very long message with many words in it that should be limited";
+        let kw = extract_error_keywords(Some(stderr));
+        assert!(kw.len() <= 5, "should limit to 5 keywords");
+    }
+
+    #[test]
+    fn extract_keywords_basic_empty() {
+        let kw = extract_keywords_basic("");
+        assert!(kw.is_empty());
+    }
+
+    #[test]
+    fn extract_keywords_basic_all_stop_words() {
+        let kw = extract_keywords_basic("how do I the is and or");
+        assert!(kw.is_empty(), "all stop words should be filtered");
+    }
+
+    #[test]
+    fn extract_keywords_basic_max_8() {
+        let text = "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10";
+        let kw = extract_keywords_basic(text);
+        assert!(kw.len() <= 8, "should take at most 8 keywords");
+    }
+
+    #[test]
+    fn extract_temporal_expression_all_terms() {
+        let terms = [
+            "yesterday", "today", "last week", "this week",
+            "this morning", "this afternoon", "last month",
+            "last hour", "recently", "earlier", "two days ago",
+        ];
+        for term in &terms {
+            assert!(extract_temporal_expression(term).is_some(), "should detect: {term}");
+        }
+    }
 }

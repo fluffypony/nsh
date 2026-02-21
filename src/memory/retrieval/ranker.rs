@@ -106,4 +106,89 @@ mod tests {
         enforce_budget(&mut memories, 100);
         assert!(memories.recent_episodic.len() <= 5);
     }
+
+    #[test]
+    fn estimate_tokens_all_types() {
+        let memories = RetrievedMemories {
+            core: vec![CoreBlock {
+                label: CoreLabel::Human,
+                value: "test user".into(),
+                char_limit: 5000,
+                updated_at: String::new(),
+            }],
+            recent_episodic: vec![EpisodicEvent {
+                id: "ep_1".into(),
+                event_type: EventType::CommandExecution,
+                actor: Actor::User,
+                summary: "ran cargo build".into(),
+                details: Some("full output".into()),
+                command: None,
+                exit_code: None,
+                working_dir: None,
+                project_context: None,
+                search_keywords: String::new(),
+                occurred_at: String::new(),
+                is_consolidated: false,
+            }],
+            semantic: vec![crate::memory::types::SemanticItem {
+                id: "sem_1".into(),
+                name: "Rust project".into(),
+                category: "tools".into(),
+                summary: "Uses cargo".into(),
+                details: None,
+                search_keywords: String::new(),
+                access_count: 0,
+                last_accessed: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }],
+            ..Default::default()
+        };
+        let tokens = estimate_tokens(&memories);
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn enforce_budget_phase1_strips_resource_content() {
+        let mut memories = RetrievedMemories {
+            resource: vec![crate::memory::types::ResourceItem {
+                id: "res_1".into(),
+                resource_type: "file".into(),
+                file_path: Some("/test".into()),
+                file_hash: None,
+                title: "test".into(),
+                summary: "test".into(),
+                content: Some("x".repeat(10000)),
+                search_keywords: String::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            }],
+            ..Default::default()
+        };
+        enforce_budget(&mut memories, 100);
+        // Resource content should be stripped
+        assert!(memories.resource[0].content.is_none() || memories.resource.is_empty());
+    }
+
+    #[test]
+    fn enforce_budget_does_nothing_under_budget() {
+        let mut memories = RetrievedMemories {
+            core: vec![CoreBlock {
+                label: CoreLabel::Human,
+                value: "short".into(),
+                char_limit: 5000,
+                updated_at: String::new(),
+            }],
+            ..Default::default()
+        };
+        let orig_core_len = memories.core.len();
+        enforce_budget(&mut memories, 100000);
+        assert_eq!(memories.core.len(), orig_core_len, "should not modify when under budget");
+    }
+
+    #[test]
+    fn estimate_tokens_empty() {
+        let memories = RetrievedMemories::default();
+        assert_eq!(estimate_tokens(&memories), 0);
+    }
 }
