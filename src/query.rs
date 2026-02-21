@@ -684,6 +684,13 @@ pub async fn handle_query(
                                 }
                                 _ => unreachable!(),
                             };
+                            // For retrieve_secret, apply redaction so the secret
+                            // doesn't persist in conversation history unredacted
+                            let content = if name == "retrieve_secret" {
+                                crate::redact::redact_secrets(&content, &config.redaction)
+                            } else {
+                                content
+                            };
                             let sanitized = crate::security::sanitize_tool_output(&content);
                             let wrapped =
                                 crate::security::wrap_tool_result(&name, &sanitized, &boundary);

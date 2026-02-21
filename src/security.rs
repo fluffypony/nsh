@@ -517,6 +517,36 @@ pub fn assess_memory_tool_call(
             if caption.is_empty() {
                 return Err("retrieve_secret requires a non-empty caption_query".into());
             }
+            // Require evidence that the user explicitly asked for a secret/credential
+            let user_requested = _conversation.iter().any(|msg| {
+                if !matches!(msg.role, crate::provider::Role::User) {
+                    return false;
+                }
+                msg.content.iter().any(|block| {
+                    if let crate::provider::ContentBlock::Text { text } = block {
+                        let lower = text.to_lowercase();
+                        lower.contains("secret")
+                            || lower.contains("credential")
+                            || lower.contains("password")
+                            || lower.contains("api key")
+                            || lower.contains("api_key")
+                            || lower.contains("token")
+                            || lower.contains("retrieve")
+                            || lower.contains("vault")
+                            || lower.contains("decrypt")
+                            || lower.contains("show me the key")
+                    } else {
+                        false
+                    }
+                })
+            });
+            if !user_requested {
+                return Err(
+                    "retrieve_secret can only be called when the user explicitly requests \
+                     access to a stored secret, credential, or API key"
+                        .into(),
+                );
+            }
             Ok(())
         }
         "core_memory_rewrite" => {
@@ -1424,5 +1454,57 @@ mod tests {
     fn test_strace_alone_is_safe() {
         let (level, _) = assess_command("strace");
         assert_eq!(level, RiskLevel::Safe);
+    }
+
+    fn make_user_message(text: &str) -> crate::provider::Message {
+        crate::provider::Message {
+            role: crate::provider::Role::User,
+            content: vec![crate::provider::ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_retrieve_secret_requires_user_evidence() {
+        let input = serde_json::json!({"caption_query": "api key"});
+        let empty: Vec<crate::provider::Message> = vec![];
+        // No user messages — should fail
+        let result = assess_memory_tool_call("retrieve_secret", &input, &empty);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("explicitly requests"));
+    }
+
+    #[test]
+    fn test_retrieve_secret_passes_with_user_evidence() {
+        let input = serde_json::json!({"caption_query": "openrouter key"});
+        let msgs = vec![make_user_message("show me my API key for openrouter")];
+        let result = assess_memory_tool_call("retrieve_secret", &input, &msgs);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_retrieve_secret_passes_with_credential_keyword() {
+        let input = serde_json::json!({"caption_query": "db password"});
+        let msgs = vec![make_user_message("get my credential for the database")];
+        let result = assess_memory_tool_call("retrieve_secret", &input, &msgs);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_retrieve_secret_fails_without_secret_keywords() {
+        let input = serde_json::json!({"caption_query": "config"});
+        let msgs = vec![make_user_message("what is the weather today")];
+        let result = assess_memory_tool_call("retrieve_secret", &input, &msgs);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_retrieve_secret_empty_caption_fails() {
+        let input = serde_json::json!({"caption_query": ""});
+        let msgs = vec![make_user_message("show me my secret")];
+        let result = assess_memory_tool_call("retrieve_secret", &input, &msgs);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("non-empty"));
     }
 }

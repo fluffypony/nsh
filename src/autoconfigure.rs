@@ -600,8 +600,15 @@ fn save_config(
     ensure_table(&mut doc, "execution");
     doc["execution"]["mode"] = toml_edit::value(execution_mode);
 
-    // Seed memory system defaults if not already present
-    if doc.get("memory").is_none() {
+    // Seed memory system defaults if not already present.
+    // Also handle the edge case where "memory" exists but is not a table
+    // (e.g., if someone accidentally set memory = true instead of [memory]).
+    let should_seed_memory = match doc.get("memory") {
+        None => true,
+        Some(item) => !item.is_table() && !item.is_table_like(),
+    };
+    if should_seed_memory {
+        doc.remove("memory"); // remove non-table value if present
         ensure_table(&mut doc, "memory");
         doc["memory"]["enabled"] = toml_edit::value(true);
         doc["memory"]["fade_after_days"] = toml_edit::value(30i64);

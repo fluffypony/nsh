@@ -121,11 +121,17 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
         parts.push("</resource_memory>".into());
     }
 
-    // Knowledge (captions only)
+    // Knowledge (captions only — redacted to prevent secret leakage)
     if !memories.knowledge.is_empty() {
         parts.push("<knowledge>".into());
         for k in &memories.knowledge {
-            parts.push(format!("• {} ({})", k.caption, k.sensitivity));
+            // Redact captions to prevent accidental secret leakage if
+            // a caption inadvertently contains sensitive material
+            let redacted_caption = {
+                let redaction = crate::config::RedactionConfig::default();
+                crate::redact::redact_secrets(&k.caption, &redaction)
+            };
+            parts.push(format!("• {} ({})", redacted_caption, k.sensitivity));
         }
         parts.push("</knowledge>".into());
     }
