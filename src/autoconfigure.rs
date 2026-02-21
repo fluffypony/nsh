@@ -318,7 +318,6 @@ fn models_for_provider(provider: &str) -> ProviderModels {
         "anthropic" => ProviderModels {
             main: vec![
                 "claude-sonnet-4.6".into(),
-                "claude-sonnet-4.6".into(),
             ],
             fast: vec!["claude-haiku-4.5".into()],
             coding: vec![
