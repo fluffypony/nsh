@@ -888,26 +888,34 @@ impl Db {
         limit: usize,
         fade_cutoff: Option<&str>,
     ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
+        self.search_episodic_fts_since(query, limit, fade_cutoff, None)
+    }
+
+    pub fn search_episodic_fts_since(
+        &self,
+        query: &str,
+        limit: usize,
+        fade_cutoff: Option<&str>,
+        since: Option<&str>,
+    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
         let fts_query = Self::to_fts_literal_query(query);
-        let sql = if let Some(cutoff) = fade_cutoff {
-            format!(
-                "SELECT e.id, e.event_type, e.actor, e.summary, e.details, e.command, e.exit_code, \
-                 e.working_dir, e.project_context, e.search_keywords, e.occurred_at, e.is_consolidated \
-                 FROM episodic_memory e \
-                 JOIN episodic_memory_fts f ON e.rowid = f.rowid \
-                 WHERE episodic_memory_fts MATCH ?1 AND e.occurred_at >= '{cutoff}' \
-                 ORDER BY bm25(episodic_memory_fts, 10.0, 5.0, 2.0) \
-                 LIMIT ?2"
-            )
-        } else {
+        let mut conditions = vec!["episodic_memory_fts MATCH ?1".to_string()];
+        if let Some(cutoff) = fade_cutoff {
+            conditions.push(format!("e.occurred_at >= '{cutoff}'"));
+        }
+        if let Some(since_val) = since {
+            conditions.push(format!("e.occurred_at >= '{since_val}'"));
+        }
+        let sql = format!(
             "SELECT e.id, e.event_type, e.actor, e.summary, e.details, e.command, e.exit_code, \
              e.working_dir, e.project_context, e.search_keywords, e.occurred_at, e.is_consolidated \
              FROM episodic_memory e \
              JOIN episodic_memory_fts f ON e.rowid = f.rowid \
-             WHERE episodic_memory_fts MATCH ?1 \
+             WHERE {} \
              ORDER BY bm25(episodic_memory_fts, 10.0, 5.0, 2.0) \
-             LIMIT ?2".to_string()
-        };
+             LIMIT ?2",
+            conditions.join(" AND ")
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             Self::row_to_episodic(row)

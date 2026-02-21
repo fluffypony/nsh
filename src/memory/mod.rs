@@ -177,7 +177,8 @@ impl MemorySystem {
             &ctx.query,
             chrono::Utc::now(),
         );
-        let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%dT%H:%M:%S").to_string());
+        // Use space separator to match SQLite's datetime() format: "YYYY-MM-DD HH:MM:SS"
+        let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
         let since_ref = since_str.as_deref();
 
         // Get fade cutoff and core/recent data while holding the lock briefly

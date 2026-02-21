@@ -194,8 +194,17 @@ impl DbAccess for Db {
         let mut results = serde_json::Map::new();
         let should_search = |mt: &str| memory_type.is_none() || memory_type == Some(mt);
 
+        // Parse temporal expressions to constrain episodic search by time range
+        let temporal_range = crate::memory::temporal::parse_temporal_expression(
+            query,
+            chrono::Utc::now(),
+        );
+        // Use space separator to match SQLite's datetime() format: "YYYY-MM-DD HH:MM:SS"
+        let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
+        let since_ref = since_str.as_deref();
+
         if should_search("episodic") {
-            match self.search_episodic_fts(query, limit, None) {
+            match self.search_episodic_fts_since(query, limit, None, since_ref) {
                 Ok(items) => { results.insert("episodic".into(), serde_json::to_value(&items)?); }
                 Err(e) => { tracing::debug!("memory_search episodic failed: {e}"); }
             }
