@@ -415,6 +415,7 @@ impl Db {
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         init_db(&conn, 10000)?;
+        crate::memory::schema::create_memory_tables(&conn)?;
         let db = Self {
             conn,
             max_output_bytes: 32768,

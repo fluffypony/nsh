@@ -27,6 +27,22 @@ pub struct MemorySystem {
 }
 
 impl MemorySystem {
+    #[cfg(test)]
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let config = crate::config::MemoryConfig::default();
+        let conn = Connection::open_in_memory()?;
+        schema::create_memory_tables(&conn)?;
+        Ok(Self {
+            db: Arc::new(Mutex::new(conn)),
+            ingestion_buffer: std::sync::Mutex::new(ingestion::IngestionBuffer::new(
+                config.ingestion_buffer_size,
+                config.ingestion_buffer_age_secs,
+            )),
+            config,
+            ignore_patterns: Vec::new(),
+        })
+    }
+
     pub fn open(config: crate::config::MemoryConfig, db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         let conn = Connection::open(&db_path)?;
         conn.execute_batch(
