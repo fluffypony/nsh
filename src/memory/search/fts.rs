@@ -8,7 +8,7 @@ pub fn build_fts5_query(query: &str) -> String {
     }
     words
         .iter()
-        .map(|w| format!("\"{}\" OR {}*", w, w))
+        .map(|w| format!("\"{w}\" OR {w}*"))
         .collect::<Vec<_>>()
         .join(" OR ")
 }

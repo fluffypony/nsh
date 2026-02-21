@@ -1,4 +1,4 @@
-#![cfg(unix)]
+// unix-specific module; gated by cfg at inclusion site
 
 use rustix::pty::{grantpt, openpt, ptsname, unlockpt};
 use rustix::termios::{self, Termios};

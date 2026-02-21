@@ -372,7 +372,7 @@ fn read_line_from_tty() -> Result<String> {
 fn prompt_choice(prompt: &str, max: usize, default: Option<usize>) -> Result<usize> {
     loop {
         let default_str = default.map_or(String::new(), |d| format!(" [{}]", d + 1));
-        eprint!("{}{}: ", prompt, default_str);
+        eprint!("{prompt}{default_str}: ");
         io::stderr().flush()?;
 
         let input = read_line_from_tty()?;
@@ -432,10 +432,7 @@ pub fn run_autoconfigure() -> Result<()> {
 
     let (chosen_provider, provider_keys) = if by_provider.len() == 1 {
         let (provider, pkeys) = by_provider.into_iter().next().unwrap();
-        eprintln!(
-            "Using \x1b[1m{}\x1b[0m (only available provider)\n",
-            provider
-        );
+        eprintln!("Using \x1b[1m{provider}\x1b[0m (only available provider)\n");
         (
             provider,
             pkeys.into_iter().cloned().collect::<Vec<_>>(),
@@ -467,10 +464,7 @@ pub fn run_autoconfigure() -> Result<()> {
     let chosen_key = if provider_keys.len() == 1 {
         provider_keys[0].key.clone()
     } else {
-        eprintln!(
-            "Multiple keys found for {}. Choose one:",
-            chosen_provider
-        );
+        eprintln!("Multiple keys found for {chosen_provider}. Choose one:");
         for (i, k) in provider_keys.iter().enumerate() {
             eprintln!(
                 "  \x1b[1m{}\x1b[0m) {} (from {})",
@@ -507,7 +501,7 @@ pub fn run_autoconfigure() -> Result<()> {
 
     eprintln!("\x1b[32m\u{2714} nsh configured successfully!\x1b[0m");
     eprintln!();
-    eprintln!("  Provider: \x1b[1m{}\x1b[0m", chosen_provider);
+    eprintln!("  Provider: \x1b[1m{chosen_provider}\x1b[0m");
     eprintln!("  Model: \x1b[1m{}\x1b[0m", models.default_model);
     eprintln!(
         "  Main chain: {}",
@@ -521,7 +515,7 @@ pub fn run_autoconfigure() -> Result<()> {
         "  Coding chain: {}",
         models.coding.join(" \u{2192} ")
     );
-    eprintln!("  Mode: \x1b[1m{}\x1b[0m", execution_mode);
+    eprintln!("  Mode: \x1b[1m{execution_mode}\x1b[0m");
     eprintln!();
     eprintln!("To reconfigure at any time, run: \x1b[1mnsh autoconfigure\x1b[0m");
     eprintln!("To edit config manually: \x1b[1mnsh config edit\x1b[0m");

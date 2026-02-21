@@ -250,7 +250,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o600, "expected mode 600, got {:o}", mode);
+        assert_eq!(mode, 0o600, "expected mode 600, got {mode:o}");
 
         set_enabled(false);
     }

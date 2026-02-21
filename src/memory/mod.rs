@@ -621,6 +621,7 @@ impl MemorySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
 
     fn test_config() -> crate::config::MemoryConfig {
         crate::config::MemoryConfig::default()
@@ -973,5 +974,45 @@ mod tests {
 
         let buffer = mem.ingestion_buffer.lock().unwrap();
         assert!(buffer.is_empty(), "disabled memory should skip events");
+    }
+
+    struct MockLlm;
+
+    #[async_trait]
+    impl crate::memory::llm_adapter::MemoryLlmClient for MockLlm {
+        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<String> {
+            Ok(r#"[{"op":"SemanticInsert","name":"Project uses cargo","category":"project","summary":"User builds with cargo","details":null,"search_keywords":"cargo build project"} ]"#.to_string())
+        }
+        async fn complete(&self, _system: &str, _user: &str) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn reflection_promotes_semantic_and_marks_consolidated() {
+        let mem = MemorySystem::open_in_memory().unwrap();
+        {
+            let conn = mem.db.lock().unwrap();
+            crate::memory::store::episodic::insert(&conn, &crate::memory::types::EpisodicEventCreate {
+                event_type: crate::memory::types::EventType::CommandExecution,
+                actor: crate::memory::types::Actor::User,
+                summary: "Ran cargo build successfully".into(),
+                details: None,
+                command: Some("cargo build".into()),
+                exit_code: Some(0),
+                working_dir: None,
+                project_context: None,
+                search_keywords: "cargo build".into(),
+            }).unwrap();
+        }
+
+        let report = mem.run_reflection(&MockLlm).await.unwrap();
+        assert!(report.ops_applied >= 1);
+
+        let conn = mem.db.lock().unwrap();
+        let sem_count = crate::memory::store::semantic::count(&conn).unwrap();
+        assert!(sem_count >= 1);
+        let uncon = crate::memory::store::episodic::list_unconsolidated(&conn, 10).unwrap();
+        assert!(uncon.is_empty());
     }
 }

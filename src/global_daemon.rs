@@ -122,7 +122,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         .collect();
 
     // Startup maintenance tasks (wire MemorySystem methods to avoid dead code and keep system tidy)
-    if memory.has_bootstrapped() == false {
+    if !memory.has_bootstrapped() {
         let _ = memory_tx.send(MemoryTask::BootstrapScan);
     }
     if memory.should_run_decay() {

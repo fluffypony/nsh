@@ -754,8 +754,8 @@ fn describe_coding_tool_action(name: &str, input: &serde_json::Value) -> String 
             let path = input["path"].as_str().unwrap_or("(missing path)");
             let pat = input["pattern"].as_str();
             match pat {
-                Some(p) if !p.is_empty() => format!("searching {} for /{p}/", path),
-                _ => format!("reading {}", path),
+                Some(p) if !p.is_empty() => format!("searching {path} for /{p}/"),
+                _ => format!("reading {path}"),
             }
         }
         "glob" => format!(

@@ -84,7 +84,7 @@ pub fn execute_with_access(
                             result.push_str("\n[... truncated]\n");
                             return Ok(result);
                         }
-                        result.push_str(&format!("    {:>4}: {}\n", ctx_no, ctx_line));
+                        result.push_str(&format!("    {ctx_no:>4}: {ctx_line}\n"));
                         output_lines += 1;
                         last_emitted_line = Some(*ctx_no);
                     }
@@ -94,7 +94,7 @@ pub fn execute_with_access(
                             result.push_str("\n[... truncated]\n");
                             return Ok(result);
                         }
-                        result.push_str(&format!(">>> {:>4}: {}\n", line_no, line_str));
+                        result.push_str(&format!(">>> {line_no:>4}: {line_str}\n"));
                         output_lines += 1;
                         last_emitted_line = Some(line_no);
                     }
@@ -107,7 +107,7 @@ pub fn execute_with_access(
                             result.push_str("\n[... truncated]\n");
                             return Ok(result);
                         }
-                        result.push_str(&format!("    {:>4}: {}\n", line_no, line_str));
+                        result.push_str(&format!("    {line_no:>4}: {line_str}\n"));
                         output_lines += 1;
                         last_emitted_line = Some(line_no);
                     }

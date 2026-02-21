@@ -150,7 +150,7 @@ pub async fn consume_stream(
             }
             crate::stream_consumer::DisplayEvent::Done => {
                 if is_streaming {
-                    eprint!("\x1b[0m\n");
+                    eprintln!("\x1b[0m");
                     io::stderr().flush().ok();
                     is_streaming = false;
                 }

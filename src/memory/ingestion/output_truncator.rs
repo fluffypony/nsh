@@ -4,7 +4,7 @@ pub fn truncate_output(output: &str, exit_code: Option<i32>, budget_chars: usize
     }
 
     let lines: Vec<&str> = output.lines().collect();
-    let is_error = exit_code.map_or(false, |c| c != 0);
+    let is_error = exit_code.is_some_and(|c| c != 0);
 
     let (head_count, tail_count) = if is_error {
         (30, 20)

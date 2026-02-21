@@ -627,7 +627,6 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 std::fs::read_to_string(daemon::global_daemon_pid_path())
                     .unwrap_or_default()
                     .trim()
-                    .to_string()
             );
         }
 
@@ -1095,12 +1094,12 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                             let response = c.get("response").and_then(|v| v.as_str()).unwrap_or("");
                             let explanation =
                                 c.get("explanation").and_then(|v| v.as_str()).unwrap_or("");
-                            println!("**Q:** {}\n", query);
+                            println!("**Q:** {query}\n");
                             match response_type {
                                 "command" => {
-                                    println!("```bash\n{}\n```\n{}\n", response, explanation)
+                                    println!("```bash\n{response}\n```\n{explanation}\n")
                                 }
-                                _ => println!("{}\n", response),
+                                _ => println!("{response}\n"),
                             }
                         }
                     }

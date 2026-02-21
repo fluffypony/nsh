@@ -12,7 +12,7 @@ pub fn find_merge_candidate(
          LIMIT 20",
     )?;
 
-    let neg = format!("-{}", time_window_secs);
+    let neg = format!("-{time_window_secs}");
     let rows: Vec<(String, String)> = stmt
         .query_map(params![neg], |row| {
             Ok((row.get(0)?, row.get(1)?))

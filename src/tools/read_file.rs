@@ -88,7 +88,7 @@ pub fn execute_with_access(
         while line.ends_with('\n') || line.ends_with('\r') {
             line.pop();
         }
-        result.push_str(&format!("{:>4}: {line}\n", total_lines));
+        result.push_str(&format!("{total_lines:>4}: {line}\n"));
     }
 
     if start_line > total_lines {

@@ -41,11 +41,11 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
         for ep in &memories.recent_episodic {
             let mut line = format!("[{}] {}", ep.occurred_at, ep.summary);
             if let Some(ref cmd) = ep.command {
-                line.push_str(&format!(" (cmd: {})", cmd));
+                line.push_str(&format!(" (cmd: {cmd})"));
             }
             if let Some(exit) = ep.exit_code {
                 if exit != 0 {
-                    line.push_str(&format!(" [exit {}]", exit));
+                    line.push_str(&format!(" [exit {exit}]"));
                 }
             }
             parts.push(line);
@@ -64,7 +64,7 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
                 } else {
                     details.clone()
                 };
-                line.push_str(&format!("\n  {}", preview));
+                line.push_str(&format!("\n  {preview}"));
             }
             parts.push(line);
         }
@@ -82,7 +82,7 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
                 } else {
                     details.clone()
                 };
-                line.push_str(&format!("\n  {}", preview));
+                line.push_str(&format!("\n  {preview}"));
             }
             parts.push(line);
         }
@@ -113,7 +113,7 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
         for r in &memories.resource {
             let mut line = format!("• {} ({})", r.title, r.resource_type);
             if let Some(ref path) = r.file_path {
-                line.push_str(&format!(" [{}]", path));
+                line.push_str(&format!(" [{path}]"));
             }
             parts.push(line);
             parts.push(format!("  {}", r.summary));

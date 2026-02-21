@@ -95,7 +95,7 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
     let response_line = read_daemon_response(&mut stream)?;
     log_daemon_client(
         "client.send_request.response",
-        &format!("session={session_id}\nresponse={}", response_line),
+        &format!("session={session_id}\nresponse={response_line}"),
     );
 
     serde_json::from_str(&response_line).map_err(|e| {

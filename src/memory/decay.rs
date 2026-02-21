@@ -9,7 +9,7 @@ pub fn run_decay(
 ) -> anyhow::Result<DecayReport> {
     let mut report = DecayReport::default();
 
-    let expire_cutoff = format!("-{} days", expire_after_days);
+    let expire_cutoff = format!("-{expire_after_days} days");
 
     // Episodic: expire by occurred_at
     report.episodic_deleted = conn.execute(

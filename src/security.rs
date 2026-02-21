@@ -302,7 +302,7 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
             (RiskLevel::Elevated, Some("permission change"))
         }
         "git" => {
-            let has_force_delete = rest.iter().any(|&a| a == "-D");
+            let has_force_delete = rest.contains(&"-D");
             let has_delete = rest.iter().any(|&a| a == "-d" || a == "--delete");
             let is_branch = rest.first().is_some_and(|&c| c == "branch");
             let is_push = rest.first().is_some_and(|&c| c == "push");
