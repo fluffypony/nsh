@@ -384,7 +384,7 @@ fn prompt_choice(prompt: &str, max: usize, default: Option<usize>) -> Result<usi
     }
 }
 
-pub fn run_autoconfigure() -> Result<()> {
+pub fn run_autoconfigure(_interactive: bool) -> Result<()> {
     eprintln!("\x1b[1mnsh autoconfigure\x1b[0m");
     eprintln!("Scanning for API keys...\n");
 

@@ -155,7 +155,11 @@ pub enum Commands {
 
     /// Auto-detect API keys and configure nsh
     #[command(alias = "autoconfig")]
-    Autoconfigure,
+    Autoconfigure {
+        /// Run in interactive mode — prompt for provider choice and login
+        #[arg(long, short, default_value_t = false)]
+        interactive: bool,
+    },
 
     /// Self-update nsh to the latest version
     Update,

@@ -137,6 +137,20 @@ pub fn create_provider(
                 "ollama".to_string(),
             )?))
         }
+        // CLIProxyAPI-backed subscriptions and sidecar-routed providers
+        "copilot" | "kiro" | "qwen" | "iflow" | "claude_sub" | "codex_sub" | "gemini_sub" => {
+            let port = crate::cliproxyapi::get_port().unwrap_or(8317);
+            let base_url = format!("http://127.0.0.1:{}/v1", port);
+            let api_key = zeroize::Zeroizing::new("nsh-internal".into());
+            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
+                api_key,
+                base_url,
+                config.provider.fallback_model.clone(),
+                vec![],
+                config.provider.timeout_seconds,
+                provider_name.to_string(),
+            )?))
+        }
         _ => anyhow::bail!("Unknown provider: {provider_name}"),
     }
 }

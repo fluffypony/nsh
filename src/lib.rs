@@ -3,6 +3,7 @@
 pub mod ansi;
 pub mod audit;
 pub mod autoconfigure;
+pub mod cliproxyapi;
 pub mod cli;
 pub mod coding_agent;
 pub mod config;
@@ -634,8 +635,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             eprintln!("nsh: next command output will not be captured");
         }
 
-        Commands::Autoconfigure => {
-            crate::autoconfigure::run_autoconfigure()?;
+        Commands::Autoconfigure { interactive } => {
+            crate::autoconfigure::run_autoconfigure(interactive)?;
         }
 
         Commands::Restart => {
