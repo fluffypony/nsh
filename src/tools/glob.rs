@@ -1,4 +1,5 @@
 use glob::Pattern;
+use std::fs::Metadata;
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let pattern_str = input["pattern"]
@@ -30,7 +31,8 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         .sort_by_file_name(|a, b| a.cmp(b))
         .build();
 
-    let mut matches: Vec<(String, u64)> = Vec::new();
+    // path, size, perms (octal rwx string)
+    let mut matches: Vec<(String, u64, String)> = Vec::new();
     let mut total_matches = 0usize;
 
     for entry in walker.flatten() {
@@ -45,16 +47,18 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         if pattern.matches(&rel_str) {
             total_matches += 1;
             if matches.len() < max_results {
-                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                matches.push((rel_str, size));
+                let meta = entry.metadata();
+                let size = meta.as_ref().map(Metadata::len).unwrap_or(0);
+                let perm = perms_string(meta.as_ref());
+                matches.push((rel_str, size, perm));
             }
         }
     }
 
     matches.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = String::new();
-    for (path, size) in &matches {
-        out.push_str(&format!("{path} ({})\n", human_size(*size)));
+    for (path, size, perm) in &matches {
+        out.push_str(&format!("{path}  {}  {}\n", human_size(*size), perm));
     }
     if total_matches > matches.len() {
         out.push_str(&format!("... and {} more", total_matches - matches.len()));
@@ -75,6 +79,21 @@ fn human_size(bytes: u64) -> String {
         size /= 1024.0;
     }
     format!("{size:.0}PB")
+}
+
+#[cfg(unix)]
+fn perms_string(meta: Option<&Metadata>) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(m) = meta {
+        let mode = m.permissions().mode() & 0o7777;
+        return format!("{:04o}", mode);
+    }
+    "????".into()
+}
+
+#[cfg(not(unix))]
+fn perms_string(_meta: Option<&Metadata>) -> String {
+    "".into()
 }
 
 #[cfg(test)]

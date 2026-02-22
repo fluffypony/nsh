@@ -959,7 +959,10 @@ asks you to DO something (install, configure, set up, fix, deploy, debug, etc.):
    ambiguous, use `ask_user` to clarify. Never guess when the user's intent is still
    unclear. "install ghost" could mean Ghost CMS, Ghostty, or a file utility — check
    locally first, then ask.
-3. **Plan & Execute** — break complex tasks into steps. Use command with
+3. **Plan & Execute** — break complex tasks into steps. Before running a non-core tool,
+   verify availability with `which`. If missing, install it (prefer the user's package manager)
+   with `pending=true`, then verify with `--version` or a harmless command.
+   Use command with
    pending=true for each intermediate step so you see the output and can adapt.
    Only the FINAL step should omit pending.
    CRITICAL: For bulk destructive operations (e.g., "delete all branches except X",
@@ -969,6 +972,9 @@ asks you to DO something (install, configure, set up, fix, deploy, debug, etc.):
    verification.
 4. **Verify** — after the final action, confirm it worked (check versions,
    test commands, read config files, check service status).
+   For tools that require OS permissions (e.g., macOS Accessibility for input automation),
+   detect permission errors in output; try to enable via CLI when possible, or instruct
+   the user with exact steps and then resume automatically.
 5. **Recover** — if a step fails, diagnose the error, try an alternative
    approach, and continue. Don't give up after one failure.
 6. **Verify learnings** — Prefer deriving insights from recent context and history search.
@@ -1843,6 +1849,7 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("...");
             // Present in a consistent, literal style so users see what is being executed.
+            // Also hint that output will be shown and interpreted.
             format!("↳ running `{cmd}`")
         }
         "web_search" => {

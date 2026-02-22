@@ -418,6 +418,28 @@ pub(crate) fn reject_reason_for_generated_command(
         }
     }
 
+    // Availability check: if the command references a non-core executable
+    // that is not present in PATH, reject and force the agent to resolve
+    // availability first (e.g., via `which` or installation).
+    if let Some(first) = trimmed_command.split_whitespace().next() {
+        if !first.is_empty()
+            && !is_core_builtin_or_utility(first)
+            && !looks_explicit_cd_target(first)
+            && !first.starts_with('/')
+            && !first.starts_with("./")
+            && !first.starts_with("../")
+            && !first.contains('=')
+        {
+            let in_path = std::env::var("PATH")
+                .unwrap_or_default()
+                .split(':')
+                .any(|dir| std::path::Path::new(dir).join(first).exists());
+            if !in_path {
+                return Some("executable not found in PATH; resolve with `which` or install it first");
+            }
+        }
+    }
+
     None
 }
 
@@ -441,6 +463,14 @@ fn looks_like_natural_language_question(text: &str) -> bool {
     QUESTION_PREFIXES
         .iter()
         .any(|prefix| lower.starts_with(prefix))
+}
+
+fn is_core_builtin_or_utility(name: &str) -> bool {
+    // Minimal allowlist of ubiquitous builtins/utilities that we don't need to pre-check.
+    matches!(
+        name,
+        "cd" | "pwd" | "ls" | "echo" | "cat" | "which" | "true" | "false" | "test" | "printf" | "sleep"
+    )
 }
 
 fn normalize_command_for_prefill(
