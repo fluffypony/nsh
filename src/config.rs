@@ -39,6 +39,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub cliproxyapi: CliProxyApiConfig,
+    #[serde(default)]
+    pub shell_hooks: ShellHooksConfig,
 }
 
 pub const DEFAULT_SUPPRESSED_EXIT_CODES: &[i32] = &[130, 137, 141, 143];
@@ -94,6 +96,19 @@ impl Default for ExecutionConfig {
 impl ExecutionConfig {
     pub fn effective_max_tool_iterations(&self) -> usize {
         self.max_tool_iterations.clamp(1, 200)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ShellHooksConfig {
+    pub auto_refresh: bool,
+}
+
+impl Default for ShellHooksConfig {
+    fn default() -> Self {
+        // Enable automatic shell hook refresh by default
+        Self { auto_refresh: true }
     }
 }
 

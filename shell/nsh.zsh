@@ -381,6 +381,28 @@ __nsh_precmd() {
         command rm -f "$notice_file" 2>/dev/null
     fi
 
+    # If hooks are outdated and auto_refresh is enabled, exec the shell to refresh
+    if command -v nsh >/dev/null 2>&1; then
+        local hook_hash
+        hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
+        if [[ -n "$hook_hash" && "$hook_hash" != "$NSH_HOOK_HASH" ]]; then
+            # Ask daemon for auto_refresh setting (environment-friendly check via config show)
+            local auto_refresh
+            auto_refresh="$(command nsh config show | command grep -E '^shell_hooks\.auto_refresh\s*=\s*true' >/dev/null 2>&1 && echo true || echo false)"
+            if [[ "$auto_refresh" == true ]]; then
+                # Only auto-exec if we're not in ZLE and no jobs are running to avoid disruption
+                if [[ -z "$ZLE_STATE" && -z "$BUFFER" ]]; then
+                    printf '\x1b[2m  nsh: refreshing shell hooks…\x1b[0m\n' >&2
+                    exec -l "$SHELL"
+                else
+                    printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+                fi
+            else
+                printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+            fi
+        fi
+    fi
+
     # ── Project switch detection for memory system ────
     if [[ "$PWD" != "${_NSH_LAST_DIR:-}" ]]; then
         _NSH_LAST_DIR="$PWD"
