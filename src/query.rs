@@ -2014,32 +2014,27 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
 }
 
 fn is_question_like(s: &str) -> bool {
-    if s.trim().is_empty() {
+    // Be conservative: only treat as a user-directed question when ALL are true:
+    // - contains a '?'
+    // - and matches common prompt patterns ("do you want", "would you like", "should I", etc.)
+    // This avoids blocking legitimate explanatory chat that happens to contain questions.
+    let trimmed = s.trim();
+    if trimmed.is_empty() || !trimmed.contains('?') {
         return false;
     }
-    let l = s.trim().to_lowercase();
-    if l.ends_with('?') {
-        return true;
-    }
-    for prefix in [
-        "are you ",
-        "do you ",
-        "would you ",
-        "should i ",
-        "can you ",
-        "could you ",
-        "is this ",
-        "what ",
-        "which ",
-        "where ",
-        "why ",
-        "how ",
-    ] {
-        if l.starts_with(prefix) {
-            return true;
-        }
-    }
-    false
+    let l = trimmed.to_lowercase();
+    let patterns = [
+        "do you want",
+        "would you like",
+        "are you looking",
+        "should i",
+        "can you",
+        "could you",
+        "which option",
+        "pick one",
+        "choose",
+    ];
+    patterns.iter().any(|p| l.contains(p))
 }
 
 #[cfg(test)]
