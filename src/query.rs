@@ -2101,6 +2101,22 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
 }
 
 fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), String> {
+    if name == "install_skill" {
+        // Special validation: require name + description, and EITHER command OR (runtime AND script)
+        let have_name = input.get("name").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let have_desc = input.get("description").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let have_command = input.get("command").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let have_runtime = input.get("runtime").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let have_script = input.get("script").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        if !have_name || !have_desc {
+            return Err("Missing required field 'name' or 'description' for tool 'install_skill'".to_string());
+        }
+        if !(have_command || (have_runtime && have_script)) {
+            return Err("Provide either 'command' OR both 'runtime' and 'script' for 'install_skill'".to_string());
+        }
+        return Ok(());
+    }
+
     let required_fields: &[&str] = match name {
         "command" => &["command", "explanation"],
         "chat" => &["response"],
@@ -2115,7 +2131,6 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "ask_user" => &["question"],
         "man_page" => &["command"],
         "manage_config" => &["action", "key"],
-        "install_skill" => &["name", "description", "command"],
         "install_mcp_server" => &["name"],
         "search_memory" => &["memory_type", "query"],
         "core_memory_append" => &["label", "content"],

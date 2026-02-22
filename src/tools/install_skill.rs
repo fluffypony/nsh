@@ -29,7 +29,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         );
     }
 
-    // Build TOML content
+    // Build TOML content. For non-programmatic skills (README-only, Skill.md), the model
+    // should convert usage instructions into either a command template or a small code
+    // wrapper (runtime+script) that invokes the documented steps verbatim. We persist
+    // exactly what the model provides here, with a human preview and confirmation.
     let mut toml_content = String::new();
     toml_content.push_str(&format!(
         "name = {}\ndescription = {}\n",
