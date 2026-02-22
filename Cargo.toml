@@ -88,6 +88,7 @@ shell-words = "1"
 flate2 = "1"
 hickory-resolver = "0.25"
 tar = "0.4"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["termios", "pty", "process", "pipe", "event", "stdio", "fs"] }
@@ -111,7 +112,6 @@ strip = true
 opt-level = "z"
 
 [dev-dependencies]
-tempfile = "3"
 serial_test = "3"
 wiremock = "0.6"
 

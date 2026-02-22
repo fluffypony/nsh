@@ -1560,7 +1560,7 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
             let _ = std::thread::Builder::new().name("nshd-update-check".into()).spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
                 if let Ok(rt) = rt {
-                    let _ = rt.block_on(async move {
+                    rt.block_on(async move {
                         if let Ok(Some((url, version))) = crate::cliproxyapi::check_for_update().await {
                             let _ = crate::cliproxyapi::download_and_install(&url, &version).await;
                         }

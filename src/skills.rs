@@ -305,7 +305,7 @@ fn execute_code_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Resul
 
     // Build JSON of parameters
     let mut params = serde_json::Map::new();
-    for (param_name, _) in &skill.parameters {
+    for param_name in skill.parameters.keys() {
         if let Some(v) = input.get(param_name) {
             params.insert(param_name.clone(), v.clone());
         }

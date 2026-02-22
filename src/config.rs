@@ -252,18 +252,12 @@ impl ProviderAuth {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct ProviderRouting {
     pub active: String,
     pub via_cliproxy: bool,
     pub configured_providers: Vec<String>,
-}
-
-impl Default for ProviderRouting {
-    fn default() -> Self {
-        Self { active: String::new(), via_cliproxy: false, configured_providers: Vec::new() }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

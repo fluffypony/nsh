@@ -108,7 +108,9 @@ nsh: Recent machine targets for `ssh` (most recent first):
 
 ### Custom Skills
 
-Skills are reusable shell command templates with optional parameters, saved as TOML files:
+Skills are reusable tools exposed to the model. nsh supports two flavors:
+
+1) Command-template skills (shell)
 
 ```toml
 # ~/.nsh/skills/deploy.toml
@@ -128,6 +130,36 @@ Skills appear as tools in the LLM's toolkit and can be invoked naturally:
 you: ? deploy to staging
 nsh: [calls skill_deploy with environment=staging]
 ```
+
+2) Code-based skills (Python / Node / custom runtime)
+
+Define a runtime and an inline script. nsh writes the script to a temp file, passes parameters as JSON via stdin and `NSH_SKILL_PARAMS_JSON`, and executes with the runtime:
+
+```toml
+# ~/.nsh/skills/humanize.toml
+name = "humanize"
+description = "Format paths or listings more readably"
+runtime = "python3"
+script = '''
+import os, sys, json
+params = json.loads(sys.stdin.read() or os.environ.get("NSH_SKILL_PARAMS_JSON","{}"))
+text = params.get("text", "")
+print(text.replace("/", " → "))
+'''
+timeout_seconds = 15
+
+[parameters.text]
+type = "string"
+description = "Text to humanize"
+```
+
+Notes:
+- Project-local skills live in `./.nsh/skills/` and require a one-time approval per run.
+- Either `command` or both `runtime`+`script` must be present.
+- Parameters are validated for safe characters in command-template mode. In code mode, use JSON passed on stdin.
+
+Importing external skills:
+- You can hand-write TOML as above, or use the upcoming `nsh skills import --source <path|url>` to auto-detect and convert common formats (Claude Skills, MCP tools, OpenAI tool schemas, LangChain). Unknown formats will fall back to a guided conversion that outputs TOML for your review.
 
 ### MCP Server Support
 

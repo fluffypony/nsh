@@ -140,7 +140,7 @@ pub fn main_inner() -> anyhow::Result<()> {
         };
         let resp = send_to_global_or_fallback(&req)?;
         match resp {
-            daemon::DaemonResponse::Ok { data: Some(d) } => println!("{}", d),
+            daemon::DaemonResponse::Ok { data: Some(d) } => println!("{d}"),
             daemon::DaemonResponse::Ok { data: None } => println!("ok"),
             daemon::DaemonResponse::Error { message } => eprintln!("nsh: {message}"),
         }

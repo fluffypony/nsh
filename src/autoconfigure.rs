@@ -418,7 +418,7 @@ fn build_provider_options(detected_keys: &[DetectedKey]) -> Vec<ProviderOption> 
     // Include sidecar-backed subscriptions if keys or OAuth tokens are detected
     for id in ["copilot", "claude_sub", "codex_sub", "gemini_sub", "kiro", "qwen", "iflow"] {
         if by_provider.contains_key(id) {
-            options.insert(0, ProviderOption { id: id.into(), display_name: format!("{} (subscription)", id), kind: ProviderKind::Subscription, detected_key: by_provider.get(id).and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: true, native_base_url: None });
+            options.insert(0, ProviderOption { id: id.into(), display_name: format!("{id} (subscription)"), kind: ProviderKind::Subscription, detected_key: by_provider.get(id).and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: true, native_base_url: None });
         }
     }
     // Merge OAuth detections from cliproxyapi
@@ -465,7 +465,7 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
             match crate::cliproxyapi::run_oauth_login(&chosen.id) {
                 Ok(true) => {
                     // Sidecar ensure and test
-                    let port = match crate::cliproxyapi::ensure_running() { Ok(p) => p, Err(_) => 8317 };
+                    let port = crate::cliproxyapi::ensure_running().unwrap_or(8317);
                     // Test provider with fast model via a temporary runtime
                     let models = models_for_provider(&chosen.id);
                     let test_model = models.fast.first().unwrap_or(&models.default_model).clone();
