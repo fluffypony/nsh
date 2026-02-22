@@ -2053,7 +2053,9 @@ pub fn spawn_openai_stream(
         let mut current_tool_index: Option<usize> = None;
         let mut generation_id: Option<String> = None;
         // Add timeout bounds to detect stalled SSE connections
-        while let Ok(maybe_event) = tokio::time::timeout(std::time::Duration::from_secs(120), stream.next()).await {
+        while let Ok(maybe_event) =
+            tokio::time::timeout(std::time::Duration::from_secs(120), stream.next()).await
+        {
             let Some(event) = maybe_event else { break };
             let event = match event {
                 Ok(e) => e,

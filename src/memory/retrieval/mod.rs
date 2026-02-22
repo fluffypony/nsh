@@ -27,10 +27,8 @@ pub async fn retrieve_for_query(
     let mut memories = RetrievedMemories::default();
 
     // Parse temporal expression from query to constrain time range
-    let temporal_range = crate::memory::temporal::parse_temporal_expression(
-        &ctx.query,
-        chrono::Utc::now(),
-    );
+    let temporal_range =
+        crate::memory::temporal::parse_temporal_expression(&ctx.query, chrono::Utc::now());
     // Use space separator to match SQLite's datetime() format: "YYYY-MM-DD HH:MM:SS"
     let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
     let since_ref = since_str.as_deref();
@@ -60,19 +58,15 @@ pub async fn retrieve_for_query(
     memories.relevant_episodic =
         crate::memory::store::episodic::search_bm25(conn, &query_str, 10, fade_cutoff, since_ref)?;
 
-    memories.semantic =
-        crate::memory::store::semantic::search_bm25(conn, &query_str, 10)?;
+    memories.semantic = crate::memory::store::semantic::search_bm25(conn, &query_str, 10)?;
 
-    memories.procedural =
-        crate::memory::store::procedural::search_bm25(conn, &query_str, 5)?;
+    memories.procedural = crate::memory::store::procedural::search_bm25(conn, &query_str, 5)?;
 
-    memories.resource =
-        crate::memory::store::resource::search_bm25(conn, &query_str, 5)?;
+    memories.resource = crate::memory::store::resource::search_bm25(conn, &query_str, 5)?;
 
     // Add CWD-relevant resources
     if let Some(ref cwd) = ctx.cwd {
-        let cwd_resources =
-            crate::memory::store::resource::get_for_cwd(conn, cwd, 3)?;
+        let cwd_resources = crate::memory::store::resource::get_for_cwd(conn, cwd, 3)?;
         for r in cwd_resources {
             if !memories.resource.iter().any(|existing| existing.id == r.id) {
                 memories.resource.push(r);
@@ -80,12 +74,8 @@ pub async fn retrieve_for_query(
         }
     }
 
-    memories.knowledge = crate::memory::store::knowledge::search_bm25(
-        conn,
-        &query_str,
-        5,
-        Sensitivity::Medium,
-    )?;
+    memories.knowledge =
+        crate::memory::store::knowledge::search_bm25(conn, &query_str, 5, Sensitivity::Medium)?;
 
     // Update access counts for retrieved semantic items
     for item in &memories.semantic {
@@ -101,26 +91,36 @@ mod tests {
 
     #[test]
     fn needs_full_retrieval_natural_language() {
-        assert!(needs_full_retrieval(crate::memory::types::InteractionMode::NaturalLanguage));
+        assert!(needs_full_retrieval(
+            crate::memory::types::InteractionMode::NaturalLanguage
+        ));
     }
 
     #[test]
     fn needs_full_retrieval_error_fix() {
-        assert!(needs_full_retrieval(crate::memory::types::InteractionMode::ErrorFix));
+        assert!(needs_full_retrieval(
+            crate::memory::types::InteractionMode::ErrorFix
+        ));
     }
 
     #[test]
     fn needs_full_retrieval_code_generation() {
-        assert!(needs_full_retrieval(crate::memory::types::InteractionMode::CodeGeneration));
+        assert!(needs_full_retrieval(
+            crate::memory::types::InteractionMode::CodeGeneration
+        ));
     }
 
     #[test]
     fn needs_full_retrieval_autonomous() {
-        assert!(needs_full_retrieval(crate::memory::types::InteractionMode::AutonomousExecution));
+        assert!(needs_full_retrieval(
+            crate::memory::types::InteractionMode::AutonomousExecution
+        ));
     }
 
     #[test]
     fn does_not_need_full_retrieval_command_suggestion() {
-        assert!(!needs_full_retrieval(crate::memory::types::InteractionMode::CommandSuggestion));
+        assert!(!needs_full_retrieval(
+            crate::memory::types::InteractionMode::CommandSuggestion
+        ));
     }
 }

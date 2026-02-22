@@ -140,10 +140,15 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.episodic_deleted, 1, "old episodic event should be deleted");
+        assert_eq!(
+            report.episodic_deleted, 1,
+            "old episodic event should be deleted"
+        );
 
         // The recent one should survive
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM episodic_memory", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM episodic_memory", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -158,7 +163,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.semantic_deleted, 0, "high-access semantic items should be preserved");
+        assert_eq!(
+            report.semantic_deleted, 0,
+            "high-access semantic items should be preserved"
+        );
     }
 
     #[test]
@@ -172,7 +180,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.semantic_deleted, 1, "low-access old semantic items should be deleted");
+        assert_eq!(
+            report.semantic_deleted, 1,
+            "low-access old semantic items should be deleted"
+        );
     }
 
     #[test]
@@ -185,7 +196,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.procedural_deleted, 0, "high-access procedural items should be preserved");
+        assert_eq!(
+            report.procedural_deleted, 0,
+            "high-access procedural items should be preserved"
+        );
     }
 
     #[test]
@@ -198,7 +212,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.procedural_deleted, 1, "low-access old procedural items should be deleted");
+        assert_eq!(
+            report.procedural_deleted, 1,
+            "low-access old procedural items should be deleted"
+        );
     }
 
     #[test]
@@ -211,7 +228,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.resource_deleted, 1, "old resource items should be deleted");
+        assert_eq!(
+            report.resource_deleted, 1,
+            "old resource items should be deleted"
+        );
     }
 
     #[test]
@@ -237,7 +257,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.knowledge_deleted, 1, "old low-sensitivity knowledge should be deleted");
+        assert_eq!(
+            report.knowledge_deleted, 1,
+            "old low-sensitivity knowledge should be deleted"
+        );
     }
 
     #[test]
@@ -250,7 +273,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.knowledge_deleted, 0, "medium/high sensitivity knowledge should be preserved");
+        assert_eq!(
+            report.knowledge_deleted, 0,
+            "medium/high sensitivity knowledge should be preserved"
+        );
     }
 
     #[test]
@@ -263,7 +289,10 @@ mod tests {
         ).unwrap();
 
         let report = run_decay(&conn, 30, 90).unwrap();
-        assert_eq!(report.knowledge_deleted, 0, "high sensitivity knowledge should be preserved");
+        assert_eq!(
+            report.knowledge_deleted, 0,
+            "high sensitivity knowledge should be preserved"
+        );
     }
 
     #[test]
@@ -271,11 +300,13 @@ mod tests {
         let conn = setup();
         run_decay(&conn, 30, 90).unwrap();
 
-        let last: String = conn.query_row(
-            "SELECT value FROM memory_config WHERE key = 'last_decay_at'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let last: String = conn
+            .query_row(
+                "SELECT value FROM memory_config WHERE key = 'last_decay_at'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(!last.is_empty(), "last_decay_at should be set");
     }
 
@@ -299,7 +330,10 @@ mod tests {
         let cutoff_30 = get_fade_cutoff(&conn, 30).unwrap();
         let cutoff_60 = get_fade_cutoff(&conn, 60).unwrap();
         // 60-day cutoff should be earlier than 30-day cutoff
-        assert!(cutoff_60 < cutoff_30, "60-day cutoff should be earlier than 30-day");
+        assert!(
+            cutoff_60 < cutoff_30,
+            "60-day cutoff should be earlier than 30-day"
+        );
     }
 
     #[test]
@@ -310,7 +344,10 @@ mod tests {
             "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_decay_at', datetime('now'))",
             [],
         ).unwrap();
-        assert!(!should_run_decay(&conn), "should not run decay if recently run");
+        assert!(
+            !should_run_decay(&conn),
+            "should not run decay if recently run"
+        );
     }
 
     #[test]
@@ -321,6 +358,9 @@ mod tests {
             "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_decay_at', datetime('now', '-48 hours'))",
             [],
         ).unwrap();
-        assert!(should_run_decay(&conn), "should run decay if last run > 24 hours ago");
+        assert!(
+            should_run_decay(&conn),
+            "should run decay if last run > 24 hours ago"
+        );
     }
 }

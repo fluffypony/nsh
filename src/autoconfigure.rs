@@ -316,14 +316,9 @@ fn models_for_provider(provider: &str) -> ProviderModels {
             default_model: "google/gemini-2.5-flash".into(),
         },
         "anthropic" => ProviderModels {
-            main: vec![
-                "claude-sonnet-4.6".into(),
-            ],
+            main: vec!["claude-sonnet-4.6".into()],
             fast: vec!["claude-haiku-4.5".into()],
-            coding: vec![
-                "claude-opus-4.6".into(),
-                "claude-sonnet-4.6".into(),
-            ],
+            coding: vec!["claude-opus-4.6".into(), "claude-sonnet-4.6".into()],
             default_model: "claude-sonnet-4.6".into(),
         },
         "openai" => ProviderModels {
@@ -333,10 +328,7 @@ fn models_for_provider(provider: &str) -> ProviderModels {
             default_model: "gpt-5.2".into(),
         },
         "gemini" => ProviderModels {
-            main: vec![
-                "gemini-2.5-flash".into(),
-                "gemini-3-flash-preview".into(),
-            ],
+            main: vec!["gemini-2.5-flash".into(), "gemini-3-flash-preview".into()],
             fast: vec!["gemini-2.5-flash-lite".into()],
             coding: vec![
                 "gemini-2.5-pro".into(),
@@ -432,10 +424,7 @@ pub fn run_autoconfigure() -> Result<()> {
     let (chosen_provider, provider_keys) = if by_provider.len() == 1 {
         let (provider, pkeys) = by_provider.into_iter().next().unwrap();
         eprintln!("Using \x1b[1m{provider}\x1b[0m (only available provider)\n");
-        (
-            provider,
-            pkeys.into_iter().cloned().collect::<Vec<_>>(),
-        )
+        (provider, pkeys.into_iter().cloned().collect::<Vec<_>>())
     } else {
         let providers: Vec<String> = by_provider.keys().cloned().collect();
         eprintln!("Choose a provider:");
@@ -502,18 +491,9 @@ pub fn run_autoconfigure() -> Result<()> {
     eprintln!();
     eprintln!("  Provider: \x1b[1m{chosen_provider}\x1b[0m");
     eprintln!("  Model: \x1b[1m{}\x1b[0m", models.default_model);
-    eprintln!(
-        "  Main chain: {}",
-        models.main.join(" \u{2192} ")
-    );
-    eprintln!(
-        "  Fast chain: {}",
-        models.fast.join(" \u{2192} ")
-    );
-    eprintln!(
-        "  Coding chain: {}",
-        models.coding.join(" \u{2192} ")
-    );
+    eprintln!("  Main chain: {}", models.main.join(" \u{2192} "));
+    eprintln!("  Fast chain: {}", models.fast.join(" \u{2192} "));
+    eprintln!("  Coding chain: {}", models.coding.join(" \u{2192} "));
     eprintln!("  Mode: \x1b[1m{execution_mode}\x1b[0m");
     eprintln!();
     eprintln!("To reconfigure at any time, run: \x1b[1mnsh autoconfigure\x1b[0m");
@@ -571,12 +551,10 @@ fn save_config(
                 toml_edit::value("https://openrouter.ai/api/v1");
         }
         "anthropic" => {
-            doc["provider"][provider]["base_url"] =
-                toml_edit::value("https://api.anthropic.com");
+            doc["provider"][provider]["base_url"] = toml_edit::value("https://api.anthropic.com");
         }
         "openai" => {
-            doc["provider"][provider]["base_url"] =
-                toml_edit::value("https://api.openai.com/v1");
+            doc["provider"][provider]["base_url"] = toml_edit::value("https://api.openai.com/v1");
         }
         "gemini" => {
             doc["provider"][provider]["base_url"] =

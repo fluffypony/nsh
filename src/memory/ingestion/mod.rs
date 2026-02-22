@@ -53,10 +53,14 @@ impl IngestionBuffer {
 pub fn can_fast_path(event: &ShellEvent) -> bool {
     use crate::memory::types::ShellEventType;
     match event.event_type {
-        ShellEventType::SessionStart | ShellEventType::SessionEnd | ShellEventType::ProjectSwitch => true,
+        ShellEventType::SessionStart
+        | ShellEventType::SessionEnd
+        | ShellEventType::ProjectSwitch => true,
         ShellEventType::CommandExecution => {
             if let Some(ref cmd) = event.command {
-                classifier::is_low_signal(cmd) || event.exit_code == Some(0) && event.output.as_ref().is_none_or(|o| o.len() < 200)
+                classifier::is_low_signal(cmd)
+                    || event.exit_code == Some(0)
+                        && event.output.as_ref().is_none_or(|o| o.len() < 200)
             } else {
                 true
             }
@@ -66,7 +70,7 @@ pub fn can_fast_path(event: &ShellEvent) -> bool {
 }
 
 pub fn fast_path_episodic(event: &ShellEvent) -> crate::memory::types::EpisodicEventCreate {
-    use crate::memory::types::{EpisodicEventCreate, EventType, Actor, ShellEventType};
+    use crate::memory::types::{Actor, EpisodicEventCreate, EventType, ShellEventType};
 
     let (event_type, actor, summary) = match event.event_type {
         ShellEventType::SessionStart => (
@@ -97,12 +101,18 @@ pub fn fast_path_episodic(event: &ShellEvent) -> crate::memory::types::EpisodicE
         ShellEventType::UserInstruction => (
             EventType::UserInstruction,
             Actor::User,
-            event.instruction.clone().unwrap_or_else(|| "User instruction".into()),
+            event
+                .instruction
+                .clone()
+                .unwrap_or_else(|| "User instruction".into()),
         ),
         ShellEventType::AssistantAction => (
             EventType::AssistantAction,
             Actor::Assistant,
-            event.instruction.clone().unwrap_or_else(|| "Assistant action".into()),
+            event
+                .instruction
+                .clone()
+                .unwrap_or_else(|| "Assistant action".into()),
         ),
         ShellEventType::ProjectSwitch => {
             let dir = event.working_dir.as_deref().unwrap_or("unknown");
@@ -124,10 +134,7 @@ pub fn fast_path_episodic(event: &ShellEvent) -> crate::memory::types::EpisodicE
         command: event.command.clone(),
         exit_code: event.exit_code,
         working_dir: event.working_dir.clone(),
-        project_context: event
-            .git_context
-            .as_ref()
-            .and_then(|g| g.repo_root.clone()),
+        project_context: event.git_context.as_ref().and_then(|g| g.repo_root.clone()),
         search_keywords: keywords,
     }
 }
@@ -389,7 +396,10 @@ mod tests {
         };
         let ep = fast_path_episodic(&event);
         assert!(ep.summary.contains("new-project"));
-        assert_eq!(ep.event_type, crate::memory::types::EventType::ProjectSwitch);
+        assert_eq!(
+            ep.event_type,
+            crate::memory::types::EventType::ProjectSwitch
+        );
     }
 
     #[test]
@@ -470,7 +480,10 @@ mod tests {
             file_path: None,
         };
         let kw = generate_fast_path_keywords(&event);
-        assert!(kw.contains("user"), "should still extract from working_dir: {kw}");
+        assert!(
+            kw.contains("user"),
+            "should still extract from working_dir: {kw}"
+        );
     }
 
     #[test]

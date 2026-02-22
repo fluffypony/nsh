@@ -6,10 +6,7 @@ use rusqlite::Connection;
 
 pub fn parse_bootstrap_response(response: &str, default_desc: &str) -> (String, String) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(response.trim()) {
-        let summary = v["summary"]
-            .as_str()
-            .unwrap_or(default_desc)
-            .to_string();
+        let summary = v["summary"].as_str().unwrap_or(default_desc).to_string();
         let keywords = v["keywords"].as_str().unwrap_or("").to_string();
         (summary, keywords)
     } else {
@@ -19,9 +16,26 @@ pub fn parse_bootstrap_response(response: &str, default_desc: &str) -> (String, 
 
 pub fn detect_installed_tools() -> Vec<String> {
     let tools_to_check = [
-        "git", "cargo", "rustc", "node", "npm", "python3", "pip3",
-        "docker", "kubectl", "terraform", "go", "java", "ruby",
-        "brew", "apt", "dnf", "vim", "nvim", "code", "tmux",
+        "git",
+        "cargo",
+        "rustc",
+        "node",
+        "npm",
+        "python3",
+        "pip3",
+        "docker",
+        "kubectl",
+        "terraform",
+        "go",
+        "java",
+        "ruby",
+        "brew",
+        "apt",
+        "dnf",
+        "vim",
+        "nvim",
+        "code",
+        "tmux",
     ];
 
     tools_to_check

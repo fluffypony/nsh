@@ -133,28 +133,29 @@ pub async fn handle_query(
     }
 
     // ── Active Memory Retrieval ──────────────────────
-    let memory_prompt = if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
-        let memory_ctx = crate::memory::types::MemoryQueryContext {
-            query: query.to_string(),
-            cwd: Some(ctx.cwd.clone()),
-            session_id: Some(session_id.to_string()),
-            interaction_mode: if query.starts_with("The previous command failed") {
-                crate::memory::types::InteractionMode::ErrorFix
-            } else {
-                crate::memory::types::InteractionMode::NaturalLanguage
-            },
-            error_context: None,
-        };
-        match db.memory_retrieve_prompt(&memory_ctx) {
-            Ok(prompt) => prompt,
-            Err(e) => {
-                tracing::debug!("Memory retrieval failed: {e}");
-                String::new()
+    let memory_prompt =
+        if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
+            let memory_ctx = crate::memory::types::MemoryQueryContext {
+                query: query.to_string(),
+                cwd: Some(ctx.cwd.clone()),
+                session_id: Some(session_id.to_string()),
+                interaction_mode: if query.starts_with("The previous command failed") {
+                    crate::memory::types::InteractionMode::ErrorFix
+                } else {
+                    crate::memory::types::InteractionMode::NaturalLanguage
+                },
+                error_context: None,
+            };
+            match db.memory_retrieve_prompt(&memory_ctx) {
+                Ok(prompt) => prompt,
+                Err(e) => {
+                    tracing::debug!("Memory retrieval failed: {e}");
+                    String::new()
+                }
             }
-        }
-    } else {
-        String::new()
-    };
+        } else {
+            String::new()
+        };
 
     let system = build_system_prompt(
         &ctx,
@@ -457,7 +458,7 @@ pub async fn handle_query(
                         has_terminal_tool = true;
                         tools::install_mcp::execute(input, config)?;
                     }
-                    
+
                     "ask_user" => {
                         ask_user_calls.push((id.clone(), name.clone(), input.clone()));
                     }
@@ -598,8 +599,11 @@ pub async fn handle_query(
                         }));
                     }
                     // ── Memory tools (non-terminal) ──────────
-                    "search_memory" | "core_memory_append" | "core_memory_rewrite"
-                    | "store_memory" | "retrieve_secret" => {
+                    "search_memory"
+                    | "core_memory_append"
+                    | "core_memory_rewrite"
+                    | "store_memory"
+                    | "retrieve_secret" => {
                         // Gate on memory config
                         if !config.memory.enabled || config.memory.incognito {
                             let wrapped = crate::security::wrap_tool_result(
@@ -612,11 +616,9 @@ pub async fn handle_query(
                                 content: wrapped,
                                 is_error: true,
                             });
-                        } else if let Err(e) = crate::security::assess_memory_tool_call(
-                            &name,
-                            &input,
-                            &messages,
-                        ) {
+                        } else if let Err(e) =
+                            crate::security::assess_memory_tool_call(&name, &input, &messages)
+                        {
                             let wrapped = crate::security::wrap_tool_result(
                                 &name,
                                 &format!("Security check failed: {e}"),
@@ -632,8 +634,11 @@ pub async fn handle_query(
                                 "search_memory" => {
                                     let mt = input["memory_type"].as_str().unwrap_or("all");
                                     let q = input["query"].as_str().unwrap_or("");
-                                    let lim = (input["limit"].as_u64().unwrap_or(10) as usize).min(50);
-                                    match crate::tools::memory::execute_search_memory(db, mt, q, lim) {
+                                    let lim =
+                                        (input["limit"].as_u64().unwrap_or(10) as usize).min(50);
+                                    match crate::tools::memory::execute_search_memory(
+                                        db, mt, q, lim,
+                                    ) {
                                         Ok(results) => (results, false),
                                         Err(e) => (e, true),
                                     }
@@ -641,7 +646,9 @@ pub async fn handle_query(
                                 "core_memory_append" => {
                                     let label = input["label"].as_str().unwrap_or("");
                                     let content = input["content"].as_str().unwrap_or("");
-                                    match crate::tools::memory::execute_core_memory_append(db, label, content) {
+                                    match crate::tools::memory::execute_core_memory_append(
+                                        db, label, content,
+                                    ) {
                                         Ok(msg) => (msg, false),
                                         Err(e) => (e, true),
                                     }
@@ -649,22 +656,33 @@ pub async fn handle_query(
                                 "core_memory_rewrite" => {
                                     let label = input["label"].as_str().unwrap_or("");
                                     let content = input["content"].as_str().unwrap_or("");
-                                    match crate::tools::memory::execute_core_memory_rewrite(db, label, content) {
+                                    match crate::tools::memory::execute_core_memory_rewrite(
+                                        db, label, content,
+                                    ) {
                                         Ok(msg) => (msg, false),
                                         Err(e) => (e, true),
                                     }
                                 }
                                 "store_memory" => {
                                     let memory_type = input["memory_type"].as_str().unwrap_or("");
-                                    let data = input.get("data").cloned().unwrap_or(serde_json::json!({}));
-                                    match crate::tools::memory::execute_store_memory(db, memory_type, &data) {
+                                    let data =
+                                        input.get("data").cloned().unwrap_or(serde_json::json!({}));
+                                    match crate::tools::memory::execute_store_memory(
+                                        db,
+                                        memory_type,
+                                        &data,
+                                    ) {
                                         Ok(msg) => (msg, false),
                                         Err(e) => (e, true),
                                     }
                                 }
                                 "retrieve_secret" => {
-                                    let caption_query = input["caption_query"].as_str().unwrap_or("");
-                                    match crate::tools::memory::execute_retrieve_secret(db, caption_query) {
+                                    let caption_query =
+                                        input["caption_query"].as_str().unwrap_or("");
+                                    match crate::tools::memory::execute_retrieve_secret(
+                                        db,
+                                        caption_query,
+                                    ) {
                                         Ok(secret) => (secret, false),
                                         Err(e) => (e, true),
                                     }

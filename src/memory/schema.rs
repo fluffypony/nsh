@@ -391,9 +391,15 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_memory_tables(&conn).unwrap();
 
-        let tables = ["core_memory", "episodic_memory", "semantic_memory",
-                       "procedural_memory", "resource_memory", "knowledge_vault",
-                       "memory_config"];
+        let tables = [
+            "core_memory",
+            "episodic_memory",
+            "semantic_memory",
+            "procedural_memory",
+            "resource_memory",
+            "knowledge_vault",
+            "memory_config",
+        ];
         for table in &tables {
             let exists: bool = conn
                 .query_row(
@@ -412,8 +418,10 @@ mod tests {
         create_memory_tables(&conn).unwrap();
 
         let fts_tables = [
-            "episodic_memory_fts", "semantic_memory_fts",
-            "procedural_memory_fts", "resource_memory_fts",
+            "episodic_memory_fts",
+            "semantic_memory_fts",
+            "procedural_memory_fts",
+            "resource_memory_fts",
             "knowledge_vault_fts",
         ];
         for table in &fts_tables {
@@ -434,12 +442,19 @@ mod tests {
         create_memory_tables(&conn).unwrap();
 
         let indexes = [
-            "idx_episodic_occurred", "idx_episodic_event_type",
-            "idx_episodic_exit_code", "idx_episodic_working_dir",
-            "idx_episodic_project", "idx_episodic_consolidated",
-            "idx_semantic_name", "idx_semantic_category",
-            "idx_resource_type", "idx_resource_file_path", "idx_resource_file_hash",
-            "idx_knowledge_entry_type", "idx_knowledge_sensitivity",
+            "idx_episodic_occurred",
+            "idx_episodic_event_type",
+            "idx_episodic_exit_code",
+            "idx_episodic_working_dir",
+            "idx_episodic_project",
+            "idx_episodic_consolidated",
+            "idx_semantic_name",
+            "idx_semantic_category",
+            "idx_resource_type",
+            "idx_resource_file_path",
+            "idx_resource_file_hash",
+            "idx_knowledge_entry_type",
+            "idx_knowledge_sensitivity",
         ];
         for idx in &indexes {
             let exists: bool = conn
@@ -459,11 +474,21 @@ mod tests {
         create_memory_tables(&conn).unwrap();
 
         let triggers = [
-            "episodic_memory_ai", "episodic_memory_ad", "episodic_memory_au",
-            "semantic_memory_ai", "semantic_memory_ad", "semantic_memory_au",
-            "procedural_memory_ai", "procedural_memory_ad", "procedural_memory_au",
-            "resource_memory_ai", "resource_memory_ad", "resource_memory_au",
-            "knowledge_vault_ai", "knowledge_vault_ad", "knowledge_vault_au",
+            "episodic_memory_ai",
+            "episodic_memory_ad",
+            "episodic_memory_au",
+            "semantic_memory_ai",
+            "semantic_memory_ad",
+            "semantic_memory_au",
+            "procedural_memory_ai",
+            "procedural_memory_ad",
+            "procedural_memory_au",
+            "resource_memory_ai",
+            "resource_memory_ad",
+            "resource_memory_au",
+            "knowledge_vault_ai",
+            "knowledge_vault_ad",
+            "knowledge_vault_au",
         ];
         for trigger in &triggers {
             let exists: bool = conn
@@ -483,9 +508,13 @@ mod tests {
         create_memory_tables(&conn).unwrap();
 
         let expected_keys = [
-            "schema_version", "fade_after_days", "expire_after_days",
-            "consolidation_threshold", "last_decay_at",
-            "last_reflection_at", "last_bootstrap_at",
+            "schema_version",
+            "fade_after_days",
+            "expire_after_days",
+            "consolidation_threshold",
+            "last_decay_at",
+            "last_reflection_at",
+            "last_bootstrap_at",
         ];
         for key in &expected_keys {
             let exists: bool = conn
@@ -592,7 +621,8 @@ mod tests {
             "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords)
              VALUES ('ep_UPD', 'command_execution', 'user', 'ran cargo build', 'cargo build')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "UPDATE episodic_memory SET summary = 'ran docker build', search_keywords = 'docker build' WHERE id = 'ep_UPD'",
@@ -629,9 +659,11 @@ mod tests {
             "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords)
              VALUES ('ep_DEL', 'command_execution', 'user', 'ran npm install', 'npm install')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        conn.execute("DELETE FROM episodic_memory WHERE id = 'ep_DEL'", []).unwrap();
+        conn.execute("DELETE FROM episodic_memory WHERE id = 'ep_DEL'", [])
+            .unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -648,11 +680,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_memory_tables(&conn).unwrap();
 
-        let (value, limit): (String, i64) = conn.query_row(
-            "SELECT value, char_limit FROM core_memory WHERE label = 'human'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
+        let (value, limit): (String, i64) = conn
+            .query_row(
+                "SELECT value, char_limit FROM core_memory WHERE label = 'human'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(value, "");
         assert_eq!(limit, 5000);
     }
@@ -666,7 +700,8 @@ mod tests {
             "INSERT INTO semantic_memory (id, name, category, summary, search_keywords)
              VALUES ('sem_U', 'Old name', 'general', 'old summary', 'old keywords')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "UPDATE semantic_memory SET name = 'New name', summary = 'new summary', search_keywords = 'new keywords' WHERE id = 'sem_U'",
@@ -674,7 +709,11 @@ mod tests {
         ).unwrap();
 
         let old_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'old'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'old'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(old_count, 0, "old term should be removed after update");
 
@@ -693,12 +732,18 @@ mod tests {
             "INSERT INTO semantic_memory (id, name, category, summary, search_keywords)
              VALUES ('sem_D', 'Docker tools', 'tools', 'uses docker', 'docker tools')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        conn.execute("DELETE FROM semantic_memory WHERE id = 'sem_D'", []).unwrap();
+        conn.execute("DELETE FROM semantic_memory WHERE id = 'sem_D'", [])
+            .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'docker'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'docker'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0, "FTS entry should be removed after delete");
     }
@@ -741,7 +786,8 @@ mod tests {
             [],
         ).unwrap();
 
-        conn.execute("DELETE FROM procedural_memory WHERE id = 'proc_D'", []).unwrap();
+        conn.execute("DELETE FROM procedural_memory WHERE id = 'proc_D'", [])
+            .unwrap();
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM procedural_memory_fts WHERE procedural_memory_fts MATCH 'deploy'", [], |r| r.get(0))
@@ -758,7 +804,8 @@ mod tests {
             "INSERT INTO resource_memory (id, resource_type, title, summary, search_keywords)
              VALUES ('res_U', 'config', 'Old title', 'old summary', 'old keywords')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         conn.execute(
             "UPDATE resource_memory SET title = 'New title', summary = 'new summary', search_keywords = 'new keywords' WHERE id = 'res_U'",
@@ -785,12 +832,18 @@ mod tests {
             "INSERT INTO resource_memory (id, resource_type, title, summary, search_keywords)
              VALUES ('res_D', 'config', 'Nginx config', 'nginx conf', 'nginx config')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
-        conn.execute("DELETE FROM resource_memory WHERE id = 'res_D'", []).unwrap();
+        conn.execute("DELETE FROM resource_memory WHERE id = 'res_D'", [])
+            .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM resource_memory_fts WHERE resource_memory_fts MATCH 'nginx'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM resource_memory_fts WHERE resource_memory_fts MATCH 'nginx'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0, "FTS entry should be removed after delete");
     }
@@ -833,10 +886,15 @@ mod tests {
             [],
         ).unwrap();
 
-        conn.execute("DELETE FROM knowledge_vault WHERE id = 'kv_D'", []).unwrap();
+        conn.execute("DELETE FROM knowledge_vault WHERE id = 'kv_D'", [])
+            .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge_vault_fts WHERE knowledge_vault_fts MATCH 'aws'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge_vault_fts WHERE knowledge_vault_fts MATCH 'aws'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0, "FTS entry should be removed after delete");
     }

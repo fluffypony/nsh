@@ -24,7 +24,9 @@ pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<Str
 
 fn read_user_input() -> anyhow::Result<String> {
     use std::io::IsTerminal;
-    read_user_input_inner(std::io::stdin().is_terminal(), || std::fs::File::open("/dev/tty"))
+    read_user_input_inner(std::io::stdin().is_terminal(), || {
+        std::fs::File::open("/dev/tty")
+    })
 }
 
 fn read_user_input_inner<F>(stdin_is_terminal: bool, tty_opener: F) -> anyhow::Result<String>
@@ -91,7 +93,10 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::NotFound, "no tty"))
         })
         .expect("fallback should be returned");
-        assert_eq!(out, "Cannot ask user — stdin is piped. Proceeding with best guess.");
+        assert_eq!(
+            out,
+            "Cannot ask user — stdin is piped. Proceeding with best guess."
+        );
     }
 
     #[test]

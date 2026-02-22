@@ -106,7 +106,8 @@ mod tests {
         .expect_err("expected error");
 
         assert!(
-            err.to_string().contains("Web search not available with provider ollama"),
+            err.to_string()
+                .contains("Web search not available with provider ollama"),
             "unexpected error: {err}"
         );
     }

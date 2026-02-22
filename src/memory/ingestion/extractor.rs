@@ -1,5 +1,7 @@
-use crate::memory::types::{MemoryOp, ShellEvent, CoreBlock, EpisodicEvent, SemanticItem, ProceduralItem};
 use crate::memory::llm_adapter::MemoryLlmClient;
+use crate::memory::types::{
+    CoreBlock, EpisodicEvent, MemoryOp, ProceduralItem, SemanticItem, ShellEvent,
+};
 
 pub async fn extract_memory_ops(
     events: &[ShellEvent],
@@ -31,7 +33,15 @@ fn build_extraction_prompt(
 
     prompt.push_str("### Core Memory\n");
     for block in core {
-        prompt.push_str(&format!("- {}: {}\n", block.label, if block.value.is_empty() { "(empty)" } else { &block.value }));
+        prompt.push_str(&format!(
+            "- {}: {}\n",
+            block.label,
+            if block.value.is_empty() {
+                "(empty)"
+            } else {
+                &block.value
+            }
+        ));
     }
 
     if !recent_episodic.is_empty() {
@@ -189,14 +199,12 @@ pub fn validate_keyword_presence(ops: Vec<MemoryOp>) -> Vec<MemoryOp> {
 
 pub fn extract_fallback_keywords(text: &str) -> String {
     const STOP_WORDS: &[&str] = &[
-        "the", "a", "an", "is", "was", "are", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will",
-        "would", "could", "should", "may", "might", "shall", "can",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from",
-        "as", "into", "through", "during", "before", "after", "and",
-        "but", "or", "nor", "not", "no", "so", "if", "then", "than",
-        "that", "this", "these", "those", "it", "its", "i", "me",
-        "my", "we", "our", "you", "your", "he", "she", "they",
+        "the", "a", "an", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "through",
+        "during", "before", "after", "and", "but", "or", "nor", "not", "no", "so", "if", "then",
+        "than", "that", "this", "these", "those", "it", "its", "i", "me", "my", "we", "our", "you",
+        "your", "he", "she", "they",
     ];
 
     text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
@@ -280,7 +288,9 @@ mod tests {
         }];
         let validated = validate_keyword_presence(ops);
         match &validated[0] {
-            MemoryOp::SemanticInsert { search_keywords, .. } => {
+            MemoryOp::SemanticInsert {
+                search_keywords, ..
+            } => {
                 assert!(!search_keywords.is_empty());
                 assert!(search_keywords.contains("Cargo"));
             }
@@ -403,8 +413,13 @@ mod tests {
         }];
         let validated = validate_keyword_presence(ops);
         match &validated[0] {
-            MemoryOp::ProceduralInsert { search_keywords, .. } => {
-                assert!(!search_keywords.is_empty(), "should fill in fallback keywords for procedural");
+            MemoryOp::ProceduralInsert {
+                search_keywords, ..
+            } => {
+                assert!(
+                    !search_keywords.is_empty(),
+                    "should fill in fallback keywords for procedural"
+                );
                 assert!(search_keywords.contains("Deploy"));
             }
             _ => panic!("expected ProceduralInsert"),
@@ -429,7 +444,10 @@ mod tests {
         let validated = validate_keyword_presence(ops);
         match &validated[0] {
             MemoryOp::EpisodicInsert { event } => {
-                assert!(!event.search_keywords.trim().is_empty(), "should fill in fallback keywords");
+                assert!(
+                    !event.search_keywords.trim().is_empty(),
+                    "should fill in fallback keywords"
+                );
                 assert!(event.search_keywords.contains("Built"));
             }
             _ => panic!("expected EpisodicInsert"),
@@ -447,7 +465,9 @@ mod tests {
         }];
         let validated = validate_keyword_presence(ops);
         match &validated[0] {
-            MemoryOp::SemanticInsert { search_keywords, .. } => {
+            MemoryOp::SemanticInsert {
+                search_keywords, ..
+            } => {
                 assert_eq!(search_keywords, "existing keywords here");
             }
             _ => panic!("expected SemanticInsert"),
@@ -456,7 +476,9 @@ mod tests {
 
     #[test]
     fn validate_keyword_presence_noop_passthrough() {
-        let ops = vec![MemoryOp::NoOp { reason: "test".into() }];
+        let ops = vec![MemoryOp::NoOp {
+            reason: "test".into(),
+        }];
         let validated = validate_keyword_presence(ops);
         assert!(matches!(&validated[0], MemoryOp::NoOp { .. }));
     }

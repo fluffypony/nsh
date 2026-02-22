@@ -224,7 +224,10 @@ fn summarize_entity_matches(
         let m = &matches[0];
         return format!(
             "Most recent matching target:\n- [{}] {} (via {})\n  command: {}\n",
-            m.started_at, m.entity, m.executable, crate::util::truncate(&m.command, 200)
+            m.started_at,
+            m.entity,
+            m.executable,
+            crate::util::truncate(&m.command, 200)
         );
     }
 
@@ -932,14 +935,6 @@ mod tests {
         let result = execute(&db, &input, &config, "test_sess").unwrap();
         assert!(result.contains("cargo"));
     }
-
-    
-
-    
-
-    
-
-    
 
     #[test]
     fn test_result_formatting_with_cwd_and_output() {

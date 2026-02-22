@@ -132,7 +132,9 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
             "nsh wrap: could not determine original TTY for fd {}; NSH_ORIG_TTY will not be set",
             real_stdin.as_raw_fd()
         );
-        eprintln!("nsh: warning: could not determine original TTY; CWD tracking may use PTY slave path");
+        eprintln!(
+            "nsh: warning: could not determine original TTY; CWD tracking may use PTY slave path"
+        );
     }
     let argv0_cstr = std::ffi::CString::new(format!("-{basename}")).expect("valid shell name");
     let shell_cstr = std::ffi::CString::new(shell.to_owned()).expect("valid shell path");

@@ -142,7 +142,7 @@ pub fn execute(
         // interpretation on the next turn. The content here is already
         // redacted by format_execution_output.
         if !output_content.trim().is_empty() {
-            eprintln!("{}", output_content);
+            eprintln!("{output_content}");
         }
         if !private {
             let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
@@ -435,7 +435,9 @@ pub(crate) fn reject_reason_for_generated_command(
                 .split(':')
                 .any(|dir| std::path::Path::new(dir).join(first).exists());
             if !in_path {
-                return Some("executable not found in PATH; resolve with `which` or install it first");
+                return Some(
+                    "executable not found in PATH; resolve with `which` or install it first",
+                );
             }
         }
     }
@@ -469,7 +471,16 @@ fn is_core_builtin_or_utility(name: &str) -> bool {
     // Minimal allowlist of ubiquitous builtins/utilities that we don't need to pre-check.
     matches!(
         name,
-        "cd" | "pwd" | "ls" | "echo" | "cat" | "which" | "true" | "false" | "test" | "printf" | "sleep"
+        "cd" | "pwd"
+            | "ls"
+            | "echo"
+            | "cat"
+            | "which"
+            | "true"
+            | "false"
+            | "test"
+            | "printf"
+            | "sleep"
     )
 }
 

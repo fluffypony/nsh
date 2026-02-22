@@ -9,7 +9,9 @@ use crate::daemon::{DaemonRequest, DaemonResponse};
 // ── Memory background task types ──────────────────────
 enum MemoryTask {
     FlushIngestion,
-    IngestBatch { events: Vec<crate::memory::types::ShellEvent> },
+    IngestBatch {
+        events: Vec<crate::memory::types::ShellEvent>,
+    },
     RunReflection,
     BootstrapScan,
 }
@@ -73,16 +75,12 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let config = crate::config::Config::load().unwrap_or_default();
     let db_path = crate::config::Config::nsh_dir().join("nsh.db");
     let memory = Arc::new(
-        crate::memory::MemorySystem::open(config.memory.clone(), db_path)
-            .unwrap_or_else(|e| {
-                log_daemon("memory.init.error", &e.to_string());
-                // Fall back to in-memory (will lose data on restart, but won't crash)
-                crate::memory::MemorySystem::open(
-                    config.memory.clone(),
-                    ":memory:".into(),
-                )
+        crate::memory::MemorySystem::open(config.memory.clone(), db_path).unwrap_or_else(|e| {
+            log_daemon("memory.init.error", &e.to_string());
+            // Fall back to in-memory (will lose data on restart, but won't crash)
+            crate::memory::MemorySystem::open(config.memory.clone(), ":memory:".into())
                 .expect("in-memory MemorySystem must succeed")
-            }),
+        }),
     );
 
     // Background async thread for LLM-dependent memory operations
@@ -158,7 +156,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     if let Ok(meta) = std::fs::metadata(path) {
                         if let Ok(mtime) = meta.modified() {
                             if Some(mtime) != monitor_initial_mtime {
-                                tracing::info!("nshd: binary updated on disk, scheduling graceful restart");
+                                tracing::info!(
+                                    "nshd: binary updated on disk, scheduling graceful restart"
+                                );
                                 restart_flag.store(true, Ordering::Relaxed);
                                 break;
                             }
@@ -223,9 +223,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     if last_binary_check.elapsed() > Duration::from_secs(30) {
                         last_binary_check = Instant::now();
                         if let Some(ref exe) = exe_path {
-                            let current_mtime = std::fs::metadata(exe)
-                                .ok()
-                                .and_then(|m| m.modified().ok());
+                            let current_mtime =
+                                std::fs::metadata(exe).ok().and_then(|m| m.modified().ok());
                             if exe_mtime_at_start.is_some() && current_mtime != exe_mtime_at_start {
                                 log_daemon(
                                     "server.lifecycle",
@@ -239,7 +238,10 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     if restart_pending.load(Ordering::Relaxed) {
                         if restart_requested_at.is_none() {
                             restart_requested_at = Some(Instant::now());
-                            log_daemon("server.lifecycle", "restart requested, draining connections...");
+                            log_daemon(
+                                "server.lifecycle",
+                                "restart requested, draining connections...",
+                            );
                         }
                         let drained = active_conns.load(Ordering::Relaxed) == 0;
                         let timed_out = restart_requested_at
@@ -247,15 +249,22 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                             .unwrap_or(false);
                         if drained || timed_out {
                             if !drained {
-                                log_daemon("server.lifecycle", "drain timeout (5s), force exiting for restart");
+                                log_daemon(
+                                    "server.lifecycle",
+                                    "drain timeout (5s), force exiting for restart",
+                                );
                             } else {
-                                log_daemon("server.lifecycle", "all connections drained, exiting for restart");
+                                log_daemon(
+                                    "server.lifecycle",
+                                    "all connections drained, exiting for restart",
+                                );
                             }
                             break;
                         }
                     }
                     // Also check for the restart marker file from clients
-                    let restart_marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
+                    let restart_marker =
+                        crate::config::Config::nsh_dir().join("nshd_restart_pending");
                     if restart_marker.exists() {
                         log_daemon("server.lifecycle", "restart marker detected, shutting down");
                         restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -287,7 +296,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     // Re-exec if restart was requested, so the new daemon starts immediately
     if restart_pending.load(Ordering::Relaxed) {
         let args: Vec<String> = std::env::args().collect();
-        let core_path = crate::config::Config::nsh_dir().join("bin").join("nsh-core");
+        let core_path = crate::config::Config::nsh_dir()
+            .join("bin")
+            .join("nsh-core");
         let target = if core_path.exists() {
             core_path
         } else if let Ok(exe) = std::env::current_exe() {
@@ -347,7 +358,13 @@ fn run_write_thread(
             if let Ok(()) = db.conn_execute_batch("BEGIN IMMEDIATE;") {
                 let mut pending: Vec<(mpsc::Sender<DaemonResponse>, DaemonResponse)> = Vec::new();
                 for cmd in batch {
-                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx, &mut session_project_roots);
+                    let resp = execute_write(
+                        &db,
+                        cmd.request,
+                        &memory,
+                        &memory_tx,
+                        &mut session_project_roots,
+                    );
                     pending.push((cmd.reply, resp));
                 }
                 if db.conn_execute_batch("COMMIT;").is_err() {
@@ -362,13 +379,25 @@ fn run_write_thread(
                 }
             } else {
                 for cmd in batch {
-                    let resp = execute_write(&db, cmd.request, &memory, &memory_tx, &mut session_project_roots);
+                    let resp = execute_write(
+                        &db,
+                        cmd.request,
+                        &memory,
+                        &memory_tx,
+                        &mut session_project_roots,
+                    );
                     let _ = cmd.reply.send(resp);
                 }
             }
         } else {
             let cmd = batch.into_iter().next().unwrap();
-            let resp = execute_write(&db, cmd.request, &memory, &memory_tx, &mut session_project_roots);
+            let resp = execute_write(
+                &db,
+                cmd.request,
+                &memory,
+                &memory_tx,
+                &mut session_project_roots,
+            );
             let _ = cmd.reply.send(resp);
         }
     }
@@ -385,7 +414,10 @@ fn run_memory_thread(
     {
         Ok(rt) => rt,
         Err(e) => {
-            log_daemon("memory.thread.error", &format!("failed to create tokio runtime: {e}"));
+            log_daemon(
+                "memory.thread.error",
+                &format!("failed to create tokio runtime: {e}"),
+            );
             return;
         }
     };
@@ -435,7 +467,10 @@ fn run_memory_thread(
 }
 
 fn send_memory_decay_once(memory: &crate::memory::MemorySystem) -> Result<(), ()> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|_| ())?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| ())?;
     rt.block_on(async {
         let _ = memory.run_decay();
     });
@@ -458,14 +493,12 @@ fn execute_write(
             let _ = std::fs::write(&marker, "");
             DaemonResponse::ok()
         }
-        DaemonRequest::GetVersion => {
-            DaemonResponse::ok_with_data(serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "build_version": env!("NSH_BUILD_VERSION"),
-                "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
-                "protocol_version": crate::daemon::DAEMON_PROTOCOL_VERSION,
-            }))
-        }
+        DaemonRequest::GetVersion => DaemonResponse::ok_with_data(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "build_version": env!("NSH_BUILD_VERSION"),
+            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
+            "protocol_version": crate::daemon::DAEMON_PROTOCOL_VERSION,
+        })),
         DaemonRequest::Record {
             session,
             command,
@@ -564,7 +597,10 @@ fn execute_write(
                                 if let Some(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
                                     crate::daemon_client::try_send_request(&session, &req)
                                 {
-                                    captured_output = d.get("output").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    captured_output = d
+                                        .get("output")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
                                 }
                             }
                         }
@@ -720,7 +756,7 @@ fn execute_write(
             Ok(()) => DaemonResponse::ok(),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
-        
+
         DaemonRequest::SetMeta { key, value } => match db.set_meta(&key, &value) {
             Ok(()) => DaemonResponse::ok(),
             Err(e) => DaemonResponse::error(format!("{e}")),
@@ -821,7 +857,10 @@ fn execute_write(
                 },
             }
         }
-        DaemonRequest::MemoryStore { memory_type, data_json } => {
+        DaemonRequest::MemoryStore {
+            memory_type,
+            data_json,
+        } => {
             use crate::daemon_db::DbAccess;
             match DbAccess::memory_store(db, &memory_type, &data_json) {
                 Ok(id) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
@@ -843,18 +882,16 @@ fn execute_write(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::MemoryRunDecay => {
-            match memory.run_decay() {
-                Ok(report) => DaemonResponse::ok_with_data(serde_json::json!({
-                    "episodic_deleted": report.episodic_deleted,
-                    "semantic_deleted": report.semantic_deleted,
-                    "procedural_deleted": report.procedural_deleted,
-                    "resource_deleted": report.resource_deleted,
-                    "knowledge_deleted": report.knowledge_deleted,
-                })),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
-        }
+        DaemonRequest::MemoryRunDecay => match memory.run_decay() {
+            Ok(report) => DaemonResponse::ok_with_data(serde_json::json!({
+                "episodic_deleted": report.episodic_deleted,
+                "semantic_deleted": report.semantic_deleted,
+                "procedural_deleted": report.procedural_deleted,
+                "resource_deleted": report.resource_deleted,
+                "knowledge_deleted": report.knowledge_deleted,
+            })),
+            Err(e) => DaemonResponse::error(format!("{e}")),
+        },
         DaemonRequest::MemoryRunReflection => {
             if memory_tx.send(MemoryTask::RunReflection).is_err() {
                 tracing::debug!("memory thread disconnected, reflection skipped");
@@ -867,12 +904,10 @@ fn execute_write(
             }
             DaemonResponse::ok()
         }
-        DaemonRequest::MemoryClearAll => {
-            match memory.clear_all() {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
-        }
+        DaemonRequest::MemoryClearAll => match memory.clear_all() {
+            Ok(()) => DaemonResponse::ok(),
+            Err(e) => DaemonResponse::error(format!("{e}")),
+        },
         DaemonRequest::MemoryClearByType { memory_type } => {
             match db.clear_memories_by_type(&memory_type) {
                 Ok(()) => DaemonResponse::ok(),
@@ -921,7 +956,11 @@ fn run_read_thread(
     }
 }
 
-fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, request: DaemonRequest) -> DaemonResponse {
+fn execute_read(
+    db: &crate::db::Db,
+    memory: &crate::memory::MemorySystem,
+    request: DaemonRequest,
+) -> DaemonResponse {
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_read.request", &req_dbg);
     match request {
@@ -994,7 +1033,7 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        
+
         DaemonRequest::GetMeta { key } => match db.get_meta(&key) {
             Ok(value) => DaemonResponse::ok_with_data(serde_json::json!({"value": value})),
             Err(e) => DaemonResponse::error(format!("{e}")),
@@ -1165,9 +1204,16 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
             match serde_json::from_str::<crate::memory::types::MemoryQueryContext>(&context_json) {
                 Ok(ctx) => {
                     // For read path, perform retrieval without LLM (fast path handles most cases)
-                    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    let rt = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
                         Ok(rt) => rt,
-                        Err(e) => return DaemonResponse::error(format!("memory runtime init failed: {e}")),
+                        Err(e) => {
+                            return DaemonResponse::error(format!(
+                                "memory runtime init failed: {e}"
+                            ));
+                        }
                     };
                     let result = rt.block_on(async { memory.retrieve_for_query(&ctx, None).await });
                     match result {
@@ -1183,61 +1229,70 @@ fn execute_read(db: &crate::db::Db, memory: &crate::memory::MemorySystem, reques
                 Err(e) => DaemonResponse::error(format!("invalid context JSON: {e}")),
             }
         }
-        DaemonRequest::MemorySearch { query, memory_type: _, limit } => {
+        DaemonRequest::MemorySearch {
+            query,
+            memory_type: _,
+            limit,
+        } => {
             // Use MemorySystem search across all types for now
             match memory.search(&query, None, limit) {
                 Ok(results) => {
-                    let json: Vec<serde_json::Value> = results.into_iter().map(|r| {
-                        serde_json::json!({
-                            "type": r.memory_type.as_str(),
-                            "id": r.id,
-                            "summary": r.summary,
-                            "score": r.score,
+                    let json: Vec<serde_json::Value> = results
+                        .into_iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "type": r.memory_type.as_str(),
+                                "id": r.id,
+                                "summary": r.summary,
+                                "score": r.score,
+                            })
                         })
-                    }).collect();
+                        .collect();
                     DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::MemoryGetCore => {
-            match memory.get_core_memory() {
-                Ok(blocks) => {
-                    let json: Vec<serde_json::Value> = blocks.iter().map(|b| {
+        DaemonRequest::MemoryGetCore => match memory.get_core_memory() {
+            Ok(blocks) => {
+                let json: Vec<serde_json::Value> = blocks
+                    .iter()
+                    .map(|b| {
                         serde_json::json!({
                             "label": b.label.as_str(),
                             "value": b.value,
                             "char_limit": b.char_limit,
                             "updated_at": b.updated_at,
                         })
-                    }).collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"blocks": json}))
-                }
-                Err(e) => DaemonResponse::error(format!("{e}")),
+                    })
+                    .collect();
+                DaemonResponse::ok_with_data(serde_json::json!({"blocks": json}))
             }
-        }
+            Err(e) => DaemonResponse::error(format!("{e}")),
+        },
         DaemonRequest::MemoryRetrieveSecret { caption_query } => {
             match db.search_knowledge_fts(&caption_query, 3, &["low", "medium", "high"]) {
                 Ok(results) => {
-                    let json: Vec<serde_json::Value> = results.iter().map(|r| {
-                        serde_json::json!({
-                            "id": r.id,
-                            "caption": r.caption,
-                            "entry_type": r.entry_type,
-                            "sensitivity": r.sensitivity.as_str(),
+                    let json: Vec<serde_json::Value> = results
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "id": r.id,
+                                "caption": r.caption,
+                                "entry_type": r.entry_type,
+                                "sensitivity": r.sensitivity.as_str(),
+                            })
                         })
-                    }).collect();
+                        .collect();
                     DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::MemoryExportAll => {
-            match memory.export_all() {
-                Ok(data) => DaemonResponse::ok_with_data(data),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
-        }
+        DaemonRequest::MemoryExportAll => match memory.export_all() {
+            Ok(data) => DaemonResponse::ok_with_data(data),
+            Err(e) => DaemonResponse::error(format!("{e}")),
+        },
         DaemonRequest::MemoryStats => {
             match memory.stats() {
                 Ok(stats) => {
@@ -1307,8 +1362,10 @@ mod tests_memory_stats {
         // Seed telemetry
         db.set_memory_config("decay_runs", "9").unwrap();
         db.set_memory_config("reflection_runs", "3").unwrap();
-        db.set_memory_config("last_decay_at", "2026-02-21 12:34:56").unwrap();
-        db.set_memory_config("last_reflection_at", "2026-02-20 08:10:11").unwrap();
+        db.set_memory_config("last_decay_at", "2026-02-21 12:34:56")
+            .unwrap();
+        db.set_memory_config("last_reflection_at", "2026-02-20 08:10:11")
+            .unwrap();
 
         let resp = execute_read(&db, &mem, DaemonRequest::MemoryStats);
         match resp {
@@ -1316,10 +1373,7 @@ mod tests_memory_stats {
                 assert!(d.get("core").is_some());
                 assert_eq!(d["decay_runs"].as_i64(), Some(9));
                 assert_eq!(d["reflection_runs"].as_i64(), Some(3));
-                assert_eq!(
-                    d["last_decay_at"].as_str(),
-                    Some("2026-02-21 12:34:56")
-                );
+                assert_eq!(d["last_decay_at"].as_str(), Some("2026-02-21 12:34:56"));
                 assert_eq!(
                     d["last_reflection_at"].as_str(),
                     Some("2026-02-20 08:10:11")
@@ -1414,7 +1468,6 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::InsertConversation { .. }
             | DaemonRequest::InsertUsage { .. }
             | DaemonRequest::UpdateConversationResult { .. }
-            
             | DaemonRequest::SetMeta { .. }
             | DaemonRequest::Prune { .. }
             | DaemonRequest::RebuildFts
@@ -1489,8 +1542,8 @@ fn write_response(
     resp: &DaemonResponse,
 ) -> std::io::Result<()> {
     let mut w = std::io::BufWriter::with_capacity(256 * 1024, stream);
-    let mut json_val = serde_json::to_value(resp)
-        .unwrap_or_else(|_| serde_json::json!({"status":"error"}));
+    let mut json_val =
+        serde_json::to_value(resp).unwrap_or_else(|_| serde_json::json!({"status":"error"}));
     if let serde_json::Value::Object(ref mut map) = json_val {
         map.insert(
             "v".into(),
@@ -1592,14 +1645,18 @@ mod tests {
         let read_cmd = read_rx.recv_timeout(Duration::from_millis(300)).ok();
 
         if let Some(cmd) = &write_cmd {
-            let _ = cmd.reply.send(DaemonResponse::ok_with_data(serde_json::json!({
-                "routed": "write"
-            })));
+            let _ = cmd
+                .reply
+                .send(DaemonResponse::ok_with_data(serde_json::json!({
+                    "routed": "write"
+                })));
         }
         if let Some(cmd) = &read_cmd {
-            let _ = cmd.reply.send(DaemonResponse::ok_with_data(serde_json::json!({
-                "routed": "read"
-            })));
+            let _ = cmd
+                .reply
+                .send(DaemonResponse::ok_with_data(serde_json::json!({
+                    "routed": "read"
+                })));
         }
 
         let mut response = String::new();
@@ -1671,6 +1728,9 @@ mod tests {
 
         assert!(write_cmd.is_none());
         assert!(read_cmd.is_none());
-        assert!(response.contains("parse error"), "unexpected response: {response}");
+        assert!(
+            response.contains("parse error"),
+            "unexpected response: {response}"
+        );
     }
 }

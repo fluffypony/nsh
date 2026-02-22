@@ -109,7 +109,9 @@ mod tests {
 
     #[test]
     fn build_fts5_query_long_input() {
-        let result = build_fts5_query("this is a very long query with many words that should all be processed correctly");
+        let result = build_fts5_query(
+            "this is a very long query with many words that should all be processed correctly",
+        );
         assert!(result.contains("\"very\""));
         assert!(result.contains("\"long\""));
         assert!(result.contains("\"query\""));

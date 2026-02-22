@@ -49,7 +49,11 @@ pub fn update(
     Ok(())
 }
 
-pub fn search_bm25(conn: &Connection, query: &str, limit: usize) -> anyhow::Result<Vec<ProceduralItem>> {
+pub fn search_bm25(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<ProceduralItem>> {
     let fts_query = crate::memory::search::fts::build_fts5_query(query);
     if fts_query.is_empty() {
         return Ok(vec![]);
@@ -161,7 +165,15 @@ mod tests {
     #[test]
     fn search_bm25_empty_returns_empty() {
         let conn = setup();
-        insert(&conn, "workflow", "deploy", "deploy to prod", "[]", "deploy").unwrap();
+        insert(
+            &conn,
+            "workflow",
+            "deploy",
+            "deploy to prod",
+            "[]",
+            "deploy",
+        )
+        .unwrap();
         let results = search_bm25(&conn, "", 10).unwrap();
         assert!(results.is_empty());
     }
@@ -186,7 +198,8 @@ mod tests {
             "Deployment workflow",
             r#"["run cargo build --release", "copy binary to server", "restart systemd service"]"#,
             "deploy production release",
-        ).unwrap();
+        )
+        .unwrap();
 
         let results = search_bm25(&conn, "systemd service", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -195,8 +208,23 @@ mod tests {
     #[test]
     fn update_preserves_type_and_trigger() {
         let conn = setup();
-        let id = insert(&conn, "fix", "error-E0433", "fix missing import", "[]", "fix").unwrap();
-        update(&conn, &id, "fix missing import with use statement", r#"["add use crate::foo"]"#, "fix import").unwrap();
+        let id = insert(
+            &conn,
+            "fix",
+            "error-E0433",
+            "fix missing import",
+            "[]",
+            "fix",
+        )
+        .unwrap();
+        update(
+            &conn,
+            &id,
+            "fix missing import with use statement",
+            r#"["add use crate::foo"]"#,
+            "fix import",
+        )
+        .unwrap();
 
         let items = list_all(&conn).unwrap();
         assert_eq!(items[0].entry_type, "fix");

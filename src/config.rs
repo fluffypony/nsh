@@ -1944,9 +1944,15 @@ confirm_intermediate_steps = false
 
     #[test]
     fn test_execution_config_effective_max_tool_iterations_bounds() {
-        let ec = ExecutionConfig { max_tool_iterations: 0, ..Default::default() };
+        let ec = ExecutionConfig {
+            max_tool_iterations: 0,
+            ..Default::default()
+        };
         assert_eq!(ec.effective_max_tool_iterations(), 1);
-        let ec = ExecutionConfig { max_tool_iterations: 250, ..Default::default() };
+        let ec = ExecutionConfig {
+            max_tool_iterations: 250,
+            ..Default::default()
+        };
         assert_eq!(ec.effective_max_tool_iterations(), 200);
     }
 

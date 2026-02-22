@@ -25,7 +25,8 @@ mod tests {
 
     #[test]
     fn run_wrapped_shell_returns_actionable_error_message() {
-        let err = run_wrapped_shell("pwsh").expect_err("run_wrapped_shell should fail on windows shim");
+        let err =
+            run_wrapped_shell("pwsh").expect_err("run_wrapped_shell should fail on windows shim");
         let text = err.to_string();
         assert!(text.contains("not supported on native Windows"));
         assert!(text.contains("use WSL"));

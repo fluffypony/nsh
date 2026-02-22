@@ -1,6 +1,6 @@
 use rusqlite::{Connection, params};
 
-use crate::memory::types::{EpisodicEvent, EpisodicEventCreate, Actor, EventType, generate_id};
+use crate::memory::types::{Actor, EpisodicEvent, EpisodicEventCreate, EventType, generate_id};
 
 fn parse_event_type(s: &str) -> EventType {
     match s {
@@ -103,7 +103,12 @@ pub fn delete(conn: &Connection, ids: &[String]) -> anyhow::Result<usize> {
     Ok(count)
 }
 
-pub fn list_recent(conn: &Connection, limit: usize, fade_cutoff: Option<&str>, since: Option<&str>) -> anyhow::Result<Vec<EpisodicEvent>> {
+pub fn list_recent(
+    conn: &Connection,
+    limit: usize,
+    fade_cutoff: Option<&str>,
+    since: Option<&str>,
+) -> anyhow::Result<Vec<EpisodicEvent>> {
     let mut conditions = Vec::new();
     if let Some(cutoff) = fade_cutoff {
         conditions.push(format!("occurred_at >= '{cutoff}'"));
@@ -150,7 +155,13 @@ pub fn list_unconsolidated(conn: &Connection, limit: usize) -> anyhow::Result<Ve
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn search_bm25(conn: &Connection, query: &str, limit: usize, fade_cutoff: Option<&str>, since: Option<&str>) -> anyhow::Result<Vec<EpisodicEvent>> {
+pub fn search_bm25(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+    fade_cutoff: Option<&str>,
+    since: Option<&str>,
+) -> anyhow::Result<Vec<EpisodicEvent>> {
     let fts_query = crate::memory::search::fts::build_fts5_query(query);
     if fts_query.is_empty() {
         return Ok(vec![]);
@@ -286,12 +297,31 @@ mod tests {
         };
         let id = insert(&conn, &event).unwrap();
 
-        merge(&conn, &id, "Updated summary", Some("Additional info"), "cargo build updated").unwrap();
+        merge(
+            &conn,
+            &id,
+            "Updated summary",
+            Some("Additional info"),
+            "cargo build updated",
+        )
+        .unwrap();
 
         let events = list_recent(&conn, 10, None, None).unwrap();
         assert_eq!(events[0].summary, "Updated summary");
-        assert!(events[0].details.as_ref().unwrap().contains("Original details"));
-        assert!(events[0].details.as_ref().unwrap().contains("Additional info"));
+        assert!(
+            events[0]
+                .details
+                .as_ref()
+                .unwrap()
+                .contains("Original details")
+        );
+        assert!(
+            events[0]
+                .details
+                .as_ref()
+                .unwrap()
+                .contains("Additional info")
+        );
     }
 
     #[test]
@@ -339,17 +369,21 @@ mod tests {
     #[test]
     fn search_bm25_empty_query() {
         let conn = setup();
-        insert(&conn, &EpisodicEventCreate {
-            event_type: EventType::CommandExecution,
-            actor: Actor::User,
-            summary: "test".into(),
-            details: None,
-            command: None,
-            exit_code: None,
-            working_dir: None,
-            project_context: None,
-            search_keywords: "test".into(),
-        }).unwrap();
+        insert(
+            &conn,
+            &EpisodicEventCreate {
+                event_type: EventType::CommandExecution,
+                actor: Actor::User,
+                summary: "test".into(),
+                details: None,
+                command: None,
+                exit_code: None,
+                working_dir: None,
+                project_context: None,
+                search_keywords: "test".into(),
+            },
+        )
+        .unwrap();
 
         let results = search_bm25(&conn, "", 10, None, None).unwrap();
         assert!(results.is_empty(), "empty query should return no results");
@@ -364,21 +398,29 @@ mod tests {
              VALUES ('ep_VOLD', 'command_execution', 'user', 'old cargo build', 'cargo build', datetime('now', '-60 days'))",
             [],
         ).unwrap();
-        insert(&conn, &EpisodicEventCreate {
-            event_type: EventType::CommandExecution,
-            actor: Actor::User,
-            summary: "new cargo build".into(),
-            details: None,
-            command: None,
-            exit_code: None,
-            working_dir: None,
-            project_context: None,
-            search_keywords: "cargo build".into(),
-        }).unwrap();
+        insert(
+            &conn,
+            &EpisodicEventCreate {
+                event_type: EventType::CommandExecution,
+                actor: Actor::User,
+                summary: "new cargo build".into(),
+                details: None,
+                command: None,
+                exit_code: None,
+                working_dir: None,
+                project_context: None,
+                search_keywords: "cargo build".into(),
+            },
+        )
+        .unwrap();
 
         let cutoff = crate::memory::decay::get_fade_cutoff(&conn, 30).unwrap();
         let results = search_bm25(&conn, "cargo build", 10, Some(&cutoff), None).unwrap();
-        assert_eq!(results.len(), 1, "should only find recent event after fade cutoff");
+        assert_eq!(
+            results.len(),
+            1,
+            "should only find recent event after fade cutoff"
+        );
         assert_eq!(results[0].summary, "new cargo build");
     }
 
@@ -386,17 +428,21 @@ mod tests {
     fn list_recent_respects_limit() {
         let conn = setup();
         for i in 0..5 {
-            insert(&conn, &EpisodicEventCreate {
-                event_type: EventType::CommandExecution,
-                actor: Actor::User,
-                summary: format!("event {i}"),
-                details: None,
-                command: None,
-                exit_code: None,
-                working_dir: None,
-                project_context: None,
-                search_keywords: "test".into(),
-            }).unwrap();
+            insert(
+                &conn,
+                &EpisodicEventCreate {
+                    event_type: EventType::CommandExecution,
+                    actor: Actor::User,
+                    summary: format!("event {i}"),
+                    details: None,
+                    command: None,
+                    exit_code: None,
+                    working_dir: None,
+                    project_context: None,
+                    search_keywords: "test".into(),
+                },
+            )
+            .unwrap();
         }
 
         let recent = list_recent(&conn, 3, None, None).unwrap();
@@ -431,17 +477,21 @@ mod tests {
         let conn = setup();
         assert_eq!(count(&conn).unwrap(), 0);
 
-        let id = insert(&conn, &EpisodicEventCreate {
-            event_type: EventType::SessionStart,
-            actor: Actor::System,
-            summary: "session".into(),
-            details: None,
-            command: None,
-            exit_code: None,
-            working_dir: None,
-            project_context: None,
-            search_keywords: "session".into(),
-        }).unwrap();
+        let id = insert(
+            &conn,
+            &EpisodicEventCreate {
+                event_type: EventType::SessionStart,
+                actor: Actor::System,
+                summary: "session".into(),
+                details: None,
+                command: None,
+                exit_code: None,
+                working_dir: None,
+                project_context: None,
+                search_keywords: "session".into(),
+            },
+        )
+        .unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
 
         delete(&conn, &[id]).unwrap();
@@ -457,10 +507,19 @@ mod tests {
 
     #[test]
     fn parse_event_type_all_variants() {
-        assert_eq!(parse_event_type("command_execution"), EventType::CommandExecution);
+        assert_eq!(
+            parse_event_type("command_execution"),
+            EventType::CommandExecution
+        );
         assert_eq!(parse_event_type("command_error"), EventType::CommandError);
-        assert_eq!(parse_event_type("user_instruction"), EventType::UserInstruction);
-        assert_eq!(parse_event_type("assistant_action"), EventType::AssistantAction);
+        assert_eq!(
+            parse_event_type("user_instruction"),
+            EventType::UserInstruction
+        );
+        assert_eq!(
+            parse_event_type("assistant_action"),
+            EventType::AssistantAction
+        );
         assert_eq!(parse_event_type("file_edit"), EventType::FileEdit);
         assert_eq!(parse_event_type("session_start"), EventType::SessionStart);
         assert_eq!(parse_event_type("session_end"), EventType::SessionEnd);

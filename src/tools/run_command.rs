@@ -61,7 +61,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
     // then also return it so the model can interpret it. Keep stdout visible,
     // include stderr section and exit code just like before.
     if !redacted.trim().is_empty() {
-        eprintln!("{}", redacted);
+        eprintln!("{redacted}");
     }
     Ok(redacted)
 }

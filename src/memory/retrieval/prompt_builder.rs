@@ -317,7 +317,10 @@ mod tests {
             ..Default::default()
         };
         let prompt = build_memory_prompt(&memories);
-        assert!(prompt.contains("[exit 101]"), "non-zero exit code should be shown");
+        assert!(
+            prompt.contains("[exit 101]"),
+            "non-zero exit code should be shown"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::memory::types::{RoutingDecision, CoreUpdateDecision, ShellEvent, ShellEventType};
+use crate::memory::types::{CoreUpdateDecision, RoutingDecision, ShellEvent, ShellEventType};
 
 pub fn route(event: &ShellEvent) -> RoutingDecision {
     let mut decision = RoutingDecision {
@@ -94,20 +94,37 @@ pub fn route(event: &ShellEvent) -> RoutingDecision {
 fn command_reveals_secrets(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     let patterns = [
-        "export api_key", "export api_secret", "export token",
-        "export secret", "export password", "export aws_",
-        "cat .env", "cat ~/.env", "source .env",
-        "ssh-add", "aws configure", "gcloud auth",
-        "docker login", "npm login", "heroku auth",
+        "export api_key",
+        "export api_secret",
+        "export token",
+        "export secret",
+        "export password",
+        "export aws_",
+        "cat .env",
+        "cat ~/.env",
+        "source .env",
+        "ssh-add",
+        "aws configure",
+        "gcloud auth",
+        "docker login",
+        "npm login",
+        "heroku auth",
     ];
     patterns.iter().any(|p| lower.contains(p))
 }
 
 fn output_contains_secrets(output: &str) -> bool {
     let patterns = [
-        "sk-", "ghp_", "gho_", "AKIA", "AIza",
-        "-----BEGIN", "xoxb-", "xoxp-",
-        "npm_", "pypi-",
+        "sk-",
+        "ghp_",
+        "gho_",
+        "AKIA",
+        "AIza",
+        "-----BEGIN",
+        "xoxb-",
+        "xoxp-",
+        "npm_",
+        "pypi-",
     ];
     patterns.iter().any(|p| output.contains(p))
 }
@@ -115,37 +132,68 @@ fn output_contains_secrets(output: &str) -> bool {
 fn command_reveals_project_info(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     let triggers = [
-        "cargo", "npm", "pip", "pip3", "poetry",
-        "git remote", "git clone", "docker", "kubectl",
-        "terraform", "ansible", "make", "cmake",
-        "go build", "go mod", "gradle", "maven", "mvn",
+        "cargo",
+        "npm",
+        "pip",
+        "pip3",
+        "poetry",
+        "git remote",
+        "git clone",
+        "docker",
+        "kubectl",
+        "terraform",
+        "ansible",
+        "make",
+        "cmake",
+        "go build",
+        "go mod",
+        "gradle",
+        "maven",
+        "mvn",
     ];
-    triggers.iter().any(|t| lower.starts_with(t) || lower.contains(&format!(" {t}")))
+    triggers
+        .iter()
+        .any(|t| lower.starts_with(t) || lower.contains(&format!(" {t}")))
 }
 
 fn is_config_file(path: &str) -> bool {
     let lower = path.to_lowercase();
     let extensions = [
-        ".toml", ".yaml", ".yml", ".json", ".env",
-        ".ini", ".cfg", ".conf", ".config",
+        ".toml", ".yaml", ".yml", ".json", ".env", ".ini", ".cfg", ".conf", ".config",
     ];
     let names = [
-        "makefile", "dockerfile", "docker-compose",
-        "package.json", "cargo.toml", "go.mod",
-        "requirements.txt", "pyproject.toml",
-        ".gitignore", ".editorconfig",
+        "makefile",
+        "dockerfile",
+        "docker-compose",
+        "package.json",
+        "cargo.toml",
+        "go.mod",
+        "requirements.txt",
+        "pyproject.toml",
+        ".gitignore",
+        ".editorconfig",
     ];
-    extensions.iter().any(|e| lower.ends_with(e))
-        || names.iter().any(|n| lower.ends_with(n))
+    extensions.iter().any(|e| lower.ends_with(e)) || names.iter().any(|n| lower.ends_with(n))
 }
 
 fn is_environment_changing_command(cmd: &str) -> bool {
     let lower = cmd.to_lowercase();
     let triggers = [
-        "export ", "source ", "nvm use", "nvm install",
-        "pyenv ", "rbenv ", "rustup default", "rustup toolchain",
-        "asdf ", "brew install", "apt install", "dnf install",
-        "pacman -S", "pip install", "npm install -g",
+        "export ",
+        "source ",
+        "nvm use",
+        "nvm install",
+        "pyenv ",
+        "rbenv ",
+        "rustup default",
+        "rustup toolchain",
+        "asdf ",
+        "brew install",
+        "apt install",
+        "dnf install",
+        "pacman -S",
+        "pip install",
+        "npm install -g",
         "cargo install",
     ];
     triggers.iter().any(|t| lower.starts_with(t))
@@ -155,9 +203,8 @@ fn is_preference_revealing(cmd: &str) -> bool {
     let first = cmd.split_whitespace().next().unwrap_or("");
     let base = first.rsplit('/').next().unwrap_or(first);
     let preference_tools = [
-        "rg", "bat", "exa", "eza", "fd", "dust", "procs",
-        "bottom", "btm", "zoxide", "starship", "delta",
-        "lazygit", "gitui", "helix", "hx", "nvim", "micro",
+        "rg", "bat", "exa", "eza", "fd", "dust", "procs", "bottom", "btm", "zoxide", "starship",
+        "delta", "lazygit", "gitui", "helix", "hx", "nvim", "micro",
     ];
     preference_tools.contains(&base)
 }
@@ -176,10 +223,19 @@ fn reads_significant_file(cmd: &str) -> bool {
 fn is_explicit_memory_directive(text: &str) -> bool {
     let lower = text.to_lowercase();
     let directives = [
-        "remember that", "i prefer", "always use", "never use",
-        "the password is", "my name is", "i am", "i like",
-        "don't forget", "keep in mind", "note that",
-        "from now on", "going forward",
+        "remember that",
+        "i prefer",
+        "always use",
+        "never use",
+        "the password is",
+        "my name is",
+        "i am",
+        "i like",
+        "don't forget",
+        "keep in mind",
+        "note that",
+        "from now on",
+        "going forward",
     ];
     directives.iter().any(|d| lower.contains(d))
 }
@@ -287,13 +343,19 @@ mod tests {
         let mut event = make_cmd_event("echo hello");
         event.output = Some("Your API key is sk-abc123".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "output containing sk- should trigger knowledge update");
+        assert!(
+            d.update_knowledge,
+            "output containing sk- should trigger knowledge update"
+        );
     }
 
     #[test]
     fn route_docker_login_detects_secret() {
         let d = route(&make_cmd_event("docker login -u user"));
-        assert!(d.update_knowledge, "docker login should flag secret detection");
+        assert!(
+            d.update_knowledge,
+            "docker login should flag secret detection"
+        );
     }
 
     #[test]
@@ -311,13 +373,19 @@ mod tests {
     #[test]
     fn route_aws_configure_detects_secret() {
         let d = route(&make_cmd_event("aws configure"));
-        assert!(d.update_knowledge, "aws configure should flag secret detection");
+        assert!(
+            d.update_knowledge,
+            "aws configure should flag secret detection"
+        );
     }
 
     #[test]
     fn route_gcloud_auth_detects_secret() {
         let d = route(&make_cmd_event("gcloud auth login"));
-        assert!(d.update_knowledge, "gcloud auth should flag secret detection");
+        assert!(
+            d.update_knowledge,
+            "gcloud auth should flag secret detection"
+        );
     }
 
     #[test]
@@ -325,7 +393,10 @@ mod tests {
         let mut event = make_cmd_event("echo token");
         event.output = Some("ghp_abc123def456".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "ghp_ token in output should flag secret");
+        assert!(
+            d.update_knowledge,
+            "ghp_ token in output should flag secret"
+        );
     }
 
     #[test]
@@ -333,7 +404,10 @@ mod tests {
         let mut event = make_cmd_event("echo key");
         event.output = Some("AKIAIOSFODNN7EXAMPLE".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "AKIA prefix in output should flag secret");
+        assert!(
+            d.update_knowledge,
+            "AKIA prefix in output should flag secret"
+        );
     }
 
     #[test]
@@ -341,7 +415,10 @@ mod tests {
         let mut event = make_cmd_event("cat key");
         event.output = Some("-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "-----BEGIN in output should flag secret");
+        assert!(
+            d.update_knowledge,
+            "-----BEGIN in output should flag secret"
+        );
     }
 
     #[test]
@@ -395,7 +472,10 @@ mod tests {
     #[test]
     fn route_preference_nvim() {
         let d = route(&make_cmd_event("nvim src/main.rs"));
-        assert!(d.update_core.is_some(), "nvim should reveal user preference");
+        assert!(
+            d.update_core.is_some(),
+            "nvim should reveal user preference"
+        );
         assert_eq!(d.update_core.as_ref().unwrap().label, "human");
     }
 
@@ -414,38 +494,56 @@ mod tests {
     #[test]
     fn route_preference_lazygit() {
         let d = route(&make_cmd_event("lazygit"));
-        assert!(d.update_core.is_some(), "lazygit should reveal user preference");
+        assert!(
+            d.update_core.is_some(),
+            "lazygit should reveal user preference"
+        );
     }
 
     #[test]
     fn route_env_change_brew_install() {
         let d = route(&make_cmd_event("brew install ripgrep"));
-        assert!(d.update_core.is_some(), "brew install should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "brew install should flag environment change"
+        );
         assert_eq!(d.update_core.as_ref().unwrap().label, "environment");
     }
 
     #[test]
     fn route_env_change_nvm_use() {
         let d = route(&make_cmd_event("nvm use 18"));
-        assert!(d.update_core.is_some(), "nvm use should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "nvm use should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_rustup() {
         let d = route(&make_cmd_event("rustup default nightly"));
-        assert!(d.update_core.is_some(), "rustup should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "rustup should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_pip_install() {
         let d = route(&make_cmd_event("pip install flask"));
-        assert!(d.update_core.is_some(), "pip install should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "pip install should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_cargo_install() {
         let d = route(&make_cmd_event("cargo install ripgrep"));
-        assert!(d.update_core.is_some(), "cargo install should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "cargo install should flag environment change"
+        );
     }
 
     #[test]
@@ -453,7 +551,10 @@ mod tests {
         let mut event = make_cmd_event("vim config.toml");
         event.file_path = Some("config.toml".into());
         let d = route(&event);
-        assert!(d.update_resource, ".toml file should trigger resource update");
+        assert!(
+            d.update_resource,
+            ".toml file should trigger resource update"
+        );
     }
 
     #[test]
@@ -461,7 +562,10 @@ mod tests {
         let mut event = make_cmd_event("vim deploy.yaml");
         event.file_path = Some("deploy.yaml".into());
         let d = route(&event);
-        assert!(d.update_resource, ".yaml file should trigger resource update");
+        assert!(
+            d.update_resource,
+            ".yaml file should trigger resource update"
+        );
     }
 
     #[test]
@@ -469,7 +573,10 @@ mod tests {
         let mut event = make_cmd_event("vim Dockerfile");
         event.file_path = Some("Dockerfile".into());
         let d = route(&event);
-        assert!(d.update_resource, "Dockerfile should trigger resource update");
+        assert!(
+            d.update_resource,
+            "Dockerfile should trigger resource update"
+        );
     }
 
     #[test]
@@ -477,29 +584,44 @@ mod tests {
         let mut event = make_cmd_event("code package.json");
         event.file_path = Some("package.json".into());
         let d = route(&event);
-        assert!(d.update_resource, "package.json should trigger resource update");
+        assert!(
+            d.update_resource,
+            "package.json should trigger resource update"
+        );
     }
 
     #[test]
     fn route_reads_significant_file_readme() {
         let d = route(&make_cmd_event("cat README.md"));
-        assert!(d.update_resource, "cat README should trigger resource update");
+        assert!(
+            d.update_resource,
+            "cat README should trigger resource update"
+        );
     }
 
     #[test]
     fn route_reads_significant_file_config() {
         let d = route(&make_cmd_event("cat .editorconfig"));
-        assert!(d.update_resource, "cat .editorconfig should trigger resource update");
+        assert!(
+            d.update_resource,
+            "cat .editorconfig should trigger resource update"
+        );
     }
 
     #[test]
     fn route_structured_output_as_resource() {
         let mut event = make_cmd_event("cargo tree");
         // Must be > 100 chars and have >= 2 structured indicators
-        let structured_output = (0..10).map(|i| format!("├── dep{i} = v{i}.0.0: description")).collect::<Vec<_>>().join("\n");
+        let structured_output = (0..10)
+            .map(|i| format!("├── dep{i} = v{i}.0.0: description"))
+            .collect::<Vec<_>>()
+            .join("\n");
         event.output = Some(structured_output);
         let d = route(&event);
-        assert!(d.update_resource, "structured output should trigger resource update");
+        assert!(
+            d.update_resource,
+            "structured output should trigger resource update"
+        );
     }
 
     #[test]
@@ -528,7 +650,10 @@ mod tests {
         };
         let d = route(&event);
         assert!(d.update_episodic);
-        assert!(d.only_episodic(), "ProjectSwitch should only update episodic");
+        assert!(
+            d.only_episodic(),
+            "ProjectSwitch should only update episodic"
+        );
     }
 
     #[test]
@@ -546,8 +671,14 @@ mod tests {
             file_path: None,
         };
         let d = route(&event);
-        assert!(d.update_semantic, "non-directive instruction should update semantic");
-        assert!(d.update_core.is_none(), "non-directive instruction should not update core");
+        assert!(
+            d.update_semantic,
+            "non-directive instruction should update semantic"
+        );
+        assert!(
+            d.update_core.is_none(),
+            "non-directive instruction should not update core"
+        );
     }
 
     #[test]
@@ -607,7 +738,9 @@ mod tests {
 
     #[test]
     fn explicit_memory_directive_going_forward() {
-        assert!(is_explicit_memory_directive("Going forward, let's use Rust"));
+        assert!(is_explicit_memory_directive(
+            "Going forward, let's use Rust"
+        ));
     }
 
     #[test]
@@ -644,7 +777,10 @@ mod tests {
         let mut event = make_cmd_event("echo test");
         event.output = Some("xoxb-123-456-abc".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "xoxb- token in output should flag secret");
+        assert!(
+            d.update_knowledge,
+            "xoxb- token in output should flag secret"
+        );
     }
 
     #[test]
@@ -652,7 +788,10 @@ mod tests {
         let mut event = make_cmd_event("echo test");
         event.output = Some("npm_abc123def".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "npm_ token in output should flag secret");
+        assert!(
+            d.update_knowledge,
+            "npm_ token in output should flag secret"
+        );
     }
 
     #[test]
@@ -660,7 +799,10 @@ mod tests {
         let mut event = make_cmd_event("echo test");
         event.output = Some("pypi-abc123".into());
         let d = route(&event);
-        assert!(d.update_knowledge, "pypi- token in output should flag secret");
+        assert!(
+            d.update_knowledge,
+            "pypi- token in output should flag secret"
+        );
     }
 
     #[test]
@@ -702,31 +844,46 @@ mod tests {
     #[test]
     fn route_env_change_source() {
         let d = route(&make_cmd_event("source ~/.bashrc"));
-        assert!(d.update_core.is_some(), "source should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "source should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_pyenv() {
         let d = route(&make_cmd_event("pyenv install 3.12"));
-        assert!(d.update_core.is_some(), "pyenv should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "pyenv should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_asdf() {
         let d = route(&make_cmd_event("asdf install nodejs 20"));
-        assert!(d.update_core.is_some(), "asdf should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "asdf should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_apt_install() {
         let d = route(&make_cmd_event("apt install vim"));
-        assert!(d.update_core.is_some(), "apt install should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "apt install should flag environment change"
+        );
     }
 
     #[test]
     fn route_env_change_npm_global() {
         let d = route(&make_cmd_event("npm install -g typescript"));
-        assert!(d.update_core.is_some(), "npm install -g should flag environment change");
+        assert!(
+            d.update_core.is_some(),
+            "npm install -g should flag environment change"
+        );
     }
 
     #[test]
@@ -744,19 +901,28 @@ mod tests {
     #[test]
     fn route_preference_helix() {
         let d = route(&make_cmd_event("hx src/main.rs"));
-        assert!(d.update_core.is_some(), "hx (helix) should reveal user preference");
+        assert!(
+            d.update_core.is_some(),
+            "hx (helix) should reveal user preference"
+        );
     }
 
     #[test]
     fn route_preference_delta() {
         let d = route(&make_cmd_event("delta file1 file2"));
-        assert!(d.update_core.is_some(), "delta should reveal user preference");
+        assert!(
+            d.update_core.is_some(),
+            "delta should reveal user preference"
+        );
     }
 
     #[test]
     fn route_preference_zoxide() {
         let d = route(&make_cmd_event("zoxide query project"));
-        assert!(d.update_core.is_some(), "zoxide should reveal user preference");
+        assert!(
+            d.update_core.is_some(),
+            "zoxide should reveal user preference"
+        );
     }
 
     #[test]
@@ -764,7 +930,10 @@ mod tests {
         let mut event = make_cmd_event("vim .env");
         event.file_path = Some(".env".into());
         let d = route(&event);
-        assert!(d.update_resource, ".env file should trigger resource update");
+        assert!(
+            d.update_resource,
+            ".env file should trigger resource update"
+        );
     }
 
     #[test]
@@ -772,21 +941,33 @@ mod tests {
         let mut event = make_cmd_event("vim .gitignore");
         event.file_path = Some(".gitignore".into());
         let d = route(&event);
-        assert!(d.update_resource, ".gitignore should trigger resource update");
+        assert!(
+            d.update_resource,
+            ".gitignore should trigger resource update"
+        );
     }
 
     #[test]
     fn route_cat_license() {
         let d = route(&make_cmd_event("cat LICENSE"));
-        assert!(d.update_resource, "cat LICENSE should trigger resource update");
+        assert!(
+            d.update_resource,
+            "cat LICENSE should trigger resource update"
+        );
     }
 
     #[test]
     fn route_bat_cargo_toml() {
         // bat is both a preference AND reads a significant file
         let d = route(&make_cmd_event("bat Cargo.toml"));
-        assert!(d.update_resource, "bat Cargo.toml should trigger resource update");
-        assert!(d.update_core.is_some(), "bat usage should reveal user preference");
+        assert!(
+            d.update_resource,
+            "bat Cargo.toml should trigger resource update"
+        );
+        assert!(
+            d.update_core.is_some(),
+            "bat usage should reveal user preference"
+        );
     }
 
     #[test]

@@ -15,7 +15,9 @@ fn main() {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new(&core_path).args(&args[1..]).exec();
+            let err = std::process::Command::new(&core_path)
+                .args(&args[1..])
+                .exec();
             eprintln!(
                 "nsh: failed to exec nsh-core at {}: {}",
                 core_path.display(),
@@ -26,7 +28,10 @@ fn main() {
 
         #[cfg(windows)]
         {
-            match std::process::Command::new(&core_path).args(&args[1..]).status() {
+            match std::process::Command::new(&core_path)
+                .args(&args[1..])
+                .status()
+            {
                 Ok(status) => std::process::exit(status.code().unwrap_or(1)),
                 Err(e) => {
                     eprintln!("nsh: failed to exec nsh-core: {}", e);

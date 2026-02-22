@@ -1,6 +1,6 @@
 const LOW_SIGNAL_COMMANDS: &[&str] = &[
-    "ls", "ll", "la", "cd", "pwd", "clear", "exit", "history",
-    "echo", "true", "false", ":", "test", "whoami", "date",
+    "ls", "ll", "la", "cd", "pwd", "clear", "exit", "history", "echo", "true", "false", ":",
+    "test", "whoami", "date",
 ];
 
 pub fn is_low_signal(command: &str) -> bool {
@@ -10,7 +10,12 @@ pub fn is_low_signal(command: &str) -> bool {
 }
 
 #[cfg(test)]
-pub fn is_rapid_repeat(command: &str, last_command: Option<&str>, last_timestamp: Option<i64>, now: i64) -> bool {
+pub fn is_rapid_repeat(
+    command: &str,
+    last_command: Option<&str>,
+    last_timestamp: Option<i64>,
+    now: i64,
+) -> bool {
     if let (Some(last_cmd), Some(last_ts)) = (last_command, last_timestamp) {
         if last_cmd == command && (now - last_ts) < 5 {
             return true;
@@ -82,7 +87,12 @@ mod tests {
 
     #[test]
     fn rapid_repeat_different_commands() {
-        assert!(!is_rapid_repeat("git status", Some("git push"), Some(100), 101));
+        assert!(!is_rapid_repeat(
+            "git status",
+            Some("git push"),
+            Some(100),
+            101
+        ));
     }
 
     #[test]

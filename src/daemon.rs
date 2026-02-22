@@ -571,8 +571,8 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                         let _ = db.update_summary(*id, &trivial);
                     }
                     // memory system removed: no package association persistence
-                // Conversation feedback loop: if this command matches
-                // a pending conversation suggestion, record the result
+                    // Conversation feedback loop: if this command matches
+                    // a pending conversation suggestion, record the result
                     if let Ok(Some((conv_id, suggested_cmd))) =
                         db.find_pending_conversation(&session)
                     {

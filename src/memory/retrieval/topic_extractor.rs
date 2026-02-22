@@ -1,10 +1,7 @@
 use crate::memory::llm_adapter::MemoryLlmClient;
 use crate::memory::types::{InteractionMode, MemoryQueryContext};
 
-pub async fn extract(
-    ctx: &MemoryQueryContext,
-    llm: Option<&dyn MemoryLlmClient>,
-) -> Vec<String> {
+pub async fn extract(ctx: &MemoryQueryContext, llm: Option<&dyn MemoryLlmClient>) -> Vec<String> {
     // Try fast path first (handles 60-70% of cases)
     let fast = extract_fast(ctx);
     if !fast.is_empty() {
@@ -78,13 +75,11 @@ async fn extract_with_llm(input: &str, llm: &dyn MemoryLlmClient) -> anyhow::Res
 
 pub fn extract_keywords_basic(input: &str) -> Vec<String> {
     const STOP_WORDS: &[&str] = &[
-        "the", "a", "an", "is", "was", "are", "were", "be", "been",
-        "have", "has", "had", "do", "does", "did", "will", "would",
-        "could", "should", "can", "to", "of", "in", "for", "on",
-        "with", "at", "by", "from", "as", "and", "but", "or",
-        "not", "no", "so", "if", "than", "that", "this", "it",
-        "how", "what", "when", "where", "why", "which", "who",
-        "i", "me", "my", "we", "you", "your", "he", "she", "they",
+        "the", "a", "an", "is", "was", "are", "were", "be", "been", "have", "has", "had", "do",
+        "does", "did", "will", "would", "could", "should", "can", "to", "of", "in", "for", "on",
+        "with", "at", "by", "from", "as", "and", "but", "or", "not", "no", "so", "if", "than",
+        "that", "this", "it", "how", "what", "when", "where", "why", "which", "who", "i", "me",
+        "my", "we", "you", "your", "he", "she", "they",
     ];
 
     input
@@ -120,9 +115,17 @@ pub fn extract_error_keywords(stderr: Option<&str>) -> Vec<String> {
 fn extract_temporal_expression(input: &str) -> Option<String> {
     let lower = input.to_lowercase();
     let temporal_terms = [
-        "yesterday", "today", "last week", "this week",
-        "this morning", "this afternoon", "last month",
-        "last hour", "recently", "earlier", "two days ago",
+        "yesterday",
+        "today",
+        "last week",
+        "this week",
+        "this morning",
+        "this afternoon",
+        "last month",
+        "last hour",
+        "recently",
+        "earlier",
+        "two days ago",
     ];
     for term in &temporal_terms {
         if lower.contains(term) {
@@ -182,10 +185,7 @@ mod tests {
             extract_temporal_expression("show me last week commands"),
             Some("last week".to_string())
         );
-        assert_eq!(
-            extract_temporal_expression("how to build rust"),
-            None
-        );
+        assert_eq!(extract_temporal_expression("how to build rust"), None);
     }
 
     #[test]
@@ -197,14 +197,20 @@ mod tests {
     #[test]
     fn extract_error_keywords_no_error_lines() {
         let kw = extract_error_keywords(Some("all good\nno problems\neverything fine"));
-        assert!(kw.is_empty(), "should only extract from error-containing lines");
+        assert!(
+            kw.is_empty(),
+            "should only extract from error-containing lines"
+        );
     }
 
     #[test]
     fn extract_error_keywords_not_found() {
         let kw = extract_error_keywords(Some("command not found: foobar"));
         assert!(!kw.is_empty());
-        assert!(kw.iter().any(|k| k.contains("foobar") || k.contains("found")));
+        assert!(
+            kw.iter()
+                .any(|k| k.contains("foobar") || k.contains("found"))
+        );
     }
 
     #[test]
@@ -236,12 +242,23 @@ mod tests {
     #[test]
     fn extract_temporal_expression_all_terms() {
         let terms = [
-            "yesterday", "today", "last week", "this week",
-            "this morning", "this afternoon", "last month",
-            "last hour", "recently", "earlier", "two days ago",
+            "yesterday",
+            "today",
+            "last week",
+            "this week",
+            "this morning",
+            "this afternoon",
+            "last month",
+            "last hour",
+            "recently",
+            "earlier",
+            "two days ago",
         ];
         for term in &terms {
-            assert!(extract_temporal_expression(term).is_some(), "should detect: {term}");
+            assert!(
+                extract_temporal_expression(term).is_some(),
+                "should detect: {term}"
+            );
         }
     }
 }

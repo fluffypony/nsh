@@ -13,7 +13,11 @@ pub fn execute_search_memory(
     query: &str,
     limit: usize,
 ) -> Result<String, String> {
-    let mt = if memory_type == "all" { None } else { Some(memory_type) };
+    let mt = if memory_type == "all" {
+        None
+    } else {
+        Some(memory_type)
+    };
     db.memory_search(query, mt, limit)
         .map_err(|e| format!("Memory search error: {e}"))
 }
@@ -52,10 +56,7 @@ pub fn execute_store_memory(
 }
 
 /// Execute a retrieve_secret tool call.
-pub fn execute_retrieve_secret(
-    db: &dyn DbAccess,
-    caption_query: &str,
-) -> Result<String, String> {
+pub fn execute_retrieve_secret(db: &dyn DbAccess, caption_query: &str) -> Result<String, String> {
     db.memory_retrieve_secret(caption_query)
         .map_err(|e| format!("Secret retrieval error: {e}"))
 }

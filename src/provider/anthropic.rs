@@ -230,7 +230,10 @@ impl LlmProvider for AnthropicProvider {
                                     name: block["name"].as_str().unwrap_or("").to_string(),
                                 })
                                 .await;
-                        } else if matches!(block["type"].as_str(), Some("server_tool_use") | Some("web_search_tool_result")) {
+                        } else if matches!(
+                            block["type"].as_str(),
+                            Some("server_tool_use") | Some("web_search_tool_result")
+                        ) {
                             // server_tool_use and web_search_tool_result are handled by Anthropic internally
                             in_server_tool_use = true;
                         }

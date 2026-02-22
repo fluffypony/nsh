@@ -1,6 +1,6 @@
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 #[cfg(test)]
 use chrono::Timelike;
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 
 pub fn parse_temporal_expression(
     expr: &str,
@@ -18,10 +18,24 @@ pub fn parse_temporal_expression(
     if lower.contains("yesterday") {
         let yesterday = now - Duration::days(1);
         let start = Utc
-            .with_ymd_and_hms(yesterday.year(), yesterday.month(), yesterday.day(), 0, 0, 0)
+            .with_ymd_and_hms(
+                yesterday.year(),
+                yesterday.month(),
+                yesterday.day(),
+                0,
+                0,
+                0,
+            )
             .single()?;
         let end = Utc
-            .with_ymd_and_hms(yesterday.year(), yesterday.month(), yesterday.day(), 23, 59, 59)
+            .with_ymd_and_hms(
+                yesterday.year(),
+                yesterday.month(),
+                yesterday.day(),
+                23,
+                59,
+                59,
+            )
             .single()?;
         return Some((start, end));
     }
@@ -41,7 +55,14 @@ pub fn parse_temporal_expression(
         let last_monday = this_monday - Duration::days(7);
         let last_sunday = this_monday - Duration::days(1);
         let start = Utc
-            .with_ymd_and_hms(last_monday.year(), last_monday.month(), last_monday.day(), 0, 0, 0)
+            .with_ymd_and_hms(
+                last_monday.year(),
+                last_monday.month(),
+                last_monday.day(),
+                0,
+                0,
+                0,
+            )
             .single()?;
         let end = Utc
             .with_ymd_and_hms(

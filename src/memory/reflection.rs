@@ -21,7 +21,16 @@ pub fn build_reflection_prompt(
         } else {
             0
         };
-        prompt.push_str(&format!("- {} ({}% full): {}\n", block.label,  pct, if block.value.is_empty() { "(empty)" } else { &block.value }));
+        prompt.push_str(&format!(
+            "- {} ({}% full): {}\n",
+            block.label,
+            pct,
+            if block.value.is_empty() {
+                "(empty)"
+            } else {
+                &block.value
+            }
+        ));
     }
 
     if !semantic.is_empty() {
@@ -194,9 +203,13 @@ mod tests {
                      VALUES ('ep_{i}', 'command_execution', 'user', 'event {i}', 'test')"
                 ),
                 [],
-            ).unwrap();
+            )
+            .unwrap();
         }
-        assert!(should_run_reflection(&conn, 50), "should run when threshold reached");
+        assert!(
+            should_run_reflection(&conn, 50),
+            "should run when threshold reached"
+        );
     }
 
     #[test]
@@ -210,14 +223,18 @@ mod tests {
                      VALUES ('ep_{i}', 'command_execution', 'user', 'event {i}', 'test')"
                 ),
                 [],
-            ).unwrap();
+            )
+            .unwrap();
         }
         // Mark reflection as recently run
         conn.execute(
             "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_reflection_at', datetime('now'))",
             [],
         ).unwrap();
-        assert!(!should_run_reflection(&conn, 50), "should not run under threshold with recent reflection");
+        assert!(
+            !should_run_reflection(&conn, 50),
+            "should not run under threshold with recent reflection"
+        );
     }
 
     #[test]
@@ -228,13 +245,17 @@ mod tests {
             "INSERT INTO episodic_memory (id, event_type, actor, summary, search_keywords)
              VALUES ('ep_1', 'command_execution', 'user', 'event', 'test')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // Mark reflection as long ago
         conn.execute(
             "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_reflection_at', datetime('now', '-48 hours'))",
             [],
         ).unwrap();
-        assert!(should_run_reflection(&conn, 50), "should run when overdue and has events");
+        assert!(
+            should_run_reflection(&conn, 50),
+            "should run when overdue and has events"
+        );
     }
 
     #[test]
@@ -261,8 +282,13 @@ mod tests {
         let resp = r#"[{"op": "SemanticInsert", "name": "fact", "category": "general", "summary": "Uses Docker for development workflow", "search_keywords": ""}]"#;
         let ops = parse_reflection_response(resp);
         match &ops[0] {
-            MemoryOp::SemanticInsert { search_keywords, .. } => {
-                assert!(!search_keywords.is_empty(), "should fill in fallback keywords");
+            MemoryOp::SemanticInsert {
+                search_keywords, ..
+            } => {
+                assert!(
+                    !search_keywords.is_empty(),
+                    "should fill in fallback keywords"
+                );
             }
             _ => panic!("expected SemanticInsert"),
         }

@@ -61,14 +61,22 @@ pub trait DbAccess {
         pending: bool,
     ) -> anyhow::Result<i64>;
     fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()>;
-    
+
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>>;
     fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
 
     // ── Memory system ──────────────────────────────────
-    fn memory_retrieve_prompt(&self, ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String>;
-    fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String>;
+    fn memory_retrieve_prompt(
+        &self,
+        ctx: &crate::memory::types::MemoryQueryContext,
+    ) -> anyhow::Result<String>;
+    fn memory_search(
+        &self,
+        query: &str,
+        memory_type: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<String>;
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String>;
@@ -191,52 +199,79 @@ impl DbAccess for Db {
         Ok(self.mark_summary_error(id, error)?)
     }
 
-    fn memory_retrieve_prompt(&self, _ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String> {
+    fn memory_retrieve_prompt(
+        &self,
+        _ctx: &crate::memory::types::MemoryQueryContext,
+    ) -> anyhow::Result<String> {
         // Direct DbAccess is used only in limited contexts; return empty prompt here.
         Ok(String::new())
     }
 
-    fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {
+    fn memory_search(
+        &self,
+        query: &str,
+        memory_type: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<String> {
         let mut results = serde_json::Map::new();
         let should_search = |mt: &str| memory_type.is_none() || memory_type == Some(mt);
 
         // Parse temporal expressions to constrain episodic search by time range
-        let temporal_range = crate::memory::temporal::parse_temporal_expression(
-            query,
-            chrono::Utc::now(),
-        );
+        let temporal_range =
+            crate::memory::temporal::parse_temporal_expression(query, chrono::Utc::now());
         // Use space separator to match SQLite's datetime() format: "YYYY-MM-DD HH:MM:SS"
-        let since_str = temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
+        let since_str =
+            temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
         let since_ref = since_str.as_deref();
 
         if should_search("episodic") {
             match self.search_episodic_fts_since(query, limit, None, since_ref) {
-                Ok(items) => { results.insert("episodic".into(), serde_json::to_value(&items)?); }
-                Err(e) => { tracing::debug!("memory_search episodic failed: {e}"); }
+                Ok(items) => {
+                    results.insert("episodic".into(), serde_json::to_value(&items)?);
+                }
+                Err(e) => {
+                    tracing::debug!("memory_search episodic failed: {e}");
+                }
             }
         }
         if should_search("semantic") {
             match self.search_semantic_fts(query, limit) {
-                Ok(items) => { results.insert("semantic".into(), serde_json::to_value(&items)?); }
-                Err(e) => { tracing::debug!("memory_search semantic failed: {e}"); }
+                Ok(items) => {
+                    results.insert("semantic".into(), serde_json::to_value(&items)?);
+                }
+                Err(e) => {
+                    tracing::debug!("memory_search semantic failed: {e}");
+                }
             }
         }
         if should_search("procedural") {
             match self.search_procedural_fts(query, limit) {
-                Ok(items) => { results.insert("procedural".into(), serde_json::to_value(&items)?); }
-                Err(e) => { tracing::debug!("memory_search procedural failed: {e}"); }
+                Ok(items) => {
+                    results.insert("procedural".into(), serde_json::to_value(&items)?);
+                }
+                Err(e) => {
+                    tracing::debug!("memory_search procedural failed: {e}");
+                }
             }
         }
         if should_search("resource") {
             match self.search_resource_fts(query, limit) {
-                Ok(items) => { results.insert("resource".into(), serde_json::to_value(&items)?); }
-                Err(e) => { tracing::debug!("memory_search resource failed: {e}"); }
+                Ok(items) => {
+                    results.insert("resource".into(), serde_json::to_value(&items)?);
+                }
+                Err(e) => {
+                    tracing::debug!("memory_search resource failed: {e}");
+                }
             }
         }
         if should_search("knowledge") {
             match self.search_knowledge_fts(query, limit, &["low", "medium"]) {
-                Ok(items) => { results.insert("knowledge".into(), serde_json::to_value(&items)?); }
-                Err(e) => { tracing::debug!("memory_search knowledge failed: {e}"); }
+                Ok(items) => {
+                    results.insert("knowledge".into(), serde_json::to_value(&items)?);
+                }
+                Err(e) => {
+                    tracing::debug!("memory_search knowledge failed: {e}");
+                }
             }
         }
         Ok(serde_json::to_string(&results)?)
@@ -463,8 +498,6 @@ impl DbAccess for DaemonDb {
             .collect())
     }
 
-    
-
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>> {
         let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistory {
             query: query.to_string(),
@@ -668,8 +701,6 @@ impl DbAccess for DaemonDb {
             .collect())
     }
 
-    
-
     fn insert_conversation(
         &self,
         session_id: &str,
@@ -698,12 +729,6 @@ impl DbAccess for DaemonDb {
         })?;
         Ok(())
     }
-
-    
-
-    
-
-    
 
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>> {
         let data =
@@ -751,14 +776,26 @@ impl DbAccess for DaemonDb {
         Ok(())
     }
 
-    fn memory_retrieve_prompt(&self, ctx: &crate::memory::types::MemoryQueryContext) -> anyhow::Result<String> {
+    fn memory_retrieve_prompt(
+        &self,
+        ctx: &crate::memory::types::MemoryQueryContext,
+    ) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieve {
             context_json: serde_json::to_string(ctx)?,
         })?);
-        Ok(data.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        Ok(data
+            .get("prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
 
-    fn memory_search(&self, query: &str, memory_type: Option<&str>, limit: usize) -> anyhow::Result<String> {
+    fn memory_search(
+        &self,
+        query: &str,
+        memory_type: Option<&str>,
+        limit: usize,
+    ) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemorySearch {
             query: query.to_string(),
             memory_type: memory_type.map(String::from),
@@ -766,7 +803,6 @@ impl DbAccess for DaemonDb {
         })?);
         Ok(serde_json::to_string(&data)?)
     }
-
 
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
         self.request(DaemonRequest::MemoryCoreAppend {
@@ -789,9 +825,12 @@ impl DbAccess for DaemonDb {
             memory_type: memory_type.to_string(),
             data_json: data_json.to_string(),
         })?);
-        Ok(data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string())
+        Ok(data
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
     }
-
 
     fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieveSecret {
@@ -799,7 +838,6 @@ impl DbAccess for DaemonDb {
         })?);
         Ok(serde_json::to_string(&data)?)
     }
-
 
     // memory_record_event removed from trait
 }
@@ -862,7 +900,10 @@ mod tests {
     fn spawn_mock_global_daemon(
         home_path: &Path,
         response: DaemonResponse,
-    ) -> (std::sync::mpsc::Receiver<serde_json::Value>, std::thread::JoinHandle<()>) {
+    ) -> (
+        std::sync::mpsc::Receiver<serde_json::Value>,
+        std::thread::JoinHandle<()>,
+    ) {
         let nsh_dir = home_path.join(".nsh");
         std::fs::create_dir_all(&nsh_dir).expect("create ~/.nsh");
         let socket_path = nsh_dir.join("nshd.sock");
@@ -1003,7 +1044,9 @@ mod tests {
 
         let db = DaemonDb::new();
         // simulate an error via a read-only request
-        let err = db.search_history("foo", 1).expect_err("should propagate error");
+        let err = db
+            .search_history("foo", 1)
+            .expect_err("should propagate error");
         assert!(err.to_string().contains("database temporarily unavailable"));
         handle.join().expect("join daemon thread");
     }
@@ -1062,7 +1105,6 @@ mod tests {
         handle.join().expect("join daemon thread");
     }
 
-    
     #[test]
     #[serial]
     fn memory_retrieve_prompt_sends_context_and_maps_prompt() {
@@ -1082,7 +1124,9 @@ mod tests {
             interaction_mode: crate::memory::types::InteractionMode::NaturalLanguage,
             error_context: None,
         };
-        let prompt = db.memory_retrieve_prompt(&ctx).expect("memory_retrieve_prompt should succeed");
+        let prompt = db
+            .memory_retrieve_prompt(&ctx)
+            .expect("memory_retrieve_prompt should succeed");
         assert!(prompt.contains("<core_memory>"));
 
         let request = request_rx.recv().expect("captured request");
@@ -1105,7 +1149,9 @@ mod tests {
         );
 
         let db = DaemonDb::new();
-        let json = db.memory_search("cargo", None, 5).expect("memory_search should succeed");
+        let json = db
+            .memory_search("cargo", None, 5)
+            .expect("memory_search should succeed");
         assert!(json.contains("results"));
         assert!(json.contains("sem_1234"));
 

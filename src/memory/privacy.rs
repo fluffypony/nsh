@@ -71,8 +71,11 @@ pub fn should_skip_output(output: &str) -> bool {
 pub fn is_password_prompt(text: &str) -> bool {
     let lower = text.to_lowercase();
     let prompts = [
-        "password:", "passphrase:", "enter pin:",
-        "password for", "authentication required",
+        "password:",
+        "passphrase:",
+        "enter pin:",
+        "password for",
+        "authentication required",
     ];
     prompts.iter().any(|p| lower.contains(p))
 }
@@ -122,10 +125,7 @@ mod tests {
 
     #[test]
     fn is_ignored_with_multiple_patterns() {
-        let patterns = vec![
-            "/home/user/secret/**".to_string(),
-            "*.key".to_string(),
-        ];
+        let patterns = vec!["/home/user/secret/**".to_string(), "*.key".to_string()];
         assert!(is_ignored_path("/home/user/secret/file.txt", &patterns));
         assert!(is_ignored_path("vault.key", &patterns));
         assert!(!is_ignored_path("/home/user/project/main.rs", &patterns));

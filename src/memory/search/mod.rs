@@ -1,7 +1,7 @@
 pub mod fts;
 
-use rusqlite::Connection;
 use crate::memory::types::{MemoryType, SearchResult, Sensitivity};
+use rusqlite::Connection;
 
 pub fn search_all(
     conn: &Connection,
@@ -10,7 +10,9 @@ pub fn search_all(
 ) -> anyhow::Result<Vec<SearchResult>> {
     let mut results = Vec::new();
 
-    if let Ok(episodic) = crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None, None) {
+    if let Ok(episodic) =
+        crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None, None)
+    {
         for e in episodic {
             results.push(SearchResult {
                 memory_type: MemoryType::Episodic,
@@ -32,7 +34,9 @@ pub fn search_all(
         }
     }
 
-    if let Ok(procedural) = crate::memory::store::procedural::search_bm25(conn, query, limit_per_type) {
+    if let Ok(procedural) =
+        crate::memory::store::procedural::search_bm25(conn, query, limit_per_type)
+    {
         for p in procedural {
             results.push(SearchResult {
                 memory_type: MemoryType::Procedural,
@@ -54,7 +58,12 @@ pub fn search_all(
         }
     }
 
-    if let Ok(knowledge) = crate::memory::store::knowledge::search_bm25(conn, query, limit_per_type, Sensitivity::Medium) {
+    if let Ok(knowledge) = crate::memory::store::knowledge::search_bm25(
+        conn,
+        query,
+        limit_per_type,
+        Sensitivity::Medium,
+    ) {
         for k in knowledge {
             results.push(SearchResult {
                 memory_type: MemoryType::Knowledge,
@@ -118,7 +127,10 @@ mod tests {
         .unwrap();
 
         let results = search_all(&conn, "cargo build", 10).unwrap();
-        assert!(results.len() >= 2, "should find results across episodic and semantic");
+        assert!(
+            results.len() >= 2,
+            "should find results across episodic and semantic"
+        );
 
         let types: Vec<MemoryType> = results.iter().map(|r| r.memory_type).collect();
         assert!(types.contains(&MemoryType::Episodic));
@@ -143,7 +155,10 @@ mod tests {
 
         let results = search_all(&conn, "rust programming", 2).unwrap();
         // limit_per_type=2 means at most 2 per memory type
-        let semantic_count = results.iter().filter(|r| r.memory_type == MemoryType::Semantic).count();
+        let semantic_count = results
+            .iter()
+            .filter(|r| r.memory_type == MemoryType::Semantic)
+            .count();
         assert!(semantic_count <= 2, "should respect limit per type");
     }
 
@@ -170,7 +185,9 @@ mod tests {
 
         let results = search_all(&conn, "github token", 10).unwrap();
         assert!(!results.is_empty());
-        let k = results.iter().find(|r| r.memory_type == MemoryType::Knowledge);
+        let k = results
+            .iter()
+            .find(|r| r.memory_type == MemoryType::Knowledge);
         assert!(k.is_some(), "should find knowledge entries");
         // Secret value should NOT be in summary
         assert!(!k.unwrap().summary.contains("ghp_test123"));
@@ -191,7 +208,9 @@ mod tests {
         .unwrap();
 
         let results = search_all(&conn, "deploy production", 10).unwrap();
-        let p = results.iter().find(|r| r.memory_type == MemoryType::Procedural);
+        let p = results
+            .iter()
+            .find(|r| r.memory_type == MemoryType::Procedural);
         assert!(p.is_some(), "should find procedural entries");
     }
 
@@ -212,7 +231,9 @@ mod tests {
         .unwrap();
 
         let results = search_all(&conn, "git config", 10).unwrap();
-        let r = results.iter().find(|r| r.memory_type == MemoryType::Resource);
+        let r = results
+            .iter()
+            .find(|r| r.memory_type == MemoryType::Resource);
         assert!(r.is_some(), "should find resource entries");
     }
 }

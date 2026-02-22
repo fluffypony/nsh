@@ -272,7 +272,10 @@ fn test_memory_stats_cli_outputs_telemetry_keys() {
         && stdout.contains("\"decay_runs\"")
         && stdout.contains("\"reflection_runs\"")
         || stderr.contains("nsh is still starting up");
-    assert!(ok, "expected telemetry keys or startup notice; stdout: {stdout}, stderr: {stderr}");
+    assert!(
+        ok,
+        "expected telemetry keys or startup notice; stdout: {stdout}, stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -280,7 +283,10 @@ fn test_memory_telemetry_cli_outputs_only_telem_keys() {
     let home = test_home();
     let output = run_nsh(home.path(), &["memory", "telemetry"]);
 
-    assert!(output.status.success(), "nsh memory telemetry should succeed");
+    assert!(
+        output.status.success(),
+        "nsh memory telemetry should succeed"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let ok = (stdout.contains("\"decay_runs\"")
@@ -288,7 +294,10 @@ fn test_memory_telemetry_cli_outputs_only_telem_keys() {
         && stdout.contains("\"reflection_runs\"")
         && stdout.contains("\"last_reflection_at\""))
         || stderr.contains("nsh is still starting up");
-    assert!(ok, "expected telemetry JSON or startup notice; stdout: {stdout}, stderr: {stderr}");
+    assert!(
+        ok,
+        "expected telemetry JSON or startup notice; stdout: {stdout}, stderr: {stderr}"
+    );
 }
 
 #[test]

@@ -159,19 +159,23 @@ pub async fn run_coding_agent(
     let boundary = crate::security::generate_boundary();
     let instructions = crate::context::gather_custom_instructions(config, &working_dir_str)
         .unwrap_or_else(|| "(none)".into());
-    let memory_prompt = if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
-        let db = crate::daemon_db::DaemonDb::new();
-        let search_text = crate::util::truncate(task, 200);
-        match db.memory_search(&search_text, None, config.memory.max_retrieval_per_type) {
-            Ok(results) if !results.is_empty() && results != "{}" => {
-                let redacted = crate::redact::redact_secrets(&results, &config.redaction);
-                format!("<memory_search_results>\n{}\n</memory_search_results>", crate::context::xml_escape(&redacted))
+    let memory_prompt =
+        if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
+            let db = crate::daemon_db::DaemonDb::new();
+            let search_text = crate::util::truncate(task, 200);
+            match db.memory_search(&search_text, None, config.memory.max_retrieval_per_type) {
+                Ok(results) if !results.is_empty() && results != "{}" => {
+                    let redacted = crate::redact::redact_secrets(&results, &config.redaction);
+                    format!(
+                        "<memory_search_results>\n{}\n</memory_search_results>",
+                        crate::context::xml_escape(&redacted)
+                    )
+                }
+                _ => String::new(),
             }
-            _ => String::new(),
-        }
-    } else {
-        String::new()
-    };
+        } else {
+            String::new()
+        };
     let system = build_coding_system_prompt(
         &working_dir_str,
         project_context_xml,
@@ -655,9 +659,7 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
         || lower.starts_with("pytest")
         || lower.starts_with("jest")
         || (lower.contains(" test")
-            && (lower.starts_with("npm")
-                || lower.starts_with("pnpm")
-                || lower.starts_with("yarn")))
+            && (lower.starts_with("npm") || lower.starts_with("pnpm") || lower.starts_with("yarn")))
     {
         120 + file_count / 5
     } else if lower.starts_with("ruff")

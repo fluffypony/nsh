@@ -20,10 +20,10 @@ pub mod history_import;
 pub mod init;
 pub mod json_display;
 pub mod json_extract;
+pub mod live_update;
 #[allow(dead_code)]
 pub mod mcp;
 pub mod memory;
-pub mod live_update;
 pub mod provider;
 #[cfg(unix)]
 pub mod pty;
@@ -44,13 +44,13 @@ pub mod util;
 
 pub mod shim;
 
+use crate::daemon_db::DbAccess;
 use clap::Parser;
 use cli::{
     Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
     MemoryAction, ProviderAction, SessionAction,
 };
 use sha2::{Digest, Sha256};
-use crate::daemon_db::DbAccess;
 
 fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
     if daemon_client::is_global_daemon_running() {
@@ -776,7 +776,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 return Ok(());
             }
             match action {
-                MemoryAction::Search { query, r#type, limit } => {
+                MemoryAction::Search {
+                    query,
+                    r#type,
+                    limit,
+                } => {
                     let request = daemon::DaemonRequest::MemorySearch {
                         query,
                         memory_type: r#type,
@@ -826,14 +830,26 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
                 MemoryAction::Clear { r#type } => {
                     if let Some(ref memory_type) = r#type {
-                        let valid = ["episodic", "semantic", "procedural", "resource", "knowledge", "core"];
+                        let valid = [
+                            "episodic",
+                            "semantic",
+                            "procedural",
+                            "resource",
+                            "knowledge",
+                            "core",
+                        ];
                         if !valid.contains(&memory_type.as_str()) {
-                            eprintln!("Unknown memory type '{}'. Valid types: {}", memory_type, valid.join(", "));
+                            eprintln!(
+                                "Unknown memory type '{}'. Valid types: {}",
+                                memory_type,
+                                valid.join(", ")
+                            );
                             return Ok(());
                         }
-                        let _ = send_to_global_or_fallback(
-                            &daemon::DaemonRequest::MemoryClearByType { memory_type: memory_type.clone() }
-                        );
+                        let _ =
+                            send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearByType {
+                                memory_type: memory_type.clone(),
+                            });
                         eprintln!("{memory_type} memories cleared.");
                     } else {
                         let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearAll);
@@ -934,44 +950,42 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         eprintln!("nsh: daemon error: {message}");
                     }
                 }
-                None => {
-                    match action {
-                        DaemonSendAction::Record {
+                None => match action {
+                    DaemonSendAction::Record {
+                        session,
+                        command,
+                        cwd,
+                        exit_code,
+                        started_at,
+                        duration_ms,
+                        tty,
+                        pid,
+                        shell,
+                    } => {
+                        let global_request = daemon::DaemonRequest::Record {
                             session,
                             command,
                             cwd,
                             exit_code,
                             started_at,
-                            duration_ms,
                             tty,
                             pid,
                             shell,
-                        } => {
-                            let global_request = daemon::DaemonRequest::Record {
-                                session,
-                                command,
-                                cwd,
-                                exit_code,
-                                started_at,
-                                tty,
-                                pid,
-                                shell,
-                                duration_ms,
-                                output: None,
-                            };
-                            let _ = send_to_global_or_fallback(&global_request);
-                        }
-                        DaemonSendAction::Heartbeat { session } => {
-                            let _ = send_to_global_or_fallback(&daemon::DaemonRequest::Heartbeat {
-                                session,
-                            });
-                        }
-                        DaemonSendAction::CaptureMark { .. } => {}
-                        DaemonSendAction::Status => {
-                            eprintln!("nsh: daemon not running");
-                        }
+                            duration_ms,
+                            output: None,
+                        };
+                        let _ = send_to_global_or_fallback(&global_request);
                     }
-                }
+                    DaemonSendAction::Heartbeat { session } => {
+                        let _ = send_to_global_or_fallback(&daemon::DaemonRequest::Heartbeat {
+                            session,
+                        });
+                    }
+                    DaemonSendAction::CaptureMark { .. } => {}
+                    DaemonSendAction::Status => {
+                        eprintln!("nsh: daemon not running");
+                    }
+                },
             }
             check_daemon_versions(&session_id);
         }
@@ -1049,9 +1063,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 if !version_warning_shown {
                     let notice = config::Config::nsh_dir().join("update_notice");
                     if notice.exists() {
-                        eprintln!(
-                            "\x1b[2m⟳ nsh updated — exit and re-run for latest hooks\x1b[0m"
-                        );
+                        eprintln!("\x1b[2m⟳ nsh updated — exit and re-run for latest hooks\x1b[0m");
                         version_warning_shown = true;
                     }
                 }
@@ -1390,7 +1402,9 @@ fn apply_pending_update(_reexec: bool) {
         let notice_path = config::Config::nsh_dir().join("update_notice");
         let _ = std::fs::write(
             &notice_path,
-            format!("v{version} installed — queries active immediately, shell hooks refresh on next terminal"),
+            format!(
+                "v{version} installed — queries active immediately, shell hooks refresh on next terminal"
+            ),
         );
 
         // Signal daemon to restart to pick up new core

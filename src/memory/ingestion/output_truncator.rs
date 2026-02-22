@@ -6,11 +6,7 @@ pub fn truncate_output(output: &str, exit_code: Option<i32>, budget_chars: usize
     let lines: Vec<&str> = output.lines().collect();
     let is_error = exit_code.is_some_and(|c| c != 0);
 
-    let (head_count, tail_count) = if is_error {
-        (30, 20)
-    } else {
-        (20, 10)
-    };
+    let (head_count, tail_count) = if is_error { (30, 20) } else { (20, 10) };
 
     if lines.len() <= head_count + tail_count {
         return output.to_string();
@@ -23,10 +19,7 @@ pub fn truncate_output(output: &str, exit_code: Option<i32>, budget_chars: usize
     let important = extract_important_lines(omitted);
 
     let mut result = head.join("\n");
-    result.push_str(&format!(
-        "\n\n[... {} lines omitted ...]\n",
-        omitted.len()
-    ));
+    result.push_str(&format!("\n\n[... {} lines omitted ...]\n", omitted.len()));
 
     if !important.is_empty() {
         result.push_str("[Key lines from omitted section:]\n");
@@ -49,9 +42,18 @@ pub fn truncate_output(output: &str, exit_code: Option<i32>, budget_chars: usize
 
 fn extract_important_lines(lines: &[&str]) -> Vec<String> {
     let important_patterns = [
-        "error", "warning", "failed", "deprecated",
-        "built", "compiled", "installed", "created",
-        "fatal", "panic", "exception", "traceback",
+        "error",
+        "warning",
+        "failed",
+        "deprecated",
+        "built",
+        "compiled",
+        "installed",
+        "created",
+        "fatal",
+        "panic",
+        "exception",
+        "traceback",
     ];
 
     let mut result = Vec::new();
@@ -79,7 +81,9 @@ mod tests {
 
     #[test]
     fn truncates_long_output() {
-        let lines: Vec<String> = (0..200).map(|i| format!("line {i}: {}", "x".repeat(50))).collect();
+        let lines: Vec<String> = (0..200)
+            .map(|i| format!("line {i}: {}", "x".repeat(50)))
+            .collect();
         let output = lines.join("\n");
         let result = truncate_output(&output, Some(0), 2000);
         assert!(result.contains("lines omitted"));
@@ -88,7 +92,9 @@ mod tests {
 
     #[test]
     fn error_output_preserves_more_head() {
-        let lines: Vec<String> = (0..200).map(|i| format!("line {i}: {}", "x".repeat(50))).collect();
+        let lines: Vec<String> = (0..200)
+            .map(|i| format!("line {i}: {}", "x".repeat(50)))
+            .collect();
         let output = lines.join("\n");
         let result = truncate_output(&output, Some(1), 3000);
         assert!(result.contains("lines omitted"));
@@ -111,16 +117,17 @@ mod tests {
 
     #[test]
     fn important_lines_max_10() {
-        let lines: Vec<&str> = (0..20)
-            .map(|_| "error: something went wrong")
-            .collect();
+        let lines: Vec<&str> = (0..20).map(|_| "error: something went wrong").collect();
         let important = extract_important_lines(&lines);
         assert!(important.len() <= 10, "should cap at 10 important lines");
     }
 
     #[test]
     fn truncate_preserves_all_if_few_lines() {
-        let output = (0..25).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let output = (0..25)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let result = truncate_output(&output, Some(0), 100000);
         // 25 lines < head(20) + tail(10), so should not truncate
         assert!(!result.contains("omitted"));
@@ -128,7 +135,9 @@ mod tests {
 
     #[test]
     fn truncate_includes_error_lines() {
-        let mut lines: Vec<String> = (0..100).map(|i| format!("line {i}: normal output")).collect();
+        let mut lines: Vec<String> = (0..100)
+            .map(|i| format!("line {i}: normal output"))
+            .collect();
         lines[50] = "error: compilation failed".into();
         lines[60] = "warning: unused variable".into();
         let output = lines.join("\n");
@@ -138,10 +147,15 @@ mod tests {
 
     #[test]
     fn truncate_hard_budget() {
-        let lines: Vec<String> = (0..500).map(|i| format!("line {i}: {}", "x".repeat(100))).collect();
+        let lines: Vec<String> = (0..500)
+            .map(|i| format!("line {i}: {}", "x".repeat(100)))
+            .collect();
         let output = lines.join("\n");
         let result = truncate_output(&output, Some(0), 1000);
-        assert!(result.len() <= 1100, "should respect budget with small overhead");
+        assert!(
+            result.len() <= 1100,
+            "should respect budget with small overhead"
+        );
     }
 
     #[test]
@@ -159,6 +173,10 @@ mod tests {
             "built target release",
         ];
         let important = extract_important_lines(&lines);
-        assert_eq!(important.len(), 10, "all lines should be considered important");
+        assert_eq!(
+            important.len(),
+            10,
+            "all lines should be considered important"
+        );
     }
 }

@@ -284,8 +284,6 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             )?;
         }
 
-        
-
         if recheck < 5 {
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS command_entities (
@@ -941,7 +939,8 @@ impl Db {
         } else {
             "SELECT id, event_type, actor, summary, details, command, exit_code, \
              working_dir, project_context, search_keywords, occurred_at, is_consolidated \
-             FROM episodic_memory ORDER BY occurred_at DESC LIMIT ?1".to_string()
+             FROM episodic_memory ORDER BY occurred_at DESC LIMIT ?1"
+                .to_string()
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![limit as i64], Self::row_to_episodic)?;
@@ -1154,7 +1153,8 @@ impl Db {
         for s in allowed_sensitivity {
             all_params.push(Box::new(s.to_string()));
         }
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            all_params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             let sensitivity_str: String = row.get(4)?;
             Ok(crate::memory::types::KnowledgeEntry {
@@ -1190,11 +1190,21 @@ impl Db {
     }
 
     pub fn memory_stats(&self) -> rusqlite::Result<crate::memory::types::MemoryStats> {
-        let ep: i64 = self.conn.query_row("SELECT COUNT(*) FROM episodic_memory", [], |r| r.get(0))?;
-        let sem: i64 = self.conn.query_row("SELECT COUNT(*) FROM semantic_memory", [], |r| r.get(0))?;
-        let proc: i64 = self.conn.query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))?;
-        let res: i64 = self.conn.query_row("SELECT COUNT(*) FROM resource_memory", [], |r| r.get(0))?;
-        let kv: i64 = self.conn.query_row("SELECT COUNT(*) FROM knowledge_vault", [], |r| r.get(0))?;
+        let ep: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM episodic_memory", [], |r| r.get(0))?;
+        let sem: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM semantic_memory", [], |r| r.get(0))?;
+        let proc: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM procedural_memory", [], |r| r.get(0))?;
+        let res: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM resource_memory", [], |r| r.get(0))?;
+        let kv: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM knowledge_vault", [], |r| r.get(0))?;
         Ok(crate::memory::types::MemoryStats {
             core_count: 3,
             episodic_count: ep as usize,
@@ -1241,10 +1251,14 @@ impl Db {
             "procedural" => self.conn.execute_batch("DELETE FROM procedural_memory;")?,
             "resource" => self.conn.execute_batch("DELETE FROM resource_memory;")?,
             "knowledge" => self.conn.execute_batch("DELETE FROM knowledge_vault;")?,
-            "core" => self.conn.execute_batch("UPDATE core_memory SET value = '', updated_at = datetime('now');")?,
-            _ => return Err(rusqlite::Error::InvalidParameterName(
-                format!("unknown memory type: {memory_type}")
-            )),
+            "core" => self.conn.execute_batch(
+                "UPDATE core_memory SET value = '', updated_at = datetime('now');",
+            )?,
+            _ => {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "unknown memory type: {memory_type}"
+                )));
+            }
         }
         Ok(())
     }
@@ -1262,10 +1276,8 @@ impl Db {
                 "invalid memory table: {table}"
             )));
         }
-        self.conn.execute(
-            &format!("DELETE FROM {table} WHERE id = ?"),
-            params![id],
-        )?;
+        self.conn
+            .execute(&format!("DELETE FROM {table} WHERE id = ?"), params![id])?;
         Ok(())
     }
 
@@ -1274,8 +1286,7 @@ impl Db {
         _fade_days: u32,
         expire_days: u32,
     ) -> rusqlite::Result<crate::memory::types::DecayReport> {
-        let cutoff = chrono::Utc::now()
-            - chrono::Duration::days(expire_days as i64);
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(expire_days as i64);
         let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S").to_string();
 
         let ep_del = self.conn.execute(
@@ -1311,7 +1322,9 @@ impl Db {
         })
     }
 
-    fn row_to_episodic(row: &rusqlite::Row) -> rusqlite::Result<crate::memory::types::EpisodicEvent> {
+    fn row_to_episodic(
+        row: &rusqlite::Row,
+    ) -> rusqlite::Result<crate::memory::types::EpisodicEvent> {
         let event_type_str: String = row.get(1)?;
         let actor_str: String = row.get(2)?;
         let event_type = match event_type_str.as_str() {
@@ -1346,7 +1359,9 @@ impl Db {
         })
     }
 
-    fn row_to_resource(row: &rusqlite::Row) -> rusqlite::Result<crate::memory::types::ResourceItem> {
+    fn row_to_resource(
+        row: &rusqlite::Row,
+    ) -> rusqlite::Result<crate::memory::types::ResourceItem> {
         Ok(crate::memory::types::ResourceItem {
             id: row.get(0)?,
             resource_type: row.get(1)?,
@@ -2165,31 +2180,44 @@ impl Db {
 
         // Memory system check
         eprint!("  Memory tables... ");
-        let memory_count: i64 = self.conn.query_row(
-            "SELECT (SELECT COUNT(*) FROM episodic_memory) + \
+        let memory_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM episodic_memory) + \
                     (SELECT COUNT(*) FROM semantic_memory) + \
                     (SELECT COUNT(*) FROM procedural_memory) + \
                     (SELECT COUNT(*) FROM resource_memory) + \
                     (SELECT COUNT(*) FROM knowledge_vault)",
-            [], |row| row.get(0),
-        ).unwrap_or(0);
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
         eprintln!("{memory_count} total memory entries");
 
         eprint!("  Core memory... ");
-        let core_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM core_memory", [], |row| row.get(0)
-        ).unwrap_or(0);
+        let core_count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM core_memory", [], |row| row.get(0))
+            .unwrap_or(0);
         eprintln!("{core_count} blocks");
 
         eprint!("  Memory FTS5 integrity... ");
         let mut mem_fts_ok = true;
-        for table in ["episodic_memory_fts", "semantic_memory_fts", "procedural_memory_fts",
-                       "resource_memory_fts", "knowledge_vault_fts"] {
+        for table in [
+            "episodic_memory_fts",
+            "semantic_memory_fts",
+            "procedural_memory_fts",
+            "resource_memory_fts",
+            "knowledge_vault_fts",
+        ] {
             if let Err(e) = self.conn.execute(
-                &format!("INSERT INTO {table}({table}) VALUES('integrity-check')"), []
+                &format!("INSERT INTO {table}({table}) VALUES('integrity-check')"),
+                [],
             ) {
                 eprintln!("FAILED ({table}): {e}");
-                let _ = self.conn.execute_batch(&format!("INSERT INTO {table}({table}) VALUES('rebuild')"));
+                let _ = self
+                    .conn
+                    .execute_batch(&format!("INSERT INTO {table}({table}) VALUES('rebuild')"));
                 mem_fts_ok = false;
             }
         }
@@ -2351,7 +2379,9 @@ impl Db {
         s.push_str("\nMemory Health:\n");
         s.push_str(&format!("  Last decay: {last_decay_at} ({decay_status})\n"));
         s.push_str(&format!("  Decay runs: {decay_runs}\n"));
-        s.push_str(&format!("  Last reflection: {last_reflection_at} ({reflection_status})\n"));
+        s.push_str(&format!(
+            "  Last reflection: {last_reflection_at} ({reflection_status})\n"
+        ));
         s.push_str(&format!("  Reflection runs: {reflection_runs}\n"));
         s.push_str(&format!(
             "  Notes: episodic={}, semantic={}, procedural={}\n",
@@ -2449,8 +2479,6 @@ impl Db {
         self.conn.execute_batch(sql)
     }
 }
-
-
 
 // ── Data types ─────────────────────────────────────────────────────
 
@@ -3727,7 +3755,8 @@ mod tests {
         }
         db.set_memory_config("decay_runs", "2").unwrap();
         db.set_memory_config("reflection_runs", "0").unwrap();
-        db.set_memory_config("last_decay_at", "2026-02-20 10:00:00").unwrap();
+        db.set_memory_config("last_decay_at", "2026-02-20 10:00:00")
+            .unwrap();
         db.set_memory_config("last_reflection_at", "").unwrap();
 
         let report = db.build_memory_health_section();
@@ -6604,8 +6633,6 @@ mod tests {
 
     // memory-related tests removed
 
-    
-
     // #[test]
     // fn test_upsert_memory_case_insensitive_key() {}
 
@@ -6876,8 +6903,6 @@ mod tests {
 
     // #[test]
     // fn test_delete_memory_nonexistent() {}
-
-    
 
     #[test]
     fn test_command_count_after_prune() {
@@ -8171,26 +8196,6 @@ mod tests {
         assert_eq!(results[0].command, "npm run build");
     }
 
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
     #[test]
     fn test_session_labels() {
         let db = test_db();
@@ -8813,8 +8818,6 @@ mod tests {
             .unwrap();
         assert_eq!(count, 0);
     }
-
-    
 
     #[test]
     fn test_init_db_sets_pragmas() {
@@ -9649,15 +9652,9 @@ mod tests {
         assert!(results[0].command.contains("fts_target"));
     }
 
-    
-
-    
+    // #[test]
 
     // #[test]
-    
-
-    // #[test]
-    
 
     #[test]
     fn test_conversation_exchange_to_tool_result_chat_with_exit_code() {
@@ -10224,8 +10221,6 @@ mod tests {
         assert!(db.get_meta("last_prune_at").unwrap().is_some());
     }
 
-    
-
     #[test]
     fn test_update_command_triggers_fts_update() {
         let db = test_db();
@@ -10359,12 +10354,6 @@ mod tests {
             .unwrap();
         assert_eq!(db.command_count().unwrap(), 1);
     }
-
-    
-
-    
-
-    
 
     #[test]
     fn test_insert_usage_minimal_fields() {

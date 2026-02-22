@@ -179,10 +179,13 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
 }
 
 fn encrypt_secret(plaintext: &str) -> anyhow::Result<String> {
-    use aes_gcm::{Aes256Gcm, KeyInit, aead::{Aead, AeadCore, OsRng}};
+    use aes_gcm::{
+        Aes256Gcm, KeyInit,
+        aead::{Aead, AeadCore, OsRng},
+    };
     let key = get_or_create_key()?;
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_bytes())
@@ -201,8 +204,8 @@ fn decrypt_secret(hex_data: &str) -> anyhow::Result<String> {
         anyhow::bail!("encrypted data too short");
     }
     let (nonce_bytes, ciphertext) = data.split_at(12);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
     let nonce = Nonce::from_slice(nonce_bytes);
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
@@ -274,8 +277,24 @@ mod tests {
     #[serial]
     fn search_filters_by_sensitivity() {
         let conn = setup();
-        insert(&conn, "cred", "Low secret", "val", Sensitivity::Low, "low test").unwrap();
-        insert(&conn, "cred", "High secret", "val", Sensitivity::High, "high test").unwrap();
+        insert(
+            &conn,
+            "cred",
+            "Low secret",
+            "val",
+            Sensitivity::Low,
+            "low test",
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "cred",
+            "High secret",
+            "val",
+            Sensitivity::High,
+            "high test",
+        )
+        .unwrap();
 
         let low_only = search_bm25(&conn, "test", 10, Sensitivity::Low).unwrap();
         assert_eq!(low_only.len(), 1);
@@ -289,7 +308,15 @@ mod tests {
     #[serial]
     fn delete_removes_entries() {
         let conn = setup();
-        let id = insert(&conn, "cred", "test secret", "value", Sensitivity::Low, "test").unwrap();
+        let id = insert(
+            &conn,
+            "cred",
+            "test secret",
+            "value",
+            Sensitivity::Low,
+            "test",
+        )
+        .unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
         delete(&conn, &[id]).unwrap();
         assert_eq!(count(&conn).unwrap(), 0);
@@ -299,8 +326,24 @@ mod tests {
     #[serial]
     fn multiple_secrets_independent() {
         let conn = setup();
-        let id1 = insert(&conn, "api_key", "GitHub token", "ghp_abc123", Sensitivity::High, "github token").unwrap();
-        let id2 = insert(&conn, "password", "DB password", "supersecret", Sensitivity::Medium, "database password").unwrap();
+        let id1 = insert(
+            &conn,
+            "api_key",
+            "GitHub token",
+            "ghp_abc123",
+            Sensitivity::High,
+            "github token",
+        )
+        .unwrap();
+        let id2 = insert(
+            &conn,
+            "password",
+            "DB password",
+            "supersecret",
+            Sensitivity::Medium,
+            "database password",
+        )
+        .unwrap();
 
         assert_ne!(id1, id2);
         assert_eq!(count(&conn).unwrap(), 2);
@@ -388,9 +431,33 @@ mod tests {
     #[serial]
     fn sensitivity_low_only_excludes_medium_high() {
         let conn = setup();
-        insert(&conn, "cred", "Low item", "val", Sensitivity::Low, "shared keyword").unwrap();
-        insert(&conn, "cred", "Medium item", "val", Sensitivity::Medium, "shared keyword").unwrap();
-        insert(&conn, "cred", "High item", "val", Sensitivity::High, "shared keyword").unwrap();
+        insert(
+            &conn,
+            "cred",
+            "Low item",
+            "val",
+            Sensitivity::Low,
+            "shared keyword",
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "cred",
+            "Medium item",
+            "val",
+            Sensitivity::Medium,
+            "shared keyword",
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "cred",
+            "High item",
+            "val",
+            Sensitivity::High,
+            "shared keyword",
+        )
+        .unwrap();
 
         let results = search_bm25(&conn, "shared keyword", 10, Sensitivity::Low).unwrap();
         assert_eq!(results.len(), 1);
@@ -401,9 +468,33 @@ mod tests {
     #[serial]
     fn sensitivity_medium_includes_low_and_medium() {
         let conn = setup();
-        insert(&conn, "cred", "Low item", "val", Sensitivity::Low, "shared keyword").unwrap();
-        insert(&conn, "cred", "Medium item", "val", Sensitivity::Medium, "shared keyword").unwrap();
-        insert(&conn, "cred", "High item", "val", Sensitivity::High, "shared keyword").unwrap();
+        insert(
+            &conn,
+            "cred",
+            "Low item",
+            "val",
+            Sensitivity::Low,
+            "shared keyword",
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "cred",
+            "Medium item",
+            "val",
+            Sensitivity::Medium,
+            "shared keyword",
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "cred",
+            "High item",
+            "val",
+            Sensitivity::High,
+            "shared keyword",
+        )
+        .unwrap();
 
         let results = search_bm25(&conn, "shared keyword", 10, Sensitivity::Medium).unwrap();
         assert_eq!(results.len(), 2);

@@ -3,9 +3,8 @@ use rusqlite::{Connection, params};
 use crate::memory::types::{CoreBlock, CoreLabel};
 
 pub fn get_all(conn: &Connection) -> anyhow::Result<Vec<CoreBlock>> {
-    let mut stmt = conn.prepare(
-        "SELECT label, value, char_limit, updated_at FROM core_memory ORDER BY label",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT label, value, char_limit, updated_at FROM core_memory ORDER BY label")?;
     let rows = stmt.query_map([], |row| {
         let label_str: String = row.get(0)?;
         Ok(CoreBlock {

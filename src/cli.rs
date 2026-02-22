@@ -361,15 +361,9 @@ mod tests {
 
     #[test]
     fn parses_export_with_format_and_session() {
-        let cli = Cli::try_parse_from([
-            "nsh",
-            "export",
-            "--format",
-            "json",
-            "--session",
-            "sess-123",
-        ])
-        .expect("export should parse");
+        let cli =
+            Cli::try_parse_from(["nsh", "export", "--format", "json", "--session", "sess-123"])
+                .expect("export should parse");
 
         match cli.command {
             Commands::Export { format, session } => {

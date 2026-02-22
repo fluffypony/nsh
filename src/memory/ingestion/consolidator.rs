@@ -14,9 +14,7 @@ pub fn find_merge_candidate(
 
     let neg = format!("-{time_window_secs}");
     let rows: Vec<(String, String)> = stmt
-        .query_map(params![neg], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?
+        .query_map(params![neg], |row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -57,7 +55,8 @@ mod tests {
             [],
         ).unwrap();
 
-        let result = find_merge_candidate(&conn, "Ran cargo build successfully with output", 30).unwrap();
+        let result =
+            find_merge_candidate(&conn, "Ran cargo build successfully with output", 30).unwrap();
         assert_eq!(result, Some("ep_TEST".to_string()));
     }
 
@@ -84,7 +83,11 @@ mod tests {
         ).unwrap();
 
         let result = find_merge_candidate(&conn, "Ran cargo build", 30).unwrap();
-        assert_eq!(result, Some("ep_EXACT".to_string()), "exact match should be found");
+        assert_eq!(
+            result,
+            Some("ep_EXACT".to_string()),
+            "exact match should be found"
+        );
     }
 
     #[test]
@@ -98,7 +101,8 @@ mod tests {
         ).unwrap();
 
         // Very different string should not match (Jaro-Winkler < 0.85)
-        let result = find_merge_candidate(&conn, "Deployed Docker container to production", 30).unwrap();
+        let result =
+            find_merge_candidate(&conn, "Deployed Docker container to production", 30).unwrap();
         assert!(result.is_none(), "dissimilar strings should not match");
     }
 
@@ -114,7 +118,10 @@ mod tests {
 
         // With a 30-second window, the 60-second-old event should not be found
         let result = find_merge_candidate(&conn, "Ran cargo build", 30).unwrap();
-        assert!(result.is_none(), "events outside time window should not match");
+        assert!(
+            result.is_none(),
+            "events outside time window should not match"
+        );
     }
 
     #[test]
@@ -133,8 +140,13 @@ mod tests {
         ).unwrap();
 
         // The query is sorted DESC by occurred_at, so most recent should be checked first
-        let result = find_merge_candidate(&conn, "Ran cargo build successfully with output", 30).unwrap();
-        assert_eq!(result, Some("ep_NEWER".to_string()), "should pick most recent match");
+        let result =
+            find_merge_candidate(&conn, "Ran cargo build successfully with output", 30).unwrap();
+        assert_eq!(
+            result,
+            Some("ep_NEWER".to_string()),
+            "should pick most recent match"
+        );
     }
 
     #[test]
@@ -146,7 +158,12 @@ mod tests {
             [],
         ).unwrap();
 
-        let result = find_merge_candidate(&conn, "Ran `cargo build` with --release flag successfully", 30).unwrap();
+        let result = find_merge_candidate(
+            &conn,
+            "Ran `cargo build` with --release flag successfully",
+            30,
+        )
+        .unwrap();
         assert_eq!(result, Some("ep_SPEC".to_string()));
     }
 
@@ -188,6 +205,9 @@ mod tests {
 
         // Slight variation should still match (Jaro-Winkler > 0.85)
         let result = find_merge_candidate(&conn, "Ran cargo build (exit 1)", 30).unwrap();
-        assert!(result.is_some(), "slight variations should still match with Jaro-Winkler > 0.85");
+        assert!(
+            result.is_some(),
+            "slight variations should still match with Jaro-Winkler > 0.85"
+        );
     }
 }

@@ -6,7 +6,9 @@ pub fn generate_id(prefix: &str) -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
-    let suffix: String = (0..8).map(|_| chars[rng.gen_range(0..chars.len())]).collect();
+    let suffix: String = (0..8)
+        .map(|_| chars[rng.gen_range(0..chars.len())])
+        .collect();
     format!("{prefix}_{suffix}")
 }
 
@@ -389,22 +391,83 @@ impl RoutingDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op")]
 pub enum MemoryOp {
-    CoreAppend { label: String, content: String },
-    CoreRewrite { label: String, content: String },
-    EpisodicInsert { event: EpisodicEventCreate },
-    EpisodicMerge { target_id: String, combined_summary: String, additional_details: Option<String>, search_keywords: String },
-    EpisodicDelete { ids: Vec<String> },
-    SemanticInsert { name: String, category: String, summary: String, details: Option<String>, search_keywords: String },
-    SemanticUpdate { id: String, summary: String, details: Option<String>, search_keywords: String },
-    SemanticDelete { ids: Vec<String> },
-    ProceduralInsert { entry_type: String, trigger_pattern: String, summary: String, steps: String, search_keywords: String },
-    ProceduralUpdate { id: String, summary: String, steps: String, search_keywords: String },
-    ProceduralDelete { ids: Vec<String> },
-    ResourceInsert { resource_type: String, file_path: Option<String>, file_hash: Option<String>, title: String, summary: String, content: Option<String>, search_keywords: String },
-    ResourceDelete { ids: Vec<String> },
-    KnowledgeInsert { entry_type: String, caption: String, secret_value: String, sensitivity: String, search_keywords: String },
-    KnowledgeDelete { ids: Vec<String> },
-    NoOp { reason: String },
+    CoreAppend {
+        label: String,
+        content: String,
+    },
+    CoreRewrite {
+        label: String,
+        content: String,
+    },
+    EpisodicInsert {
+        event: EpisodicEventCreate,
+    },
+    EpisodicMerge {
+        target_id: String,
+        combined_summary: String,
+        additional_details: Option<String>,
+        search_keywords: String,
+    },
+    EpisodicDelete {
+        ids: Vec<String>,
+    },
+    SemanticInsert {
+        name: String,
+        category: String,
+        summary: String,
+        details: Option<String>,
+        search_keywords: String,
+    },
+    SemanticUpdate {
+        id: String,
+        summary: String,
+        details: Option<String>,
+        search_keywords: String,
+    },
+    SemanticDelete {
+        ids: Vec<String>,
+    },
+    ProceduralInsert {
+        entry_type: String,
+        trigger_pattern: String,
+        summary: String,
+        steps: String,
+        search_keywords: String,
+    },
+    ProceduralUpdate {
+        id: String,
+        summary: String,
+        steps: String,
+        search_keywords: String,
+    },
+    ProceduralDelete {
+        ids: Vec<String>,
+    },
+    ResourceInsert {
+        resource_type: String,
+        file_path: Option<String>,
+        file_hash: Option<String>,
+        title: String,
+        summary: String,
+        content: Option<String>,
+        search_keywords: String,
+    },
+    ResourceDelete {
+        ids: Vec<String>,
+    },
+    KnowledgeInsert {
+        entry_type: String,
+        caption: String,
+        secret_value: String,
+        sensitivity: String,
+        search_keywords: String,
+    },
+    KnowledgeDelete {
+        ids: Vec<String>,
+    },
+    NoOp {
+        reason: String,
+    },
 }
 
 // ── Context Budget ──
@@ -544,15 +607,25 @@ mod tests {
     fn routing_decision_has_any_updates() {
         let mut d = RoutingDecision::default();
         assert!(!d.has_any_updates());
-        d = RoutingDecision { update_episodic: true, ..Default::default() };
+        d = RoutingDecision {
+            update_episodic: true,
+            ..Default::default()
+        };
         assert!(d.has_any_updates());
     }
 
     #[test]
     fn routing_decision_only_episodic() {
-        let mut d = RoutingDecision { update_episodic: true, ..Default::default() };
+        let mut d = RoutingDecision {
+            update_episodic: true,
+            ..Default::default()
+        };
         assert!(d.only_episodic());
-        d = RoutingDecision { update_episodic: true, update_semantic: true, ..Default::default() };
+        d = RoutingDecision {
+            update_episodic: true,
+            update_semantic: true,
+            ..Default::default()
+        };
         assert!(!d.only_episodic());
     }
 
@@ -599,7 +672,10 @@ mod tests {
 
     #[test]
     fn event_type_display() {
-        assert_eq!(format!("{}", EventType::CommandExecution), "command_execution");
+        assert_eq!(
+            format!("{}", EventType::CommandExecution),
+            "command_execution"
+        );
         assert_eq!(format!("{}", EventType::ProjectSwitch), "project_switch");
     }
 
@@ -663,7 +739,10 @@ mod tests {
 
     #[test]
     fn shell_event_type_as_str() {
-        assert_eq!(ShellEventType::CommandExecution.as_str(), "command_execution");
+        assert_eq!(
+            ShellEventType::CommandExecution.as_str(),
+            "command_execution"
+        );
         assert_eq!(ShellEventType::FileEdit.as_str(), "file_edit");
         assert_eq!(ShellEventType::UserInstruction.as_str(), "user_instruction");
         assert_eq!(ShellEventType::AssistantAction.as_str(), "assistant_action");

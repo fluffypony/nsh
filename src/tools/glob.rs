@@ -47,9 +47,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         if pattern.matches(&rel_str) {
             total_matches += 1;
             if matches.len() < max_results {
-                let meta = entry.metadata();
-                let size = meta.as_ref().map(Metadata::len).unwrap_or(0);
-                let perm = perms_string(meta.as_ref());
+                let (size, perm) = match entry.metadata() {
+                    Ok(m) => (m.len(), perms_string(Some(&m))),
+                    Err(_) => (0, perms_string(None)),
+                };
                 matches.push((rel_str, size, perm));
             }
         }
@@ -86,7 +87,7 @@ fn perms_string(meta: Option<&Metadata>) -> String {
     use std::os::unix::fs::PermissionsExt;
     if let Some(m) = meta {
         let mode = m.permissions().mode() & 0o7777;
-        return format!("{:04o}", mode);
+        return format!("{mode:04o}");
     }
     "????".into()
 }
@@ -108,8 +109,7 @@ mod tests {
         std::fs::create_dir_all(root.path().join("nested")).expect("mkdir nested");
         std::fs::write(root.path().join("nested").join("b.rs"), "pub fn f() {}\n")
             .expect("write b.rs");
-        std::fs::write(root.path().join("nested").join("c.txt"), "ignored\n")
-            .expect("write c.txt");
+        std::fs::write(root.path().join("nested").join("c.txt"), "ignored\n").expect("write c.txt");
 
         let output = execute(&json!({
             "pattern": "**/*.rs",

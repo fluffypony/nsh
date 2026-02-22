@@ -104,8 +104,7 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
         &format!("session={session_id}\nresponse={response_line}"),
     );
 
-    serde_json::from_value(json_val)
-        .map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
+    serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
 }
 
 pub fn get_system_info(_session_id: &str) -> anyhow::Result<crate::context::SystemInfoBundle> {
@@ -240,8 +239,7 @@ fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse
         &format!("response={response_line}"),
     );
 
-    serde_json::from_value(json_val)
-        .map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
+    serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
 }
 
 #[cfg(not(unix))]
@@ -354,7 +352,12 @@ pub fn send_to_global_with_retry(request: DaemonRequest) -> anyhow::Result<Daemo
                 if attempt >= 1 {
                     let _ = ensure_global_daemon_running();
                 }
-                tracing::debug!("daemon connection retry {}/{}: {}", attempt + 1, max_attempts, msg);
+                tracing::debug!(
+                    "daemon connection retry {}/{}: {}",
+                    attempt + 1,
+                    max_attempts,
+                    msg
+                );
             }
             Err(e) => return Err(e),
         }

@@ -549,7 +549,13 @@ pub fn pump_loop(
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
                     if poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_daemon_connection(l, &capture, max_output_bytes, &active_conns, &session_id);
+                        handle_daemon_connection(
+                            l,
+                            &capture,
+                            max_output_bytes,
+                            &active_conns,
+                            &session_id,
+                        );
                     }
                 }
             }
@@ -756,8 +762,9 @@ fn handle_daemon_connection(
                 let session = session_id.to_string();
                 move || {
                     handle_daemon_connection_inner(stream, &capture, max_output_bytes, &session);
-                active.fetch_sub(1, Ordering::Relaxed);
-            }}) {
+                    active.fetch_sub(1, Ordering::Relaxed);
+                }
+            }) {
             Ok(_) => {}
             Err(e) => {
                 tracing::warn!("daemon: failed to spawn connection handler thread: {e}");
@@ -777,7 +784,10 @@ fn handle_daemon_connection_inner(
     use std::io::{BufRead, BufReader, Read, Write};
 
     // Include session context in logs to aid debugging and ensure param is meaningful
-    tracing::trace!("daemon: handling per-session connection for session={}", session_id);
+    tracing::trace!(
+        "daemon: handling per-session connection for session={}",
+        session_id
+    );
 
     // Allow larger responses without premature timeouts
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();

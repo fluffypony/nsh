@@ -226,7 +226,9 @@ mod tests {
         assert!(body.contains("ok"));
 
         daemon_log("daemon-test.log", "daemon.section", "payload");
-        let daemon_path = crate::config::Config::nsh_dir().join("debug").join("daemon-test.log");
+        let daemon_path = crate::config::Config::nsh_dir()
+            .join("debug")
+            .join("daemon-test.log");
         let daemon_body = std::fs::read_to_string(&daemon_path).expect("read daemon log");
         assert!(daemon_body.contains("daemon.section"));
         assert!(daemon_body.contains("payload"));

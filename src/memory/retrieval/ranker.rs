@@ -64,7 +64,7 @@ pub fn estimate_tokens(memories: &RetrievedMemories) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::types::{CoreBlock, CoreLabel, EpisodicEvent, EventType, Actor};
+    use crate::memory::types::{Actor, CoreBlock, CoreLabel, EpisodicEvent, EventType};
 
     #[test]
     fn estimate_tokens_basic() {
@@ -183,7 +183,11 @@ mod tests {
         };
         let orig_core_len = memories.core.len();
         enforce_budget(&mut memories, 100000);
-        assert_eq!(memories.core.len(), orig_core_len, "should not modify when under budget");
+        assert_eq!(
+            memories.core.len(),
+            orig_core_len,
+            "should not modify when under budget"
+        );
     }
 
     #[test]

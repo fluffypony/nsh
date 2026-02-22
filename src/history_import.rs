@@ -5,10 +5,8 @@ use regex::Regex;
 
 use crate::db::IMPORT_SESSION_PREFIX;
 
-type SessionEntries = std::collections::HashMap<
-    String,
-    (String, String, Vec<(String, DateTime<Utc>)>),
->;
+type SessionEntries =
+    std::collections::HashMap<String, (String, String, Vec<(String, DateTime<Utc>)>)>;
 
 const MAX_IMPORT_ENTRIES: usize = 10_000;
 const IMPORT_LOCK_FILENAME: &str = "history_import.lock";

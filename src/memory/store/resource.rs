@@ -64,11 +64,24 @@ pub fn upsert_by_path(
         )?;
         Ok(id)
     } else {
-        insert(conn, resource_type, Some(file_path), Some(file_hash), title, summary, content, search_keywords)
+        insert(
+            conn,
+            resource_type,
+            Some(file_path),
+            Some(file_hash),
+            title,
+            summary,
+            content,
+            search_keywords,
+        )
     }
 }
 
-pub fn search_bm25(conn: &Connection, query: &str, limit: usize) -> anyhow::Result<Vec<ResourceItem>> {
+pub fn search_bm25(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<ResourceItem>> {
     let fts_query = crate::memory::search::fts::build_fts5_query(query);
     if fts_query.is_empty() {
         return Ok(vec![]);
@@ -85,7 +98,11 @@ pub fn search_bm25(conn: &Connection, query: &str, limit: usize) -> anyhow::Resu
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn get_for_cwd(conn: &Connection, cwd: &str, limit: usize) -> anyhow::Result<Vec<ResourceItem>> {
+pub fn get_for_cwd(
+    conn: &Connection,
+    cwd: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<ResourceItem>> {
     let pattern = format!("{cwd}%");
     let mut stmt = conn.prepare(
         "SELECT id, resource_type, file_path, file_hash, title, summary, content, search_keywords, created_at, updated_at
@@ -166,8 +183,28 @@ mod tests {
     #[test]
     fn upsert_by_path_updates() {
         let conn = setup();
-        let id1 = upsert_by_path(&conn, "file", "/tmp/test", "hash1", "Test", "Old", None, "test").unwrap();
-        let id2 = upsert_by_path(&conn, "file", "/tmp/test", "hash2", "Test", "New", None, "test").unwrap();
+        let id1 = upsert_by_path(
+            &conn,
+            "file",
+            "/tmp/test",
+            "hash1",
+            "Test",
+            "Old",
+            None,
+            "test",
+        )
+        .unwrap();
+        let id2 = upsert_by_path(
+            &conn,
+            "file",
+            "/tmp/test",
+            "hash2",
+            "Test",
+            "New",
+            None,
+            "test",
+        )
+        .unwrap();
         assert_eq!(id1, id2);
         assert_eq!(count(&conn).unwrap(), 1);
     }
@@ -175,7 +212,17 @@ mod tests {
     #[test]
     fn exists_with_hash_works() {
         let conn = setup();
-        insert(&conn, "file", Some("/tmp/f"), Some("h1"), "t", "s", None, "k").unwrap();
+        insert(
+            &conn,
+            "file",
+            Some("/tmp/f"),
+            Some("h1"),
+            "t",
+            "s",
+            None,
+            "k",
+        )
+        .unwrap();
         assert!(exists_with_hash(&conn, "/tmp/f", "h1").unwrap());
         assert!(!exists_with_hash(&conn, "/tmp/f", "h2").unwrap());
     }
@@ -183,8 +230,28 @@ mod tests {
     #[test]
     fn get_for_cwd_filters() {
         let conn = setup();
-        insert(&conn, "file", Some("/home/user/project/Cargo.toml"), None, "Cargo", "manifest", None, "cargo").unwrap();
-        insert(&conn, "file", Some("/other/path/file"), None, "Other", "other", None, "other").unwrap();
+        insert(
+            &conn,
+            "file",
+            Some("/home/user/project/Cargo.toml"),
+            None,
+            "Cargo",
+            "manifest",
+            None,
+            "cargo",
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "file",
+            Some("/other/path/file"),
+            None,
+            "Other",
+            "other",
+            None,
+            "other",
+        )
+        .unwrap();
 
         let results = get_for_cwd(&conn, "/home/user/project", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -194,7 +261,17 @@ mod tests {
     #[test]
     fn delete_removes_items() {
         let conn = setup();
-        let id = insert(&conn, "file", Some("/tmp/f"), None, "test", "test", None, "test").unwrap();
+        let id = insert(
+            &conn,
+            "file",
+            Some("/tmp/f"),
+            None,
+            "test",
+            "test",
+            None,
+            "test",
+        )
+        .unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
         delete(&conn, &[id]).unwrap();
         assert_eq!(count(&conn).unwrap(), 0);
@@ -203,7 +280,17 @@ mod tests {
     #[test]
     fn search_bm25_empty_returns_empty() {
         let conn = setup();
-        insert(&conn, "config", Some("/etc/test"), None, "Test Config", "test config", None, "test config").unwrap();
+        insert(
+            &conn,
+            "config",
+            Some("/etc/test"),
+            None,
+            "Test Config",
+            "test config",
+            None,
+            "test config",
+        )
+        .unwrap();
         let results = search_bm25(&conn, "", 10).unwrap();
         assert!(results.is_empty());
     }
@@ -220,7 +307,8 @@ mod tests {
             "Git configuration",
             Some("[alias]\nco = checkout\nbr = branch"),
             "git config alias",
-        ).unwrap();
+        )
+        .unwrap();
 
         let results = search_bm25(&conn, "checkout branch", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -238,19 +326,43 @@ mod tests {
             "Main project documentation",
             Some("# My Project\n\nThis is a cool project."),
             "readme project documentation",
-        ).unwrap();
+        )
+        .unwrap();
         assert!(id.starts_with("res_"));
 
         let results = search_bm25(&conn, "project documentation", 10).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].file_path.as_ref().unwrap(), "/home/user/project/README.md");
+        assert_eq!(
+            results[0].file_path.as_ref().unwrap(),
+            "/home/user/project/README.md"
+        );
     }
 
     #[test]
     fn upsert_preserves_resource_type() {
         let conn = setup();
-        upsert_by_path(&conn, "config", "/etc/test", "h1", "Test", "v1", None, "test").unwrap();
-        upsert_by_path(&conn, "config", "/etc/test", "h2", "Test Updated", "v2", None, "test").unwrap();
+        upsert_by_path(
+            &conn,
+            "config",
+            "/etc/test",
+            "h1",
+            "Test",
+            "v1",
+            None,
+            "test",
+        )
+        .unwrap();
+        upsert_by_path(
+            &conn,
+            "config",
+            "/etc/test",
+            "h2",
+            "Test Updated",
+            "v2",
+            None,
+            "test",
+        )
+        .unwrap();
 
         let results = get_for_cwd(&conn, "/etc", 10).unwrap();
         assert_eq!(results.len(), 1);
@@ -260,7 +372,17 @@ mod tests {
     #[test]
     fn get_for_cwd_no_match() {
         let conn = setup();
-        insert(&conn, "file", Some("/home/other/file"), None, "File", "test", None, "test").unwrap();
+        insert(
+            &conn,
+            "file",
+            Some("/home/other/file"),
+            None,
+            "File",
+            "test",
+            None,
+            "test",
+        )
+        .unwrap();
 
         let results = get_for_cwd(&conn, "/home/user", 10).unwrap();
         assert!(results.is_empty());
