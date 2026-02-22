@@ -138,9 +138,10 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
         key.copy_from_slice(&bytes[..32]);
         Ok(key)
     } else {
-        use rand::RngCore;
+        use rand::{prelude::*, rng};
         let mut key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
+        let mut r = rng();
+        r.fill(&mut key);
         #[cfg(unix)]
         {
             use std::io::Write;

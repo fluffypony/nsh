@@ -69,7 +69,7 @@ sha2 = "0.10"
 
 # Encryption (Knowledge Vault)
 aes-gcm = "0.10"
-rand = "0.8"
+rand = "0.10"
 hex = "0.4"
 
 # String similarity (episodic dedup)

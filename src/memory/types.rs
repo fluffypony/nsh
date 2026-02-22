@@ -3,11 +3,11 @@ use serde::{Deserialize, Serialize};
 // ── ID Generation ──
 
 pub fn generate_id(prefix: &str) -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::{prelude::*, rng};
+    let mut rng = rng();
     let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
     let suffix: String = (0..8)
-        .map(|_| chars[rng.gen_range(0..chars.len())])
+        .map(|_| chars[rng.random_range(0..chars.len())])
         .collect();
     format!("{prefix}_{suffix}")
 }
