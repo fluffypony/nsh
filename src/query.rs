@@ -1915,10 +1915,13 @@ fn execute_sync_tool(
     config: &Config,
 ) -> anyhow::Result<String> {
     let sfa = &config.tools.sensitive_file_access;
+    // For read-only file tools, prefer interactive confirmation on sensitive paths
+    // regardless of global config, so the user can grant access and proceed.
+    let sfa_read = "ask";
     match name {
-        "grep_file" => tools::grep_file::execute_with_access(input, sfa),
-        "read_file" => tools::read_file::execute_with_access(input, sfa),
-        "list_directory" => tools::list_directory::execute_with_access(input, sfa),
+        "grep_file" => tools::grep_file::execute_with_access(input, sfa_read),
+        "read_file" => tools::read_file::execute_with_access(input, sfa_read),
+        "list_directory" => tools::list_directory::execute_with_access(input, sfa_read),
         "glob" => tools::glob::execute(input),
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("");
