@@ -12,7 +12,13 @@ static APPROVED_SKILLS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 struct SkillFile {
     name: String,
     description: String,
+    #[serde(default)]
     command: String,
+    // Optional code-based skill support
+    #[serde(default)]
+    runtime: Option<String>, // e.g., "python", "python3", "node"
+    #[serde(default)]
+    script: Option<String>, // inline script source to execute with runtime
     #[serde(default = "default_skill_timeout")]
     timeout_seconds: u64,
     #[serde(default)]
@@ -37,6 +43,8 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub command: String,
+    pub runtime: Option<String>,
+    pub script: Option<String>,
     pub timeout_seconds: u64,
     pub terminal: bool,
     pub parameters: HashMap<String, SkillParam>,
@@ -85,12 +93,34 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
             }
         };
 
+        // Require at least a command or a (runtime, script) pair
+        let missing_command = skill_file.command.trim().is_empty();
+        let has_code = skill_file
+            .runtime
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+            && skill_file
+                .script
+                .as_ref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+        if missing_command && !has_code {
+            tracing::warn!(
+                "Skill {} missing 'command' and no (runtime+script) provided; skipping",
+                skill_file.name
+            );
+            continue;
+        }
+
         skills.insert(
             skill_file.name.clone(),
             Skill {
                 name: skill_file.name,
                 description: skill_file.description,
                 command: skill_file.command,
+                runtime: skill_file.runtime,
+                script: skill_file.script,
                 timeout_seconds: skill_file.timeout_seconds,
                 terminal: skill_file.terminal,
                 parameters: skill_file.parameters,
@@ -176,25 +206,21 @@ fn check_project_skill_approval(skill: &Skill) -> anyhow::Result<()> {
 pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<String> {
     check_project_skill_approval(skill)?;
 
-    let mut command = skill.command.clone();
-    for param_name in skill.parameters.keys() {
-        let value = input.get(param_name).and_then(|v| v.as_str()).unwrap_or("");
-
-        validate_param_value(value)?;
-
-        command = command.replace(&format!("{{{param_name}}}"), value);
-    }
-
-    #[cfg(unix)]
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&command)
-        .output()?;
-
-    #[cfg(windows)]
-    let output = std::process::Command::new("cmd")
-        .args(["/C", &command])
-        .output()?;
+    let output = if skill.runtime.is_some() && skill.script.is_some() {
+        execute_code_skill(skill, input)?
+    } else {
+        // Shell-command template mode
+        let mut command = skill.command.clone();
+        for param_name in skill.parameters.keys() {
+            let value = input.get(param_name).and_then(|v| v.as_str()).unwrap_or("");
+            validate_param_value(value)?;
+            command = command.replace(&format!("{{{param_name}}}"), value);
+        }
+        #[cfg(unix)]
+        { std::process::Command::new("sh").arg("-c").arg(&command).output()? }
+        #[cfg(windows)]
+        { std::process::Command::new("cmd").args(["/C", &command]).output()? }
+    };
 
     let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -226,6 +252,84 @@ pub async fn execute_skill_async(skill: Skill, input: serde_json::Value) -> anyh
         Ok(Err(e)) => anyhow::bail!("Skill task panicked: {e}"),
         Err(_) => anyhow::bail!("Skill timed out after {timeout_secs}s"),
     }
+}
+
+fn resolve_runtime_binary(rt: &str) -> Option<(String, Vec<String>)> {
+    let l = rt.trim().to_lowercase();
+    match l.as_str() {
+        "python" | "python3" => {
+            if which::which("python3").is_ok() {
+                Some(("python3".into(), vec![]))
+            } else if which::which("python").is_ok() {
+                Some(("python".into(), vec![]))
+            } else {
+                None
+            }
+        }
+        "node" | "nodejs" => {
+            if which::which("node").is_ok() {
+                Some(("node".into(), vec![]))
+            } else {
+                None
+            }
+        }
+        other => {
+            if which::which(other).is_ok() {
+                Some((other.into(), vec![]))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn execute_code_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<std::process::Output> {
+    let rt = skill
+        .runtime
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("runtime is required for code-based skill"))?;
+    let script = skill
+        .script
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("script is required for code-based skill"))?;
+
+    let (bin, mut args) = resolve_runtime_binary(rt)
+        .ok_or_else(|| anyhow::anyhow!(format!("runtime not found in PATH: {rt}")))?;
+
+    // Write script to a temp file with appropriate extension for better DX
+    let ext = if bin.contains("python") { "py" } else if bin.contains("node") { "js" } else { "txt" };
+    let mut file = tempfile::Builder::new().suffix(&format!(".{ext}")).tempfile()?;
+    use std::io::Write as _;
+    file.write_all(script.as_bytes())?;
+    let script_path = file.path().to_path_buf();
+
+    // Build JSON of parameters
+    let mut params = serde_json::Map::new();
+    for (param_name, _) in &skill.parameters {
+        if let Some(v) = input.get(param_name) {
+            params.insert(param_name.clone(), v.clone());
+        }
+    }
+    let params_json = serde_json::Value::Object(params).to_string();
+
+    // Environment variables for convenience
+    let mut cmd = std::process::Command::new(&bin);
+    args.push(script_path.to_string_lossy().to_string());
+    cmd.args(&args)
+        .env("NSH_SKILL_NAME", &skill.name)
+        .env("NSH_SKILL_PARAMS_JSON", &params_json)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // Provide params via stdin as JSON as well
+    let mut child = cmd.spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write as _;
+        let _ = stdin.write_all(params_json.as_bytes());
+    }
+    let output = child.wait_with_output()?;
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -282,6 +386,8 @@ mod tests {
             name: "search".to_string(),
             description: "Search things".to_string(),
             command: "echo {query}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 30,
             terminal: false,
             parameters: params,
@@ -319,6 +425,8 @@ mod tests {
             name: "echo_test".to_string(),
             description: "test".to_string(),
             command: "echo hello".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -342,6 +450,8 @@ mod tests {
             name: "greet".to_string(),
             description: "greet someone".to_string(),
             command: "echo hello {name}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: params,
@@ -365,6 +475,8 @@ mod tests {
             name: "greet".to_string(),
             description: "greet someone".to_string(),
             command: "echo hello {name}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: params,
@@ -380,6 +492,8 @@ mod tests {
             name: "alpha".to_string(),
             description: "Alpha skill".to_string(),
             command: "echo a".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 10,
             terminal: false,
             parameters: HashMap::new(),
@@ -397,6 +511,8 @@ mod tests {
             name: "beta".to_string(),
             description: "Beta skill".to_string(),
             command: "echo {x}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 20,
             terminal: false,
             parameters: params,
@@ -448,6 +564,8 @@ mod tests {
             name: "async_echo".to_string(),
             description: "test".to_string(),
             command: "echo hello".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -560,6 +678,8 @@ command = "echo project"
             name: "big_output".to_string(),
             description: "test".to_string(),
             command: "python3 -c \"print('x' * 10000)\"".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -576,6 +696,8 @@ command = "echo project"
             name: "slow".to_string(),
             description: "test".to_string(),
             command: "sleep 10".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 1,
             terminal: false,
             parameters: HashMap::new(),
@@ -592,6 +714,8 @@ command = "echo project"
             name: "global_test".to_string(),
             description: "test".to_string(),
             command: "echo hi".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -648,6 +772,8 @@ description = "has no command"
             name: "stderr_test".to_string(),
             description: "test".to_string(),
             command: "echo error_msg >&2".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -663,6 +789,8 @@ description = "has no command"
             name: "both_test".to_string(),
             description: "test".to_string(),
             command: "echo stdout_line; echo stderr_line >&2".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -700,6 +828,8 @@ description = "has no command"
             name: "multi_param".to_string(),
             description: "skill with many params".to_string(),
             command: "echo {arg1} {arg2}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 10,
             terminal: false,
             parameters: params,
@@ -772,6 +902,8 @@ command = "echo hi"
             name: "debug_test".to_string(),
             description: "test debug".to_string(),
             command: "echo debug".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -807,6 +939,8 @@ command = "echo hi"
             name: "clone_test".to_string(),
             description: "test".to_string(),
             command: "echo {x}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 10,
             terminal: true,
             parameters: params,
@@ -856,6 +990,8 @@ command = "echo second"
             name: "greet".to_string(),
             description: "greet".to_string(),
             command: "echo hello {name}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: params,
@@ -871,6 +1007,8 @@ command = "echo second"
             name: "simple".to_string(),
             description: "test".to_string(),
             command: "echo no_params".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -911,6 +1049,8 @@ timeout_seconds = 10
             name: "stderr_only".to_string(),
             description: "test".to_string(),
             command: "echo only_stderr >&2".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -927,6 +1067,8 @@ timeout_seconds = 10
             name: "fail_cmd".to_string(),
             description: "test".to_string(),
             command: "exit 42".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -1015,6 +1157,8 @@ command = "echo hi"
             name: "simple".to_string(),
             description: "a simple skill".to_string(),
             command: "echo hello".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 10,
             terminal: false,
             parameters: HashMap::new(),
@@ -1035,6 +1179,8 @@ command = "echo hi"
             name: "big_output".to_string(),
             description: "test".to_string(),
             command: "python3 -c \"print('x' * 10000)\"".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -1068,6 +1214,8 @@ command = "echo hi"
             name: "multi_param".to_string(),
             description: "test".to_string(),
             command: "echo {greeting} {target}".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: params,
@@ -1090,6 +1238,8 @@ command = "echo hi"
             name: "both_streams".to_string(),
             description: "test".to_string(),
             command: "echo stdout_msg; echo stderr_msg >&2".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
@@ -1110,6 +1260,8 @@ command = "echo hi"
             name: "async_test".to_string(),
             description: "test".to_string(),
             command: "echo async_output".to_string(),
+            runtime: None,
+            script: None,
             timeout_seconds: 5,
             terminal: false,
             parameters: HashMap::new(),
