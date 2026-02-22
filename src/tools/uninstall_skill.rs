@@ -24,7 +24,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         eprintln!("{dim}Path:{reset} {}", toml_path.display());
     }
 
-    if !toml_path.exists() && !(remove_dir && dir_path.exists()) {
+    if !(toml_path.exists() || (remove_dir && dir_path.exists())) {
         return Ok(format!("No skill files found for '{name}'"));
     }
 

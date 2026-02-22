@@ -76,7 +76,7 @@ pub fn validate_read_path_with_access(
             let allowed_read_only = home.join(".nsh").join("skills");
             let allowed_read_only = allowed_read_only
                 .canonicalize()
-                .unwrap_or_else(|_| allowed_read_only);
+                .unwrap_or(allowed_read_only);
             if canonical.starts_with(&allowed_read_only) {
                 return Ok(canonical);
             }

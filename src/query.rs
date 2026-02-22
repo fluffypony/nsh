@@ -1914,7 +1914,7 @@ fn execute_sync_tool(
     input: &serde_json::Value,
     config: &Config,
 ) -> anyhow::Result<String> {
-    let sfa = &config.tools.sensitive_file_access;
+    // let sfa = &config.tools.sensitive_file_access; // not used for read-only tools below
     // For read-only file tools, prefer interactive confirmation on sensitive paths
     // regardless of global config, so the user can grant access and proceed.
     let sfa_read = "ask";
