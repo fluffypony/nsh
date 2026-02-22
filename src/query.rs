@@ -1944,7 +1944,8 @@ Use 'done' to signal autonomous task completion when no final command is needed.
 Skill installation guidelines:
 1. Prefer the built-in install_skill tool to create a TOML under ~/.nsh/skills instead of cloning repos.
 2. If a repo provides a runtime-based script, convert it to a code skill (runtime+script) via install_skill.
-3. After installation, you may read ~/.nsh/skills/*.toml to answer usage questions.
+3. If a repo provides only a SKILL.md (or README) with instructions, create a doc-only skill by passing 'docs' with the verbatim SKILL.md contents to install_skill. Do not invent nonexistent scripts. Expose a simple parameter schema if needed, but keep behavior faithful to the docs.
+4. After installation, you may read ~/.nsh/skills/*.toml or the accompanying .md to answer usage questions.
 "#;
     let base = format!("{base}\n\n{github_guidance}");
 

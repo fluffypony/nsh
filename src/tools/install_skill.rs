@@ -9,6 +9,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
     let terminal = input["terminal"].as_bool().unwrap_or(false);
     let parameters = input.get("parameters");
+    let docs = input["docs"].as_str();
 
     if name.is_empty() || description.is_empty() {
         anyhow::bail!("install_skill: 'name' and 'description' are required");
@@ -16,10 +17,11 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let has_command = !command.trim().is_empty();
     let has_code = runtime.map(|s| !s.trim().is_empty()).unwrap_or(false)
         && script.map(|s| !s.trim().is_empty()).unwrap_or(false);
-    if !has_command && !has_code {
+    // Doc-only mode: allow installing a skill with only docs if provided.
+    if !has_command && !has_code && docs.is_none() {
         // Maintain error text the tests expect ('required')
         anyhow::bail!(
-            "install_skill: required field missing — provide either 'command' OR both 'runtime' and 'script'"
+            "install_skill: required field missing — provide either 'command' OR both 'runtime' and 'script' or 'docs'"
         );
     }
 
@@ -101,6 +103,11 @@ terminal = {terminal}
 
     std::fs::create_dir_all(&skills_dir)?;
     std::fs::write(&skill_path, &toml_content)?;
+    // If docs provided, write them alongside the TOML for reference.
+    if let Some(d) = docs {
+        let doc_path = skills_dir.join(format!("{name}.md"));
+        std::fs::write(&doc_path, d)?;
+    }
     eprintln!(
         "{green}✓ skill '{name}' installed at {}{reset}",
         skill_path.display()

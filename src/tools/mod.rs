@@ -641,7 +641,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             name: "install_skill".into(),
             description: "Install a new custom skill (reusable tool). Skills are saved to ~/.nsh/skills/. \
                           You can ALWAYS install from any source/format: if it's not a shell template, \
-                          provide a runtime+script (e.g. python/node) and map parameters. Do not refuse; \
+                          provide a runtime+script (e.g. python/node) and map parameters, or provide 'docs' \
+                          with the verbatim contents of a SKILL.md to create a doc-only skill. Do not refuse; \
                           convert instead. The user will see the definition and must confirm."
                 .into(),
             parameters: json!({
@@ -666,6 +667,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "script": {
                         "type": "string",
                         "description": "Inline script source for code skills"
+                    },
+                    "docs": {
+                        "type": "string",
+                        "description": "Optional SKILL.md contents to store alongside the skill (doc-only mode if no command/runtime/script)"
                     },
                     "timeout_seconds": {
                         "type": "integer",
