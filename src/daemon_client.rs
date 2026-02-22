@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::os::unix::net::UnixStream;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_DAEMON_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
@@ -314,19 +315,33 @@ pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
 /// Ensure the global daemon binary version matches ours; gracefully restart if not.
 pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
     let our_version = env!("CARGO_PKG_VERSION");
+    let our_build = env!("NSH_BUILD_VERSION");
     if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
         send_to_global(&crate::daemon::DaemonRequest::Status)
     {
-        if let Some(daemon_ver) = d.get("version").and_then(|v| v.as_str()) {
-            if daemon_ver != our_version {
-                tracing::info!(
-                    "daemon version {daemon_ver} != our version {our_version}, signaling graceful restart"
-                );
-                let _ = signal_daemon_restart();
-                // Allow a short window for graceful drain and re-exec, then ensure running
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                let _ = ensure_global_daemon_running();
-            }
+        let daemon_ver = d.get("version").and_then(|v| v.as_str());
+        let daemon_build = d.get("build_version").and_then(|v| v.as_str());
+
+        let version_mismatch = daemon_ver != Some(our_version);
+        let build_mismatch = match daemon_build {
+            Some(b) => b != our_build,
+            None => false, // if build not reported, don't flap; version check still applies
+        };
+
+        if version_mismatch || build_mismatch {
+            tracing::info!(
+                "daemon restart: version_mismatch={} build_mismatch={} (daemon_ver={:?}, daemon_build={:?}, our_ver={}, our_build={})",
+                version_mismatch,
+                build_mismatch,
+                daemon_ver,
+                daemon_build,
+                our_version,
+                our_build
+            );
+            let _ = signal_daemon_restart();
+            // Allow a short window for graceful drain and re-exec, then ensure running
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let _ = ensure_global_daemon_running();
         }
     }
     Ok(())
