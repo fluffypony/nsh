@@ -587,7 +587,7 @@ $ nsh status
   PTY active: yes
   Global daemon: running
   Sidecar:    running on :8317 (6.6.80)
-  Updates:    last_check=2026-02-22T12:00:03Z status=up_to_date
+  Updates:    last_check=2026-02-22T12:00:03Z (2h ago) status=up_to_date
   Provider:   openrouter
   Model:      google/gemini-2.5-flash
   DB path:    /Users/alice/.nsh/nsh.db
@@ -612,3 +612,17 @@ Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md)
 ## License
 
 BSD 3-Clause - see [LICENSE](LICENSE).
+### Sidecar Management
+
+The local CLIProxyAPI sidecar is managed by the daemon and used to route subscription providers through a local OpenAI-compatible endpoint.
+
+Common operations:
+
+```
+nsh cliproxy ensure        # start the sidecar if not running
+nsh cliproxy status        # JSON-style status: running, port, version, pid
+nsh cliproxy restart       # restart the sidecar
+nsh cliproxy check-updates # trigger an immediate update check
+```
+
+The daemon also checks for sidecar updates hourly and restarts it if an update is applied.
