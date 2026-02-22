@@ -823,10 +823,67 @@ pub async fn handle_query(
                             let name_for_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
-                            let matched_skill = skills
+                            // Try exact match first
+                            let mut matched_skill = skills
                                 .iter()
                                 .find(|s| format!("skill_{}", s.name) == name_for_exec)
                                 .cloned();
+                            // If the model used a slightly different skill name (e.g., 'humanizer' vs 'humanize'),
+                            // attempt a simple fuzzy match to map to an existing installed skill.
+                            if matched_skill.is_none() && name_for_exec.starts_with("skill_") {
+                                let req = name_for_exec.trim_start_matches("skill_");
+                                let candidates: Vec<&crate::skills::Skill> = skills.iter().collect();
+                                // Heuristic: try common suffix trims and then minimal edit distance <= 2
+                                let trims = ["er", "or", "r", "s", "ing", "izer", "ise", "ize"];
+                                let mut bases = vec![req.to_string()];
+                                for t in &trims {
+                                    if let Some(base) = req.strip_suffix(t) {
+                                        bases.push(base.to_string());
+                                    }
+                                }
+                                // Prefer substring proximity
+                                if let Some(s) = candidates.iter().find(|s| bases.iter().any(|b| s.name == *b || s.name.starts_with(b) || b.starts_with(&s.name))) {
+                                    matched_skill = Some((**s).clone());
+                                } else {
+                                    // Fallback: minimal edit distance
+                                    fn lev(a: &str, b: &str) -> usize {
+                                        let mut dp = vec![0usize; (b.len() + 1) * (a.len() + 1)];
+                                        let w = b.len() + 1;
+                                        // first column
+                                        for (i, cell) in dp.iter_mut().step_by(w).take(a.len() + 1).enumerate() {
+                                            *cell = i;
+                                        }
+                                        // first row
+                                        for (j, cell) in dp.iter_mut().take(b.len() + 1).enumerate() {
+                                            *cell = j;
+                                        }
+                                        let ab: Vec<char> = a.chars().collect();
+                                        let bb: Vec<char> = b.chars().collect();
+                                        for i in 1..=ab.len() {
+                                            for j in 1..=bb.len() {
+                                                let cost = if ab[i - 1] == bb[j - 1] { 0 } else { 1 };
+                                                let del = dp[(i - 1) * w + j] + 1;
+                                                let ins = dp[i * w + (j - 1)] + 1;
+                                                let sub = dp[(i - 1) * w + (j - 1)] + cost;
+                                                dp[i * w + j] = del.min(ins).min(sub);
+                                            }
+                                        }
+                                        dp[ab.len() * w + bb.len()]
+                                    }
+                                    let mut best: Option<(&crate::skills::Skill, usize)> = None;
+                                    for s in &candidates {
+                                        let d = lev(req, &s.name);
+                                        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+                                            best = Some((s, d));
+                                        }
+                                    }
+                                    if let Some((s, d)) = best {
+                                        if d <= 2 {
+                                            matched_skill = Some((*s).clone());
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(skill) = matched_skill {
                                 futs.push(Box::pin(async move {
                                     let result = crate::skills::execute_skill_async(skill, input)
