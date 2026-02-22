@@ -432,16 +432,28 @@ pub async fn handle_query(
                         }
                     }
                     "chat" => {
-                        has_terminal_tool = true;
-                        tools::chat::execute(
-                            input,
-                            query,
-                            db,
-                            session_id,
-                            opts.private,
-                            config,
-                            !streamed_text_shown,
-                        )?;
+                        // Disallow using chat to ask questions; require ask_user instead
+                        let resp_text = input["response"].as_str().unwrap_or("");
+                        if is_question_like(resp_text) {
+                            let msg = "Chat tool used to ask a question. Use ask_user for user prompts; chat ends the turn.";
+                            let wrapped = crate::security::wrap_tool_result(name, msg, &boundary);
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: wrapped,
+                                is_error: true,
+                            });
+                        } else {
+                            has_terminal_tool = true;
+                            tools::chat::execute(
+                                input,
+                                query,
+                                db,
+                                session_id,
+                                opts.private,
+                                config,
+                                !streamed_text_shown,
+                            )?;
+                        }
                     }
                     "write_file" => {
                         has_terminal_tool = true;
@@ -1999,6 +2011,35 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
         }
     }
     Ok(())
+}
+
+fn is_question_like(s: &str) -> bool {
+    if s.trim().is_empty() {
+        return false;
+    }
+    let l = s.trim().to_lowercase();
+    if l.ends_with('?') {
+        return true;
+    }
+    for prefix in [
+        "are you ",
+        "do you ",
+        "would you ",
+        "should i ",
+        "can you ",
+        "could you ",
+        "is this ",
+        "what ",
+        "which ",
+        "where ",
+        "why ",
+        "how ",
+    ] {
+        if l.starts_with(prefix) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
