@@ -1233,13 +1233,35 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         .get("last_update_status")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
+                    // Pretty relative timestamp if possible
+                    let last_check_pretty = if last_check.is_empty() {
+                        String::new()
+                    } else if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(last_check) {
+                        let now = chrono::Utc::now();
+                        let ago = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
+                        if ago.num_seconds() < 60 {
+                            format!("{}s ago", ago.num_seconds())
+                        } else if ago.num_minutes() < 60 {
+                            format!("{}m ago", ago.num_minutes())
+                        } else if ago.num_hours() < 48 {
+                            format!("{}h ago", ago.num_hours())
+                        } else {
+                            format!("{}d ago", ago.num_days())
+                        }
+                    } else {
+                        last_check.to_string()
+                    };
                     if running {
                         eprintln!("  Sidecar:    running on :{port} ({version})");
                     } else {
                         eprintln!("  Sidecar:    not running");
                     }
                     if !last_check.is_empty() || !last_status.is_empty() {
-                        eprintln!("  Updates:    last_check={last_check} status={last_status}");
+                        if last_check_pretty.is_empty() {
+                            eprintln!("  Updates:    last_check={last_check} status={last_status}");
+                        } else {
+                            eprintln!("  Updates:    last_check={last_check} ({last_check_pretty}) status={last_status}");
+                        }
                     }
                 }
             }
