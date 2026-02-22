@@ -69,6 +69,16 @@ pub fn validate_read_path_with_access(
     // also impractical to abuse or attack.
     if sensitive_file_access != "allow" {
         if let Some(home) = dirs::home_dir() {
+            // Allowlist: reads under ~/.nsh/skills are considered safe so the agent
+            // can introspect installed skills (READ-ONLY). This prevents a deadlock
+            // where it cannot answer questions about skills it just installed.
+            let allowed_read_only = home.join(".nsh").join("skills");
+            let allowed_read_only = allowed_read_only
+                .canonicalize()
+                .unwrap_or_else(|_| allowed_read_only);
+            if canonical.starts_with(&allowed_read_only) {
+                return Ok(canonical);
+            }
             let sensitive_dirs = [
                 home.join(".ssh"),
                 home.join(".gnupg"),

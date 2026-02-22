@@ -1883,6 +1883,11 @@ When the user references a GitHub repo or URL:
 This is more reliable than web_search for GitHub-hosted projects.
 
 Use 'done' to signal autonomous task completion when no final command is needed.
+\n
+Skill installation guidelines:
+1. Prefer the built-in install_skill tool to create a TOML under ~/.nsh/skills instead of cloning repos.
+2. If a repo provides a runtime-based script, convert it to a code skill (runtime+script) via install_skill.
+3. After installation, you may read ~/.nsh/skills/*.toml to answer usage questions.
 "#;
     let base = format!("{base}\n\n{github_guidance}");
 
