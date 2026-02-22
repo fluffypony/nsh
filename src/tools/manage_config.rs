@@ -74,7 +74,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             backup_config(&config_path)?;
             write_config(&config_path, &new_content)?;
             eprintln!("{green}✓ config updated: {key}{reset}");
-            return Ok(format!("Successfully applied config change: set {}", key));
+            Ok(format!("Successfully applied config change: set {key}"))
         }
         "remove" => {
             if !remove_toml_value(&mut doc, key)? {
@@ -106,7 +106,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             backup_config(&config_path)?;
             write_config(&config_path, &new_content)?;
             eprintln!("{green}✓ config key removed: {key}{reset}");
-            return Ok(format!("Successfully removed config key: {}", key));
+            Ok(format!("Successfully removed config key: {key}"))
         }
         _ => {
             anyhow::bail!("manage_config: unknown action '{action}'. Use 'set' or 'remove'.");

@@ -749,7 +749,7 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
         content.push(ContentLine { text: explanation.to_string(), dim: true });
         content.push(ContentLine { text: String::new(), dim: true });
     }
-    content.push(ContentLine { text: format!("$ {}", command), dim: false });
+    content.push(ContentLine { text: format!("$ {command}"), dim: false });
     tui::render_box(label, &content, box_style);
     eprintln!();
 }

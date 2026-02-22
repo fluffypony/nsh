@@ -102,7 +102,7 @@ terminal = {terminal}
         skill_path.display()
     );
 
-    Ok(format!("Successfully installed skill '{}'", name))
+    Ok(format!("Successfully installed skill '{name}'"))
 }
 
 #[cfg(test)]

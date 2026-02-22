@@ -1874,6 +1874,18 @@ These ALWAYS require investigation → execution → verification at minimum.
         )
         .replace("{SHELL_GUIDANCE}", shell_guidance);
 
+    // Additional guidance for GitHub tool usage and completion protocol
+    let github_guidance = r#"
+When the user references a GitHub repo or URL:
+1. Use github(fetch_readme) with a focused goal first
+2. If you need specific files, use github(fetch_tree) then github(fetch_file)
+3. Only then proceed to execute installation/setup steps with run_command
+This is more reliable than web_search for GitHub-hosted projects.
+
+Use 'done' to signal autonomous task completion when no final command is needed.
+"#;
+    let base = format!("{base}\n\n{github_guidance}");
+
     let boundary_note = crate::security::boundary_system_prompt_addition(boundary);
     let mut result = format!("{base}\n{boundary_note}\n\n{config_xml}\n\n{xml_context}");
     if !memory_prompt.is_empty() {

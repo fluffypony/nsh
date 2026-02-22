@@ -60,12 +60,11 @@ pub fn show_spinner() {
         let mut i = 0;
         while SPINNER_ACTIVE.load(Ordering::SeqCst) {
             eprint!(
-                "\r  {}{} {}thinking…{}{}",
+                "\r  {}{} {}thinking…{}\x1b[K",
                 crate::tui::style::DIM_CYAN,
                 frames[i % frames.len()],
                 crate::tui::style::DIM,
-                crate::tui::style::RESET,
-                "\x1b[K"
+                crate::tui::style::RESET
             );
             io::stderr().flush().ok();
             i += 1;
@@ -103,12 +102,11 @@ impl SpinnerGuard {
                 let mut i = 0;
                 while SPINNER_ACTIVE.load(Ordering::SeqCst) {
                     eprint!(
-                        "\r  {}{} {}thinking…{}{}",
+                        "\r  {}{} {}thinking…{}\x1b[K",
                         crate::tui::style::DIM_CYAN,
                         frames[i % frames.len()],
                         crate::tui::style::DIM,
-                        crate::tui::style::RESET,
-                        "\x1b[K"
+                        crate::tui::style::RESET
                     );
                     std::io::Write::flush(&mut std::io::stderr()).ok();
                     i += 1;

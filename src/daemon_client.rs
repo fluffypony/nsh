@@ -191,6 +191,10 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
 
 #[cfg(unix)]
 fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    // Before issuing the real request, check daemon version and attempt graceful restart once if mismatched.
+    // If restart does not yield a new version quickly, proceed with the current daemon.
+    let _ = ensure_daemon_version_matches();
+
     let socket_path = crate::daemon::global_daemon_socket_path();
     let mut stream = UnixStream::connect(&socket_path)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;

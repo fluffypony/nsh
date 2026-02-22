@@ -2,7 +2,7 @@
 //! Centralizes terminal width detection, box drawing, word wrapping,
 //! ANSI color constants, and reusable display helpers.
 
-use std::io::Write;
+// keep empty: no direct writes needed here
 
 // ─── ANSI Style Constants ────────────────────────────────────────────
 
@@ -138,7 +138,7 @@ pub fn render_box(label: &str, content: &[ContentLine], box_style: BoxStyle) {
     let bold = style::BOLD;
 
     // Top border: ╭─ label ──────────╮
-    let label_display = if label.is_empty() { String::new() } else { format!(" {} ", label) };
+    let label_display = if label.is_empty() { String::new() } else { format!(" {label} ") };
     let label_len = label_display.chars().count();
     let top_dashes = box_width.saturating_sub(3 + label_len); // 3 = ╭─ + ╮
     eprintln!(
@@ -181,14 +181,13 @@ pub fn render_simple_box(label: &str, text: &str, box_style: BoxStyle) {
 /// Print a full-width section header: ── Title ────────────────
 pub fn section_header(title: &str) {
     let w = term_width().saturating_sub(2);
-    let label = format!(" {} ", title);
+    let label = format!(" {title} ");
     let label_len = label.chars().count();
     let padding = w.saturating_sub(label_len + 3);
     eprintln!(
-        "  {}── {}{}{}{}",
+        "  {}── {} {}{}",
         style::BOLD_CYAN,
         title,
-        " ",
         "─".repeat(padding),
         style::RESET
     );
@@ -222,7 +221,7 @@ pub fn tool_success(message: &str) {
 /// Subtle divider showing tool execution start.
 pub fn tool_divider(tool_name: &str) {
     let w = term_width().saturating_sub(4);
-    let label = format!(" {} ", tool_name);
+    let label = format!(" {tool_name} ");
     let label_len = label.chars().count();
     let pad = w.saturating_sub(label_len);
     eprintln!(

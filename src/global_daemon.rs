@@ -1573,8 +1573,7 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
     }
 }
 
-// Expose a minimal test-only hook for integration tests to fetch sidecar status
-#[cfg(any(test, feature = "global-daemon-test"))]
+// Expose a minimal hook for integration tests to fetch sidecar status
 pub mod test_helpers {
     pub fn sidecar_status_inline() -> Option<crate::daemon::DaemonResponse> {
         super::handle_sidecar_requests_inline(&crate::daemon::DaemonRequest::CLIProxyApiStatus)

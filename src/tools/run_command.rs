@@ -14,7 +14,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                     crate::tui::style::RESET,
                     reason.unwrap_or("")
                 );
-                eprintln!("  $ {}", cmd);
+                eprintln!("  $ {cmd}");
                 eprint!(
                     "  {}Type 'yes' to proceed: {}",
                     crate::tui::style::BOLD_RED,
@@ -33,7 +33,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                     crate::tui::style::BOLD_YELLOW,
                     crate::tui::style::RESET
                 );
-                eprintln!("  $ {}", cmd);
+                eprintln!("  $ {cmd}");
                 eprint!(
                     "  {}Allow? [y/N]{} ",
                     crate::tui::style::BOLD_YELLOW,

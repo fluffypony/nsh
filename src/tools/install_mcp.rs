@@ -97,7 +97,7 @@ pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> an
 
     if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
         eprintln!("Error: resulting config would be invalid: {e}");
-        return Ok(format!("Error: resulting config would be invalid: {}", e));
+        return Ok(format!("Error: resulting config would be invalid: {e}"));
     }
 
     let bold_yellow = "\x1b[1;33m";

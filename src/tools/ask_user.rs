@@ -1,21 +1,20 @@
 use std::io::{self, BufRead, Write};
 
 pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<String> {
-    let color = "\x1b[1;33m"; // bold yellow
-    let reset = "\x1b[0m";
+    use crate::tui::{self, BoxStyle, ContentLine};
 
-    eprint!("{color}nsh needs input:{reset} {question}");
-
+    // Build content lines for the TUI box
+    let mut content = Vec::new();
+    content.push(ContentLine { text: question.to_string(), dim: false });
     if let Some(opts) = options {
-        eprintln!();
+        content.push(ContentLine { text: String::new(), dim: true });
         for (i, opt) in opts.iter().enumerate() {
-            eprintln!("  {}) {}", i + 1, opt);
+            content.push(ContentLine { text: format!("{}) {}", i + 1, opt), dim: true });
         }
-        eprint!("> ");
-    } else {
-        eprint!("\n> ");
     }
+    tui::render_box("Question", &content, BoxStyle::Question);
 
+    eprint!("  {}❯{} ", crate::tui::style::PINK, crate::tui::style::RESET);
     io::stderr().flush()?;
 
     let input = read_user_input()?;

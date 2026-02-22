@@ -38,7 +38,7 @@ fn parse_repo_spec(input: &str) -> anyhow::Result<(String, String, Option<String
                 return Ok((owner, repo, path));
             }
         }
-        anyhow::bail!("Could not parse GitHub URL: {}", input);
+        anyhow::bail!("Could not parse GitHub URL: {input}");
     }
 
     // owner/repo format
@@ -47,8 +47,7 @@ fn parse_repo_spec(input: &str) -> anyhow::Result<(String, String, Option<String
         Ok((parts[0].to_string(), parts[1].to_string(), None))
     } else {
         anyhow::bail!(
-            "Invalid repo format '{}'. Expected 'owner/repo' or a full GitHub URL.",
-            input
+            "Invalid repo format '{input}'. Expected 'owner/repo' or a full GitHub URL."
         )
     }
 }
@@ -69,9 +68,7 @@ fn build_client() -> anyhow::Result<reqwest::Client> {
     // Opportunistically use GITHUB_TOKEN if available (raises rate limit to 5000/hr)
     if let Ok(token) = std::env::var("GITHUB_TOKEN") {
         if !token.is_empty() {
-            if let Ok(val) =
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
-            {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
                 headers.insert(reqwest::header::AUTHORIZATION, val);
             }
         }
@@ -135,8 +132,7 @@ pub async fn execute(input: &serde_json::Value, config: &Config) -> anyhow::Resu
             fetch_file(&client, &owner, &repo, &path).await
         }
         _ => anyhow::bail!(
-            "github: unknown action '{}'. Use fetch_readme, fetch_tree, or fetch_file.",
-            action
+            "github: unknown action '{action}'. Use fetch_readme, fetch_tree, or fetch_file."
         ),
     }
 }
@@ -151,7 +147,7 @@ async fn fetch_readme(
     config: &Config,
 ) -> anyhow::Result<String> {
     // Use the GitHub API endpoint which auto-detects README variants
-    let url = format!("https://api.github.com/repos/{}/{}/readme", owner, repo);
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/readme");
     let resp = client
         .get(&url)
         .header("Accept", "application/vnd.github.v3.raw")
@@ -160,10 +156,7 @@ async fn fetch_readme(
 
     if !resp.status().is_success() {
         // Fallback: try raw.githubusercontent.com
-        let fallback = format!(
-            "https://raw.githubusercontent.com/{}/{}/HEAD/README.md",
-            owner, repo
-        );
+        let fallback = format!("https://raw.githubusercontent.com/{owner}/{repo}/HEAD/README.md");
         let resp2 = client.get(&fallback).send().await?;
         if !resp2.status().is_success() {
             anyhow::bail!(
@@ -252,7 +245,7 @@ async fn fetch_tree(
     depth: usize,
 ) -> anyhow::Result<String> {
     // First, detect the default branch
-    let repo_url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    let repo_url = format!("https://api.github.com/repos/{owner}/{repo}");
     let repo_resp = client.get(&repo_url).send().await?;
     check_rate_limit(repo_resp.headers());
 
@@ -268,8 +261,7 @@ async fn fetch_tree(
 
     // Fetch the full recursive tree
     let tree_url = format!(
-        "https://api.github.com/repos/{}/{}/git/trees/{}?recursive=1",
-        owner, repo, default_branch
+        "https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1"
     );
     let resp = client.get(&tree_url).send().await?;
     check_rate_limit(resp.headers());
@@ -294,7 +286,7 @@ async fn fetch_tree(
                 if slashes < depth {
                     let item_type = item["type"].as_str().unwrap_or("blob");
                     let prefix = if item_type == "tree" { "dir " } else { "file" };
-                    paths.push(format!("{} {}", prefix, path));
+                    paths.push(format!("{prefix} {path}"));
                 }
             }
         }
@@ -319,9 +311,8 @@ async fn fetch_file(
     // Try raw.githubusercontent.com first (doesn't consume API rate limit)
     for branch in &["HEAD", "main", "master"] {
         let url = format!(
-            "https://raw.githubusercontent.com/{}/{}/{}/{}",
-            owner, repo, branch, path
-        );
+            "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+    );
         let resp = client.get(&url).send().await?;
         if resp.status().is_success() {
             let content = resp.text().await?;
@@ -330,10 +321,7 @@ async fn fetch_file(
     }
 
     // Fallback to API
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/contents/{}",
-        owner, repo, path
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/contents/{path}");
     let resp = client
         .get(&url)
         .header("Accept", "application/vnd.github.v3.raw")
