@@ -291,9 +291,12 @@ function __nsh_postexec --on-event fish_postexec
         command rm -f $msg_file 2>/dev/null
     end
     # restart_needed and update_available markers are obsolete under shim/core split
+    # If an update notice exists, auto-reload hooks and inform the user once
     set -l notice_file "$HOME/.nsh/update_notice"
     if test -f $notice_file
-        printf '\x1b[2m  nsh: %s\x1b[0m\n' (command cat $notice_file 2>/dev/null) >&2
+        # Attempt an automatic refresh by re-evaluating the init script
+        command nsh init fish | source 2>/dev/null
+        printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         command rm -f $notice_file 2>/dev/null
     end
 
@@ -334,6 +337,16 @@ function __nsh_check_pending --on-event fish_prompt
             end
             commandline -r -- "$cmd"
             commandline -f repaint
+        end
+    end
+    # Periodic hook version check (~every 20 prompts)
+    set -g __nsh_cmd_counter (math "$__nsh_cmd_counter + 1")
+    if test (math "$__nsh_cmd_counter % 20") -eq 0
+        set -l _disk_hook_hash (command nsh init fish --hash 2>/dev/null)
+        if test -n "$_disk_hook_hash" -a "$_disk_hook_hash" != "$NSH_HOOK_HASH"
+            # Auto-reload hooks
+            command nsh init fish | source 2>/dev/null
+            printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         end
     end
 end

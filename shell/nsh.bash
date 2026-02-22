@@ -253,9 +253,12 @@ __nsh_prompt_command() {
         command rm -f "$msg_file" 2>/dev/null
     fi
     # restart_needed and update_available markers are obsolete under shim/core split
+    # If an update notice exists, auto-reload hooks and inform the user once
     local notice_file="$HOME/.nsh/update_notice"
     if [[ -f "$notice_file" ]]; then
-        printf '\x1b[2m  nsh: %s\x1b[0m\n' "$(command cat "$notice_file" 2>/dev/null)" >&2
+        # Attempt an automatic refresh by re-evaluating the init script
+        eval "$(command nsh init bash)" 2>/dev/null || true
+        printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         command rm -f "$notice_file" 2>/dev/null
     fi
 
@@ -302,13 +305,15 @@ __nsh_check_pending() {
             history -s -- "$cmd"
         fi
     fi
-    # Periodic hook version check (~every 100 commands)
+    # Periodic hook version check (~every 20 commands)
     (( __nsh_cmd_counter = ${__nsh_cmd_counter:-0} + 1 ))
-    if (( __nsh_cmd_counter % 100 == 0 )); then
+    if (( __nsh_cmd_counter % 20 == 0 )); then
         local _disk_hook_hash
         _disk_hook_hash="$(command nsh init bash --hash 2>/dev/null)"
         if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
-            printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+            # Auto-reload hooks
+            eval "$(command nsh init bash)" 2>/dev/null || true
+            printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         fi
     fi
 }
