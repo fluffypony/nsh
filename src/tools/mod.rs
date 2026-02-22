@@ -16,6 +16,7 @@ pub mod search_history;
 pub mod web_search;
 pub mod write_file;
 pub mod github;
+pub mod uninstall_skill;
 
 use std::path::PathBuf;
 
@@ -689,6 +690,28 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["name", "description"]
+            }),
+        },
+        ToolDefinition {
+            name: "uninstall_skill".into(),
+            description: "Uninstall a custom skill by removing its TOML from ~/.nsh/skills. \
+                          Optionally remove a same-named directory under ~/.nsh/skills if it exists \
+                          (e.g., from a previous repo clone). Always prompts for confirmation."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name (alphanumeric + underscores)"
+                    },
+                    "remove_dir": {
+                        "type": "boolean",
+                        "description": "Also remove ~/.nsh/skills/{name} directory if present",
+                        "default": true
+                    }
+                },
+                "required": ["name"]
             }),
         },
         ToolDefinition {
