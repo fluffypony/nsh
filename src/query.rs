@@ -193,6 +193,9 @@ pub async fn handle_query(
     let mut force_json_next = false;
     let mut streamed_text_shown = false;
 
+    // Track repeated failing tool calls to prevent infinite loops
+    let mut repeat_guard = RepeatGuard::default();
+    let mut abort_tool_loop: bool = false;
     for iteration in 0..max_iterations {
         if cancelled.load(Ordering::SeqCst) {
             eprint!("\x1b[0m");
@@ -350,6 +353,12 @@ pub async fn handle_query(
                         content: wrapped,
                         is_error: true,
                     });
+                    // If the model repeats the same invalid tool call inputs, stop early
+                    if repeat_guard.note_invalid(name, input) {
+                        eprintln!("\x1b[33mnsh: model repeated an invalid tool call 3 times; aborting tool loop\x1b[0m");
+                        abort_tool_loop = true;
+                        break;
+                    }
                     continue;
                 }
 
@@ -559,6 +568,10 @@ pub async fn handle_query(
         }
 
         if has_terminal_tool {
+            break;
+        }
+
+        if abort_tool_loop {
             break;
         }
 
@@ -1963,4 +1976,57 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod repeat_guard_tests {
+    use super::*;
+
+    #[test]
+    fn repeat_guard_triggers_on_third_repeat() {
+        let mut guard = RepeatGuard::default();
+        let name = "store_memory";
+        let payload = serde_json::json!({"memory_type":"semantic","data":{}});
+        assert!(!guard.note_invalid(name, &payload));
+        assert!(!guard.note_invalid(name, &payload));
+        // Third identical invalid should trigger
+        assert!(guard.note_invalid(name, &payload));
+    }
+
+    #[test]
+    fn repeat_guard_resets_on_different_payload() {
+        let mut guard = RepeatGuard::default();
+        let name = "store_memory";
+        let p1 = serde_json::json!({"data":{}});
+        let p2 = serde_json::json!({"data":{"x":1}});
+        assert!(!guard.note_invalid(name, &p1));
+        assert!(!guard.note_invalid(name, &p1));
+        // different input hash resets counter
+        assert!(!guard.note_invalid(name, &p2));
+        // repeating new payload now accumulates again
+        assert!(!guard.note_invalid(name, &p2));
+        assert!(guard.note_invalid(name, &p2));
+    }
+}
+#[derive(Default)]
+struct RepeatGuard {
+    last_tool_signature: Option<(String, String)>,
+    repeat_fail_count: u8,
+}
+
+impl RepeatGuard {
+    fn note_invalid(&mut self, name: &str, input: &serde_json::Value) -> bool {
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(input.to_string().as_bytes());
+        let hex = format!("{:x}", hasher.finalize());
+        let sig = (name.to_string(), hex);
+        if self.last_tool_signature.as_ref() == Some(&sig) {
+            self.repeat_fail_count = self.repeat_fail_count.saturating_add(1);
+        } else {
+            self.repeat_fail_count = 0;
+        }
+        self.last_tool_signature = Some(sig);
+        self.repeat_fail_count >= 2
+    }
 }

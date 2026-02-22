@@ -296,7 +296,7 @@ impl DbAccess for Db {
     }
 
     fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String> {
-        let data: serde_json::Value = serde_json::from_str(data_json)?;
+        let mut data: serde_json::Value = serde_json::from_str(data_json)?;
         let id = crate::memory::types::generate_id(match memory_type {
             "episodic" => "ep",
             "semantic" => "sem",
@@ -307,6 +307,10 @@ impl DbAccess for Db {
         });
         match memory_type {
             "semantic" => {
+                // Ensure an id is present to satisfy struct deserialization
+                if let Some(obj) = data.as_object_mut() {
+                    obj.entry("id").or_insert(serde_json::Value::String(id.clone()));
+                }
                 let item = serde_json::from_value::<crate::memory::types::SemanticItem>(data)?;
                 self.conn_execute_batch(&format!(
                     "INSERT OR REPLACE INTO semantic_memory (id, name, category, summary, details, search_keywords) \
