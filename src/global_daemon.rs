@@ -170,6 +170,26 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         });
     }
 
+    // ── Hourly update checker for sidecar ─────────────────────────────────
+    {
+        std::thread::Builder::new()
+            .name("nshd-update-checker".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_secs(3600));
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+                if let Ok(rt) = rt {
+                    let _ = rt.block_on(async move {
+                        if let Ok(Some((url, version))) = crate::cliproxyapi::check_for_update().await {
+                            if crate::cliproxyapi::download_and_install(&url, &version).await.is_ok() {
+                                let _ = crate::cliproxyapi::stop_sidecar();
+                                let _ = crate::cliproxyapi::ensure_running();
+                            }
+                        }
+                    });
+                }
+            })?;
+    }
+
     #[cfg(unix)]
     {
         listener.set_nonblocking(true)?;
@@ -1415,6 +1435,14 @@ fn handle_global_connection(
 
     let (reply_tx, reply_rx) = mpsc::channel();
 
+    // Intercept sidecar management requests in the main thread, since they are
+    // fast and not DB-bound, to avoid unnecessary worker routing.
+    if let Some(resp) = handle_sidecar_requests_inline(&request) {
+        let _ = write_response(&stream, &resp);
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        return;
+    }
+
     let is_write = is_write_request(&request);
     let send_result = if is_write {
         write_tx
@@ -1454,6 +1482,54 @@ fn handle_global_connection(
         }
     }
     let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse> {
+    match req {
+        DaemonRequest::EnsureCLIProxyApi => Some(match crate::cliproxyapi::ensure_running() {
+            Ok(port) => DaemonResponse::ok_with_data(serde_json::json!({"port": port})),
+            Err(e) => DaemonResponse::error(e.to_string()),
+        }),
+        DaemonRequest::CLIProxyApiStatus => {
+            let running = crate::cliproxyapi::is_sidecar_running();
+            let port = crate::cliproxyapi::get_port();
+            let version = std::fs::read_to_string(crate::cliproxyapi::version_file()).ok();
+            let pid = std::fs::read_to_string(crate::cliproxyapi::pid_file())
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+            Some(DaemonResponse::ok_with_data(serde_json::json!({
+                "running": running,
+                "port": port,
+                "version": version,
+                "pid": pid,
+            })))
+        }
+        DaemonRequest::CLIProxyApiRestart => {
+            let _ = crate::cliproxyapi::stop_sidecar();
+            Some(match crate::cliproxyapi::ensure_running() {
+                Ok(port) => DaemonResponse::ok_with_data(serde_json::json!({"port": port})),
+                Err(e) => DaemonResponse::error(e.to_string()),
+            })
+        }
+        DaemonRequest::StopCLIProxyApi => Some(match crate::cliproxyapi::stop_sidecar() {
+            Ok(()) => DaemonResponse::ok(),
+            Err(e) => DaemonResponse::error(e.to_string()),
+        }),
+        DaemonRequest::CheckForUpdates => {
+            let _ = std::thread::Builder::new().name("nshd-update-check".into()).spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+                if let Ok(rt) = rt {
+                    let _ = rt.block_on(async move {
+                        if let Ok(Some((url, version))) = crate::cliproxyapi::check_for_update().await {
+                            let _ = crate::cliproxyapi::download_and_install(&url, &version).await;
+                        }
+                    });
+                }
+            });
+            Some(DaemonResponse::ok())
+        }
+        _ => None,
+    }
 }
 
 fn is_write_request(req: &DaemonRequest) -> bool {

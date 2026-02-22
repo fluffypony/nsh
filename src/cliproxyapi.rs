@@ -109,7 +109,8 @@ pub async fn check_for_update() -> Result<Option<(String, String)>> {
         None => return Ok(None),
     };
 
-    let assets = resp["assets"].as_array().unwrap_or(&vec![]);
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let assets = resp["assets"].as_array().unwrap_or(&empty);
     let asset = match assets.iter().find(|a| {
         a["name"].as_str().unwrap_or("").contains(&target)
     }) {

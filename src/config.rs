@@ -10,6 +10,8 @@ use zeroize::Zeroizing;
 #[serde(default)]
 pub struct Config {
     pub provider: ProviderConfig,
+    #[serde(default)]
+    pub provider_routing: ProviderRouting,
     pub context: ContextConfig,
     #[serde(default)]
     pub hints: HintsConfig,
@@ -35,6 +37,8 @@ pub struct Config {
     pub execution: ExecutionConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub cliproxyapi: CliProxyApiConfig,
 }
 
 pub const DEFAULT_SUPPRESSED_EXIT_CODES: &[i32] = &[130, 137, 141, 143];
@@ -149,6 +153,18 @@ pub struct ProviderConfig {
     pub openai: Option<ProviderAuth>,
     pub ollama: Option<ProviderAuth>,
     pub gemini: Option<ProviderAuth>,
+    // Additional providers
+    pub copilot: Option<ProviderAuth>,
+    pub kiro: Option<ProviderAuth>,
+    pub qwen: Option<ProviderAuth>,
+    pub iflow: Option<ProviderAuth>,
+    pub z_ai: Option<ProviderAuth>,
+    pub minimax: Option<ProviderAuth>,
+    pub kimi: Option<ProviderAuth>,
+    pub claude_sub: Option<ProviderAuth>,
+    pub codex_sub: Option<ProviderAuth>,
+    pub gemini_sub: Option<ProviderAuth>,
+    pub deepseek: Option<ProviderAuth>,
     pub timeout_seconds: u64,
 }
 
@@ -164,6 +180,17 @@ impl Default for ProviderConfig {
             openai: None,
             ollama: None,
             gemini: None,
+            copilot: None,
+            kiro: None,
+            qwen: None,
+            iflow: None,
+            z_ai: None,
+            minimax: None,
+            kimi: None,
+            claude_sub: None,
+            codex_sub: None,
+            gemini_sub: None,
+            deepseek: None,
             timeout_seconds: 120,
         }
     }
@@ -207,6 +234,11 @@ impl ProviderAuth {
             "anthropic" => "ANTHROPIC_API_KEY",
             "openai" => "OPENAI_API_KEY",
             "gemini" => "GEMINI_API_KEY",
+            "qwen" => "QWEN_API_KEY",
+            "z_ai" => "XAI_API_KEY",
+            "minimax" => "MINIMAX_API_KEY",
+            "kimi" => "MOONSHOT_API_KEY",
+            "deepseek" => "DEEPSEEK_API_KEY",
             _ => "",
         };
         if !env_var.is_empty() {
@@ -217,6 +249,52 @@ impl ProviderAuth {
             }
         }
         anyhow::bail!("No API key for {provider_name} (tried config, api_key_cmd, ${env_var})")
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ProviderRouting {
+    pub active: String,
+    pub via_cliproxy: bool,
+    pub configured_providers: Vec<String>,
+}
+
+impl Default for ProviderRouting {
+    fn default() -> Self {
+        Self { active: String::new(), via_cliproxy: false, configured_providers: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct CliProxyApiConfig {
+    pub enabled: bool,
+    pub port: Option<u16>,
+    pub binary_path: Option<String>,
+    pub auth_dir: Option<String>,
+    pub github_repo: String,
+    pub auto_update: bool,
+    pub auto_start: bool,
+    pub check_interval_secs: u64,
+    pub last_update_check: Option<String>,
+    pub installed_version: Option<String>,
+}
+
+impl Default for CliProxyApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: None,
+            binary_path: None,
+            auth_dir: None,
+            github_repo: "router-for-me/CLIProxyAPIPlus".into(),
+            auto_update: true,
+            auto_start: true,
+            check_interval_secs: 3600,
+            last_update_check: None,
+            installed_version: None,
+        }
     }
 }
 
@@ -335,6 +413,18 @@ pub const TOOL_BLOCKED_KEYS: &[&str] = &[
     "memory.enabled",
     "memory.incognito",
     "memory.ignore_paths",
+    // Provider API keys for new providers (tool access blocked)
+    "provider.copilot.api_key",
+    "provider.kiro.api_key",
+    "provider.qwen.api_key",
+    "provider.iflow.api_key",
+    "provider.z_ai.api_key",
+    "provider.minimax.api_key",
+    "provider.kimi.api_key",
+    "provider.claude_sub.api_key",
+    "provider.codex_sub.api_key",
+    "provider.gemini_sub.api_key",
+    "provider.deepseek.api_key",
 ];
 
 const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &["api_key", "api_key_cmd", "base_url"];
@@ -349,9 +439,14 @@ pub fn is_setting_protected(key: &str) -> bool {
     {
         return true;
     }
-    for blocked in TOOL_BLOCKED_KEYS {
-        if blocked.starts_with(key) && blocked[key.len()..].starts_with('.') {
-            return true;
+    // Only certain parent tables block all of their children via prefix rules
+    // (do not apply this to generic parents like "provider")
+    let parent_protected = ["execution", "tools", "redaction", "memory"];
+    if parent_protected.contains(&key) {
+        for blocked in TOOL_BLOCKED_KEYS {
+            if blocked.starts_with(key) && blocked[key.len()..].starts_with('.') {
+                return true;
+            }
         }
     }
     false
@@ -908,6 +1003,17 @@ pub fn build_config_xml(
         ("openai", &config.provider.openai),
         ("ollama", &config.provider.ollama),
         ("gemini", &config.provider.gemini),
+        ("copilot", &config.provider.copilot),
+        ("kiro", &config.provider.kiro),
+        ("qwen", &config.provider.qwen),
+        ("iflow", &config.provider.iflow),
+        ("z_ai", &config.provider.z_ai),
+        ("minimax", &config.provider.minimax),
+        ("kimi", &config.provider.kimi),
+        ("claude_sub", &config.provider.claude_sub),
+        ("codex_sub", &config.provider.codex_sub),
+        ("gemini_sub", &config.provider.gemini_sub),
+        ("deepseek", &config.provider.deepseek),
     ] {
         let has_key = auth
             .as_ref()

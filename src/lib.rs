@@ -4,6 +4,7 @@ pub mod ansi;
 pub mod audit;
 pub mod autoconfigure;
 pub mod cliproxyapi;
+pub mod update_checker;
 pub mod cli;
 pub mod coding_agent;
 pub mod config;
@@ -126,6 +127,26 @@ pub fn main_inner() -> anyhow::Result<()> {
         }
     }
 
+    if let Commands::CliProxy { action } = cli.command {
+        let req = match action.as_str() {
+            "ensure" => daemon::DaemonRequest::EnsureCLIProxyApi,
+            "status" => daemon::DaemonRequest::CLIProxyApiStatus,
+            "restart" => daemon::DaemonRequest::CLIProxyApiRestart,
+            "check-updates" => daemon::DaemonRequest::CheckForUpdates,
+            _ => {
+                eprintln!("Usage: nsh cliproxy <ensure|status|restart|check-updates>");
+                return Ok(());
+            }
+        };
+        let resp = send_to_global_or_fallback(&req)?;
+        match resp {
+            daemon::DaemonResponse::Ok { data: Some(d) } => println!("{}", d),
+            daemon::DaemonResponse::Ok { data: None } => println!("ok"),
+            daemon::DaemonResponse::Error { message } => eprintln!("nsh: {message}"),
+        }
+        return Ok(());
+    }
+
     // Do not handle Wrap here — shim handles it directly
 
     // Apply pending update for commands (no re-exec; shim delegates new core next run)
@@ -143,6 +164,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Wrap { .. } => unreachable!(),
         Commands::Nshd => unreachable!(),
+        Commands::CliProxy { .. } => unreachable!(),
 
         Commands::Init { shell, hash } => {
             if hash {
@@ -904,7 +926,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 DaemonSendAction::Record { session, .. } => session.clone(),
                 DaemonSendAction::Heartbeat { session } => session.clone(),
                 DaemonSendAction::CaptureMark { session } => session.clone(),
-                DaemonSendAction::Status => {
+                DaemonSendAction::Status | DaemonSendAction::CliProxyEnsure | DaemonSendAction::CliProxyStatus | DaemonSendAction::CliProxyRestart | DaemonSendAction::CheckUpdates => {
                     std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
                 }
             };
@@ -943,6 +965,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     session: session.clone(),
                 },
                 DaemonSendAction::Status => daemon::DaemonRequest::Status,
+                DaemonSendAction::CliProxyEnsure => daemon::DaemonRequest::EnsureCLIProxyApi,
+                DaemonSendAction::CliProxyStatus => daemon::DaemonRequest::CLIProxyApiStatus,
+                DaemonSendAction::CliProxyRestart => daemon::DaemonRequest::CLIProxyApiRestart,
+                DaemonSendAction::CheckUpdates => daemon::DaemonRequest::CheckForUpdates,
             };
 
             match daemon_client::try_send_request(&session_id, &request) {
@@ -983,7 +1009,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         });
                     }
                     DaemonSendAction::CaptureMark { .. } => {}
-                    DaemonSendAction::Status => {
+                    DaemonSendAction::Status | DaemonSendAction::CliProxyEnsure | DaemonSendAction::CliProxyStatus | DaemonSendAction::CliProxyRestart | DaemonSendAction::CheckUpdates => {
                         eprintln!("nsh: daemon not running");
                     }
                 },

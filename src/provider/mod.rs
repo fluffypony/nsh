@@ -151,6 +151,41 @@ pub fn create_provider(
                 provider_name.to_string(),
             )?))
         }
+        // BYOK third-party providers (to be completed with config entries)
+        "z_ai" | "minimax" | "kimi" | "deepseek" => {
+            // If configured with a direct API key, use it; otherwise fall back to local sidecar
+            let auth = match provider_name {
+                "z_ai" => config.provider.z_ai.as_ref(),
+                "minimax" => config.provider.minimax.as_ref(),
+                "kimi" => config.provider.kimi.as_ref(),
+                "deepseek" => config.provider.deepseek.as_ref(),
+                _ => None,
+            };
+            let (base_url, api_key) = if let Some(a) = auth {
+                if let Ok(k) = a.resolve_api_key(provider_name) {
+                    let url = a.base_url.clone().unwrap_or_else(|| match provider_name {
+                        "z_ai" => "https://api.x.ai/v1".into(),
+                        "minimax" => "https://api.minimaxi.chat/v1".into(),
+                        "kimi" => "https://api.moonshot.cn/v1".into(),
+                        "deepseek" => "https://api.deepseek.com/v1".into(),
+                        _ => "https://api.openai.com/v1".into(),
+                    });
+                    (url, k)
+                } else {
+                    (crate::provider::openai_compat::cliproxyapi_base_url(), zeroize::Zeroizing::new("nsh-internal".into()))
+                }
+            } else {
+                (crate::provider::openai_compat::cliproxyapi_base_url(), zeroize::Zeroizing::new("nsh-internal".into()))
+            };
+            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
+                api_key,
+                base_url,
+                config.provider.fallback_model.clone(),
+                vec![],
+                config.provider.timeout_seconds,
+                provider_name.to_string(),
+            )?))
+        }
         _ => anyhow::bail!("Unknown provider: {provider_name}"),
     }
 }

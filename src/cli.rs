@@ -189,6 +189,12 @@ pub enum Commands {
     /// Internal: run the global nsh database daemon
     #[command(name = "nshd", hide = true)]
     Nshd,
+
+    /// Manage the local CLIProxyAPI sidecar
+    CliProxy {
+        /// Action: ensure, status, restart, or check-updates
+        action: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -335,6 +341,14 @@ pub enum DaemonSendAction {
     },
     /// Get daemon status
     Status,
+    /// Ensure sidecar is running and print port
+    CliProxyEnsure,
+    /// Print sidecar status (running, port, version, pid)
+    CliProxyStatus,
+    /// Restart the sidecar process
+    CliProxyRestart,
+    /// Trigger an immediate sidecar update check
+    CheckUpdates,
 }
 
 #[derive(Subcommand)]

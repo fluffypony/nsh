@@ -111,6 +111,11 @@ impl OpenAICompatProvider {
     }
 }
 
+/// Read the CLIProxyAPI sidecar's local base URL or fall back to 8317.
+pub fn cliproxyapi_base_url() -> String {
+    crate::cliproxyapi::base_url().unwrap_or_else(|| "http://127.0.0.1:8317/v1".to_string())
+}
+
 fn is_retryable(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }

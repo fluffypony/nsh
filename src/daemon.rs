@@ -244,6 +244,12 @@ pub enum DaemonRequest {
     MemoryClearByType {
         memory_type: String,
     },
+    // Sidecar management
+    EnsureCLIProxyApi,
+    CLIProxyApiStatus,
+    CLIProxyApiRestart,
+    StopCLIProxyApi,
+    CheckForUpdates,
 }
 
 fn default_max_lines() -> usize {
@@ -449,6 +455,12 @@ pub fn handle_daemon_request(
         | DaemonRequest::MarkUnsummarizedForLlm
         | DaemonRequest::BackfillEntities
         | DaemonRequest::GenerateSummaries
+        // Sidecar/updates are not handled in per-session daemon
+        | DaemonRequest::EnsureCLIProxyApi
+        | DaemonRequest::CLIProxyApiStatus
+        | DaemonRequest::CLIProxyApiRestart
+        | DaemonRequest::StopCLIProxyApi
+        | DaemonRequest::CheckForUpdates
         | DaemonRequest::MemoryRecordEvent { .. }
         | DaemonRequest::MemoryFlushIngestion
         | DaemonRequest::MemoryIngestBatch { .. }
