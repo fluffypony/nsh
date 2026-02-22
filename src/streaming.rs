@@ -59,7 +59,14 @@ pub fn show_spinner() {
         let frames = spinner_frames();
         let mut i = 0;
         while SPINNER_ACTIVE.load(Ordering::SeqCst) {
-            eprint!("\r\x1b[2m{} thinking...\x1b[0m", frames[i % frames.len()]);
+            eprint!(
+                "\r  {}{} {}thinking…{}{}",
+                crate::tui::style::DIM_CYAN,
+                frames[i % frames.len()],
+                crate::tui::style::DIM,
+                crate::tui::style::RESET,
+                "\x1b[K"
+            );
             io::stderr().flush().ok();
             i += 1;
             std::thread::sleep(std::time::Duration::from_millis(80));
@@ -95,7 +102,14 @@ impl SpinnerGuard {
                 let frames = spinner_frames();
                 let mut i = 0;
                 while SPINNER_ACTIVE.load(Ordering::SeqCst) {
-                    eprint!("\r\x1b[2m{} thinking...\x1b[0m", frames[i % frames.len()]);
+                    eprint!(
+                        "\r  {}{} {}thinking…{}{}",
+                        crate::tui::style::DIM_CYAN,
+                        frames[i % frames.len()],
+                        crate::tui::style::DIM,
+                        crate::tui::style::RESET,
+                        "\x1b[K"
+                    );
                     std::io::Write::flush(&mut std::io::stderr()).ok();
                     i += 1;
                     std::thread::sleep(std::time::Duration::from_millis(80));

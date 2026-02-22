@@ -532,6 +532,16 @@ pub async fn handle_query(
                             is_error,
                         });
                     }
+                    "done" => {
+                        has_terminal_tool = true;
+                        let result = input["result"].as_str().unwrap_or("Task completed.");
+                        eprintln!(
+                            "\n  {}✓ {}{}",
+                            crate::tui::style::BOLD_CYAN,
+                            result,
+                            crate::tui::style::RESET
+                        );
+                    }
 
                     "ask_user" => {
                         ask_user_calls.push((id.clone(), name.clone(), input.clone()));
