@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::os::unix::net::UnixStream;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_DAEMON_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -192,8 +193,24 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
 #[cfg(unix)]
 fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
     // Before issuing the real request, check daemon version and attempt graceful restart once if mismatched.
-    // If restart does not yield a new version quickly, proceed with the current daemon.
-    let _ = ensure_daemon_version_matches();
+    // Skip during tests to avoid extra connections breaking single-accept mocks.
+    #[cfg(not(test))]
+    {
+        // Protect against re-entrancy because ensure_daemon_version_matches internally sends a request as well.
+        static ENSURE_VERSION_GUARD: AtomicBool = AtomicBool::new(false);
+        let entered = ENSURE_VERSION_GUARD
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        if entered {
+            // Also allow disabling via env for custom harnesses
+            let skip = std::env::var("NSH_SKIP_DAEMON_VERSION").is_ok()
+                || std::env::var("NSH_TEST_MODE").ok().as_deref() == Some("1");
+            if !skip {
+                let _ = ensure_daemon_version_matches();
+            }
+            ENSURE_VERSION_GUARD.store(false, Ordering::SeqCst);
+        }
+    }
 
     let socket_path = crate::daemon::global_daemon_socket_path();
     let mut stream = UnixStream::connect(&socket_path)?;

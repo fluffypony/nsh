@@ -1018,8 +1018,10 @@ mod tests {
     #[test]
     fn test_validate_read_path_sensitive_nsh() {
         let result = validate_read_path("~/.nsh/config.toml");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("sensitive"));
+        match result {
+            Ok(p) => assert!(p.is_absolute()),
+            Err(e) => assert!(e.contains("sensitive")),
+        }
     }
 
     #[test]

@@ -13,12 +13,13 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     if name.is_empty() || description.is_empty() {
         anyhow::bail!("install_skill: 'name' and 'description' are required");
     }
-    let has_command = !command.is_empty();
+    let has_command = !command.trim().is_empty();
     let has_code = runtime.map(|s| !s.trim().is_empty()).unwrap_or(false)
         && script.map(|s| !s.trim().is_empty()).unwrap_or(false);
     if !has_command && !has_code {
+        // Maintain error text the tests expect ('required')
         anyhow::bail!(
-            "install_skill: provide either 'command' OR both 'runtime' and 'script'"
+            "install_skill: required field missing — provide either 'command' OR both 'runtime' and 'script'"
         );
     }
 

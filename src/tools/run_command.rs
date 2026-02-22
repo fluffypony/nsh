@@ -24,7 +24,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line).unwrap_or(0);
                 if line.trim() != "yes" {
-                    return Ok("User denied dangerous command.".to_string());
+                    return Ok("DENIED: dangerous command not approved".to_string());
                 }
             }
             crate::security::RiskLevel::Elevated => {
@@ -41,7 +41,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 );
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_confirmation() {
-                    return Ok("User denied elevated command.".to_string());
+                    return Ok("DENIED: command not approved".to_string());
                 }
             }
             crate::security::RiskLevel::Safe => {
@@ -58,7 +58,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 );
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_confirmation() {
-                    return Ok("User denied command.".to_string());
+                    return Ok("DENIED: command not approved".to_string());
                 }
             }
         }

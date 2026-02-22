@@ -920,7 +920,7 @@ mod tests {
     ) {
         let nsh_dir = home_path.join(".nsh");
         std::fs::create_dir_all(&nsh_dir).expect("create ~/.nsh");
-        let socket_path = nsh_dir.join("nshd.sock");
+        let socket_path = crate::daemon::global_daemon_socket_path();
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path).expect("bind mock daemon socket");
 
@@ -939,6 +939,8 @@ mod tests {
                 .write_all(response_json.as_bytes())
                 .expect("write response");
             stream.flush().expect("flush response");
+            // keep the listener alive briefly to avoid ECONNREFUSED races in follow-up calls
+            std::thread::sleep(std::time::Duration::from_millis(50));
         });
 
         (rx, handle)

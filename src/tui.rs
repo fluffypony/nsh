@@ -2,7 +2,7 @@
 //! Centralizes terminal width detection, box drawing, word wrapping,
 //! ANSI color constants, and reusable display helpers.
 
-// keep empty: no direct writes needed here
+// Note: Avoid importing std::io::Write here to prevent unused import warnings.
 
 // ─── ANSI Style Constants ────────────────────────────────────────────
 
