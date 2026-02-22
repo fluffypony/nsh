@@ -993,6 +993,35 @@ impl Db {
         rows.collect()
     }
 
+    pub fn list_top_accessed_semantic(
+        &self,
+        limit: usize,
+    ) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, category, summary, details, search_keywords, \
+             access_count, last_accessed, created_at, updated_at \
+             FROM semantic_memory \
+             WHERE access_count > 0 \
+             ORDER BY access_count DESC, updated_at DESC \
+             LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(crate::memory::types::SemanticItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                category: row.get(2)?,
+                summary: row.get(3)?,
+                details: row.get(4)?,
+                search_keywords: row.get(5)?,
+                access_count: row.get(6)?,
+                last_accessed: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn list_all_semantic(&self) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, category, summary, details, search_keywords, \

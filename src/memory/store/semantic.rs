@@ -84,6 +84,21 @@ pub fn list_recent(conn: &Connection, limit: usize) -> anyhow::Result<Vec<Semant
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Return the most frequently accessed semantic items.  These represent
+/// user preferences and commonly-relevant facts that should be recalled
+/// on every query regardless of keyword match (MIRIX active retrieval).
+pub fn list_top_accessed(conn: &Connection, limit: usize) -> anyhow::Result<Vec<SemanticItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, category, summary, details, search_keywords, access_count, last_accessed, created_at, updated_at
+         FROM semantic_memory
+         WHERE access_count > 0
+         ORDER BY access_count DESC, updated_at DESC
+         LIMIT ?",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], row_to_item)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<SemanticItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, category, summary, details, search_keywords, access_count, last_accessed, created_at, updated_at
@@ -219,6 +234,31 @@ mod tests {
         assert_eq!(items[0].summary, "new summary");
         assert_eq!(items[0].details.as_ref().unwrap(), "new details");
         assert_eq!(items[0].search_keywords, "new keywords");
+    }
+
+    #[test]
+    fn list_top_accessed_returns_by_access_count() {
+        let conn = setup();
+        let id1 = insert_or_update(&conn, "low", "general", "low access", None, "low").unwrap();
+        let id2 =
+            insert_or_update(&conn, "high", "general", "high access", None, "high").unwrap();
+        // Give id2 more accesses
+        increment_access(&conn, &id2).unwrap();
+        increment_access(&conn, &id2).unwrap();
+        increment_access(&conn, &id1).unwrap();
+
+        let items = list_top_accessed(&conn, 10).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, "high", "highest access count first");
+        assert_eq!(items[1].name, "low");
+    }
+
+    #[test]
+    fn list_top_accessed_excludes_zero_access() {
+        let conn = setup();
+        insert_or_update(&conn, "never", "general", "never accessed", None, "never").unwrap();
+        let items = list_top_accessed(&conn, 10).unwrap();
+        assert!(items.is_empty(), "items with 0 accesses should be excluded");
     }
 
     #[test]

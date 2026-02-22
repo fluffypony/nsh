@@ -203,8 +203,18 @@ impl DbAccess for Db {
         &self,
         _ctx: &crate::memory::types::MemoryQueryContext,
     ) -> anyhow::Result<String> {
-        // Direct DbAccess is used only in limited contexts; return empty prompt here.
-        Ok(String::new())
+        // Direct path: build a minimal prompt with core memory + top semantic.
+        // Full retrieval is only available via the daemon, but MIRIX requires
+        // that core memory and high-access user preferences are always present.
+        let mut memories = crate::memory::types::RetrievedMemories::default();
+        if let Ok(core) = self.get_core_memory() {
+            memories.core = core;
+        }
+        if let Ok(top_sem) = self.list_top_accessed_semantic(5) {
+            memories.semantic = top_sem;
+        }
+        let prompt = crate::memory::retrieval::prompt_builder::build_memory_prompt(&memories);
+        Ok(prompt)
     }
 
     fn memory_search(

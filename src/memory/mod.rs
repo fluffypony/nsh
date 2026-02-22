@@ -204,12 +204,20 @@ impl MemorySystem {
         let since_ref = since_str.as_deref();
 
         // Get fade cutoff and core/recent data while holding the lock briefly
-        let (fade_cutoff, core, recent) = {
+        let (fade_cutoff, core, recent, top_semantic, cwd_resources) = {
             let conn = self.db.lock().unwrap();
             let cutoff = decay::get_fade_cutoff(&conn, self.config.fade_after_days)?;
             let core = store::core::get_all(&conn)?;
             let recent = store::episodic::list_recent(&conn, 10, Some(&cutoff), since_ref)?;
-            (cutoff, core, recent)
+            // MIRIX: always fetch high-access semantic items (user preferences)
+            let top_sem = store::semantic::list_top_accessed(&conn, 5).unwrap_or_default();
+            // MIRIX: always fetch CWD-relevant resources
+            let cwd_res = if let Some(ref cwd) = ctx.cwd {
+                store::resource::get_for_cwd(&conn, cwd, 3).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            (cutoff, core, recent, top_sem, cwd_res)
         };
 
         // Extract topics without holding the lock (may call LLM)
@@ -221,6 +229,9 @@ impl MemorySystem {
             keywords: keywords.clone(),
             core,
             recent_episodic: recent,
+            // MIRIX: seed with always-recalled semantic items and CWD resources
+            semantic: top_semantic,
+            resource: cwd_resources,
             ..Default::default()
         };
 
@@ -228,25 +239,32 @@ impl MemorySystem {
             let query_str = keywords.join(" ");
             memories.relevant_episodic =
                 store::episodic::search_bm25(&conn, &query_str, 10, Some(&fade_cutoff), since_ref)?;
-            memories.semantic = store::semantic::search_bm25(&conn, &query_str, 10)?;
-            memories.procedural = store::procedural::search_bm25(&conn, &query_str, 5)?;
-            memories.resource = store::resource::search_bm25(&conn, &query_str, 5)?;
 
-            if let Some(ref cwd) = ctx.cwd {
-                let cwd_resources = store::resource::get_for_cwd(&conn, cwd, 3)?;
-                for r in cwd_resources {
-                    if !memories.resource.iter().any(|existing| existing.id == r.id) {
-                        memories.resource.push(r);
-                    }
+            // Merge BM25 semantic results with always-recalled top-accessed items
+            let bm25_semantic = store::semantic::search_bm25(&conn, &query_str, 10)?;
+            for item in bm25_semantic {
+                if !memories.semantic.iter().any(|existing| existing.id == item.id) {
+                    memories.semantic.push(item);
+                }
+            }
+
+            memories.procedural = store::procedural::search_bm25(&conn, &query_str, 5)?;
+
+            // Merge BM25 resource results with always-recalled CWD resources
+            let bm25_resources = store::resource::search_bm25(&conn, &query_str, 5)?;
+            for r in bm25_resources {
+                if !memories.resource.iter().any(|existing| existing.id == r.id) {
+                    memories.resource.push(r);
                 }
             }
 
             memories.knowledge =
                 store::knowledge::search_bm25(&conn, &query_str, 5, Sensitivity::Medium)?;
+        }
 
-            for item in &memories.semantic {
-                let _ = store::semantic::increment_access(&conn, &item.id);
-            }
+        // Update access counts for all semantic items that will be shown
+        for item in &memories.semantic {
+            let _ = store::semantic::increment_access(&conn, &item.id);
         }
 
         drop(conn);
