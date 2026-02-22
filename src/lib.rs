@@ -1217,6 +1217,32 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             eprintln!("  Shell:      {shell}");
             eprintln!("  PTY active: {}", if pty_active { "yes" } else { "no" });
             eprintln!("  Global daemon: {global_daemon_status}");
+            // If daemon is running, fetch sidecar status for richer info
+            if daemon_client::is_global_daemon_running() {
+                if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) =
+                    send_to_global_or_fallback(&daemon::DaemonRequest::CLIProxyApiStatus)
+                {
+                    let running = d.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let port = d.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let version = d.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                    let last_check = d
+                        .get("last_update_check")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let last_status = d
+                        .get("last_update_status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if running {
+                        eprintln!("  Sidecar:    running on :{port} ({version})");
+                    } else {
+                        eprintln!("  Sidecar:    not running");
+                    }
+                    if !last_check.is_empty() || !last_status.is_empty() {
+                        eprintln!("  Updates:    last_check={last_check} status={last_status}");
+                    }
+                }
+            }
             eprintln!("  Provider:   {}", config.provider.default);
             eprintln!("  Model:      {}", config.provider.model);
             eprintln!("  DB path:    {}", db_path.display());

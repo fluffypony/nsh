@@ -177,15 +177,46 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             .spawn(|| loop {
                 std::thread::sleep(Duration::from_secs(3600));
                 let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+                // Defaults before attempt
+                let mut last_status: &str = "unknown";
+                let mut last_version: Option<String> = None;
                 if let Ok(rt) = rt {
                     let _ = rt.block_on(async move {
-                        if let Ok(Some((url, version))) = crate::cliproxyapi::check_for_update().await {
-                            if crate::cliproxyapi::download_and_install(&url, &version).await.is_ok() {
-                                let _ = crate::cliproxyapi::stop_sidecar();
-                                let _ = crate::cliproxyapi::ensure_running();
+                        match crate::cliproxyapi::check_for_update().await {
+                            Ok(Some((url, version))) => {
+                                match crate::cliproxyapi::download_and_install(&url, &version).await {
+                                    Ok(_) => {
+                                        let _ = crate::cliproxyapi::stop_sidecar();
+                                        let _ = crate::cliproxyapi::ensure_running();
+                                        last_status = "updated";
+                                        last_version = Some(version);
+                                    }
+                                    Err(_) => {
+                                        last_status = "failed";
+                                        last_version = Some(version);
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                last_status = "up_to_date";
+                                last_version = std::fs::read_to_string(crate::cliproxyapi::version_file()).ok();
+                            }
+                            Err(_) => {
+                                last_status = "error";
+                                last_version = std::fs::read_to_string(crate::cliproxyapi::version_file()).ok();
                             }
                         }
                     });
+                }
+
+                // Record results in DB meta if possible, avoiding any migrations
+                if let Ok(db) = crate::db::Db::open() {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = db.set_meta("cliproxyapi_last_update_check", &now);
+                    let _ = db.set_meta("cliproxyapi_last_update_status", last_status);
+                    if let Some(v) = last_version {
+                        let _ = db.set_meta("cliproxyapi_installed_version", v.trim());
+                    }
                 }
             })?;
     }
@@ -1497,11 +1528,24 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
             let pid = std::fs::read_to_string(crate::cliproxyapi::pid_file())
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok());
+            // Read last update info from DB meta if present
+            let (last_check, last_status, installed_version) = match crate::db::Db::open_readonly() {
+                Ok(db) => {
+                    let lc = db.get_meta("cliproxyapi_last_update_check").ok().flatten();
+                    let ls = db.get_meta("cliproxyapi_last_update_status").ok().flatten();
+                    let iv = db.get_meta("cliproxyapi_installed_version").ok().flatten();
+                    (lc, ls, iv)
+                }
+                Err(_) => (None, None, None),
+            };
             Some(DaemonResponse::ok_with_data(serde_json::json!({
                 "running": running,
                 "port": port,
                 "version": version,
                 "pid": pid,
+                "last_update_check": last_check,
+                "last_update_status": last_status,
+                "installed_version": installed_version,
             })))
         }
         DaemonRequest::CLIProxyApiRestart => {
