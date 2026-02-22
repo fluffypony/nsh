@@ -1210,7 +1210,19 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
 
             eprintln!("nsh status:");
-            eprintln!("  Version:    {build_version}");
+            eprintln!("  Client:     {build_version}");
+            // Show daemon version
+            if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) =
+                daemon_client::send_to_global(&daemon::DaemonRequest::Status)
+            {
+                let dv = d.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                let bv = d.get("build_version").and_then(|v| v.as_str()).unwrap_or("");
+                if bv.is_empty() {
+                    eprintln!("  Daemon:     v{dv}");
+                } else {
+                    eprintln!("  Daemon:     {bv} (core {dv})");
+                }
+            }
             eprintln!("  Session:    {session_id}");
             if let Some(label) = session_label {
                 eprintln!("  Label:      {label}");
