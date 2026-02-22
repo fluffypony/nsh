@@ -114,3 +114,6 @@ opt-level = "z"
 tempfile = "3"
 serial_test = "3"
 wiremock = "0.6"
+
+[features]
+global-daemon-test = []

@@ -177,43 +177,40 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             .spawn(|| loop {
                 std::thread::sleep(Duration::from_secs(3600));
                 let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
-                // Defaults before attempt
-                let mut last_status: &str = "unknown";
+                let mut last_status = String::from("unknown");
                 let mut last_version: Option<String> = None;
                 if let Ok(rt) = rt {
-                    let _ = rt.block_on(async move {
+                    let (status, version_opt) = rt.block_on(async move {
                         match crate::cliproxyapi::check_for_update().await {
                             Ok(Some((url, version))) => {
                                 match crate::cliproxyapi::download_and_install(&url, &version).await {
                                     Ok(_) => {
                                         let _ = crate::cliproxyapi::stop_sidecar();
                                         let _ = crate::cliproxyapi::ensure_running();
-                                        last_status = "updated";
-                                        last_version = Some(version);
+                                        ("updated".to_string(), Some(version))
                                     }
-                                    Err(_) => {
-                                        last_status = "failed";
-                                        last_version = Some(version);
-                                    }
+                                    Err(_) => ("failed".to_string(), Some(version)),
                                 }
                             }
-                            Ok(None) => {
-                                last_status = "up_to_date";
-                                last_version = std::fs::read_to_string(crate::cliproxyapi::version_file()).ok();
-                            }
-                            Err(_) => {
-                                last_status = "error";
-                                last_version = std::fs::read_to_string(crate::cliproxyapi::version_file()).ok();
-                            }
+                            Ok(None) => (
+                                "up_to_date".to_string(),
+                                std::fs::read_to_string(crate::cliproxyapi::version_file()).ok(),
+                            ),
+                            Err(_) => (
+                                "error".to_string(),
+                                std::fs::read_to_string(crate::cliproxyapi::version_file()).ok(),
+                            ),
                         }
                     });
+                    last_status = status;
+                    last_version = version_opt;
                 }
 
                 // Record results in DB meta if possible, avoiding any migrations
                 if let Ok(db) = crate::db::Db::open() {
                     let now = chrono::Utc::now().to_rfc3339();
                     let _ = db.set_meta("cliproxyapi_last_update_check", &now);
-                    let _ = db.set_meta("cliproxyapi_last_update_status", last_status);
+                    let _ = db.set_meta("cliproxyapi_last_update_status", &last_status);
                     if let Some(v) = last_version {
                         let _ = db.set_meta("cliproxyapi_installed_version", v.trim());
                     }
@@ -1573,6 +1570,14 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
             Some(DaemonResponse::ok())
         }
         _ => None,
+    }
+}
+
+// Expose a minimal test-only hook for integration tests to fetch sidecar status
+#[cfg(any(test, feature = "global-daemon-test"))]
+pub mod test_helpers {
+    pub fn sidecar_status_inline() -> Option<crate::daemon::DaemonResponse> {
+        super::handle_sidecar_requests_inline(&crate::daemon::DaemonRequest::CLIProxyApiStatus)
     }
 }
 

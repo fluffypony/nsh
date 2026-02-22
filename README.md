@@ -341,7 +341,7 @@ Invoke-Expression (nsh init powershell)
 | `nsh query [--think] [--private] [--json] <words...>` | Ask the assistant |
 | `nsh chat` | Interactive REPL chat mode |
 | `nsh history search <query> [--limit N]` | Full-text search command history |
-| `nsh status` | Show runtime state |
+| `nsh status` | Show runtime state (includes sidecar status and last update check) |
 | `nsh doctor [capture] [--no-prune] [--no-vacuum] [--prune-days D]` | DB integrity check or capture-health diagnostic |
 | `nsh config [path\|show\|edit]` | View or edit configuration |
 | `nsh reset` | Clear session conversation context |
@@ -576,6 +576,23 @@ Use one TXT record per target line.
 
 ```bash
 nsh status                    # inspect session/provider/db state
+
+When the global daemon is running, `nsh status` also reports the CLIProxyAPI sidecar state and update info:
+
+```
+$ nsh status
+  Version:    0.9.2
+  Session:    7YQ2GNRQ
+  Shell:      /bin/zsh
+  PTY active: yes
+  Global daemon: running
+  Sidecar:    running on :8317 (6.6.80)
+  Updates:    last_check=2026-02-22T12:00:03Z status=up_to_date
+  Provider:   openrouter
+  Model:      google/gemini-2.5-flash
+  DB path:    /Users/alice/.nsh/nsh.db
+  DB size:    8.4 MB
+```
 nsh doctor                    # integrity check + cleanup
 nsh doctor capture            # verify whether per-command output capture is active
 nsh config show               # verify config
