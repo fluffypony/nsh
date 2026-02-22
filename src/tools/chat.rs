@@ -20,8 +20,10 @@ pub fn execute(
             });
             eprintln!("{}", serde_json::to_string(&event)?);
         } else {
+            eprintln!("");
             let skin = termimad::MadSkin::default();
             skin.write_text_on(&mut std::io::stderr(), response)?;
+            eprintln!("");
         }
     }
 

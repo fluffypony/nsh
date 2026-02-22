@@ -43,6 +43,7 @@ pub mod streaming;
 pub mod summary;
 pub mod tools;
 pub mod util;
+pub mod tui;
 
 pub mod shim;
 

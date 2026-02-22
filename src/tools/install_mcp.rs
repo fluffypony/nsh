@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> anyhow::Result<()> {
+pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
     let transport = input["transport"].as_str().unwrap_or("stdio");
     let command = input["command"].as_str();
@@ -97,7 +97,7 @@ pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> an
 
     if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
         eprintln!("Error: resulting config would be invalid: {e}");
-        return Ok(());
+        return Ok(format!("Error: resulting config would be invalid: {}", e));
     }
 
     let bold_yellow = "\x1b[1;33m";
@@ -125,7 +125,7 @@ pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> an
     io::stdin().read_line(&mut answer)?;
     if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
         eprintln!("{dim}MCP server installation declined{reset}");
-        return Ok(());
+        return Ok("Config change declined".to_string());
     }
 
     if config_path.exists() {
@@ -144,7 +144,7 @@ pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> an
 
     eprintln!("{green}✓ MCP server '{name}' added to config{reset}");
     eprintln!("{dim}Restart your shell or run a new query for it to become active.{reset}");
-    Ok(())
+    Ok("MCP server configuration applied".to_string())
 }
 
 #[cfg(test)]

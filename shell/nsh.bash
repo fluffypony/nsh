@@ -207,7 +207,7 @@ __nsh_prompt_command() {
                 case "$cmd" in
                     grep*|test*|"["*|diff*|cmp*|nsh*|ssh*|scp*|sftp*|rsync*|mosh*|ping*|curl*|wget*|ftp*|telnet*|nc*|exit*|logout*|fg*|bg*) ;;
                     *)
-                        printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix or ? ignore\x1b[0m\n' "$exit_code" >&2
+                        printf '\x1b[2m  nsh: command exited %d · ? fix · ? ignore\x1b[0m\n' "$exit_code" >&2
                         ;;
                 esac
             fi

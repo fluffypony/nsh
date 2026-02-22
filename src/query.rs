@@ -491,16 +491,46 @@ pub async fn handle_query(
                         }
                     }
                     "manage_config" => {
-                        has_terminal_tool = true;
-                        tools::manage_config::execute(input)?;
+                        let result = tools::manage_config::execute(input);
+                        let (content, is_error) = match result {
+                            Ok(msg) => (msg, false),
+                            Err(e) => (format!("Error: {e}"), true),
+                        };
+                        let wrapped =
+                            crate::security::wrap_tool_result(name, &content, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: wrapped,
+                            is_error,
+                        });
                     }
                     "install_skill" => {
-                        has_terminal_tool = true;
-                        tools::install_skill::execute(input)?;
+                        let result = tools::install_skill::execute(input);
+                        let (content, is_error) = match result {
+                            Ok(msg) => (msg, false),
+                            Err(e) => (format!("Error: {e}"), true),
+                        };
+                        let wrapped =
+                            crate::security::wrap_tool_result(name, &content, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: wrapped,
+                            is_error,
+                        });
                     }
                     "install_mcp_server" => {
-                        has_terminal_tool = true;
-                        tools::install_mcp::execute(input, config)?;
+                        let result = tools::install_mcp::execute(input, config);
+                        let (content, is_error) = match result {
+                            Ok(msg) => (msg, false),
+                            Err(e) => (format!("Error: {e}"), true),
+                        };
+                        let wrapped =
+                            crate::security::wrap_tool_result(name, &content, &boundary);
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: wrapped,
+                            is_error,
+                        });
                     }
 
                     "ask_user" => {
@@ -615,7 +645,7 @@ pub async fn handle_query(
             let mut futs: Vec<ToolFuture> = Vec::new();
 
             for (id, name, input) in parallel_calls {
-                eprintln!("  \x1b[2m↳ {}\x1b[0m", describe_tool_action(&name, &input));
+                crate::tui::tool_status(&describe_tool_action(&name, &input));
                 match name.as_str() {
                     "search_history" => {
                         let (content, is_error) =
@@ -642,6 +672,15 @@ pub async fn handle_query(
                         let ws_cfg = config.clone();
                         futs.push(Box::pin(async move {
                             let r = tools::web_search::execute(&q, &ws_cfg).await;
+                            let result = r.map_err(|e| format!("{e}"));
+                            (id, name, result)
+                        }));
+                    }
+                    "github" => {
+                        let input_clone = input.clone();
+                        let cfg_clone = config.clone();
+                        futs.push(Box::pin(async move {
+                            let r = crate::tools::github::execute(&input_clone, &cfg_clone).await;
                             let result = r.map_err(|e| format!("{e}"));
                             (id, name, result)
                         }));
@@ -1922,6 +1961,16 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
             let q = input["query"].as_str().unwrap_or("...");
             format!("searching \"{q}\"")
         }
+        "github" => {
+            let action = input["action"].as_str().unwrap_or("?");
+            let repo = input["repo"].as_str().unwrap_or("?");
+            let goal = input["goal"].as_str().unwrap_or("");
+            if goal.is_empty() {
+                format!("github {action} on {repo}")
+            } else {
+                format!("github {action} on {repo} (goal: {goal})")
+            }
+        }
         "man_page" => {
             let cmd = input["command"].as_str().unwrap_or("?");
             format!("reading man page: {cmd}")
@@ -1975,6 +2024,7 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "code" => &["task"],
         "run_command" => &["command", "reason"],
         "web_search" => &["query"],
+        "github" => &["action", "repo"],
         "ask_user" => &["question"],
         "man_page" => &["command"],
         "manage_config" => &["action", "key"],

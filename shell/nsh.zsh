@@ -328,9 +328,9 @@ __nsh_precmd() {
                                 for pattern in ${(s: :)NSH_HINT_IGNORE}; do
                                     [[ "$cmd" == ${~pattern} ]] && _skip=1 && break
                                 done
-                                (( _skip )) || printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix or ? ignore\x1b[0m\n' "$exit_code" >&2
+                                (( _skip )) || printf '\x1b[2m  nsh: command exited %d · ? fix · ? ignore\x1b[0m\n' "$exit_code" >&2
                             else
-                                printf '\x1b[2m  nsh: command failed (exit %d) — type ? fix or ? ignore\x1b[0m\n' "$exit_code" >&2
+                                printf '\x1b[2m  nsh: command exited %d · ? fix · ? ignore\x1b[0m\n' "$exit_code" >&2
                             fi
                             ;;
                     esac

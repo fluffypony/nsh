@@ -15,6 +15,7 @@ pub mod run_command;
 pub mod search_history;
 pub mod web_search;
 pub mod write_file;
+pub mod github;
 
 use std::path::PathBuf;
 
@@ -393,11 +394,52 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["query"]
             }),
         },
+        // ── GitHub Tool ──────────────────────────────────────────────
+        ToolDefinition {
+            name: "github".into(),
+            description: "Access public GitHub repositories without authentication. \
+                          Can fetch the README (with a goal to auto-summarize), \
+                          list the repo file tree, or fetch a specific file. \
+                          Prefer this over web_search when a GitHub repo URL or name is known."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["fetch_readme", "fetch_tree", "fetch_file"],
+                        "description": "What to fetch"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Repository in 'owner/repo' format or a full GitHub URL"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File path within the repo (required for fetch_file)"
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "For fetch_readme: a specific question to answer \
+                                        (e.g. 'how do we install this?'). The README will be \
+                                        summarized to only include relevant info, saving context."
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "For fetch_tree: max directory depth (default 2, max 5)"
+                    }
+                },
+                "required": ["action", "repo"]
+            }),
+        },
         ToolDefinition {
             name: "run_command".into(),
-            description: "Execute a safe, read-only command \
-                          WITHOUT user approval. Only for \
-                          investigative commands on the allowlist."
+            description: "Execute a shell command in the background and return its output. \
+                          THIS IS YOUR PRIMARY INVESTIGATIVE AND EXECUTION TOOL. Use it to \
+                          check versions, compile code, run tests, install packages, and \
+                          perform any intermediate steps. You can call this multiple times \
+                          to pursue a goal autonomously. The user will be prompted to approve \
+                          commands not in the strict allowlist."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -692,6 +734,25 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["name"]
+            }),
+        },
+        // ── Done Tool ────────────────────────────────────────────────
+        ToolDefinition {
+            name: "done".into(),
+            description: "Signal that an autonomous multi-step task is complete. \
+                          Use this when you have finished investigating, executing, \
+                          and verifying — and there is no shell command to leave at \
+                          the user's prompt. Provide a concise result summary."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "string",
+                        "description": "Summary of what was achieved"
+                    }
+                },
+                "required": ["result"]
             }),
         },
         // ── Memory tools ─────────────────────────────────

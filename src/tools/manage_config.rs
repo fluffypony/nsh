@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
+pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let action = input["action"].as_str().unwrap_or("set");
     let key = input["key"].as_str().unwrap_or("");
     let value = input.get("value");
@@ -14,7 +14,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             "\x1b[1;31m✗ Setting '{key}' is security-sensitive and cannot be changed via AI tool call.\x1b[0m"
         );
         eprintln!("\x1b[2m  Edit manually: nsh config edit\x1b[0m");
-        return Ok(());
+        return Ok("User declined or protected setting".to_string());
     }
 
     let config_path = crate::config::Config::path();
@@ -49,7 +49,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
                 eprintln!("{red}✗ Invalid configuration: {e}{reset}");
                 eprintln!("{dim}The change was not applied.{reset}");
-                return Ok(());
+                return Ok("Config change declined".to_string());
             }
 
             eprintln!("{bold_yellow}nsh config change:{reset}");
@@ -68,17 +68,18 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             io::stdin().read_line(&mut answer)?;
             if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
                 eprintln!("{dim}config change declined{reset}");
-                return Ok(());
+                return Ok("Config change declined".to_string());
             }
 
             backup_config(&config_path)?;
             write_config(&config_path, &new_content)?;
             eprintln!("{green}✓ config updated: {key}{reset}");
+            return Ok(format!("Successfully applied config change: set {}", key));
         }
         "remove" => {
             if !remove_toml_value(&mut doc, key)? {
                 eprintln!("Key not found: {key}");
-                return Ok(());
+                return Ok("Config change declined".to_string());
             }
 
             let new_content = doc.to_string();
@@ -86,7 +87,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
                 eprintln!("{red}✗ Invalid configuration: {e}{reset}");
                 eprintln!("{dim}The change was not applied.{reset}");
-                return Ok(());
+                return Ok("Config change declined".to_string());
             }
 
             eprintln!("{bold_yellow}nsh config removal:{reset}");
@@ -99,19 +100,19 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
             io::stdin().read_line(&mut answer)?;
             if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
                 eprintln!("{dim}config change declined{reset}");
-                return Ok(());
+                return Ok("Config change declined".to_string());
             }
 
             backup_config(&config_path)?;
             write_config(&config_path, &new_content)?;
             eprintln!("{green}✓ config key removed: {key}{reset}");
+            return Ok(format!("Successfully removed config key: {}", key));
         }
         _ => {
             anyhow::bail!("manage_config: unknown action '{action}'. Use 'set' or 'remove'.");
         }
     }
 
-    Ok(())
 }
 
 fn backup_config(path: &std::path::Path) -> anyhow::Result<()> {

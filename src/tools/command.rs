@@ -733,34 +733,24 @@ fn shell_quote_if_needed(value: &str) -> String {
 }
 
 fn display_command_preview(command: &str, explanation: &str, risk: &crate::security::RiskLevel) {
-    let color = match risk {
-        RiskLevel::Dangerous => "\x1b[1;31m",
-        RiskLevel::Elevated => "\x1b[1;33m",
-        RiskLevel::Safe => "\x1b[2m",
+    use crate::tui::{self, BoxStyle, ContentLine};
+    let box_style = match risk {
+        RiskLevel::Dangerous => BoxStyle::Dangerous,
+        RiskLevel::Elevated => BoxStyle::Elevated,
+        RiskLevel::Safe => BoxStyle::Safe,
     };
-    let reset = "\x1b[0m";
-    let dim = "\x1b[2m";
-
-    let content_width = command.len().max(explanation.len()).clamp(20, 60);
-    let box_width = content_width + 4;
-
-    let top_label = " nsh ";
-    let top_line = format!(
-        "╭─{top_label}{:─<width$}╮",
-        "",
-        width = box_width - top_label.len() - 1
-    );
-    let bottom_line = format!("╰{:─<width$}╯", "", width = box_width + 1);
-
-    eprintln!("{color}{top_line}{reset}");
+    let label = match risk {
+        RiskLevel::Dangerous => "⚠ DANGEROUS",
+        RiskLevel::Elevated => "⚡ ELEVATED",
+        RiskLevel::Safe => "nsh",
+    };
+    let mut content = Vec::new();
     if !explanation.is_empty() {
-        for line in explanation.lines() {
-            eprintln!("{color}│{reset} {dim}{line}{reset}");
-        }
-        eprintln!("{color}│{reset}");
+        content.push(ContentLine { text: explanation.to_string(), dim: true });
+        content.push(ContentLine { text: String::new(), dim: true });
     }
-    eprintln!("{color}│{reset} $ {command}");
-    eprintln!("{color}{bottom_line}{reset}");
+    content.push(ContentLine { text: format!("$ {}", command), dim: false });
+    tui::render_box(label, &content, box_style);
     eprintln!();
 }
 

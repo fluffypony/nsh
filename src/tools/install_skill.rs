@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
+pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
     let description = input["description"].as_str().unwrap_or("");
     let command = input["command"].as_str().unwrap_or("");
@@ -92,7 +92,7 @@ terminal = {terminal}
     io::stdin().read_line(&mut answer)?;
     if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
         eprintln!("{dim}skill installation declined{reset}");
-        return Ok(());
+        return Ok("Config change declined".to_string());
     }
 
     std::fs::create_dir_all(&skills_dir)?;
@@ -102,7 +102,7 @@ terminal = {terminal}
         skill_path.display()
     );
 
-    Ok(())
+    Ok(format!("Successfully installed skill '{}'", name))
 }
 
 #[cfg(test)]

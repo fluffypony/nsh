@@ -4,12 +4,64 @@ use std::process::Command;
 
 pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
     if !config.tools.is_command_allowed(cmd) {
-        return Ok(format!(
-            "DENIED: '{}' is not in the run_command allowlist. \
-             Use the 'command' tool instead to let the user \
-             approve it.\nAllowed: {:?}",
-            cmd, config.tools.run_command_allowlist
-        ));
+        // Assess risk and prompt the user for approval when not allowlisted
+        let (risk, reason) = crate::security::assess_command(cmd);
+        match risk {
+            crate::security::RiskLevel::Dangerous => {
+                eprintln!(
+                    "\n  {}⚠ DANGEROUS background command requested:{} {}",
+                    crate::tui::style::BOLD_RED,
+                    crate::tui::style::RESET,
+                    reason.unwrap_or("")
+                );
+                eprintln!("  $ {}", cmd);
+                eprint!(
+                    "  {}Type 'yes' to proceed: {}",
+                    crate::tui::style::BOLD_RED,
+                    crate::tui::style::RESET
+                );
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).unwrap_or(0);
+                if line.trim() != "yes" {
+                    return Ok("User denied dangerous command.".to_string());
+                }
+            }
+            crate::security::RiskLevel::Elevated => {
+                eprintln!(
+                    "\n  {}⚡ Agent wants to run a background command:{}",
+                    crate::tui::style::BOLD_YELLOW,
+                    crate::tui::style::RESET
+                );
+                eprintln!("  $ {}", cmd);
+                eprint!(
+                    "  {}Allow? [y/N]{} ",
+                    crate::tui::style::BOLD_YELLOW,
+                    crate::tui::style::RESET
+                );
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                if !crate::tools::read_tty_confirmation() {
+                    return Ok("User denied elevated command.".to_string());
+                }
+            }
+            crate::security::RiskLevel::Safe => {
+                eprintln!(
+                    "\n  {}Agent wants to run:{} $ {}",
+                    crate::tui::style::DIM,
+                    crate::tui::style::RESET,
+                    cmd
+                );
+                eprint!(
+                    "  {}Allow? [Y/n]{} ",
+                    crate::tui::style::BOLD_YELLOW,
+                    crate::tui::style::RESET
+                );
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                if !crate::tools::read_tty_confirmation() {
+                    return Ok("User denied command.".to_string());
+                }
+            }
+        }
     }
 
     let sensitive_paths = [
