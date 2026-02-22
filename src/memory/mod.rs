@@ -262,13 +262,14 @@ impl MemorySystem {
                 store::knowledge::search_bm25(&conn, &query_str, 5, Sensitivity::Medium)?;
         }
 
-        // Update access counts for all semantic items that will be shown
+        // Enforce budget first, then increment access counts only for
+        // items that survive truncation (MIRIX: track what's actually shown)
+        retrieval::ranker::enforce_budget(&mut memories, 4000);
         for item in &memories.semantic {
             let _ = store::semantic::increment_access(&conn, &item.id);
         }
 
         drop(conn);
-        retrieval::ranker::enforce_budget(&mut memories, 4000);
         Ok(memories)
     }
 

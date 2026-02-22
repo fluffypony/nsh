@@ -84,14 +84,14 @@ pub fn list_recent(conn: &Connection, limit: usize) -> anyhow::Result<Vec<Semant
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-/// Return the most frequently accessed semantic items.  These represent
-/// user preferences and commonly-relevant facts that should be recalled
-/// on every query regardless of keyword match (MIRIX active retrieval).
+/// Return the most important semantic items for always-on recall.
+/// Prioritises frequently accessed items, then falls back to the most
+/// recently updated items so that newly created preferences are also
+/// surfaced (MIRIX active retrieval — avoids cold-start gap).
 pub fn list_top_accessed(conn: &Connection, limit: usize) -> anyhow::Result<Vec<SemanticItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, category, summary, details, search_keywords, access_count, last_accessed, created_at, updated_at
          FROM semantic_memory
-         WHERE access_count > 0
          ORDER BY access_count DESC, updated_at DESC
          LIMIT ?",
     )?;
@@ -254,11 +254,12 @@ mod tests {
     }
 
     #[test]
-    fn list_top_accessed_excludes_zero_access() {
+    fn list_top_accessed_includes_new_items() {
         let conn = setup();
-        insert_or_update(&conn, "never", "general", "never accessed", None, "never").unwrap();
+        insert_or_update(&conn, "new_pref", "general", "new preference", None, "pref").unwrap();
         let items = list_top_accessed(&conn, 10).unwrap();
-        assert!(items.is_empty(), "items with 0 accesses should be excluded");
+        assert_eq!(items.len(), 1, "new items should be included for cold-start");
+        assert_eq!(items[0].name, "new_pref");
     }
 
     #[test]

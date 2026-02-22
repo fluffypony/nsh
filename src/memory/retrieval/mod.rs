@@ -106,7 +106,9 @@ pub async fn retrieve_for_query(
         )?;
     }
 
-    // Update access counts for all semantic items that will be shown
+    // Enforce budget first, then increment access counts only for
+    // items that survive truncation (MIRIX: track what's actually shown)
+    ranker::enforce_budget(&mut memories, 4000);
     for item in &memories.semantic {
         let _ = crate::memory::store::semantic::increment_access(conn, &item.id);
     }

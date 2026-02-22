@@ -1001,7 +1001,6 @@ impl Db {
             "SELECT id, name, category, summary, details, search_keywords, \
              access_count, last_accessed, created_at, updated_at \
              FROM semantic_memory \
-             WHERE access_count > 0 \
              ORDER BY access_count DESC, updated_at DESC \
              LIMIT ?",
         )?;
