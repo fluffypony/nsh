@@ -17,6 +17,7 @@ pub mod web_search;
 pub mod write_file;
 pub mod github;
 pub mod uninstall_skill;
+pub mod skill_exists;
 
 use std::path::PathBuf;
 
@@ -769,6 +770,20 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "type": "integer",
                         "description": "Request timeout",
                         "default": 30
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "skill_exists".into(),
+            description: "Check whether a skill is installed by name. Returns a human-readable status including TOML and docs paths if present.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name (alphanumeric + underscores)"
                     }
                 },
                 "required": ["name"]
