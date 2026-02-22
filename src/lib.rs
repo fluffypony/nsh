@@ -151,7 +151,19 @@ pub fn main_inner() -> anyhow::Result<()> {
     // Do not handle Wrap here — shim handles it directly
 
     // Apply pending update for commands (no re-exec; shim delegates new core next run)
+    // If hooks were updated as part of the release, write a marker so the shell hook prints a refresh notice immediately.
     apply_pending_update(false);
+    let nsh_dir = config::Config::nsh_dir();
+    let hook_hash_on_disk = std::process::Command::new("nsh")
+        .args(["init", "zsh", "--hash"]) // zsh hash is representative; we only need a change signal
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default();
+    // Compare against embedded hook hash; if different, drop a one-shot notice
+    if !hook_hash_on_disk.trim().is_empty() && hook_hash_on_disk.trim() != env!("NSH_HOOK_HASH") {
+        let _ = std::fs::write(nsh_dir.join("update_notice"), "hooks_updated");
+    }
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

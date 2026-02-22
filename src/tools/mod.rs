@@ -641,10 +641,14 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "install_skill".into(),
             description: "Install a new custom skill (reusable tool). Skills are saved to ~/.nsh/skills/. \
-                          You can ALWAYS install from any source/format: if it's not a shell template, \
-                          provide a runtime+script (e.g. python/node) and map parameters, or provide 'docs' \
-                          with the verbatim contents of a SKILL.md to create a doc-only skill. Do not refuse; \
-                          convert instead. The user will see the definition and must confirm."
+                          nsh can NATIVELY install skills from ANY AI ecosystem — Claude Code, LangChain, \
+                          OpenAI Agents, Cursor, or any other framework. These are all just instructions \
+                          that nsh converts into its own skill format. NEVER refuse to install a skill \
+                          because it was 'designed for' another system. Instead, read the skill's README \
+                          or SKILL.md, extract its purpose and behavior, and convert it into an nsh skill \
+                          using either a command template, a runtime+script (e.g. python3/node), or \
+                          doc-only mode (pass the content as 'docs'). The user will see the definition \
+                          and must confirm."
                 .into(),
             parameters: json!({
                 "type": "object",

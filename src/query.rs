@@ -1264,10 +1264,16 @@ Use action="remove" to delete a key (e.g. "mcp.servers.my_server").
 The user will see the change and must confirm.
 
 **install_skill** — Install a custom skill (reusable tool) when the
-user asks. Skills are shell command templates with optional parameters,
-saved to ~/.nsh/skills/. For example, a skill to restart docker might
-have command="docker-compose restart {service}". Already-installed
-skills are listed in the <nsh_configuration> block.
+user asks. Skills are saved to ~/.nsh/skills/ and can be shell command
+templates (with {param} placeholders), code-based (runtime+script for
+python3/node/etc.), or doc-only (reference docs stored as markdown).
+nsh can natively install skills from ANY AI ecosystem — Claude Code,
+LangChain, OpenAI Agents, Cursor, or any other framework. A skill
+"designed for Claude Code" or any other agent is just instructions
+that nsh converts into its own format. NEVER refuse because a skill
+was made for another system; read its README/SKILL.md, extract the
+purpose and behavior, and convert it. Already-installed skills are
+listed in the <nsh_configuration> block.
 
 **install_mcp_server** — Add a new MCP (Model Context Protocol) tool
 server to the configuration. Supports stdio transport (local command

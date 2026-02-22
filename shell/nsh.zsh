@@ -203,9 +203,19 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     add-zsh-hook precmd __nsh_run_deferred
     add-zsh-hook precmd __nsh_precmd
     add-zsh-hook precmd __nsh_check_pending
-    # Periodic hook version check (~every 100 commands)
+    # Periodic hook version check (~every 20 commands) and immediate notice if update marker exists
     (( __nsh_cmd_counter = ${__nsh_cmd_counter:-0} + 1 ))
-    if (( __nsh_cmd_counter % 100 == 0 )); then
+    local _notice_file="$HOME/.nsh/update_notice"
+    if [[ -f "$_notice_file" ]]; then
+        # Attempt an automatic refresh if possible; fall back to a notice.
+        if [[ -n "${ZSH_VERSION:-}" ]]; then
+            # zsh: reload hooks by re-evaluating init script
+            eval "$(command nsh init zsh)" 2>/dev/null || true
+        fi
+        printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+        command rm -f -- "$_notice_file" 2>/dev/null
+    fi
+    if (( __nsh_cmd_counter % 20 == 0 )); then
         local _disk_hook_hash
         _disk_hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
         if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
@@ -222,6 +232,12 @@ export NSH_HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
 export NSH_HOOK_HASH="__HOOK_HASH__"
 export NSH_HOOKS_VERSION="__NSH_VERSION__"
 __nsh_load_suppressed_exit_codes
+
+# If a pending update was staged, show a one-time notice immediately at session start
+if [[ -f "$HOME/.nsh/update_notice" ]]; then
+    printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+    command rm -f -- "$HOME/.nsh/update_notice" 2>/dev/null
+fi
 
 __nsh_restore_last_cwd() {
     local restore_cwd
