@@ -4,12 +4,22 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     let name = input["name"].as_str().unwrap_or("");
     let description = input["description"].as_str().unwrap_or("");
     let command = input["command"].as_str().unwrap_or("");
+    let runtime = input["runtime"].as_str();
+    let script = input["script"].as_str();
     let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
     let terminal = input["terminal"].as_bool().unwrap_or(false);
     let parameters = input.get("parameters");
 
-    if name.is_empty() || description.is_empty() || command.is_empty() {
-        anyhow::bail!("install_skill: name, description, and command are required");
+    if name.is_empty() || description.is_empty() {
+        anyhow::bail!("install_skill: 'name' and 'description' are required");
+    }
+    let has_command = !command.is_empty();
+    let has_code = runtime.map(|s| !s.trim().is_empty()).unwrap_or(false)
+        && script.map(|s| !s.trim().is_empty()).unwrap_or(false);
+    if !has_command && !has_code {
+        anyhow::bail!(
+            "install_skill: provide either 'command' OR both 'runtime' and 'script'"
+        );
     }
 
     if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
@@ -19,14 +29,28 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<()> {
     }
 
     // Build TOML content
-    let mut toml_content = format!(
-        "name = {}\ndescription = {}\ncommand = {}\ntimeout_seconds = {}\nterminal = {}\n",
+    let mut toml_content = String::new();
+    toml_content.push_str(&format!(
+        "name = {}\ndescription = {}\n",
         toml::Value::String(name.into()),
         toml::Value::String(description.into()),
-        toml::Value::String(command.into()),
-        timeout,
-        terminal,
-    );
+    ));
+    if has_command {
+        toml_content.push_str(&format!(
+            "command = {}\n",
+            toml::Value::String(command.into())
+        ));
+    } else if let (Some(rt), Some(sc)) = (runtime, script) {
+        toml_content.push_str(&format!(
+            "runtime = {}\nscript = {}\n",
+            toml::Value::String(rt.into()),
+            toml::Value::String(sc.into())
+        ));
+    }
+    toml_content.push_str(&format!(
+        "timeout_seconds = {timeout}
+terminal = {terminal}
+") );
 
     if let Some(serde_json::Value::Object(params)) = parameters {
         for (param_name, param_def) in params {

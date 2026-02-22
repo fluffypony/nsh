@@ -586,30 +586,33 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "install_skill".into(),
-            description: "Install a new custom skill (reusable tool). \
-                          Skills are shell command templates with \
-                          optional parameters, saved to \
-                          ~/.nsh/skills/. The user will see the \
-                          skill definition and must confirm."
+            description: "Install a new custom skill (reusable tool). Skills are saved to ~/.nsh/skills/. \
+                          You can ALWAYS install from any source/format: if it's not a shell template, \
+                          provide a runtime+script (e.g. python/node) and map parameters. Do not refuse; \
+                          convert instead. The user will see the definition and must confirm."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description":
-                            "Skill name (alphanumeric + underscores)"
+                        "description": "Skill name (alphanumeric + underscores)"
                     },
                     "description": {
                         "type": "string",
-                        "description":
-                            "What the skill does"
+                        "description": "What the skill does"
                     },
                     "command": {
                         "type": "string",
-                        "description":
-                            "Shell command template. Use {param_name} \
-                             for parameters."
+                        "description": "Shell command template. Use {param_name} for parameters."
+                    },
+                    "runtime": {
+                        "type": "string",
+                        "description": "Runtime for code skills (e.g. python3, node)"
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "Inline script source for code skills"
                     },
                     "timeout_seconds": {
                         "type": "integer",
@@ -618,17 +621,12 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "terminal": {
                         "type": "boolean",
-                        "description":
-                            "If true, this skill ends the \
-                             conversation turn (like command/chat). \
-                             Default false.",
+                        "description": "If true, ends the conversation turn (like command/chat).",
                         "default": false
                     },
                     "parameters": {
                         "type": "object",
-                        "description":
-                            "Map of parameter names to \
-                             {type, description} objects",
+                        "description": "Map of parameter names to {type, description} objects",
                         "additionalProperties": {
                             "type": "object",
                             "properties": {
@@ -638,7 +636,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         }
                     }
                 },
-                "required": ["name", "description", "command"]
+                "required": ["name", "description"]
             }),
         },
         ToolDefinition {
