@@ -362,6 +362,29 @@ pub async fn handle_query(
                     continue;
                 }
 
+                // Additional semantic guard: if model insists on store_memory semantic with empty data, abort sooner
+                if name == "store_memory" {
+                    let mt = input["memory_type"].as_str().unwrap_or("");
+                    if mt == "semantic" {
+                        if let Some(data) = input.get("data") {
+                            if let Err(msg) = crate::tools::memory::validate_store_memory_input(mt, data) {
+                                let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: wrapped,
+                                    is_error: true,
+                                });
+                                if repeat_guard.note_invalid(name, input) {
+                                    eprintln!("\x1b[33mnsh: repeated invalid semantic store_memory; aborting tool loop\x1b[0m");
+                                    abort_tool_loop = true;
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 match name.as_str() {
                     "command" => {
                         if let Some(reason) = tools::command::reject_reason_for_generated_command(

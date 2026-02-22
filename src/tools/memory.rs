@@ -6,7 +6,7 @@
 
 use crate::daemon_db::DbAccess;
 
-fn validate_store_memory_input(memory_type: &str, data: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn validate_store_memory_input(memory_type: &str, data: &serde_json::Value) -> Result<(), String> {
     let obj = data
         .as_object()
         .ok_or_else(|| "store_memory 'data' must be a JSON object".to_string())?;
