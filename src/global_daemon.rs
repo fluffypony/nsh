@@ -161,19 +161,23 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             .and_then(|m| m.modified().ok());
         let restart_flag = Arc::clone(&restart_pending);
         std::thread::spawn(move || {
+            let mut last_skill_pull = std::time::Instant::now();
             loop {
                 let _ = crate::context::sample_volatile_info();
                 let _ = crate::context::get_semi_dynamic_info();
-                // Periodically update skills by pulling latest changes
-                if let Some(skills_dir) = dirs::home_dir().map(|h| h.join(".nsh").join("skills")) {
-                    if skills_dir.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&skills_dir) {
-                            for entry in entries.flatten() {
-                                let path = entry.path();
-                                if path.join(".git").is_dir() {
-                                    let _ = std::process::Command::new("git")
-                                        .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"]) 
-                                        .status();
+                // Periodically update skills by pulling latest changes (hourly)
+                if last_skill_pull.elapsed() > std::time::Duration::from_secs(3600) {
+                    last_skill_pull = std::time::Instant::now();
+                    if let Some(skills_dir) = dirs::home_dir().map(|h| h.join(".nsh").join("skills")) {
+                        if skills_dir.is_dir() {
+                            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                                for entry in entries.flatten() {
+                                    let path = entry.path();
+                                    if path.join(".git").is_dir() {
+                                        let _ = std::process::Command::new("git")
+                                            .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"]) 
+                                            .status();
+                                    }
                                 }
                             }
                         }

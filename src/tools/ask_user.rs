@@ -14,7 +14,8 @@ pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<Str
     }
     tui::render_box("Question", &content, BoxStyle::Question);
 
-    eprint!("  {}❯{} ", crate::tui::style::PINK, crate::tui::style::RESET);
+    let th = crate::tui::theme::current_theme();
+    eprint!("  {}❯{} ", th.accent, th.reset);
     io::stderr().flush()?;
 
     let input = read_user_input()?;

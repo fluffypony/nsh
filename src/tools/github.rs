@@ -86,11 +86,12 @@ fn check_rate_limit(headers: &reqwest::header::HeaderMap) {
         if let Ok(s) = remaining.to_str() {
             if let Ok(n) = s.parse::<u32>() {
                 if n <= 5 {
+                    let th = crate::tui::theme::current_theme();
                     eprintln!(
                         "  {}⚠ GitHub API rate limit nearly exhausted ({} remaining){}",
-                        crate::tui::style::BOLD_YELLOW,
+                        th.warning,
                         n,
-                        crate::tui::style::RESET
+                        th.reset
                     );
                 }
             }

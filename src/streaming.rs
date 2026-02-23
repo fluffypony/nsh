@@ -41,7 +41,7 @@ fn chat_color() -> &'static str {
     CHAT_COLOR
         .get()
         .map(|s| s.as_str())
-        .unwrap_or(crate::tui::style::CYAN_ITALIC)
+        .unwrap_or(crate::tui::theme::current_theme().italic)
 }
 
 fn spinner_frames() -> &'static [String] {
@@ -65,10 +65,10 @@ pub fn show_spinner() {
         while SPINNER_ACTIVE.load(Ordering::SeqCst) {
             eprint!(
                 "\r  {}{} {}thinking…{}\x1b[K",
-                crate::tui::style::DIM_CYAN,
+                crate::tui::theme::current_theme().spinner,
                 frames[i % frames.len()],
-                crate::tui::style::DIM,
-                crate::tui::style::RESET
+                crate::tui::theme::current_theme().dim,
+                crate::tui::theme::current_theme().reset
             );
             io::stderr().flush().ok();
             i += 1;
@@ -87,7 +87,7 @@ pub fn hide_spinner() {
             let _ = handle.join();
         }
     }
-    eprint!("\r\x1b[K");
+    eprint!("\r{}", "\x1b[K");
     io::stderr().flush().ok();
 }
 
