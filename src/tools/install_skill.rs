@@ -1,6 +1,37 @@
 use std::io::{self, Write};
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
+    // Repo install mode: clone a git repo into ~/.nsh/skills/<repo-name>
+    if let Some(repo_url) = input.get("repo").or_else(|| input.get("url")).and_then(|v| v.as_str()) {
+        let skills_dir = crate::config::Config::nsh_dir().join("skills");
+        std::fs::create_dir_all(&skills_dir)?;
+        let repo_name = repo_url
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("skill");
+        let folder = repo_name.trim_end_matches(".git");
+        let dest = skills_dir.join(folder);
+        if dest.exists() {
+            // Pull updates
+            let status = std::process::Command::new("git")
+                .args(["-C", dest.to_string_lossy().as_ref(), "pull", "--ff-only"])
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("git pull failed for {}", dest.display());
+            }
+            return Ok(format!("Skill repo updated at {}", dest.display()));
+        } else {
+            let status = std::process::Command::new("git")
+                .args(["clone", "--depth", "1", repo_url, dest.to_string_lossy().as_ref()])
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("git clone failed: {}", repo_url);
+            }
+            return Ok(format!("Skill repo installed at {}", dest.display()));
+        }
+    }
+
     let name = input["name"].as_str().unwrap_or("");
     let description = input["description"].as_str().unwrap_or("");
     let command = input["command"].as_str().unwrap_or("");

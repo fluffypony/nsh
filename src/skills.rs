@@ -51,16 +51,73 @@ pub struct Skill {
     pub is_project: bool,
 }
 
+impl From<SkillFile> for Skill {
+    fn from(sf: SkillFile) -> Self {
+        Skill {
+            name: sf.name,
+            description: sf.description,
+            command: sf.command,
+            runtime: sf.runtime,
+            script: sf.script,
+            timeout_seconds: sf.timeout_seconds,
+            terminal: sf.terminal,
+            parameters: sf.parameters,
+            is_project: false,
+        }
+    }
+}
+
 pub fn load_skills() -> Vec<Skill> {
     let mut skills_by_name: HashMap<String, Skill> = HashMap::new();
 
     if let Some(home) = dirs::home_dir() {
         let global_dir = home.join(".nsh").join("skills");
         load_skills_from_dir(&global_dir, false, &mut skills_by_name);
+        // Also look for repo-style skills: ~/.nsh/skills/<repo>/(skill.toml|nsh.toml)
+        if let Ok(entries) = std::fs::read_dir(&global_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    for fname in ["skill.toml", "nsh.toml"] {
+                        let candidate = path.join(fname);
+                        if candidate.exists() {
+                            if let Ok(content) = std::fs::read_to_string(&candidate) {
+                                if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
+                                    let skill: Skill = skill_file.into();
+                                    skills_by_name.insert(skill.name.clone(), skill);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let project_dir = PathBuf::from(".nsh").join("skills");
     load_skills_from_dir(&project_dir, true, &mut skills_by_name);
+    // Project repo-style skills: ./.nsh/skills/<repo>/(skill.toml|nsh.toml)
+    if let Ok(entries) = std::fs::read_dir(&project_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                for fname in ["skill.toml", "nsh.toml"] {
+                    let candidate = path.join(fname);
+                    if candidate.exists() {
+                        if let Ok(content) = std::fs::read_to_string(&candidate) {
+                            if let Ok(mut skill_file) = toml::from_str::<SkillFile>(&content) {
+                                let mut skill: Skill = skill_file.into();
+                                skill.is_project = true;
+                                skills_by_name.insert(skill.name.clone(), skill);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     skills_by_name.into_values().collect()
 }
