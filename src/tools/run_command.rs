@@ -8,18 +8,10 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
         let (risk, reason) = crate::security::assess_command(cmd);
         match risk {
             crate::security::RiskLevel::Dangerous => {
-                eprintln!(
-                    "\n  {}⚠ DANGEROUS background command requested:{} {}",
-                    crate::tui::style::BOLD_RED,
-                    crate::tui::style::RESET,
-                    reason.unwrap_or("")
-                );
+                let th = crate::tui::theme::current_theme();
+                eprintln!("\n  {}⚠ DANGEROUS background command requested:{} {}", th.error, th.reset, reason.unwrap_or(""));
                 eprintln!("  $ {cmd}");
-                eprint!(
-                    "  {}Type 'yes' to proceed: {}",
-                    crate::tui::style::BOLD_RED,
-                    crate::tui::style::RESET
-                );
+                eprint!("  {}Type 'yes' to proceed: {}", th.error, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line).unwrap_or(0);
@@ -28,34 +20,19 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 }
             }
             crate::security::RiskLevel::Elevated => {
-                eprintln!(
-                    "\n  {}⚡ Agent wants to run a background command:{}",
-                    crate::tui::style::BOLD_YELLOW,
-                    crate::tui::style::RESET
-                );
+                let th = crate::tui::theme::current_theme();
+                eprintln!("\n  {}⚡ Agent wants to run a background command:{}", th.warning, th.reset);
                 eprintln!("  $ {cmd}");
-                eprint!(
-                    "  {}Allow? [y/N]{} ",
-                    crate::tui::style::BOLD_YELLOW,
-                    crate::tui::style::RESET
-                );
+                eprint!("  {}Allow? [y/N]{} ", th.warning, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_confirmation() {
                     return Ok("DENIED: command not approved".to_string());
                 }
             }
             crate::security::RiskLevel::Safe => {
-                eprintln!(
-                    "\n  {}Agent wants to run:{} $ {}",
-                    crate::tui::style::DIM,
-                    crate::tui::style::RESET,
-                    cmd
-                );
-                eprint!(
-                    "  {}Allow? [Y/n]{} ",
-                    crate::tui::style::BOLD_YELLOW,
-                    crate::tui::style::RESET
-                );
+                let th = crate::tui::theme::current_theme();
+                eprintln!("\n  {}Agent wants to run:{} $ {}", th.dim, th.reset, cmd);
+                eprint!("  {}Allow? [Y/n]{} ", th.warning, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_confirmation() {
                     return Ok("DENIED: command not approved".to_string());

@@ -107,10 +107,10 @@ impl SpinnerGuard {
                 while SPINNER_ACTIVE.load(Ordering::SeqCst) {
                     eprint!(
                         "\r  {}{} {}thinking…{}\x1b[K",
-                        crate::tui::style::DIM_CYAN,
+                        crate::tui::theme::current_theme().spinner,
                         frames[i % frames.len()],
-                        crate::tui::style::DIM,
-                        crate::tui::style::RESET
+                        crate::tui::theme::current_theme().dim,
+                        crate::tui::theme::current_theme().reset
                     );
                     std::io::Write::flush(&mut std::io::stderr()).ok();
                     i += 1;

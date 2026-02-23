@@ -164,6 +164,21 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             loop {
                 let _ = crate::context::sample_volatile_info();
                 let _ = crate::context::get_semi_dynamic_info();
+                // Periodically update skills by pulling latest changes
+                if let Some(skills_dir) = dirs::home_dir().map(|h| h.join(".nsh").join("skills")) {
+                    if skills_dir.is_dir() {
+                        if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.join(".git").is_dir() {
+                                    let _ = std::process::Command::new("git")
+                                        .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"]) 
+                                        .status();
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(ref path) = monitor_exe_path {
                     if let Ok(meta) = std::fs::metadata(path) {
                         if let Ok(mtime) = meta.modified() {
