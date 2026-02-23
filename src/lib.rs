@@ -44,6 +44,7 @@ pub mod summary;
 pub mod tools;
 pub mod util;
 pub mod tui;
+pub mod connectivity;
 
 pub mod shim;
 

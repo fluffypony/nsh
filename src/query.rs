@@ -310,6 +310,8 @@ pub async fn handle_query(
             }
         };
 
+        // If we were offline previously, a user query should immediately trigger a reconnect check
+        crate::connectivity::trigger_immediate_check();
         let response = match streaming::consume_stream(&mut rx, &cancelled).await {
             Ok(r) => r,
             Err(e) if e.to_string().contains("interrupted") => {

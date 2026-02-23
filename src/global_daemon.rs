@@ -105,6 +105,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         }),
     );
 
+    // Start connectivity monitor (best-effort)
+    crate::connectivity::start(&config);
+
     // Background async thread for LLM-dependent memory operations
     let (memory_tx, memory_rx) = mpsc::channel::<MemoryTask>();
     let memory_for_thread = Arc::clone(&memory);
@@ -398,6 +401,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&pid_path);
     log_daemon("server.lifecycle", "stopped global daemon");
     drop(lock_file);
+
+    // Start connectivity monitor in background (non-fatal if it fails to spawn)
+    crate::connectivity::start(&config);
 
     // Re-exec if restart was requested, so the new daemon starts immediately
     if restart_pending.load(Ordering::Relaxed) {
