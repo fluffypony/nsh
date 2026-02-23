@@ -641,26 +641,33 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "install_skill".into(),
-            description: "Install a new custom skill (reusable tool). Skills are saved to ~/.nsh/skills/. \
-                          nsh can NATIVELY install skills from ANY AI ecosystem — Claude Code, LangChain, \
-                          OpenAI Agents, Cursor, or any other framework. These are all just instructions \
-                          that nsh converts into its own skill format. NEVER refuse to install a skill \
-                          because it was 'designed for' another system. Instead, read the skill's README \
-                          or SKILL.md, extract its purpose and behavior, and convert it into an nsh skill \
-                          using either a command template, a runtime+script (e.g. python3/node), or \
-                          doc-only mode (pass the content as 'docs'). The user will see the definition \
-                          and must confirm."
+            description: "Install a skill from a Git repo or as a manual definition. \
+                          PREFERRED: pass 'repo' with a GitHub URL to clone the repo into \
+                          ~/.nsh/skills/<name>. The skill's SKILL.md, README.md, or skill.toml \
+                          is auto-detected and loaded. nsh natively supports skills from ANY \
+                          AI ecosystem (Claude Code, LangChain, OpenAI Agents, Cursor, etc.) — \
+                          just clone the repo and nsh reads the skill documents directly. \
+                          FALLBACK: for simple command-template or code-based skills without a \
+                          repo, pass name+description+command (or runtime+script). The user will \
+                          see the definition and must confirm."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Git repo URL to clone (e.g. https://github.com/user/skill-repo). \
+                                        This is the PREFERRED installation method. The repo is cloned \
+                                        into ~/.nsh/skills/<repo-name> and its SKILL.md/README.md is \
+                                        auto-detected. If already cloned, pulls updates."
+                    },
                     "name": {
                         "type": "string",
-                        "description": "Skill name (alphanumeric + underscores)"
+                        "description": "Skill name (alphanumeric + underscores). Only needed for manual (non-repo) skills."
                     },
                     "description": {
                         "type": "string",
-                        "description": "What the skill does"
+                        "description": "What the skill does. Only needed for manual (non-repo) skills."
                     },
                     "command": {
                         "type": "string",
@@ -700,7 +707,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         }
                     }
                 },
-                "required": ["name", "description"]
+                "required": []
             }),
         },
         ToolDefinition {

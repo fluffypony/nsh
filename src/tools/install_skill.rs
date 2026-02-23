@@ -12,24 +12,64 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             .unwrap_or("skill");
         let folder = repo_name.trim_end_matches(".git");
         let dest = skills_dir.join(folder);
+
+        let green = "\x1b[32m";
+        let dim = "\x1b[2m";
+        let reset = "\x1b[0m";
+
         if dest.exists() {
             // Pull updates
+            eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
             let status = std::process::Command::new("git")
                 .args(["-C", dest.to_string_lossy().as_ref(), "pull", "--ff-only"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .status()?;
             if !status.success() {
                 anyhow::bail!("git pull failed for {}", dest.display());
             }
-            return Ok(format!("Skill repo updated at {}", dest.display()));
         } else {
+            eprintln!("{dim}Cloning {repo_url} into {}...{reset}", dest.display());
             let status = std::process::Command::new("git")
                 .args(["clone", "--depth", "1", repo_url, dest.to_string_lossy().as_ref()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .status()?;
             if !status.success() {
                 anyhow::bail!("git clone failed: {}", repo_url);
             }
-            return Ok(format!("Skill repo installed at {}", dest.display()));
         }
+
+        // Scan for detected skill files and report
+        let mut detected = Vec::new();
+        for fname in ["SKILL.md", "skill.md", "skill.toml", "nsh.toml", "README.md"] {
+            if dest.join(fname).exists() {
+                detected.push(fname);
+            }
+        }
+
+        let action = if dest.join(".git").join("FETCH_HEAD").exists() {
+            "updated"
+        } else {
+            "installed"
+        };
+
+        let detected_str = if detected.is_empty() {
+            "No skill documents detected".to_string()
+        } else {
+            format!("Detected: {}", detected.join(", "))
+        };
+        eprintln!(
+            "{green}✓ skill repo '{folder}' {action} at {}{reset}",
+            dest.display()
+        );
+        eprintln!("{dim}  {detected_str}{reset}");
+
+        return Ok(format!(
+            "Skill repo {action} at {}. {detected_str}. \
+             The skill is now loaded automatically from its SKILL.md/README.md.",
+            dest.display()
+        ));
     }
 
     let name = input["name"].as_str().unwrap_or("");

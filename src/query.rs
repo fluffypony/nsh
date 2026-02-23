@@ -1473,16 +1473,12 @@ key path (e.g. "provider.model", "context.history_limit") and a value.
 Use action="remove" to delete a key (e.g. "mcp.servers.my_server").
 The user will see the change and must confirm.
 
-**install_skill** — Install a custom skill (reusable tool) when the
-user asks. Skills are saved to ~/.nsh/skills/ and can be shell command
-templates (with {param} placeholders), code-based (runtime+script for
-python3/node/etc.), or doc-only (reference docs stored as markdown).
-nsh can natively install skills from ANY AI ecosystem — Claude Code,
-LangChain, OpenAI Agents, Cursor, or any other framework. A skill
-"designed for Claude Code" or any other agent is just instructions
-that nsh converts into its own format. NEVER refuse because a skill
-was made for another system; read its README/SKILL.md, extract the
-purpose and behavior, and convert it. Already-installed skills are
+**install_skill** — Install a skill. PREFERRED: pass repo=URL to clone
+a git repo into ~/.nsh/skills/<name>. The skill's SKILL.md, README.md,
+or skill.toml is auto-detected and loaded. nsh natively supports skills
+from ANY AI ecosystem (Claude Code, LangChain, OpenAI Agents, Cursor,
+etc.) — just clone the repo. FALLBACK: for simple user-defined command
+templates, pass name+description+command. Already-installed skills are
 listed in the <nsh_configuration> block.
 
 **install_mcp_server** — Add a new MCP (Model Context Protocol) tool
@@ -1723,6 +1719,10 @@ User: "the tests in src/db.rs are failing, fix them"
 
 User: "switch to claude sonnet"
 → manage_config: action="set", key="provider.model", value="anthropic/claude-sonnet-4.6"
+
+User: "install this skill: https://github.com/blader/humanizer"
+→ install_skill: repo="https://github.com/blader/humanizer"
+  [clones repo, auto-detects SKILL.md, skill is immediately available]
 
 User: "install a skill that runs my test suite"
 → install_skill: name="run_tests", description="Run project test suite",
@@ -2158,10 +2158,11 @@ This is more reliable than web_search for GitHub-hosted projects.
 Use 'done' to signal autonomous task completion when no final command is needed.
 \n
 Skill installation guidelines:
-1. Prefer the built-in install_skill tool to create a TOML under ~/.nsh/skills instead of cloning repos.
-2. If a repo provides a runtime-based script, convert it to a code skill (runtime+script) via install_skill.
-3. If a repo provides only a SKILL.md (or README) with instructions, create a doc-only skill by passing 'docs' with the verbatim SKILL.md contents to install_skill. Do not invent nonexistent scripts. Expose a simple parameter schema if needed, but keep behavior faithful to the docs.
-4. After installation, you may read ~/.nsh/skills/*.toml or the accompanying .md to answer usage questions.
+1. When the user provides a GitHub URL (or any git repo URL), ALWAYS use install_skill(repo=URL) to clone it into ~/.nsh/skills/<name>. Do NOT create a TOML manually — just clone the repo.
+2. After cloning, nsh auto-detects SKILL.md, README.md, or skill.toml in the repo and loads the skill automatically.
+3. Only use the manual name+description+command mode for simple, user-defined command templates that don't come from a repo.
+4. NEVER invent scripts, commands, or runtime wrappers for skills that are just instruction documents. Cloning the repo is sufficient.
+5. After installation, you may read ~/.nsh/skills/<repo>/ contents to answer usage questions.
 "#;
     let base = format!("{base}\n\n{github_guidance}");
 
@@ -2285,8 +2286,12 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
             format!("config {action}: {key}")
         }
         "install_skill" => {
-            let name = input["name"].as_str().unwrap_or("...");
-            format!("installing skill: {name}")
+            if let Some(repo) = input["repo"].as_str() {
+                format!("installing skill from repo: {repo}")
+            } else {
+                let name = input["name"].as_str().unwrap_or("...");
+                format!("installing skill: {name}")
+            }
         }
         "install_mcp_server" => {
             let name = input["name"].as_str().unwrap_or("...");

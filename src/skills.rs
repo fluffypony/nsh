@@ -25,6 +25,8 @@ struct SkillFile {
     terminal: bool,
     #[serde(default)]
     parameters: HashMap<String, SkillParam>,
+    #[serde(default)]
+    docs: Option<String>,
 }
 
 fn default_skill_timeout() -> u64 {
@@ -49,6 +51,7 @@ pub struct Skill {
     pub terminal: bool,
     pub parameters: HashMap<String, SkillParam>,
     pub is_project: bool,
+    pub docs: Option<String>,
 }
 
 impl From<SkillFile> for Skill {
@@ -63,6 +66,7 @@ impl From<SkillFile> for Skill {
             terminal: sf.terminal,
             parameters: sf.parameters,
             is_project: false,
+            docs: sf.docs,
         }
     }
 }
@@ -73,53 +77,231 @@ pub fn load_skills() -> Vec<Skill> {
     if let Some(home) = dirs::home_dir() {
         let global_dir = home.join(".nsh").join("skills");
         load_skills_from_dir(&global_dir, false, &mut skills_by_name);
-        // Also look for repo-style skills: ~/.nsh/skills/<repo>/(skill.toml|nsh.toml)
-        if let Ok(entries) = std::fs::read_dir(&global_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    for fname in ["skill.toml", "nsh.toml"] {
-                        let candidate = path.join(fname);
-                        if candidate.exists() {
-                            if let Ok(content) = std::fs::read_to_string(&candidate) {
-                                if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
-                                    let skill: Skill = skill_file.into();
-                                    skills_by_name.insert(skill.name.clone(), skill);
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        load_repo_skills_from_dir(&global_dir, false, &mut skills_by_name);
     }
 
     let project_dir = PathBuf::from(".nsh").join("skills");
     load_skills_from_dir(&project_dir, true, &mut skills_by_name);
-    // Project repo-style skills: ./.nsh/skills/<repo>/(skill.toml|nsh.toml)
-    if let Ok(entries) = std::fs::read_dir(&project_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                for fname in ["skill.toml", "nsh.toml"] {
-                    let candidate = path.join(fname);
-                    if candidate.exists() {
-                        if let Ok(content) = std::fs::read_to_string(&candidate) {
-                            if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
-                                let mut skill: Skill = skill_file.into();
-                                skill.is_project = true;
-                                skills_by_name.insert(skill.name.clone(), skill);
-                            }
+    load_repo_skills_from_dir(&project_dir, true, &mut skills_by_name);
+
+    skills_by_name.into_values().collect()
+}
+
+/// Scan subdirectories of `dir` for cloned skill repos.
+/// Priority: skill.toml/nsh.toml > SKILL.md/skill.md > README.md
+fn load_repo_skills_from_dir(
+    dir: &Path,
+    is_project: bool,
+    skills: &mut HashMap<String, Skill>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        // Skip .git and hidden directories
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with('.') {
+                continue;
+            }
+        }
+
+        // 1. Check for TOML-based skills (skill.toml / nsh.toml)
+        let mut found_toml = false;
+        for fname in ["skill.toml", "nsh.toml"] {
+            let candidate = path.join(fname);
+            if candidate.exists() {
+                if let Ok(content) = std::fs::read_to_string(&candidate) {
+                    if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
+                        let mut skill: Skill = skill_file.into();
+                        skill.is_project = is_project;
+                        // If TOML skill has no docs, try loading from adjacent SKILL.md
+                        if skill.docs.is_none() {
+                            skill.docs = load_skill_docs_from_dir(&path);
                         }
-                        break;
+                        skills.insert(skill.name.clone(), skill);
+                        found_toml = true;
                     }
+                }
+                break;
+            }
+        }
+        if found_toml {
+            continue;
+        }
+
+        // 2. Check for markdown-based skill documents (SKILL.md, skill.md, README.md)
+        if let Some(skill) = load_markdown_skill(&path, is_project) {
+            skills.insert(skill.name.clone(), skill);
+        }
+    }
+}
+
+/// Try to load skill documentation from SKILL.md or README.md in a directory.
+fn load_skill_docs_from_dir(dir: &Path) -> Option<String> {
+    for fname in ["SKILL.md", "skill.md", "README.md", "readme.md"] {
+        let candidate = dir.join(fname);
+        if candidate.exists() {
+            if let Ok(content) = std::fs::read_to_string(&candidate) {
+                if !content.trim().is_empty() {
+                    return Some(content);
                 }
             }
         }
     }
+    None
+}
 
-    skills_by_name.into_values().collect()
+/// Parse a SKILL.md or README.md to create a doc-only Skill.
+fn load_markdown_skill(dir: &Path, is_project: bool) -> Option<Skill> {
+    let dir_name = dir.file_name()?.to_str()?.to_string();
+
+    for fname in ["SKILL.md", "skill.md", "README.md", "readme.md"] {
+        let candidate = dir.join(fname);
+        if !candidate.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&candidate) {
+            Ok(c) if !c.trim().is_empty() => c,
+            _ => continue,
+        };
+
+        let (frontmatter, body) = parse_skill_frontmatter(&content);
+        let name = frontmatter
+            .name
+            .unwrap_or_else(|| sanitize_skill_name(&dir_name));
+        let description = frontmatter.description.unwrap_or_else(|| {
+            extract_first_paragraph(&body)
+                .unwrap_or_else(|| format!("Skill from {dir_name}"))
+        });
+
+        return Some(Skill {
+            name,
+            description,
+            command: String::new(),
+            runtime: None,
+            script: None,
+            timeout_seconds: 30,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project,
+            docs: Some(content),
+        });
+    }
+    None
+}
+
+/// Metadata parsed from YAML frontmatter in a SKILL.md file.
+struct SkillFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// Parse YAML-like frontmatter delimited by `---` lines.
+/// Returns (frontmatter, body_after_frontmatter).
+fn parse_skill_frontmatter(content: &str) -> (SkillFrontmatter, String) {
+    let empty = SkillFrontmatter {
+        name: None,
+        description: None,
+    };
+
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return (empty, content.to_string());
+    }
+
+    // Find the closing ---
+    let after_first = &trimmed[3..].trim_start_matches(|c: char| c == '-');
+    let rest = after_first.trim_start_matches('\n');
+    let Some(end_pos) = rest.find("\n---") else {
+        return (empty, content.to_string());
+    };
+
+    let fm_str = &rest[..end_pos];
+    let body = &rest[end_pos + 4..]; // skip \n---
+    let body = body.trim_start_matches(|c: char| c == '-' || c == '\n');
+
+    let mut name = None;
+    let mut description = None;
+    let mut in_desc_multiline = false;
+    let mut desc_lines: Vec<String> = Vec::new();
+
+    for line in fm_str.lines() {
+        // Check for multiline continuation (indented lines after "description: |")
+        if in_desc_multiline {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                desc_lines.push(line.trim().to_string());
+                continue;
+            } else {
+                in_desc_multiline = false;
+                description = Some(desc_lines.join(" ").trim().to_string());
+                desc_lines.clear();
+            }
+        }
+
+        if let Some(val) = line.strip_prefix("name:") {
+            name = Some(val.trim().trim_matches('"').trim_matches('\'').to_string());
+        } else if let Some(val) = line.strip_prefix("description:") {
+            let val = val.trim();
+            if val == "|" || val == ">" {
+                in_desc_multiline = true;
+            } else if !val.is_empty() {
+                description = Some(val.trim_matches('"').trim_matches('\'').to_string());
+            }
+        }
+    }
+
+    if in_desc_multiline && !desc_lines.is_empty() {
+        description = Some(desc_lines.join(" ").trim().to_string());
+    }
+
+    (SkillFrontmatter { name, description }, body.to_string())
+}
+
+/// Sanitize a directory name into a valid skill name (alphanumeric + underscores).
+fn sanitize_skill_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Extract the first non-empty paragraph from markdown body text.
+fn extract_first_paragraph(body: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        // Skip headings
+        if trimmed.starts_with('#') {
+            if !lines.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if trimmed.is_empty() {
+            if !lines.is_empty() {
+                break;
+            }
+            continue;
+        }
+        lines.push(trimmed.to_string());
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        let text = lines.join(" ");
+        // Truncate to a reasonable description length
+        if text.len() > 300 {
+            Some(format!("{}...", &text[..297]))
+        } else {
+            Some(text)
+        }
+    }
 }
 
 fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<String, Skill>) {
@@ -150,7 +332,7 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
             }
         };
 
-        // Require at least a command or a (runtime, script) pair
+        // Require at least a command, a (runtime, script) pair, or docs
         let missing_command = skill_file.command.trim().is_empty();
         let has_code = skill_file
             .runtime
@@ -162,12 +344,30 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
                 .as_ref()
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
-        if missing_command && !has_code {
+        let has_docs = skill_file
+            .docs
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        // Also check for companion .md file
+        let companion_md = path.with_extension("md");
+        let has_companion_docs = companion_md.exists();
+        if missing_command && !has_code && !has_docs && !has_companion_docs {
             tracing::warn!(
-                "Skill {} missing 'command' and no (runtime+script) provided; skipping",
+                "Skill {} missing 'command' and no (runtime+script) or docs provided; skipping",
                 skill_file.name
             );
             continue;
+        }
+
+        // Load companion .md docs if not already inline
+        let mut docs = skill_file.docs;
+        if docs.is_none() && has_companion_docs {
+            if let Ok(md_content) = std::fs::read_to_string(&companion_md) {
+                if !md_content.trim().is_empty() {
+                    docs = Some(md_content);
+                }
+            }
         }
 
         skills.insert(
@@ -182,15 +382,41 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
                 terminal: skill_file.terminal,
                 parameters: skill_file.parameters,
                 is_project,
+                docs,
             },
         );
     }
+}
+
+/// Returns true if a skill is doc-only (no command or runtime+script).
+fn is_doc_only(skill: &Skill) -> bool {
+    skill.command.trim().is_empty()
+        && skill.runtime.is_none()
+        && skill.docs.is_some()
 }
 
 pub fn skill_tool_definitions(skills: &[Skill]) -> Vec<ToolDefinition> {
     skills
         .iter()
         .map(|skill| {
+            // Doc-only skills get a single "input" parameter
+            if is_doc_only(skill) {
+                return ToolDefinition {
+                    name: format!("skill_{}", skill.name),
+                    description: skill.description.clone(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "string",
+                                "description": "Text or task to process with this skill"
+                            }
+                        },
+                        "required": ["input"],
+                    }),
+                };
+            }
+
             let mut properties = serde_json::Map::new();
             let mut required = Vec::new();
 
@@ -263,6 +489,11 @@ fn check_project_skill_approval(skill: &Skill) -> anyhow::Result<()> {
 pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<String> {
     check_project_skill_approval(skill)?;
 
+    // Doc-only skills: return the skill instructions with user input
+    if is_doc_only(skill) {
+        return execute_doc_skill(skill, input);
+    }
+
     let output = if skill.runtime.is_some() && skill.script.is_some() {
         execute_code_skill(skill, input)?
     } else {
@@ -290,6 +521,28 @@ pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result
 
     if result.len() > 8000 {
         result.truncate(8000);
+        result.push_str("\n... (truncated)");
+    }
+
+    Ok(result)
+}
+
+fn execute_doc_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<String> {
+    let docs = skill.docs.as_deref().unwrap_or("");
+    let user_input = input
+        .get("input")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let mut result = String::new();
+    if !user_input.is_empty() {
+        result.push_str(&format!("User input: {user_input}\n\n"));
+    }
+    result.push_str("--- Skill Instructions ---\n");
+    result.push_str(docs);
+
+    if result.len() > 16000 {
+        result.truncate(16000);
         result.push_str("\n... (truncated)");
     }
 
@@ -449,6 +702,7 @@ mod tests {
             terminal: false,
             parameters: params,
             is_project: false,
+            docs: None,
         };
         let defs = skill_tool_definitions(&[skill]);
         assert_eq!(defs.len(), 1);
@@ -488,6 +742,7 @@ mod tests {
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("hello"));
@@ -513,6 +768,7 @@ mod tests {
             terminal: false,
             parameters: params,
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({"name": "world"})).unwrap();
         assert!(result.contains("hello world"));
@@ -538,6 +794,7 @@ mod tests {
             terminal: false,
             parameters: params,
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({"name": "world; rm -rf /"}));
         assert!(result.is_err());
@@ -555,6 +812,7 @@ mod tests {
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let mut params = HashMap::new();
         params.insert(
@@ -574,6 +832,7 @@ mod tests {
             terminal: false,
             parameters: params,
             is_project: true,
+            docs: None,
         };
         let defs = skill_tool_definitions(&[skill_a, skill_b]);
         assert_eq!(defs.len(), 2);
@@ -627,6 +886,7 @@ mod tests {
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill_async(skill, serde_json::json!({}))
             .await
@@ -741,6 +1001,7 @@ command = "echo project"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.len() <= 8100);
@@ -759,6 +1020,7 @@ command = "echo project"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill_async(skill, serde_json::json!({})).await;
         assert!(result.is_err());
@@ -777,6 +1039,7 @@ command = "echo project"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         assert!(check_project_skill_approval(&skill).is_ok());
     }
@@ -835,6 +1098,7 @@ description = "has no command"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("error_msg"));
@@ -852,6 +1116,7 @@ description = "has no command"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("stdout_line"));
@@ -891,6 +1156,7 @@ description = "has no command"
             terminal: false,
             parameters: params,
             is_project: false,
+            docs: None,
         };
         let defs = skill_tool_definitions(&[skill]);
         assert_eq!(defs.len(), 1);
@@ -965,6 +1231,7 @@ command = "echo hi"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let debug_str = format!("{skill:?}");
         assert!(debug_str.contains("debug_test"));
@@ -1002,6 +1269,7 @@ command = "echo hi"
             terminal: true,
             parameters: params,
             is_project: true,
+            docs: None,
         };
         let cloned = skill.clone();
         assert_eq!(cloned.name, "clone_test");
@@ -1053,6 +1321,7 @@ command = "echo second"
             terminal: false,
             parameters: params,
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("hello"));
@@ -1070,6 +1339,7 @@ command = "echo second"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("no_params"));
@@ -1112,6 +1382,7 @@ timeout_seconds = 10
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("only_stderr"));
@@ -1130,6 +1401,7 @@ timeout_seconds = 10
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({}));
         assert!(result.is_ok());
@@ -1220,6 +1492,7 @@ command = "echo hi"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let defs = skill_tool_definitions(&[skill]);
         assert_eq!(defs.len(), 1);
@@ -1242,6 +1515,7 @@ command = "echo hi"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.len() <= 8020);
@@ -1277,6 +1551,7 @@ command = "echo hi"
             terminal: false,
             parameters: params,
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(
             &skill,
@@ -1301,6 +1576,7 @@ command = "echo hi"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("stdout_msg"), "missing stdout: {result}");
@@ -1323,6 +1599,7 @@ command = "echo hi"
             terminal: false,
             parameters: HashMap::new(),
             is_project: false,
+            docs: None,
         };
         let result = execute_skill_async(skill, serde_json::json!({})).await;
         assert!(result.is_ok());
