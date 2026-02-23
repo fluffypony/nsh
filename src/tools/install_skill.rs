@@ -150,7 +150,6 @@ terminal = {terminal}
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use tempfile::tempdir;
 
     fn with_nsh_test_mode() -> impl Drop {
         struct Guard(Option<String>);

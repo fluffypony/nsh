@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, OnceLock};
 use std::time::Duration;
-use reqwest::{Client, Url};
+use reqwest::Url;
 
 static ONLINE: AtomicBool = AtomicBool::new(true);
 static TRIGGER_TX: OnceLock<mpsc::Sender<()>> = OnceLock::new();
@@ -35,10 +35,6 @@ fn probe_once(url: &str) -> bool {
     // Use a blocking check in a dedicated thread to avoid introducing async here.
     // reqwest Client::builder().build() creates a handle; send() is async, so use a tiny blocking client via ureq fallback.
     // If ureq not available, fall back to TcpStream as a very rough check.
-    #[cfg(feature = "ureq")] // not enabled; placeholder for future
-    {
-        return ureq::get(url).timeout_connect(2_000).call().is_ok();
-    }
     // Basic TCP connectivity probe to host:port parsed from URL; if this succeeds, we assume online.
     // Fallback: treat http(s) as online if DNS resolution works quickly.
     if let Ok(u) = Url::parse(url) {

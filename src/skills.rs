@@ -106,7 +106,7 @@ pub fn load_skills() -> Vec<Skill> {
                     let candidate = path.join(fname);
                     if candidate.exists() {
                         if let Ok(content) = std::fs::read_to_string(&candidate) {
-                            if let Ok(mut skill_file) = toml::from_str::<SkillFile>(&content) {
+                            if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
                                 let mut skill: Skill = skill_file.into();
                                 skill.is_project = true;
                                 skills_by_name.insert(skill.name.clone(), skill);
