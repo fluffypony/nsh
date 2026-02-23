@@ -209,8 +209,8 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     if [[ -f "$_notice_file" ]]; then
         # Attempt an automatic refresh if possible; fall back to a notice.
         if [[ -n "${ZSH_VERSION:-}" ]]; then
-            # zsh: reload hooks by re-evaluating init script
-            eval "$(command nsh init zsh)" 2>/dev/null || true
+            # zsh: reload hooks by re-evaluating init script without autowrap
+            NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
         fi
         printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         command rm -f -- "$_notice_file" 2>/dev/null
@@ -219,7 +219,9 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
         local _disk_hook_hash
         _disk_hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
         if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
-            printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+            # Auto-reload hooks without autowrap
+            NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
+            printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         fi
     fi
     return 0

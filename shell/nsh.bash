@@ -257,7 +257,7 @@ __nsh_prompt_command() {
     local notice_file="$HOME/.nsh/update_notice"
     if [[ -f "$notice_file" ]]; then
         # Attempt an automatic refresh by re-evaluating the init script
-        eval "$(command nsh init bash)" 2>/dev/null || true
+        NSH_NO_WRAP=1 eval "$(command nsh init bash)" 2>/dev/null || true
         printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         command rm -f "$notice_file" 2>/dev/null
     fi
@@ -312,7 +312,7 @@ __nsh_check_pending() {
         _disk_hook_hash="$(command nsh init bash --hash 2>/dev/null)"
         if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
             # Auto-reload hooks
-            eval "$(command nsh init bash)" 2>/dev/null || true
+            NSH_NO_WRAP=1 eval "$(command nsh init bash)" 2>/dev/null || true
             printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
         fi
     fi

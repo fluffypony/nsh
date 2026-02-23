@@ -180,6 +180,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::CliProxy { .. } => unreachable!(),
 
         Commands::Init { shell, hash } => {
+            // Log init starts for audit/debug tracing
+            let sid = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(none)".into());
+            let init_json = serde_json::json!({"shell": shell, "hash": hash, "session_id": sid}).to_string();
+            crate::debug_io::daemon_log("daemon.log", "init_start", &init_json);
             if hash {
                 println!("{}", env!("NSH_HOOK_HASH"));
                 return Ok(());
@@ -197,6 +201,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             private,
             json,
         } => {
+            // Log query entry for audit/debug with TTY/session
+            let sid = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(none)".into());
+            let tty = std::env::var("NSH_TTY").unwrap_or_else(|_| "(none)".into());
+            let q_json = serde_json::json!({"session_id": sid, "tty": tty, "think": think, "private": private, "json": json}).to_string();
+            crate::debug_io::daemon_log("daemon.log", "query_start", &q_json);
             if words.is_empty() {
                 eprintln!("Usage: ? <your question>");
                 std::process::exit(1);
@@ -318,6 +327,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 shell,
                 pid,
             } => {
+                // Log session start
+                let s_json = serde_json::json!({"session_id": session, "tty": tty, "shell": shell, "pid": pid}).to_string();
+                crate::debug_io::daemon_log("daemon.log", "session_start", &s_json);
                 let request = daemon::DaemonRequest::CreateSession {
                     session,
                     tty,
@@ -329,6 +341,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             SessionAction::End { session } => {
+                let e_json = serde_json::json!({"session_id": session}).to_string();
+                crate::debug_io::daemon_log("daemon.log", "session_end", &e_json);
                 let _ = send_to_global_or_fallback(&daemon::DaemonRequest::EndSession {
                     session: session.clone(),
                 });
