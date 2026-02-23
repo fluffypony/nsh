@@ -74,6 +74,9 @@ pub async fn handle_query(
     };
     let chain = &chain;
 
+    // Placeholder for future model capability detection (tool-calling/JSON mode)
+    let _model_name = chain.first().cloned().unwrap_or_default();
+
     // ── Skills + MCP ───────────────────────────────────
     let skills = crate::skills::load_skills();
 

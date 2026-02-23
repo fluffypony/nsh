@@ -37,14 +37,17 @@ pub fn last_stream_had_text() -> bool {
 }
 
 fn chat_color() -> &'static str {
-    CHAT_COLOR.get().map(|s| s.as_str()).unwrap_or("\x1b[3;36m")
+    CHAT_COLOR
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or(crate::tui::style::CYAN_ITALIC)
 }
 
 fn spinner_frames() -> &'static [String] {
     static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
     SPINNER_FRAMES.get().unwrap_or_else(|| {
         DEFAULT.get_or_init(|| {
-            vec!["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            vec!["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
                 .into_iter()
                 .map(String::from)
                 .collect()
