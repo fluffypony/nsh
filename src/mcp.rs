@@ -444,7 +444,12 @@ impl McpClient {
                         rename = sc.rename_tools.clone();
                     }
                 }
-                if disabled.iter().any(|s| !s.is_empty() && tool.name.contains(s)) {
+                if disabled.iter().any(|s| {
+                    if s.is_empty() { return false; }
+                    // Support both substring and glob patterns
+                    if tool.name.contains(s) { return true; }
+                    glob::Pattern::new(s).map(|p| p.matches(&tool.name)).unwrap_or(false)
+                }) {
                     continue;
                 }
                 let display_name = rename.get(&tool.name).cloned().unwrap_or_else(|| tool.name.clone());

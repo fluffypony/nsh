@@ -270,7 +270,10 @@ pub async fn handle_query(
             system: system.clone(),
             messages: messages.clone(),
             tools: tool_defs.clone(),
-            tool_choice: ToolChoice::Required,
+            tool_choice: {
+                let caps = crate::config::model_capabilities(&config.provider.default, &chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()));
+                if caps.supports_tool_calling { ToolChoice::Required } else { ToolChoice::Auto }
+            },
             max_tokens: 4096,
             stream: true,
             extra_body,
@@ -325,6 +328,7 @@ pub async fn handle_query(
             .iter()
             .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         let response = if !has_tool_calls {
+            let caps = crate::config::model_capabilities(&config.provider.default, &chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()));
             if !used_forced_json {
                 force_json_next = true;
             }
@@ -400,7 +404,7 @@ pub async fn handle_query(
                     tool_choice: crate::provider::ToolChoice::None,
                     max_tokens: 1024,
                     stream: false,
-                    extra_body: Some(serde_json::json!({"response_format": {"type": "json_object"}})),
+                    extra_body: if caps.supports_json_mode { Some(serde_json::json!({"response_format": {"type": "json_object"}})) } else { None },
                 };
                 if let Ok(json) = crate::json_extract::extract_with_retry(
                     provider.as_ref(),

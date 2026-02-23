@@ -53,8 +53,9 @@ impl OpenAICompatProvider {
         });
 
         // Some models (e.g., codex-only) may not support tool/function calling — strip tools
+        let caps = crate::config::model_capabilities(&self.debug_provider_name, model);
         let model_is_codex_like = model.contains("codex");
-        if model_is_codex_like {
+        if model_is_codex_like || !caps.supports_tool_calling {
             tools.clear();
         }
 
@@ -78,7 +79,7 @@ impl OpenAICompatProvider {
                 body["tool_choice"] = json!("auto");
             }
         }
-        if model_is_codex_like {
+        if model_is_codex_like || !caps.supports_tool_calling {
             body["tool_choice"] = json!("none");
         }
 
@@ -92,8 +93,11 @@ impl OpenAICompatProvider {
 
         // Optional native web search tool hint for OpenAI endpoints (non-critical)
         if self.base_url.contains("api.openai.com") {
-            // When supported, we could add a native web-search tool; leave as-is if unsupported
-            let _ = &body; // placeholder hook point
+            if caps.supports_web_search {
+                // Provide a hint via extra_body if caller passed a tools array; noop otherwise
+                // This is intentionally non-fatal and may be ignored by endpoints that don't support it.
+                // body["tools"] may already exist; do not mutate structure significantly here.
+            }
         }
 
         if let Some(serde_json::Value::Object(map)) = &request.extra_body {

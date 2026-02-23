@@ -688,6 +688,46 @@ fn default_mcp_timeout() -> u64 {
     30
 }
 
+// ── Model capabilities (heuristics) ───────────────────────────
+#[derive(Debug, Clone, Copy)]
+pub struct ModelCapabilities {
+    pub supports_tool_calling: bool,
+    pub supports_web_search: bool,
+    pub supports_json_mode: bool,
+}
+
+/// Best-effort capability detection by provider+model id.
+/// This is heuristic and intentionally conservative; callers should still handle fallbacks.
+pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
+    let m = model.to_lowercase();
+    let p = provider.to_lowercase();
+
+    // Defaults assume tools+json work; web search disabled unless explicitly known
+    let mut caps = ModelCapabilities {
+        supports_tool_calling: true,
+        supports_web_search: false,
+        supports_json_mode: true,
+    };
+
+    // Codex-like models often omit standard tool-calling
+    if m.contains("codex") {
+        caps.supports_tool_calling = false;
+        caps.supports_json_mode = false; // conservative
+    }
+
+    // OpenAI native web search preview (Responses API). We only hint here — provider layer may ignore.
+    if p == "openai" && (m.contains("gpt-5.2") || m.contains("gpt-5-search")) {
+        caps.supports_web_search = true;
+    }
+
+    // Anthropic supports tools, but not OpenAI JSON mode flag
+    if p == "anthropic" {
+        caps.supports_json_mode = false;
+    }
+
+    caps
+}
+
 fn find_project_config() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     let global_config_path = Config::path();
