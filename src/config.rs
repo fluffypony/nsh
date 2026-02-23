@@ -657,6 +657,15 @@ pub struct McpServerConfig {
     /// Extra HTTP headers (for http transport)
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Optional bearer token for HTTP transport (supports $ENV_VAR expansion)
+    #[serde(default)]
+    pub bearer_token: Option<String>,
+    /// Disable tools whose names match any of these substrings
+    #[serde(default)]
+    pub disable_tools: Vec<String>,
+    /// Rename tools: old_name -> new_name
+    #[serde(default)]
+    pub rename_tools: HashMap<String, String>,
     #[serde(default = "default_mcp_timeout")]
     pub timeout_seconds: u64,
 }

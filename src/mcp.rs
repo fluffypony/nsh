@@ -322,11 +322,22 @@ impl McpClient {
                     })?
                     .clone();
                 let client = reqwest::Client::builder().timeout(timeout).build()?;
-                let headers: Vec<(String, String)> = config
+                // Build headers with bearer support
+                let mut headers: Vec<(String, String)> = config
                     .headers
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
+                if let Some(tok) = &config.bearer_token {
+                    let value = if tok.starts_with('$') {
+                        std::env::var(&tok[1..]).unwrap_or_default()
+                    } else {
+                        tok.clone()
+                    };
+                    if !value.is_empty() {
+                        headers.push(("Authorization".into(), format!("Bearer {}", value)));
+                    }
+                }
                 McpTransport::Http {
                     client,
                     url,
@@ -425,8 +436,20 @@ impl McpClient {
         let mut defs = Vec::new();
         for (server_name, server) in &self.servers {
             for tool in &server.tools {
+                // Apply disable/rename filters from config if available
+                let (mut disabled, mut rename): (Vec<String>, HashMap<String, String>) = (Vec::new(), HashMap::new());
+                if let Some(cfg) = crate::config::Config::load().ok().map(|c| c.mcp.servers) {
+                    if let Some(sc) = cfg.get(server_name) {
+                        disabled = sc.disable_tools.clone();
+                        rename = sc.rename_tools.clone();
+                    }
+                }
+                if disabled.iter().any(|s| !s.is_empty() && tool.name.contains(s)) {
+                    continue;
+                }
+                let display_name = rename.get(&tool.name).cloned().unwrap_or_else(|| tool.name.clone());
                 defs.push(ToolDefinition {
-                    name: format!("mcp_{server_name}_{}", tool.name),
+                    name: format!("mcp_{server_name}_{}", display_name),
                     description: tool.description.clone(),
                     parameters: tool.input_schema.clone(),
                 });
