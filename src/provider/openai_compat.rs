@@ -52,6 +52,12 @@ impl OpenAICompatProvider {
             "stream": request.stream,
         });
 
+        // Some models (e.g., codex-only) may not support tool/function calling — strip tools
+        let model_is_codex_like = model.contains("codex");
+        if model_is_codex_like {
+            tools.clear();
+        }
+
         if !tools.is_empty() {
             if anthropic {
                 if let Some(last) = tools.last_mut() {
@@ -71,6 +77,9 @@ impl OpenAICompatProvider {
             ToolChoice::Auto => {
                 body["tool_choice"] = json!("auto");
             }
+        }
+        if model_is_codex_like {
+            body["tool_choice"] = json!("none");
         }
 
         if anthropic {

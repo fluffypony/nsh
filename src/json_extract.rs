@@ -89,6 +89,37 @@ pub fn missing_keys_prompt(missing: &[String]) -> String {
     )
 }
 
+/// Call the model, extract JSON, and retry up to max_retries if required keys are missing.
+pub async fn extract_with_retry<P: crate::provider::LlmProvider + ?Sized>(
+    provider: &P,
+    mut request: crate::provider::ChatRequest,
+    required: &[RequiredKeyPath],
+    max_retries: u32,
+) -> anyhow::Result<serde_json::Value> {
+    let mut attempts = 0u32;
+    loop {
+        let resp = provider.complete(request.clone()).await?;
+        let text = resp
+            .content
+            .iter()
+            .filter_map(|b| match b { crate::provider::ContentBlock::Text { text } => Some(text.as_str()), _ => None })
+            .collect::<Vec<_>>()
+            .join("");
+        match extract_and_validate(&text, required) {
+            Ok(v) => return Ok(v),
+            Err(missing) => {
+                if attempts >= max_retries { anyhow::bail!("missing keys after retries: {}", missing.join(", ")); }
+                attempts += 1;
+                // Push feedback as a user message and retry
+                request.messages.push(crate::provider::Message {
+                    role: crate::provider::Role::User,
+                    content: vec![crate::provider::ContentBlock::Text { text: missing_keys_prompt(&missing) }],
+                });
+            }
+        }
+    }
+}
+
 fn strip_thinking_tags(text: &str) -> String {
     let tags = &[
         "thinking",
