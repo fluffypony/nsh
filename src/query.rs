@@ -298,6 +298,7 @@ pub async fn handle_query(
                 crate::json_extract::RequiredKeyPath::new(&["tool"]),
                 crate::json_extract::RequiredKeyPath::new(&["input"]),
             ];
+            // Try a quick parse first
             if let Ok(json) = crate::json_extract::extract_and_validate(&text_content, &required) {
                 if let Some(name) = json
                     .get("tool")
@@ -339,6 +340,51 @@ pub async fn handle_query(
                     response
                 }
             } else {
+                // Second chance: run a non-streaming JSON-mode retry up to 2 times
+                let model_name = chain
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| config.provider.model.clone());
+                let retry_request = crate::provider::ChatRequest {
+                    model: model_name,
+                    system: system.clone(),
+                    messages: messages.clone(),
+                    tools: vec![],
+                    tool_choice: crate::provider::ToolChoice::None,
+                    max_tokens: 1024,
+                    stream: false,
+                    extra_body: Some(serde_json::json!({"response_format": {"type": "json_object"}})),
+                };
+                if let Ok(json) = crate::json_extract::extract_with_retry(
+                    provider.as_ref(),
+                    retry_request,
+                    &required,
+                    2,
+                )
+                .await
+                {
+                    if let Some(name) = json
+                        .get("tool")
+                        .or(json.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let input = json
+                            .get("input")
+                            .or(json.get("arguments"))
+                            .cloned()
+                            .unwrap_or(json.clone());
+                        Message {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::ToolUse {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: name.to_string(),
+                                input,
+                            }],
+                        }
+                    } else {
+                        response
+                    }
+                } else {
                 // If validation failed, try looser parse to catch simple command/chat shapes
                 if let Some(json) = crate::json_extract::extract_json(&text_content) {
                     if let Some(name) = json
@@ -382,6 +428,7 @@ pub async fn handle_query(
                     }
                 } else {
                     response
+                }
                 }
             }
         } else {

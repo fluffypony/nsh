@@ -96,8 +96,9 @@ pub fn validate_read_path_with_access(
                 let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
                 if canonical.starts_with(&dir_canonical) {
                     if sensitive_file_access == "ask" {
-                        eprintln!("\x1b[1;33m⚠ '{raw_path}' is in a sensitive directory\x1b[0m");
-                        eprint!("\x1b[1;33mAllow access? [y/N]\x1b[0m ");
+                        let th = crate::tui::theme::current_theme();
+                        eprintln!("{}⚠ '{raw_path}' is in a sensitive directory{}", th.warning, th.reset);
+                        eprint!("{}Allow access? [y/N]{} ", th.warning, th.reset);
                         let _ = std::io::Write::flush(&mut std::io::stderr());
                         if read_tty_confirmation() {
                             break;
