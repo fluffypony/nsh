@@ -728,6 +728,33 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
     caps
 }
 
+#[cfg(test)]
+mod tests_model_capabilities {
+    use super::*;
+
+    #[test]
+    fn codex_models_disable_tools_and_json() {
+        let caps = model_capabilities("openai", "gpt-5.2-codex");
+        assert!(!caps.supports_tool_calling);
+        assert!(!caps.supports_json_mode);
+    }
+
+    #[test]
+    fn openai_gpt_52_supports_json_and_maybe_websearch() {
+        let caps = model_capabilities("openai", "gpt-5.2");
+        assert!(caps.supports_tool_calling);
+        assert!(caps.supports_json_mode);
+        assert!(caps.supports_web_search); // heuristic: true for gpt-5.2/openai
+    }
+
+    #[test]
+    fn anthropic_supports_tools_but_not_openai_json_mode() {
+        let caps = model_capabilities("anthropic", "claude-3.5-sonnet");
+        assert!(caps.supports_tool_calling);
+        assert!(!caps.supports_json_mode);
+    }
+}
+
 fn find_project_config() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     let global_config_path = Config::path();
