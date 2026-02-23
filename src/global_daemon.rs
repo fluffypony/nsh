@@ -18,6 +18,16 @@ enum MemoryTask {
 
 type MemoryTaskSender = mpsc::Sender<MemoryTask>;
 
+// In-memory active session tracking for per-session notifications
+#[derive(Clone)]
+pub struct SessionInfo {
+    last_seen: Instant,
+    tty: Option<String>,
+    shell: Option<String>,
+    pid: Option<i64>,
+}
+type ActiveSessions = std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>;
+
 fn log_daemon(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
 }
@@ -145,14 +155,6 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     }
 
     let active_conns = Arc::new(AtomicUsize::new(0));
-    #[derive(Clone)]
-    struct SessionInfo {
-        last_seen: Instant,
-        tty: Option<String>,
-        shell: Option<String>,
-        pid: Option<i64>,
-    }
-    type ActiveSessions = std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>;
     let active_sessions: ActiveSessions = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     const MAX_GLOBAL_CONNS: usize = 32;
 
@@ -1829,7 +1831,8 @@ mod tests {
             .expect("set read timeout");
 
         let handler = std::thread::spawn(move || {
-            handle_global_connection(server, write_tx, read_tx);
+            let sessions = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+            handle_global_connection(server, write_tx, read_tx, sessions);
         });
 
         let mut line = request_line.to_string();

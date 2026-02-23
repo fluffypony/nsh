@@ -162,6 +162,8 @@ fn extract_from_code_fence(text: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{self, ChatRequest, ContentBlock, Message, Role, ToolChoice};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_direct_json() {
@@ -260,5 +262,77 @@ mod tests {
     #[test]
     fn test_extract_json_whitespace_only() {
         assert!(extract_json("   \n\t  ").is_none());
+    }
+
+    struct StubProvider {
+        responses: Arc<Mutex<Vec<Message>>>,
+        captured_requests: Arc<Mutex<Vec<ChatRequest>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl provider::LlmProvider for StubProvider {
+        async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
+            self.captured_requests.lock().unwrap().push(request);
+            let msg = self
+                .responses
+                .lock()
+                .unwrap()
+                .remove(0);
+            Ok(msg)
+        }
+
+        async fn stream(
+            &self,
+            _request: ChatRequest,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<provider::StreamEvent>> {
+            anyhow::bail!("not used in tests")
+        }
+    }
+
+    fn mk_text_message(text: &str) -> Message {
+        Message { role: Role::Assistant, content: vec![ContentBlock::Text { text: text.to_string() }] }
+    }
+
+    #[tokio::test]
+    async fn extract_with_retry_succeeds_on_second_attempt() {
+        let required = [RequiredKeyPath::new(&["tool"]), RequiredKeyPath::new(&["input"])];
+        // First response missing keys, second response correct JSON
+        let responses = vec![
+            mk_text_message("{}"),
+            mk_text_message("{\"tool\":\"command\",\"input\":{\"command\":\"echo hi\"}}"),
+        ];
+        let provider = StubProvider { responses: Arc::new(Mutex::new(responses)), captured_requests: Arc::new(Mutex::new(Vec::new())) };
+        let req = ChatRequest {
+            model: "test-model".into(),
+            system: "json only".into(),
+            messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text { text: "make json".into() }] }],
+            tools: vec![],
+            tool_choice: ToolChoice::None,
+            max_tokens: 256,
+            stream: false,
+            extra_body: None,
+        };
+        let out = extract_with_retry(&provider, req, &required, 2).await.expect("should succeed");
+        assert_eq!(out["tool"].as_str(), Some("command"));
+        assert!(provider.captured_requests.lock().unwrap().len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn extract_with_retry_fails_after_max_attempts() {
+        let required = [RequiredKeyPath::new(&["tool"]), RequiredKeyPath::new(&["input"])];
+        let responses = vec![mk_text_message("{}"), mk_text_message("{}")];
+        let provider = StubProvider { responses: Arc::new(Mutex::new(responses)), captured_requests: Arc::new(Mutex::new(Vec::new())) };
+        let req = ChatRequest {
+            model: "test-model".into(),
+            system: "json only".into(),
+            messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text { text: "make json".into() }] }],
+            tools: vec![],
+            tool_choice: ToolChoice::None,
+            max_tokens: 128,
+            stream: false,
+            extra_body: None,
+        };
+        let err = extract_with_retry(&provider, req, &required, 1).await.err().expect("should fail");
+        assert!(err.to_string().contains("missing keys"));
     }
 }

@@ -509,7 +509,7 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             chat_color: "\x1b[3;36m".into(), // cyan italic
-            thinking_indicator: "⣾⣽⣻⢿⡿⣟⣯⣷".into(),
+            thinking_indicator: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".into(),
         }
     }
 }
@@ -2495,6 +2495,9 @@ model = "search-model"
             env: std::collections::HashMap::new(),
             url: None,
             headers: std::collections::HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: std::collections::HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "stdio");
@@ -2509,6 +2512,9 @@ model = "search-model"
             env: std::collections::HashMap::new(),
             url: Some("http://localhost:8080".into()),
             headers: std::collections::HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: std::collections::HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "http");
@@ -2523,6 +2529,9 @@ model = "search-model"
             env: std::collections::HashMap::new(),
             url: Some("http://localhost:8080".into()),
             headers: std::collections::HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: std::collections::HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "http");
@@ -3573,6 +3582,9 @@ key = "value"
             env: HashMap::new(),
             url: Some("http://example.com".into()),
             headers: HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "stdio");
@@ -3587,6 +3599,9 @@ key = "value"
             env: HashMap::new(),
             url: None,
             headers: HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "stdio");
@@ -3601,6 +3616,9 @@ key = "value"
             env: HashMap::new(),
             url: Some("http://example.com".into()),
             headers: HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "stdio");
@@ -4034,6 +4052,9 @@ timeout_seconds = "fast"
             env: HashMap::new(),
             url: Some("http://localhost:8080".into()),
             headers: HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "http");
@@ -4339,6 +4360,9 @@ model = "explicit/model"
             env: HashMap::new(),
             url: None,
             headers: HashMap::new(),
+            bearer_token: None,
+            disable_tools: vec![],
+            rename_tools: HashMap::new(),
             timeout_seconds: 30,
         };
         assert_eq!(cfg.effective_transport(), "http");

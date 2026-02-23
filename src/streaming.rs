@@ -38,16 +38,18 @@ pub fn last_stream_had_text() -> bool {
 }
 
 fn chat_color() -> &'static str {
+    // Prefer configured chat color; otherwise, use the theme's primary text color
     CHAT_COLOR
         .get()
         .map(|s| s.as_str())
-        .unwrap_or(crate::tui::theme::current_theme().italic)
+        .unwrap_or(crate::tui::theme::current_theme().text)
 }
 
 fn spinner_frames() -> &'static [String] {
     static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
     SPINNER_FRAMES.get().unwrap_or_else(|| {
         DEFAULT.get_or_init(|| {
+            // Smooth Braille-inspired animation
             vec!["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
                 .into_iter()
                 .map(String::from)
