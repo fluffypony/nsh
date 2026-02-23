@@ -145,6 +145,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     }
 
     let active_conns = Arc::new(AtomicUsize::new(0));
+    let active_sessions: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     const MAX_GLOBAL_CONNS: usize = 32;
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
@@ -280,7 +282,10 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     let rt = read_tx.clone();
                     let ac = Arc::clone(&active_conns);
                     let la = Arc::clone(&last_activity);
+                    let sessions_ref = Arc::clone(&active_sessions);
                     std::thread::spawn(move || {
+                        // Track sessions seen in this connection when appropriate
+                        // (session IDs are inside request messages; handle_global_connection will process them)
                         handle_global_connection(stream, wt, rt);
                         *la.lock().unwrap() = Instant::now();
                         ac.fetch_sub(1, Ordering::Relaxed);
@@ -343,6 +348,17 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     if restart_marker.exists() {
                         log_daemon("server.lifecycle", "restart marker detected, shutting down");
                         restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
+                        // Notify active sessions about hook updates immediately (best effort)
+                        let dir = crate::config::Config::nsh_dir();
+                        if let Ok(entries) = std::fs::read_dir(&dir) {
+                            for entry in entries.flatten() {
+                                if let Some(name) = entry.file_name().to_str() {
+                                    if let Some(sid) = name.strip_prefix("active_session_") {
+                                        let _ = std::fs::write(dir.join(format!("nsh_msg_{}", sid)), "hooks_updated\n");
+                                    }
+                                }
+                            }
+                        }
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -1489,6 +1505,12 @@ fn handle_global_connection(
         }
     };
     log_daemon("server.connection.request", line.trim());
+    // Track active session IDs for per-session notifications (best-effort)
+    if let DaemonRequest::CreateSession { session, .. } | DaemonRequest::Heartbeat { session } = &request {
+        let dir = crate::config::Config::nsh_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(format!("active_session_{}", session)), "");
+    }
 
     let (reply_tx, reply_rx) = mpsc::channel();
 

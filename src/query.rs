@@ -730,12 +730,23 @@ pub async fn handle_query(
                         if suggestions.is_empty() {
                             suggestions = class_tools.keys().take(10).map(|c| (c.clone(), class_tools[c].len())).collect();
                         }
-                        let body = if suggestions.is_empty() {
+                        let mut body = if suggestions.is_empty() {
                             "No matching tool classes found. Use list_tools(class_name) after reviewing available classes.".to_string()
                         } else {
                             let list = suggestions.iter().map(|(c, n)| format!("- {} ({} tools)", c, n)).collect::<Vec<_>>().join("\n");
                             format!("Tool classes that may help:\n{}\nUse list_tools(class_name) to load one.", list)
                         };
+                        // If limited/no suggestions, perform a quick web discovery to enrich results
+                        if suggestions.len() < 2 {
+                            let query = format!("{} tool OR MCP server OR skill", goal);
+                            match crate::tools::web_search::execute(&query, config).await {
+                                Ok(text) if !text.trim().is_empty() => {
+                                    body.push_str("\n\nWeb discovery hints:\n");
+                                    body.push_str(&text);
+                                }
+                                _ => {}
+                            }
+                        }
                         let wrapped = crate::security::wrap_tool_result(&name, &body, &boundary);
                         tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
                     }
