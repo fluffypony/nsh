@@ -145,8 +145,15 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     }
 
     let active_conns = Arc::new(AtomicUsize::new(0));
-    let active_sessions: Arc<std::sync::Mutex<std::collections::HashSet<String>>> =
-        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    #[derive(Clone)]
+    struct SessionInfo {
+        last_seen: Instant,
+        tty: Option<String>,
+        shell: Option<String>,
+        pid: Option<i64>,
+    }
+    type ActiveSessions = std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>;
+    let active_sessions: ActiveSessions = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     const MAX_GLOBAL_CONNS: usize = 32;
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
@@ -162,8 +169,10 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             .and_then(|p| std::fs::metadata(p).ok())
             .and_then(|m| m.modified().ok());
         let restart_flag = Arc::clone(&restart_pending);
+        let sessions_for_monitor = std::sync::Arc::clone(&active_sessions);
         std::thread::spawn(move || {
             let mut last_skill_pull = std::time::Instant::now();
+            let mut last_prune = std::time::Instant::now();
             loop {
                 let _ = crate::context::sample_volatile_info();
                 let _ = crate::context::get_semi_dynamic_info();
@@ -183,6 +192,14 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                                 }
                             }
                         }
+                    }
+                }
+                // Prune inactive sessions every 5 minutes
+                if last_prune.elapsed() > std::time::Duration::from_secs(300) {
+                    last_prune = std::time::Instant::now();
+                    let cutoff = Instant::now() - Duration::from_secs(600);
+                    if let Ok(mut guard) = sessions_for_monitor.write() {
+                        guard.retain(|_, info| info.last_seen >= cutoff);
                     }
                 }
                 if let Some(ref path) = monitor_exe_path {
@@ -282,11 +299,11 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     let rt = read_tx.clone();
                     let ac = Arc::clone(&active_conns);
                     let la = Arc::clone(&last_activity);
-                    let sessions_ref = Arc::clone(&active_sessions);
+                    let sessions_ref = std::sync::Arc::clone(&active_sessions);
                     std::thread::spawn(move || {
                         // Track sessions seen in this connection when appropriate
                         // (session IDs are inside request messages; handle_global_connection will process them)
-                        handle_global_connection(stream, wt, rt);
+                        handle_global_connection(stream, wt, rt, sessions_ref);
                         *la.lock().unwrap() = Instant::now();
                         ac.fetch_sub(1, Ordering::Relaxed);
                     });
@@ -350,13 +367,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                         restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
                         // Notify active sessions about hook updates immediately (best effort)
                         let dir = crate::config::Config::nsh_dir();
-                        if let Ok(entries) = std::fs::read_dir(&dir) {
-                            for entry in entries.flatten() {
-                                if let Some(name) = entry.file_name().to_str() {
-                                    if let Some(sid) = name.strip_prefix("active_session_") {
-                                        let _ = std::fs::write(dir.join(format!("nsh_msg_{}", sid)), "hooks_updated\n");
-                                    }
-                                }
+                        if let Ok(guard) = active_sessions.read() {
+                            for sid in guard.keys() {
+                                let _ = std::fs::write(dir.join(format!("nsh_msg_{}", sid)), "hooks_updated\n");
                             }
                         }
                     }
@@ -1481,6 +1494,7 @@ fn handle_global_connection(
     stream: std::os::unix::net::UnixStream,
     write_tx: mpsc::Sender<WriteCommand>,
     read_tx: mpsc::Sender<ReadCommand>,
+    active_sessions: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>,
 ) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
@@ -1505,11 +1519,22 @@ fn handle_global_connection(
         }
     };
     log_daemon("server.connection.request", line.trim());
-    // Track active session IDs for per-session notifications (best-effort)
-    if let DaemonRequest::CreateSession { session, .. } | DaemonRequest::Heartbeat { session } = &request {
-        let dir = crate::config::Config::nsh_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join(format!("active_session_{}", session)), "");
+    // Track active session IDs for per-session notifications (in-memory)
+    match &request {
+        DaemonRequest::CreateSession { session, tty, shell, pid } => {
+            if let Ok(mut guard) = active_sessions.write() {
+                guard.insert(session.clone(), SessionInfo { last_seen: Instant::now(), tty: Some(tty.clone()), shell: Some(shell.clone()), pid: Some(*pid) });
+            }
+        }
+        DaemonRequest::Heartbeat { session } => {
+            if let Ok(mut guard) = active_sessions.write() {
+                guard.entry(session.clone()).and_modify(|info| info.last_seen = Instant::now()).or_insert(SessionInfo { last_seen: Instant::now(), tty: None, shell: None, pid: None });
+            }
+        }
+        DaemonRequest::EndSession { session } => {
+            if let Ok(mut guard) = active_sessions.write() { let _ = guard.remove(session); }
+        }
+        _ => {}
     }
 
     let (reply_tx, reply_rx) = mpsc::channel();
