@@ -509,7 +509,7 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             chat_color: "\x1b[3;36m".into(), // cyan italic
-            thinking_indicator: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".into(),
+            thinking_indicator: "⣾⣽⣻⢿⡿⣟⣯⣷".into(),
         }
     }
 }
