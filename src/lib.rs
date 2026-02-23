@@ -302,6 +302,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                     let tmp = dir.join("update_notice.tmp");
                     let _ = std::fs::write(&tmp, "hooks_updated");
                     let _ = std::fs::rename(&tmp, &notice);
+                    // Also notify the current session immediately via per-session message file
+                    let msg_path = dir.join(format!("nsh_msg_{}", session));
+                    let _ = std::fs::write(&msg_path, "hooks_updated\n");
                 }
             }
             let request = daemon::DaemonRequest::Record {

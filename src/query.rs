@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{config::Config, context, daemon_db::DbAccess, provider::*, streaming, tools};
+use std::collections::{HashMap, HashSet};
 
 type ToolFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>>;
@@ -87,8 +88,54 @@ pub async fn handle_query(
     }
 
     let mut tool_defs = tools::all_tool_definitions();
-    tool_defs.extend(crate::skills::skill_tool_definitions(&skills));
-    tool_defs.extend(mcp_client.lock().await.tool_definitions());
+    let skill_tool_defs = crate::skills::skill_tool_definitions(&skills);
+    let mcp_tool_defs_all = mcp_client.lock().await.tool_definitions();
+    tool_defs.extend(skill_tool_defs.clone());
+    tool_defs.extend(mcp_tool_defs_all.clone());
+
+    // Build tool classes for JIT loading
+    let mut class_tools: HashMap<String, Vec<tools::ToolDefinition>> = HashMap::new();
+    // Skill classes: one tool per skill
+    for sk in &skills {
+        let class = format!("skill:{}", sk.name);
+        let defs = crate::skills::skill_tool_definitions(&[sk.clone()]);
+        class_tools.insert(class, defs);
+    }
+    // MCP classes: group by server name (prefix mcp_<server>_)
+    let mcp_info = mcp_client.lock().await.server_info();
+    for (server, _count) in mcp_info {
+        let prefix = format!("mcp_{}_", server);
+        let mut defs = Vec::new();
+        for d in &mcp_tool_defs_all {
+            if d.name.starts_with(&prefix) {
+                defs.push(d.clone());
+            }
+        }
+        class_tools.insert(format!("mcp:{}", server), defs);
+    }
+
+    // Track which classes are already loaded (skills and MCP tools are preloaded initially)
+    let mut loaded_classes: HashSet<String> = class_tools.keys().cloned().collect();
+
+    // Add meta-tools for JIT discovery/loading
+    tool_defs.push(tools::ToolDefinition {
+        name: "list_tools".into(),
+        description: "Load tools from a specific class into the active toolset. Classes look like 'skill:<name>' or 'mcp:<server>'.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"class_name": {"type": "string", "description": "Class name: skill:<name> or mcp:<server>"}},
+            "required": ["class_name"]
+        }),
+    });
+    tool_defs.push(tools::ToolDefinition {
+        name: "find_tools".into(),
+        description: "Search installed tool classes that can help with a goal. Returns suggestions and how to load them via list_tools.".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"goal": {"type": "string", "description": "What you want to accomplish"}},
+            "required": ["goal"]
+        }),
+    });
 
     let mcp_tool_names: std::collections::HashSet<String> = mcp_client
         .lock()
@@ -639,6 +686,58 @@ pub async fn handle_query(
 
                     "ask_user" => {
                         ask_user_calls.push((id.clone(), name.clone(), input.clone()));
+                    }
+                    "list_tools" => {
+                        has_terminal_tool = true;
+                        let class_name = input["class_name"].as_str().unwrap_or("");
+                        let th = crate::tui::theme::current_theme();
+                        if let Some(defs) = class_tools.get(class_name) {
+                            // Only add if not already loaded
+                            if !loaded_classes.contains(class_name) {
+                                for d in defs {
+                                    // Avoid duplicate insertion of identical tool names
+                                    if !tool_defs.iter().any(|t| t.name == d.name) {
+                                        tool_defs.push(d.clone());
+                                    }
+                                }
+                                loaded_classes.insert(class_name.to_string());
+                            }
+                            let summary = defs.iter().map(|d| format!("- {}", d.name)).collect::<Vec<_>>().join("\n");
+                            eprintln!("\n  {}✓{} loaded tools from class '{}':\n{}", th.success, th.reset, class_name, summary);
+                            let wrapped = crate::security::wrap_tool_result(
+                                &name,
+                                &format!("Loaded {} tool(s) from class '{}'", defs.len(), class_name),
+                                &boundary,
+                            );
+                            tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
+                        } else {
+                            let wrapped = crate::security::wrap_tool_result(&name, &format!("Class '{}' not found", class_name), &boundary);
+                            tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: true });
+                        }
+                    }
+                    "find_tools" => {
+                        has_terminal_tool = true;
+                        let goal = input["goal"].as_str().unwrap_or("");
+                        let mut suggestions: Vec<(String, usize)> = Vec::new();
+                        let goal_lc = goal.to_lowercase();
+                        for (class, defs) in &class_tools {
+                            // Simple heuristic: match by class name or tool names
+                            let hay = format!("{} {}", class, defs.iter().map(|d| &d.name).cloned().collect::<Vec<_>>().join(" "));
+                            if hay.to_lowercase().contains(&goal_lc) {
+                                suggestions.push((class.clone(), defs.len()));
+                            }
+                        }
+                        if suggestions.is_empty() {
+                            suggestions = class_tools.keys().take(10).map(|c| (c.clone(), class_tools[c].len())).collect();
+                        }
+                        let body = if suggestions.is_empty() {
+                            "No matching tool classes found. Use list_tools(class_name) after reviewing available classes.".to_string()
+                        } else {
+                            let list = suggestions.iter().map(|(c, n)| format!("- {} ({} tools)", c, n)).collect::<Vec<_>>().join("\n");
+                            format!("Tool classes that may help:\n{}\nUse list_tools(class_name) to load one.", list)
+                        };
+                        let wrapped = crate::security::wrap_tool_result(&name, &body, &boundary);
+                        tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
                     }
                     "code" => {
                         let task = input["task"].as_str().unwrap_or("");

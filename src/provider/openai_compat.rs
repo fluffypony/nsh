@@ -90,6 +90,12 @@ impl OpenAICompatProvider {
             }]);
         }
 
+        // Optional native web search tool hint for OpenAI endpoints (non-critical)
+        if self.base_url.contains("api.openai.com") {
+            // When supported, we could add a native web-search tool; leave as-is if unsupported
+            let _ = &body; // placeholder hook point
+        }
+
         if let Some(serde_json::Value::Object(map)) = &request.extra_body {
             for (k, v) in map {
                 body[k] = v.clone();
