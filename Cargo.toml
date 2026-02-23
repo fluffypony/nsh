@@ -75,6 +75,9 @@ hex = "0.4"
 # String similarity (episodic dedup)
 strsim = "0.11"
 
+# Token counting (cl100k_base)
+tiktoken-rs = "0.9"
+
 # Misc
 which = "8"
 uuid = { version = "1", features = ["v4"] }

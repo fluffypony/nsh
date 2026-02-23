@@ -312,7 +312,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_file".into(),
-            description: "Read lines from a file with line numbers.".into(),
+            description: "Read a file. For small files (≤200 lines), returns full content with token count. \
+                           For larger files, returns line count and estimated token count (cl100k_base) so you \
+                           can decide: call again with full=true for the complete file, or use start_line/end_line \
+                           for a range. Unless the file exceeds ~900k tokens, requesting the full file is fine — \
+                           the provider will error if it doesn't fit the context window.".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -320,15 +324,18 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description": "File path"
                     },
+                    "full": {
+                        "type": "boolean",
+                        "description": "Return the entire file regardless of size",
+                        "default": false
+                    },
                     "start_line": {
                         "type": "integer",
-                        "description": "First line to read (1-indexed)",
-                        "default": 1
+                        "description": "First line to read (1-indexed)"
                     },
                     "end_line": {
                         "type": "integer",
-                        "description": "Last line to read (1-indexed)",
-                        "default": 200
+                        "description": "Last line to read (1-indexed)"
                     }
                 },
                 "required": ["path"]
@@ -1400,12 +1407,15 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_tool_defaults() {
+    fn test_read_file_tool_properties() {
         let tools = all_tool_definitions();
         let rf = tools.iter().find(|t| t.name == "read_file").unwrap();
         let props = rf.parameters["properties"].as_object().unwrap();
-        assert_eq!(props["start_line"]["default"], 1);
-        assert_eq!(props["end_line"]["default"], 200);
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("full"));
+        assert!(props.contains_key("start_line"));
+        assert!(props.contains_key("end_line"));
+        assert_eq!(props["full"]["default"], false);
     }
 
     #[test]
