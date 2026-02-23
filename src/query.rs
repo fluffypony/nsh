@@ -1284,10 +1284,14 @@ understand what the user is working on.
 You MUST respond by calling one or more tools. Every response must include at
 least one tool call. Never respond with plain text outside a tool call.
 
-Terminal tools (command, chat, write_file, patch_file, manage_config,
-install_skill, install_mcp_server) end the conversation turn. Exception: when
-you set `pending=true` on the `command` tool, it executes and returns output so
-you can continue the loop.
+Terminal tools (command, chat, write_file, patch_file) end the conversation
+turn. Exception: when you set `pending=true` on the `command` tool, it executes
+and returns output so you can continue the loop.
+Non-terminal action tools (manage_config, install_skill, install_mcp_server)
+return their result to you so you can verify success, retry on error, or take
+follow-up actions. Do NOT end the turn after calling these — check the result
+first and only call `chat` when the user's goal is fully achieved or truly
+impossible.
 Information-gathering tools (search_history, grep_file, read_file, list_directory,
 web_search, run_command, ask_user, man_page) can be called multiple times,
 and in parallel when independent.
