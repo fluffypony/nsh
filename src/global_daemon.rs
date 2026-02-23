@@ -32,6 +32,28 @@ fn log_daemon(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
 }
 
+#[cfg(unix)]
+fn pid_alive(pid: i64) -> bool {
+    if pid <= 0 { return false; }
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+fn tty_sanitized(tty: &str) -> String {
+    tty.replace('/', "_")
+}
+
+/// Cleanup per-TTY/session artifacts when a session ends or is pruned.
+fn cleanup_session_artifacts(session_id: &str, info: &SessionInfo) {
+    let dir = crate::config::Config::nsh_dir();
+    // Remove per-session message file if any
+    let _ = std::fs::remove_file(dir.join(format!("nsh_msg_{}", session_id)));
+    // Remove per-TTY CWD file if we know TTY
+    if let Some(tty) = &info.tty {
+        let safe = tty_sanitized(tty);
+        let _ = std::fs::remove_file(dir.join(format!("cwd_{}", safe)));
+    }
+}
+
 pub fn run_global_daemon() -> anyhow::Result<()> {
     log_daemon("server.lifecycle", "starting global daemon");
     // Restart cooldown: if we just restarted moments ago, wait a bit to avoid flapping
@@ -204,7 +226,17 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     last_prune = std::time::Instant::now();
                     let cutoff = Instant::now() - Duration::from_secs(600);
                     if let Ok(mut guard) = sessions_for_monitor.write() {
+                        // Collect stale before retaining for cleanup
+                        let stale: Vec<(String, SessionInfo)> = guard
+                            .iter()
+                            .filter(|(_, info)| info.last_seen < cutoff)
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
                         guard.retain(|_, info| info.last_seen >= cutoff);
+                        drop(guard);
+                        for (sid, info) in stale {
+                            cleanup_session_artifacts(&sid, &info);
+                        }
                     }
                 }
                 if let Some(ref path) = monitor_exe_path {
@@ -370,11 +402,27 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                     if restart_marker.exists() {
                         log_daemon("server.lifecycle", "restart marker detected, shutting down");
                         restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
-                        // Notify active sessions about hook updates immediately (best effort)
+                        // Notify only live/active sessions about hook updates (best effort)
                         let dir = crate::config::Config::nsh_dir();
                         if let Ok(guard) = active_sessions.read() {
-                            for sid in guard.keys() {
-                                let _ = std::fs::write(dir.join(format!("nsh_msg_{}", sid)), "hooks_updated\n");
+                            for (sid, info) in guard.iter() {
+                                // Skip dead PIDs where available
+                                #[cfg(unix)]
+                                {
+                                    if let Some(pid) = info.pid { if !pid_alive(pid) { continue; } }
+                                }
+                                // Skip messages for missing TTYs
+                                if let Some(tty) = &info.tty {
+                                    if !std::path::Path::new(tty).exists() { continue; }
+                                }
+                                // Tailor message by shell (minor copy variation)
+                                let msg = match info.shell.as_deref() {
+                                    Some("zsh") => "hooks_updated: zsh will auto-reload when idle\n",
+                                    Some("bash") => "hooks_updated: bash will refresh hooks on next prompt\n",
+                                    Some("fish") => "hooks_updated: fish auto-reloads hooks\n",
+                                    _ => "hooks_updated\n",
+                                };
+                                let _ = std::fs::write(dir.join(format!("nsh_msg_{}", sid)), msg);
                             }
                         }
                     }
