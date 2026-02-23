@@ -218,7 +218,7 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
                 printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
                 unset _NSH_RELOADING
             fi
-            command rm -f -- "_claimed" 2>/dev/null
+            command rm -f -- "$_claimed" 2>/dev/null
         fi
     fi
     if (( __nsh_cmd_counter % 20 == 0 )); then
