@@ -1614,22 +1614,7 @@ fn redact_config_keys(val: &mut toml::Value) {
 }
 
 fn check_daemon_versions(session_id: &str) {
-    let current_version = env!("CARGO_PKG_VERSION");
-
-    // Check global daemon version; if outdated, request restart
-    if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
-        daemon_client::send_to_global(&crate::daemon::DaemonRequest::Status)
-    {
-        if let Some(v) = d.get("version").and_then(|v| v.as_str()) {
-            if v != current_version {
-                tracing::info!("Global daemon version {} is outdated; signaling restart", v);
-                let _ = daemon_client::signal_daemon_restart();
-                let _ = daemon_client::ensure_global_daemon_running();
-            }
-        }
-    }
-
-    // Per-session daemon notices are intentionally skipped with shim/core split
+    // Centralized debounce now happens in daemon_client::ensure_daemon_version_matches()
     let _ = session_id;
 }
 
