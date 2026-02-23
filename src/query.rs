@@ -586,12 +586,8 @@ pub async fn handle_query(
                     "done" => {
                         has_terminal_tool = true;
                         let result = input["result"].as_str().unwrap_or("Task completed.");
-                        eprintln!(
-                            "\n  {}✓ {}{}",
-                            crate::tui::style::BOLD_CYAN,
-                            result,
-                            crate::tui::style::RESET
-                        );
+                        let th = crate::tui::theme::current_theme();
+                        eprintln!("\n  {}✓ {}{}", th.success, result, th.reset);
                     }
 
                     "ask_user" => {
