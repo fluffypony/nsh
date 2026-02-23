@@ -2536,6 +2536,7 @@ model = "search-model"
             parameters: std::collections::HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
             terminal: false,
         }];
         let mcp_servers = vec![];
@@ -2996,6 +2997,7 @@ model = "gpt-4"
                 parameters: HashMap::new(),
                 is_project: false,
                 docs: None,
+                source_dir: None,
             },
             crate::skills::Skill {
                 name: "lint".into(),
@@ -3008,6 +3010,7 @@ model = "gpt-4"
                 parameters: HashMap::new(),
                 is_project: true,
                 docs: None,
+                source_dir: None,
             },
         ];
         let xml = build_config_xml(&config, &skills, &[]);
@@ -4642,6 +4645,7 @@ model = "custom/model"
                 parameters: std::collections::HashMap::new(),
                 is_project: false,
                 docs: None,
+                source_dir: None,
             },
             crate::skills::Skill {
                 name: "project-skill".into(),
@@ -4654,6 +4658,7 @@ model = "custom/model"
                 parameters: std::collections::HashMap::new(),
                 is_project: true,
                 docs: None,
+                source_dir: None,
             },
         ];
         let xml = build_config_xml(&config, &skills, &[]);
