@@ -253,13 +253,27 @@ __nsh_prompt_command() {
         command rm -f "$msg_file" 2>/dev/null
     fi
     # restart_needed and update_available markers are obsolete under shim/core split
-    # If an update notice exists, auto-reload hooks and inform the user once
+    # If an update notice exists, atomically claim and auto-reload hooks once
     local notice_file="$HOME/.nsh/update_notice"
-    if [[ -f "$notice_file" ]]; then
-        # Attempt an automatic refresh by re-evaluating the init script
-        NSH_NO_WRAP=1 eval "$(command nsh init bash)" 2>/dev/null || true
-        printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
-        command rm -f "$notice_file" 2>/dev/null
+    if [[ -f "$notice_file" && -z "${_NSH_RELOADING:-}" ]]; then
+        # Atomically claim the notice so only one shell processes it
+        local _claimed="/tmp/.nsh_update_claimed.$$"
+        if command mv -f "$notice_file" "$_claimed" 2>/dev/null; then
+            # Ignore stale notices older than 5 minutes
+            local _now _mtime _age
+            _now=$(date +%s 2>/dev/null || printf '0')
+            _mtime=$(stat -c %Y "$_claimed" 2>/dev/null || stat -f %m "$_claimed" 2>/dev/null || printf '0')
+            _age=$((_now - _mtime))
+            if (( _age <= 300 )); then
+                _NSH_RELOADING=1
+                NSH_NO_WRAP=1 eval "$(command nsh init bash)" 2>/dev/null || true
+                # Immediately refresh in-memory hash to prevent re-detection
+                NSH_HOOK_HASH="$(command nsh init bash --hash 2>/dev/null)"
+                printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+                unset _NSH_RELOADING
+            fi
+            command rm -f "$_claimed" 2>/dev/null
+        fi
     fi
 
         # ── Project switch detection for memory system ────
@@ -305,21 +319,25 @@ __nsh_check_pending() {
             history -s -- "$cmd"
         fi
     fi
-    # Periodic hook version check (~every 20 commands)
-    (( __nsh_cmd_counter = ${__nsh_cmd_counter:-0} + 1 ))
-    if (( __nsh_cmd_counter % 20 == 0 )); then
+    # Time-based hook version check (~60s cooldown)
+    local _now
+    _now=$(date +%s 2>/dev/null || printf '0')
+    if (( _now - ${__nsh_last_hook_check:-0} >= 60 )); then
+        __nsh_last_hook_check="$_now"
         local _disk_hook_hash
         _disk_hook_hash="$(command nsh init bash --hash 2>/dev/null)"
-        if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
-            # Auto-reload hooks
+        if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" && -z "${_NSH_RELOADING:-}" ]]; then
+            _NSH_RELOADING=1
             NSH_NO_WRAP=1 eval "$(command nsh init bash)" 2>/dev/null || true
+            NSH_HOOK_HASH="$_disk_hook_hash"
             printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+            unset _NSH_RELOADING
         fi
     fi
 }
 
 trap '__nsh_debug_trap' DEBUG
-PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+
 
 __nsh_cleanup() {
     nsh session end --session "$NSH_SESSION_ID" 2>/dev/null

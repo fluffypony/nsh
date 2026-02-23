@@ -293,6 +293,17 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             shell,
         } => {
             let session_for_checks = session.clone();
+            // Zero-cost hook hash check: if the shell-exported hash mismatches the embedded one,
+            // write a one-shot update notice for shells to reload hooks.
+            if let Ok(env_hash) = std::env::var("NSH_HOOK_HASH") {
+                if !env_hash.is_empty() && env_hash != env!("NSH_HOOK_HASH") {
+                    let dir = config::Config::nsh_dir();
+                    let notice = dir.join("update_notice");
+                    let tmp = dir.join("update_notice.tmp");
+                    let _ = std::fs::write(&tmp, "hooks_updated");
+                    let _ = std::fs::rename(&tmp, &notice);
+                }
+            }
             let request = daemon::DaemonRequest::Record {
                 session: session.clone(),
                 command,

@@ -15,11 +15,20 @@ pub fn extract_json(input: &str) -> Option<serde_json::Value> {
             return Some(val);
         }
     }
-    // 4. Find first { and last matching }
+    // 4. Find outermost { ... } (try progressively shorter tails)
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
         if start < end {
+            // Try from outermost first
             if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
                 return Some(val);
+            }
+            // Try progressively smaller substrings (handle trailing junk)
+            for scan_end in (start + 1..=end).rev() {
+                if trimmed.as_bytes()[scan_end] == b'}' {
+                    if let Ok(val) = serde_json::from_str(&trimmed[start..=scan_end]) {
+                        return Some(val);
+                    }
+                }
             }
         }
     }
@@ -32,6 +41,52 @@ pub fn extract_json(input: &str) -> Option<serde_json::Value> {
         }
     }
     None
+}
+
+/// Represents a required key path in JSON. Keys must exist; values may be null.
+#[derive(Debug, Clone)]
+pub struct RequiredKeyPath(pub Vec<String>);
+
+impl RequiredKeyPath {
+    pub fn new(segments: &[&str]) -> Self {
+        Self(segments.iter().map(|s| s.to_string()).collect())
+    }
+    pub fn exists_in(&self, value: &serde_json::Value) -> bool {
+        let mut cur = value;
+        for seg in &self.0 {
+            match cur.get(seg) {
+                Some(v) => cur = v,
+                None => return false,
+            }
+        }
+        true
+    }
+    pub fn arrow(&self) -> String { self.0.join("->") }
+}
+
+/// Extract JSON and validate required keys exist; return Err(list_of_missing) on failure.
+pub fn extract_and_validate(
+    input: &str,
+    required: &[RequiredKeyPath],
+) -> Result<serde_json::Value, Vec<String>> {
+    let value = extract_json(input).ok_or_else(|| vec!["(no valid JSON found in response)".to_string()])?;
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|k| !k.exists_in(&value))
+        .map(|k| k.arrow())
+        .collect();
+    if missing.is_empty() { Ok(value) } else { Err(missing) }
+}
+
+/// Build a terse feedback prompt for missing keys.
+pub fn missing_keys_prompt(missing: &[String]) -> String {
+    format!(
+        "RESPOND ONLY WITH VALID JSON. Do NOT include any text before or after the JSON. \
+         No markdown fences. No preamble. No explanation after the JSON.\n\
+         Your previous response was missing these required key(s): {}.\n\
+         Include ALL of them, even if the value is null.",
+        missing.join(", ")
+    )
 }
 
 fn strip_thinking_tags(text: &str) -> String {

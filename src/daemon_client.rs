@@ -3,6 +3,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::{Read, Write};
 use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -239,22 +240,7 @@ fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse
     let json_val: serde_json::Value = serde_json::from_str(&response_line)
         .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
 
-    // Check if the global daemon is outdated; prefer graceful SIGHUP over hard stop
-    let daemon_version = json_val.get("daemon_version").and_then(|v| v.as_str());
-    if daemon_version != Some(env!("CARGO_PKG_VERSION")) {
-        tracing::info!(
-            "Global daemon is outdated (running: {:?}, current: {}), signaling restart",
-            daemon_version,
-            env!("CARGO_PKG_VERSION")
-        );
-        // Trigger graceful restart asynchronously; client call proceeds
-        std::thread::spawn(|| {
-            let _ = signal_daemon_restart();
-            // Nudge ensure after a short delay
-            std::thread::sleep(Duration::from_millis(300));
-            let _ = ensure_global_daemon_running();
-        });
-    }
+    // Inline version checks removed — handled centrally via ensure_daemon_version_matches()
 
     log_daemon_client(
         "client.send_to_global.response",
@@ -314,6 +300,17 @@ pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
 
 /// Ensure the global daemon binary version matches ours; gracefully restart if not.
 pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
+    // Global cooldown to avoid repeated checks within a short window
+    static LAST_VERSION_CHECK: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = LAST_VERSION_CHECK.load(AtomicOrdering::Relaxed);
+    if now.saturating_sub(last) < 30 {
+        return Ok(());
+    }
+    LAST_VERSION_CHECK.store(now, AtomicOrdering::Relaxed);
     let our_version = env!("CARGO_PKG_VERSION");
     let our_build = env!("NSH_BUILD_VERSION");
     if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
@@ -352,6 +349,17 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
 pub fn signal_daemon_restart() -> bool {
     #[cfg(unix)]
     {
+        // File-based cooldown to avoid restart storms
+        let lockfile = crate::config::Config::nsh_dir().join("restart.lock");
+        if let Ok(meta) = std::fs::metadata(&lockfile) {
+            if let Ok(modified) = meta.modified() {
+                if modified.elapsed().map(|d| d.as_secs() < 30).unwrap_or(false) {
+                    tracing::debug!("restart.lock fresh; skipping SIGHUP");
+                    return false;
+                }
+            }
+        }
+        let _ = std::fs::write(&lockfile, format!("{}", std::process::id()));
         let pid_path = crate::daemon::global_daemon_pid_path();
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {

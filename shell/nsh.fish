@@ -293,11 +293,25 @@ function __nsh_postexec --on-event fish_postexec
     # restart_needed and update_available markers are obsolete under shim/core split
     # If an update notice exists, auto-reload hooks and inform the user once
     set -l notice_file "$HOME/.nsh/update_notice"
-    if test -f $notice_file
-        # Attempt an automatic refresh by re-evaluating the init script
-        command nsh init fish | source 2>/dev/null
-        printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
-        command rm -f $notice_file 2>/dev/null
+    if test -f $notice_file; and not set -q _NSH_RELOADING
+        # Atomically claim notice and guard against stale (>5 min)
+        set -l _claimed "/tmp/.nsh_update_claimed."$$
+        if command mv -f $notice_file $_claimed ^/dev/null
+            set -l now (date +%s)
+            set -l mtime (stat -f %m $_claimed ^/dev/null; or echo 0)
+            set -l age (math "$now - $mtime")
+            if test $age -le 300
+                set -gx _NSH_RELOADING 1
+                set -gx NSH_NO_WRAP 1
+                command nsh init fish | source 2>/dev/null
+                set -e NSH_NO_WRAP
+                # Immediately refresh in-memory hash
+                set -gx NSH_HOOK_HASH (command nsh init fish --hash 2>/dev/null)
+                printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+                set -e _NSH_RELOADING
+            end
+            command rm -f $_claimed ^/dev/null
+        end
     end
 
     # ── Project switch detection for memory system ────
@@ -339,14 +353,19 @@ function __nsh_check_pending --on-event fish_prompt
             commandline -f repaint
         end
     end
-    # Periodic hook version check (~every 20 prompts)
-    set -g __nsh_cmd_counter (math "$__nsh_cmd_counter + 1")
-    if test (math "$__nsh_cmd_counter % 20") -eq 0
+    # Time-based hook check (~60s cooldown)
+    set -l now (date +%s)
+    if test (math "$now - ${__nsh_last_hook_check:=0}") -ge 60
+        set -g __nsh_last_hook_check $now
         set -l _disk_hook_hash (command nsh init fish --hash 2>/dev/null)
-        if test -n "$_disk_hook_hash" -a "$_disk_hook_hash" != "$NSH_HOOK_HASH"
-            # Auto-reload hooks
+        if test -n "$_disk_hook_hash" -a "$_disk_hook_hash" != "$NSH_HOOK_HASH"; and not set -q _NSH_RELOADING
+            set -gx _NSH_RELOADING 1
+            set -gx NSH_NO_WRAP 1
             command nsh init fish | source 2>/dev/null
+            set -e NSH_NO_WRAP
+            set -gx NSH_HOOK_HASH $_disk_hook_hash
             printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+            set -e _NSH_RELOADING
         end
     end
 end

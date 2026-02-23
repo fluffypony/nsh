@@ -394,29 +394,41 @@ __nsh_precmd() {
     fi
     # restart_needed and update_available markers are obsolete under shim/core split
     local notice_file="$HOME/.nsh/update_notice"
-    if [[ -f "$notice_file" ]]; then
-        printf '\x1b[2m  nsh: %s\x1b[0m\n' "$(command cat "$notice_file" 2>/dev/null)" >&2
-        command rm -f "$notice_file" 2>/dev/null
+    if [[ -f "$notice_file" && -z "${_NSH_RELOADING:-}" ]]; then
+        # Atomically claim the notice so only one shell processes it
+        local _claimed="/tmp/.nsh_update_claimed.$$"
+        if command mv -f "$notice_file" "$_claimed" 2>/dev/null; then
+            # Ignore stale notices older than 5 minutes
+            local _age=$(( EPOCHSECONDS - $(stat -f %m "$_claimed" 2>/dev/null || echo 0) ))
+            if (( _age <= 300 )); then
+                # Reload hooks in-process without wrapping
+                _NSH_RELOADING=1
+                NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
+                NSH_HOOK_HASH="$(command nsh init zsh --hash 2>/dev/null)"
+                printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+                unset _NSH_RELOADING
+            fi
+            command rm -f -- "$_claimed" 2>/dev/null
+        fi
     fi
 
     # If hooks are outdated and auto_refresh is enabled, exec the shell to refresh
     if command -v nsh >/dev/null 2>&1; then
-        local hook_hash
-        hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
-        if [[ -n "$hook_hash" && "$hook_hash" != "$NSH_HOOK_HASH" ]]; then
-            # Ask daemon for auto_refresh setting (environment-friendly check via config show)
-            local auto_refresh
-            auto_refresh="$(command nsh config show | command grep -E '^shell_hooks\.auto_refresh\s*=\s*true' >/dev/null 2>&1 && echo true || echo false)"
-            if [[ "$auto_refresh" == true ]]; then
-                # Only auto-exec if we're not in ZLE and no jobs are running to avoid disruption
-                if [[ -z "$ZLE_STATE" && -z "$BUFFER" ]]; then
-                    printf '\x1b[2m  nsh: refreshing shell hooks…\x1b[0m\n' >&2
-                    exec -l "$SHELL"
+        # Time-based cooldown (60s)
+        if (( EPOCHSECONDS - ${__nsh_last_hook_check:-0} >= 60 )); then
+            __nsh_last_hook_check=$EPOCHSECONDS
+            local hook_hash
+            hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
+            if [[ -n "$hook_hash" && "$hook_hash" != "$NSH_HOOK_HASH" && -z "${_NSH_RELOADING:-}" ]]; then
+                if [[ -z "${ZLE_STATE:-}" && -z "${BUFFER:-}" ]]; then
+                    _NSH_RELOADING=1
+                    NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
+                    NSH_HOOK_HASH="$hook_hash"
+                    printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+                    unset _NSH_RELOADING
                 else
                     printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
                 fi
-            else
-                printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
             fi
         fi
     fi

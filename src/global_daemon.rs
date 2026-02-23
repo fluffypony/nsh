@@ -282,7 +282,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    // Graceful restart: drain with timeout
+                    // Graceful restart: drain with timeout (10s)
                     if restart_pending.load(Ordering::Relaxed) {
                         if restart_requested_at.is_none() {
                             restart_requested_at = Some(Instant::now());
@@ -290,16 +290,18 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                                 "server.lifecycle",
                                 "restart requested, draining connections...",
                             );
+                            // Let in-flight requests begin to drain
+                            std::thread::sleep(Duration::from_secs(2));
                         }
                         let drained = active_conns.load(Ordering::Relaxed) == 0;
                         let timed_out = restart_requested_at
-                            .map(|t| t.elapsed() > Duration::from_secs(5))
+                            .map(|t| t.elapsed() > Duration::from_secs(10))
                             .unwrap_or(false);
                         if drained || timed_out {
                             if !drained {
                                 log_daemon(
                                     "server.lifecycle",
-                                    "drain timeout (5s), force exiting for restart",
+                                    "drain timeout (10s), force exiting for restart",
                                 );
                             } else {
                                 log_daemon(
