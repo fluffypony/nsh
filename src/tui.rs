@@ -133,10 +133,11 @@ pub fn render_box(label: &str, content: &[ContentLine], box_style: BoxStyle) {
     let box_width = tw.saturating_sub(2).max(40);
     let inner_width = box_width.saturating_sub(4); // border + 1 space each side
 
+    let th = crate::tui::theme::current_theme();
     let (border_color, title_color) = box_style.colors();
-    let reset = style::RESET;
-    let dim = style::DIM;
-    let bold = style::BOLD;
+    let reset = th.reset;
+    let dim = th.dim;
+    let bold = th.bold;
 
     // Top border: ╭─ label ──────────╮
     let label_display = if label.is_empty() { String::new() } else { format!(" {label} ") };
@@ -185,36 +186,35 @@ pub fn section_header(title: &str) {
     let label = format!(" {title} ");
     let label_len = label.chars().count();
     let padding = w.saturating_sub(label_len + 3);
-    eprintln!(
-        "  {}── {} {}{}",
-        style::BOLD_CYAN,
-        title,
-        "─".repeat(padding),
-        style::RESET
-    );
+    let th = crate::tui::theme::current_theme();
+    eprintln!("  {}── {} {}{}", th.accent, title, "─".repeat(padding), th.reset);
 }
 
 /// Print a subtle horizontal rule.
 pub fn hr() {
     let w = term_width().saturating_sub(4);
-    eprintln!("  {}{}{}", style::DIM, "─".repeat(w), style::RESET);
+    let th = crate::tui::theme::current_theme();
+    eprintln!("  {}{}{}", th.dim, "─".repeat(w), th.reset);
 }
 
 // ─── Status Line Helpers ────────────────────────────────────────────
 
 /// Tool action indicator: ◆ doing something…
 pub fn tool_status(message: &str) {
-    eprintln!("  {}◆{} {}{}{}", style::CYAN, style::RESET, style::DIM, message, style::RESET);
+    let th = crate::tui::theme::current_theme();
+    eprintln!("  {}◆{} {}{}{}", th.accent, th.reset, th.dim, message, th.reset);
 }
 
 /// Error indicator: ✖ something failed
 pub fn tool_error(message: &str) {
-    eprintln!("  {}✖{} {}{}{}", style::RED, style::RESET, style::RED, message, style::RESET);
+    let th = crate::tui::theme::current_theme();
+    eprintln!("  {}✖{} {}{}{}", th.error, th.reset, th.error, message, th.reset);
 }
 
 /// Success indicator: ✓ something worked
 pub fn tool_success(message: &str) {
-    eprintln!("  {}✓{} {}{}{}", style::GREEN, style::RESET, style::DIM, message, style::RESET);
+    let th = crate::tui::theme::current_theme();
+    eprintln!("  {}✓{} {}{}{}", th.success, th.reset, th.dim, message, th.reset);
 }
 
 // ─── Tool Start/Finish Dividers ─────────────────────────────────────
@@ -225,11 +225,6 @@ pub fn tool_divider(tool_name: &str) {
     let label = format!(" {tool_name} ");
     let label_len = label.chars().count();
     let pad = w.saturating_sub(label_len);
-    eprintln!(
-        "  {}{}{}{}",
-        style::DIM,
-        label,
-        "─".repeat(pad),
-        style::RESET
-    );
+    let th = crate::tui::theme::current_theme();
+    eprintln!("  {}{}{}{}", th.dim, label, "─".repeat(pad), th.reset);
 }
