@@ -206,22 +206,30 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     # Periodic hook version check (~every 20 commands) and immediate notice if update marker exists
     (( __nsh_cmd_counter = ${__nsh_cmd_counter:-0} + 1 ))
     local _notice_file="$HOME/.nsh/update_notice"
-    if [[ -f "$_notice_file" ]]; then
-        # Attempt an automatic refresh if possible; fall back to a notice.
-        if [[ -n "${ZSH_VERSION:-}" ]]; then
-            # zsh: reload hooks by re-evaluating init script without autowrap
-            NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
+    if [[ -f "$_notice_file" && -z "${_NSH_RELOADING:-}" ]]; then
+        # Atomically claim notice and ignore stale (>5m)
+        local _claimed="/tmp/.nsh_update_claimed.$$"
+        if command mv -f "$_notice_file" "$_claimed" 2>/dev/null; then
+            local _age=$(( EPOCHSECONDS - $(stat -f %m "$_claimed" 2>/dev/null || echo 0) ))
+            if (( _age <= 300 )); then
+                _NSH_RELOADING=1
+                NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
+                NSH_HOOK_HASH="$(command nsh init zsh --hash 2>/dev/null)"
+                printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+                unset _NSH_RELOADING
+            fi
+            command rm -f -- "_claimed" 2>/dev/null
         fi
-        printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
-        command rm -f -- "$_notice_file" 2>/dev/null
     fi
     if (( __nsh_cmd_counter % 20 == 0 )); then
         local _disk_hook_hash
         _disk_hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
-        if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" ]]; then
-            # Auto-reload hooks without autowrap
+        if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" && -z "${_NSH_RELOADING:-}" ]]; then
+            _NSH_RELOADING=1
             NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
+            NSH_HOOK_HASH="$_disk_hook_hash"
             printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
+            unset _NSH_RELOADING
         fi
     fi
     return 0

@@ -155,6 +155,7 @@ __nsh_debug_trap() {
 
 # ── Hook self-healing ───────────────────────────────────
 __nsh_ensure_hooks() {
+    # Idempotent: only add our hooks if not already present to prevent growth on reloads
     case ";${PROMPT_COMMAND:-};" in
         *";__nsh_prompt_command;"*) ;;
         *) PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;

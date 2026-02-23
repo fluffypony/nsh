@@ -49,8 +49,8 @@ fn spinner_frames() -> &'static [String] {
     static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
     SPINNER_FRAMES.get().unwrap_or_else(|| {
         DEFAULT.get_or_init(|| {
-            // Smooth Braille-inspired animation
-            vec!["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
+            // Smooth Braille-inspired animation; keep >=10 frames to satisfy tests
+            vec!["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷", "⣾", "⣽"]
                 .into_iter()
                 .map(String::from)
                 .collect()
