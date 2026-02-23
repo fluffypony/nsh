@@ -1,4 +1,5 @@
 use crate::provider::{Message, StreamEvent};
+use crate::tui::theme;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -171,7 +172,7 @@ pub async fn consume_stream(
             }
             crate::stream_consumer::DisplayEvent::Done => {
                 if is_streaming {
-                    eprintln!("\x1b[0m");
+                    eprintln!("{}", theme::current_theme().reset);
                     io::stderr().flush().ok();
                     is_streaming = false;
                 }

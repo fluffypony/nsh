@@ -176,6 +176,35 @@ url = "https://mcp.example.com"
 headers = { Authorization = "Bearer ..." }
 ```
 
+Advanced HTTP config and tool filtering:
+
+```toml
+[mcp.servers.cloudflare]
+transport = "http"
+url = "https://mcp.cloudflare.com/jsonrpc"
+bearer_token = "$CF_API_TOKEN"     # expands from env
+timeout_seconds = 30
+
+[mcp.servers.cloudflare.headers]
+X-Client = "nsh"
+
+# Optional tool filtering
+disable_tools = ["legacy_", "danger_"]
+
+[mcp.servers.cloudflare.rename_tools]
+inject_data = "cf_inject_data"
+```
+
+### Installing Skills from Git Repos
+
+You can install a skill repo directly:
+
+```bash
+nsh tools install_skill --repo https://github.com/owner/skill-repo.git
+```
+
+Repos are cloned into `~/.nsh/skills/<repo>/` and auto-discovered if they contain `skill.toml` or `nsh.toml` at the repo root. Project-local repos under `.nsh/skills/` are also detected.
+
 ### Multiple LLM Providers
 
 nsh works with any OpenAI-compatible API. Built-in provider support includes:

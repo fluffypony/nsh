@@ -5,6 +5,7 @@
 // Note: Avoid importing std::io::Write here to prevent unused import warnings.
 
 // ─── ANSI Style Constants ────────────────────────────────────────────
+pub mod theme;
 
 pub mod style {
     pub const RESET: &str = "\x1b[0m";
