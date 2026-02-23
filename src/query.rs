@@ -293,7 +293,12 @@ pub async fn handle_query(
                 })
                 .collect::<Vec<_>>()
                 .join("");
-            if let Some(json) = crate::json_extract::extract_json(&text_content) {
+            // Extract and validate required keys for a generic tool use contract
+            let required = [
+                crate::json_extract::RequiredKeyPath::new(&["tool"]),
+                crate::json_extract::RequiredKeyPath::new(&["input"]),
+            ];
+            if let Ok(json) = crate::json_extract::extract_and_validate(&text_content, &required) {
                 if let Some(name) = json
                     .get("tool")
                     .or(json.get("name"))
@@ -334,7 +339,50 @@ pub async fn handle_query(
                     response
                 }
             } else {
-                response
+                // If validation failed, try looser parse to catch simple command/chat shapes
+                if let Some(json) = crate::json_extract::extract_json(&text_content) {
+                    if let Some(name) = json
+                        .get("tool")
+                        .or(json.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let input = json
+                            .get("input")
+                            .or(json.get("arguments"))
+                            .cloned()
+                            .unwrap_or(json.clone());
+                        Message {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::ToolUse {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: name.to_string(),
+                                input,
+                            }],
+                        }
+                    } else if json.get("command").is_some() {
+                        Message {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::ToolUse {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: "command".to_string(),
+                                input: json,
+                            }],
+                        }
+                    } else if json.get("response").is_some() {
+                        Message {
+                            role: Role::Assistant,
+                            content: vec![ContentBlock::ToolUse {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                name: "chat".to_string(),
+                                input: json,
+                            }],
+                        }
+                    } else {
+                        response
+                    }
+                } else {
+                    response
+                }
             }
         } else {
             response
