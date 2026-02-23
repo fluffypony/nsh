@@ -2,7 +2,22 @@ use std::io::{self, Write};
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     // Repo install mode: clone a git repo into ~/.nsh/skills/<repo-name>
-    if let Some(repo_url) = input.get("repo").or_else(|| input.get("url")).and_then(|v| v.as_str()) {
+    // Check repo, url, and also detect URLs passed in the name field as a fallback
+    let repo_val = input
+        .get("repo")
+        .or_else(|| input.get("url"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| {
+            // Fallback: if name looks like a URL, treat it as a repo
+            let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            if name.contains("github.com") || name.contains("gitlab.com") || name.starts_with("https://") || name.starts_with("http://") || name.starts_with("git@") {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        });
+    if let Some(repo_url) = repo_val.as_deref() {
         let skills_dir = crate::config::Config::nsh_dir().join("skills");
         std::fs::create_dir_all(&skills_dir)?;
         let repo_name = repo_url
@@ -80,7 +95,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let docs = input["docs"].as_str();
 
     if name.is_empty() || description.is_empty() {
-        anyhow::bail!("install_skill: 'name' and 'description' are required");
+        anyhow::bail!(
+            "install_skill: 'name' and 'description' are required for manual skills. \
+             To install from a Git repo, pass repo=URL instead (e.g. repo=\"https://github.com/user/skill\")"
+        );
     }
     let has_command = !command.trim().is_empty();
     let has_code = runtime.map(|s| !s.trim().is_empty()).unwrap_or(false)
