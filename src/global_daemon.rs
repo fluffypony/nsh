@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +24,18 @@ fn log_daemon(action: &str, payload: &str) {
 
 pub fn run_global_daemon() -> anyhow::Result<()> {
     log_daemon("server.lifecycle", "starting global daemon");
+    // Restart cooldown: if we just restarted moments ago, wait a bit to avoid flapping
+    let restart_marker = crate::config::Config::nsh_dir().join("nshd-restart-at");
+    if let Ok(content) = std::fs::read_to_string(&restart_marker) {
+        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(content.trim()) {
+            let age = chrono::Utc::now().signed_duration_since(ts);
+            if age.num_seconds() < 5 {
+                let wait = 5 - age.num_seconds();
+                std::thread::sleep(Duration::from_secs(wait as u64));
+            }
+        }
+        let _ = std::fs::remove_file(&restart_marker);
+    }
     let lock_path = crate::daemon::global_daemon_lock_path();
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
@@ -221,13 +233,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         listener.set_nonblocking(true)?;
-        // Record the binary's mtime at daemon startup
-        let exe_path = std::env::current_exe().ok();
-        let exe_mtime_at_start = exe_path
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .and_then(|m| m.modified().ok());
-        let mut last_binary_check = Instant::now();
+        // Debounce restarts triggered via SIGHUP or monitor
+        static LAST_RESTART_EPOCH: AtomicU64 = AtomicU64::new(0);
 
         // Handle SIGHUP for graceful restart
         {
@@ -267,23 +274,20 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                         log_daemon("server.lifecycle", "idle timeout reached; shutting down");
                         break;
                     }
-                    // Binary change detection (every 30 seconds)
-                    if last_binary_check.elapsed() > Duration::from_secs(30) {
-                        last_binary_check = Instant::now();
-                        if let Some(ref exe) = exe_path {
-                            let current_mtime =
-                                std::fs::metadata(exe).ok().and_then(|m| m.modified().ok());
-                            if exe_mtime_at_start.is_some() && current_mtime != exe_mtime_at_start {
-                                log_daemon(
-                                    "server.lifecycle",
-                                    "binary changed on disk, scheduling graceful restart",
-                                );
-                                restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                    }
                     // Graceful restart: drain with timeout (10s)
                     if restart_pending.load(Ordering::Relaxed) {
+                        // Debounce: ignore restart requests if a restart occurred <30s ago
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let last = LAST_RESTART_EPOCH.load(Ordering::Relaxed);
+                        if now.saturating_sub(last) < 30 {
+                            // Too soon; clear flag and continue
+                            restart_pending.store(false, Ordering::Relaxed);
+                            std::thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
                         if restart_requested_at.is_none() {
                             restart_requested_at = Some(Instant::now());
                             log_daemon(
@@ -292,6 +296,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                             );
                             // Let in-flight requests begin to drain
                             std::thread::sleep(Duration::from_secs(2));
+                            // Record last restart request epoch for debounce
+                            LAST_RESTART_EPOCH.store(now, Ordering::Relaxed);
                         }
                         let drained = active_conns.load(Ordering::Relaxed) == 0;
                         let timed_out = restart_requested_at
@@ -356,6 +362,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         } else {
             return Ok(());
         };
+        // Write restart marker for startup cooldown
+        let _ = std::fs::write(&restart_marker, chrono::Utc::now().to_rfc3339());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

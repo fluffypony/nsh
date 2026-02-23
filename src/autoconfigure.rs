@@ -630,19 +630,19 @@ fn models_for_provider(provider: &str) -> ProviderModels {
     match provider {
         "openrouter" => ProviderModels {
             main: vec![
+                "gpt-5.2".into(),
                 "google/gemini-2.5-flash".into(),
-                "google/gemini-3-flash-preview".into(),
                 "anthropic/claude-sonnet-4.6".into(),
             ],
             fast: vec![
-                "google/gemini-2.5-flash-lite".into(),
+                "gpt-4.1-mini".into(),
                 "anthropic/claude-haiku-4.5".into(),
             ],
             coding: vec![
-                "anthropic/claude-opus-4.6".into(),
+                "gpt-5.2-codex".into(),
                 "anthropic/claude-sonnet-4.6".into(),
             ],
-            default_model: "google/gemini-2.5-flash".into(),
+            default_model: "gpt-5.2".into(),
         },
         "anthropic" => ProviderModels {
             main: vec!["claude-sonnet-4.6".into()],
@@ -651,9 +651,9 @@ fn models_for_provider(provider: &str) -> ProviderModels {
             default_model: "claude-sonnet-4.6".into(),
         },
         "openai" => ProviderModels {
-            main: vec!["gpt-5.2".into(), "gpt-4.1".into()],
-            fast: vec!["gpt-4.1-mini".into(), "gpt-4.1-nano".into()],
-            coding: vec!["gpt-5.2-codex".into(), "gpt-5.2".into()],
+            main: vec!["gpt-5.2".into(), "gpt-5.1".into()],
+            fast: vec!["gpt-5.1-codex-mini".into()],
+            coding: vec!["gpt-5.2-codex".into(), "gpt-5.1-codex".into()],
             default_model: "gpt-5.2".into(),
         },
         "gemini" => ProviderModels {
