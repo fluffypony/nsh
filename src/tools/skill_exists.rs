@@ -9,11 +9,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         let home = dirs::home_dir().unwrap_or_default();
         let base = home.join(".nsh").join("skills");
         let toml = base.join(format!("{name}.toml"));
-        let repo_dir = base.join(name);
         let md = base.join(format!("{name}.md"));
         let mut status = format!("Installed: skill_{}", s.name);
-        if repo_dir.is_dir() {
-            status.push_str(&format!("\nRepo: {}", repo_dir.display()));
+        if let Some(ref src) = s.source_dir {
+            status.push_str(&format!("\nRepo: {}", src.display()));
         }
         if toml.exists() {
             status.push_str(&format!("\nTOML: {}", toml.display()));

@@ -52,6 +52,7 @@ pub struct Skill {
     pub parameters: HashMap<String, SkillParam>,
     pub is_project: bool,
     pub docs: Option<String>,
+    pub source_dir: Option<PathBuf>,
 }
 
 impl From<SkillFile> for Skill {
@@ -67,6 +68,7 @@ impl From<SkillFile> for Skill {
             parameters: sf.parameters,
             is_project: false,
             docs: sf.docs,
+            source_dir: None,
         }
     }
 }
@@ -121,6 +123,7 @@ fn load_repo_skills_from_dir(
                     if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
                         let mut skill: Skill = skill_file.into();
                         skill.is_project = is_project;
+                        skill.source_dir = Some(path.clone());
                         // If TOML skill has no docs, try loading from adjacent SKILL.md
                         if skill.docs.is_none() {
                             skill.docs = load_skill_docs_from_dir(&path);
@@ -192,6 +195,7 @@ fn load_markdown_skill(dir: &Path, is_project: bool) -> Option<Skill> {
             parameters: HashMap::new(),
             is_project,
             docs: Some(content),
+            source_dir: Some(dir.to_path_buf()),
         });
     }
     None
@@ -383,6 +387,7 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
                 parameters: skill_file.parameters,
                 is_project,
                 docs,
+                source_dir: None,
             },
         );
     }
@@ -703,6 +708,7 @@ mod tests {
             parameters: params,
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let defs = skill_tool_definitions(&[skill]);
         assert_eq!(defs.len(), 1);
@@ -743,6 +749,7 @@ mod tests {
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("hello"));
@@ -769,6 +776,7 @@ mod tests {
             parameters: params,
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({"name": "world"})).unwrap();
         assert!(result.contains("hello world"));
@@ -795,6 +803,7 @@ mod tests {
             parameters: params,
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({"name": "world; rm -rf /"}));
         assert!(result.is_err());
@@ -813,6 +822,7 @@ mod tests {
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let mut params = HashMap::new();
         params.insert(
@@ -833,6 +843,7 @@ mod tests {
             parameters: params,
             is_project: true,
             docs: None,
+            source_dir: None,
         };
         let defs = skill_tool_definitions(&[skill_a, skill_b]);
         assert_eq!(defs.len(), 2);
@@ -887,6 +898,7 @@ mod tests {
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill_async(skill, serde_json::json!({}))
             .await
@@ -1002,6 +1014,7 @@ command = "echo project"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.len() <= 8100);
@@ -1021,6 +1034,7 @@ command = "echo project"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill_async(skill, serde_json::json!({})).await;
         assert!(result.is_err());
@@ -1040,6 +1054,7 @@ command = "echo project"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         assert!(check_project_skill_approval(&skill).is_ok());
     }
@@ -1099,6 +1114,7 @@ description = "has no command"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("error_msg"));
@@ -1117,6 +1133,7 @@ description = "has no command"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("stdout_line"));
@@ -1157,6 +1174,7 @@ description = "has no command"
             parameters: params,
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let defs = skill_tool_definitions(&[skill]);
         assert_eq!(defs.len(), 1);
@@ -1232,6 +1250,7 @@ command = "echo hi"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let debug_str = format!("{skill:?}");
         assert!(debug_str.contains("debug_test"));
@@ -1270,6 +1289,7 @@ command = "echo hi"
             parameters: params,
             is_project: true,
             docs: None,
+            source_dir: None,
         };
         let cloned = skill.clone();
         assert_eq!(cloned.name, "clone_test");
@@ -1322,6 +1342,7 @@ command = "echo second"
             parameters: params,
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("hello"));
@@ -1340,6 +1361,7 @@ command = "echo second"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("no_params"));
@@ -1383,6 +1405,7 @@ timeout_seconds = 10
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("only_stderr"));
@@ -1402,6 +1425,7 @@ timeout_seconds = 10
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({}));
         assert!(result.is_ok());
@@ -1493,6 +1517,7 @@ command = "echo hi"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let defs = skill_tool_definitions(&[skill]);
         assert_eq!(defs.len(), 1);
@@ -1516,6 +1541,7 @@ command = "echo hi"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.len() <= 8020);
@@ -1552,6 +1578,7 @@ command = "echo hi"
             parameters: params,
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(
             &skill,
@@ -1577,6 +1604,7 @@ command = "echo hi"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill(&skill, &serde_json::json!({})).unwrap();
         assert!(result.contains("stdout_msg"), "missing stdout: {result}");
@@ -1600,6 +1628,7 @@ command = "echo hi"
             parameters: HashMap::new(),
             is_project: false,
             docs: None,
+            source_dir: None,
         };
         let result = execute_skill_async(skill, serde_json::json!({})).await;
         assert!(result.is_ok());

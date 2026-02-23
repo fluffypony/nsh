@@ -17,7 +17,8 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         let dim = "\x1b[2m";
         let reset = "\x1b[0m";
 
-        if dest.exists() {
+        let already_existed = dest.exists();
+        if already_existed {
             // Pull updates
             eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
             let status = std::process::Command::new("git")
@@ -42,17 +43,13 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 
         // Scan for detected skill files and report
         let mut detected = Vec::new();
-        for fname in ["SKILL.md", "skill.md", "skill.toml", "nsh.toml", "README.md"] {
+        for fname in ["SKILL.md", "skill.md", "skill.toml", "nsh.toml", "README.md", "readme.md"] {
             if dest.join(fname).exists() {
                 detected.push(fname);
             }
         }
 
-        let action = if dest.join(".git").join("FETCH_HEAD").exists() {
-            "updated"
-        } else {
-            "installed"
-        };
+        let action = if already_existed { "updated" } else { "installed" };
 
         let detected_str = if detected.is_empty() {
             "No skill documents detected".to_string()
