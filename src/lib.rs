@@ -45,6 +45,7 @@ pub mod tools;
 pub mod util;
 pub mod tui;
 pub mod connectivity;
+pub mod tool_health;
 
 pub mod shim;
 

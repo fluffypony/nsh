@@ -657,6 +657,14 @@ fn handle_io(
         }
     }
 
+    // Hard cap pending PTY write buffer growth to avoid runaway memory
+    const HARD_CAP: usize = 256 * 1024 * 4;
+    const TARGET: usize = 256 * 1024;
+    if pending_pty_write.len() > HARD_CAP {
+        let drain_amount = pending_pty_write.len() - TARGET;
+        pending_pty_write.drain(0..drain_amount);
+    }
+
     if pty_poll.revents().contains(PollFlags::HUP) {
         return true;
     }

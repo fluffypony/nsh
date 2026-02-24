@@ -592,33 +592,57 @@ fn run_memory_thread(
         match task {
             MemoryTask::FlushIngestion => {
                 rt.block_on(async {
-                    if let Err(e) = memory.flush_ingestion(&llm).await {
-                        tracing::debug!("memory flush_ingestion error: {e}");
-                        log_daemon("memory.flush.error", &e.to_string());
+                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.flush_ingestion(&llm)).await {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory flush_ingestion error: {e}");
+                            log_daemon("memory.flush.error", &e.to_string());
+                        }
+                        Err(_) => {
+                            tracing::warn!("memory flush_ingestion timed out after 120s");
+                        }
+                        _ => {}
                     }
                 });
             }
             MemoryTask::IngestBatch { events } => {
                 rt.block_on(async {
-                    if let Err(e) = memory.ingest_batch(&events, &llm).await {
-                        tracing::debug!("memory ingest_batch error: {e}");
-                        log_daemon("memory.ingest.error", &e.to_string());
+                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.ingest_batch(&events, &llm)).await {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory ingest_batch error: {e}");
+                            log_daemon("memory.ingest.error", &e.to_string());
+                        }
+                        Err(_) => {
+                            tracing::warn!("memory ingest_batch timed out after 120s");
+                        }
+                        _ => {}
                     }
                 });
             }
             MemoryTask::RunReflection => {
                 rt.block_on(async {
-                    if let Err(e) = memory.run_reflection(&llm).await {
-                        tracing::debug!("memory run_reflection error: {e}");
-                        log_daemon("memory.reflection.error", &e.to_string());
+                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.run_reflection(&llm)).await {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory run_reflection error: {e}");
+                            log_daemon("memory.reflection.error", &e.to_string());
+                        }
+                        Err(_) => {
+                            tracing::warn!("memory run_reflection timed out after 120s");
+                        }
+                        _ => {}
                     }
                 });
             }
             MemoryTask::BootstrapScan => {
                 rt.block_on(async {
-                    if let Err(e) = memory.bootstrap_scan(&llm).await {
-                        tracing::debug!("memory bootstrap_scan error: {e}");
-                        log_daemon("memory.bootstrap.error", &e.to_string());
+                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.bootstrap_scan(&llm)).await {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory bootstrap_scan error: {e}");
+                            log_daemon("memory.bootstrap.error", &e.to_string());
+                        }
+                        Err(_) => {
+                            tracing::warn!("memory bootstrap_scan timed out after 120s");
+                        }
+                        _ => {}
                     }
                 });
             }

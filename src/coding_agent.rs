@@ -236,10 +236,29 @@ pub async fn run_coding_agent(
             }),
         );
 
-        let (mut rx, _used_model) =
-            chain::call_chain_with_fallback_think(provider.as_ref(), request, &model_chain, true)
-                .await?;
-        let response = crate::streaming::consume_stream(&mut rx, cancelled).await?;
+        let (mut rx, _used_model) = match chain::call_chain_with_fallback_think(provider.as_ref(), request, &model_chain, true).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("\x1b[33m⚠ LLM call failed: {e}, retrying...\x1b[0m");
+                if step < max_iterations - 1 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                break;
+            }
+        };
+        let response = match crate::streaming::consume_stream(&mut rx, cancelled).await {
+            Ok(r) => r,
+            Err(e) => {
+                if e.to_string().contains("interrupted") { anyhow::bail!("interrupted"); }
+                eprintln!("\x1b[33m⚠ Stream error: {e}\x1b[0m");
+                if step < max_iterations - 1 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                break;
+            }
+        };
         if let Some(path) = &debug_path {
             crate::debug_io::append(
                 path,
@@ -364,7 +383,7 @@ pub async fn run_coding_agent(
             messages.push(Message {
                 role: Role::User,
                 content: vec![ContentBlock::Text {
-                    text: "Please continue by calling tools and finish with done.".into(),
+                    text: "Please continue by calling tools and finish with `done`. If a tool failed, try an alternative approach.".into(),
                 }],
             });
             continue;

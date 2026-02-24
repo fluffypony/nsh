@@ -27,6 +27,69 @@ fn display_tool_error(error: &str, json_output: bool) {
     }
 }
 
+/// Wraps a tool future with timeout handling.
+/// In autorun mode: auto-extends once, then returns timeout error.
+/// In interactive mode: prompts user to continue waiting.
+async fn execute_with_timeout<F, T>(
+    fut: F,
+    tool_name: &str,
+    timeout_secs: u64,
+    force_autorun: bool,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::pin!(fut);
+    let mut total_elapsed = 0u64;
+    let initial_timeout = timeout_secs.max(1);
+
+    loop {
+        let wait_secs = if total_elapsed == 0 { initial_timeout } else { initial_timeout };
+        match tokio::time::timeout(std::time::Duration::from_secs(wait_secs), &mut fut).await {
+            Ok(result) => return Ok(result),
+            Err(_) => {
+                total_elapsed = total_elapsed.saturating_add(wait_secs);
+
+                if force_autorun {
+                    // In autorun, auto-extend once (up to a max) then fail
+                    let max_auto = if tool_name == "code" { 900 } else { 300 };
+                    if total_elapsed < max_auto {
+                        eprintln!(
+                            "\x1b[2m  ↳ {} still running ({}s), auto-extending...\x1b[0m",
+                            tool_name, total_elapsed
+                        );
+                        continue;
+                    }
+                    return Err(format!(
+                        "Tool '{}' timed out after {}s in autorun mode. Try a different approach.",
+                        tool_name, total_elapsed
+                    ));
+                }
+
+                // Interactive: ask user
+                eprintln!(
+                    "\n  \x1b[1;33m⏱ Tool '{}' has been running for {}s\x1b[0m",
+                    tool_name, total_elapsed
+                );
+                eprint!("\x1b[1;33m  Continue waiting? [Y/n] \x1b[0m");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                let keep_waiting = tokio::task::spawn_blocking(
+                    crate::tools::read_tty_confirmation_default_yes,
+                )
+                .await
+                .unwrap_or(false);
+                if !keep_waiting {
+                    return Err(format!(
+                        "Tool '{}' cancelled by user after {}s timeout. Try a different approach.",
+                        tool_name, total_elapsed
+                    ));
+                }
+                // continue waiting
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct QueryOptions {
     pub think: bool,
@@ -224,6 +287,15 @@ pub async fn handle_query(
     );
     let mut messages: Vec<Message> = Vec::new();
 
+    // Tool health tracker for enriching error messages and tracking consecutive failures
+    let mut tool_health = crate::tool_health::ToolHealthTracker::new();
+
+    // Cumulative time budget for this query
+    let query_start = std::time::Instant::now();
+    let max_query_duration = std::time::Duration::from_secs(
+        config.execution.max_query_duration_seconds,
+    );
+
     // Conversation history from this session
     for exchange in &ctx.conversation_history {
         let tool_id = uuid::Uuid::new_v4().to_string();
@@ -248,12 +320,43 @@ pub async fn handle_query(
     // ── Agentic tool loop ──────────────────────────────
     let max_iterations = config.execution.effective_max_tool_iterations();
     let mut force_json_next = false;
+    let mut json_retry_count: u32 = 0;
     let mut streamed_text_shown = false;
 
     // Track repeated failing tool calls to prevent infinite loops
     let mut repeat_guard = RepeatGuard::default();
     let mut abort_tool_loop: bool = false;
+    let mut no_tool_call_streak: u32 = 0;
     for iteration in 0..max_iterations {
+        // Time budget notices/extension
+        let elapsed = query_start.elapsed();
+        if max_query_duration.as_secs() > 0 {
+            let total = max_query_duration.as_secs().max(1);
+            let remaining_pct = 100u64.saturating_sub(elapsed.as_secs() * 100 / total);
+            if remaining_pct <= 20 && remaining_pct > 0 && iteration > 0 {
+                eprintln!("\x1b[2m  ⏱ {}% of time budget remaining\x1b[0m", remaining_pct);
+                messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text { text: format!(
+                        "[SYSTEM: You have approximately {}s remaining in your time budget. Wrap up your current approach. If incomplete, summarize progress and remaining steps.]",
+                        (max_query_duration.as_secs() as f64 * remaining_pct as f64 / 100.0) as u64,
+                    ) }],
+                });
+            } else if elapsed >= max_query_duration && !opts.force_autorun {
+                eprintln!(
+                    "\x1b[33mnsh: time budget of {}s reached\x1b[0m",
+                    max_query_duration.as_secs()
+                );
+                eprint!("\x1b[33mContinue? [Y/n] \x1b[0m");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                if !crate::tools::read_tty_confirmation_default_yes() {
+                    messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::Text { text: "Time budget exceeded. Respond NOW with 'chat' tool summarizing progress and remaining steps.".into() }],
+                    });
+                }
+            }
+        }
         if cancelled.load(Ordering::SeqCst) {
             eprint!("\x1b[0m");
             eprintln!("\nnsh: interrupted");
@@ -291,27 +394,58 @@ pub async fn handle_query(
         } else {
             Some(streaming::SpinnerGuard::new())
         };
-        let chain_result =
-            chain::call_chain_with_fallback_think(provider.as_ref(), request, chain, opts.think)
-                .await;
+        let chain_result = chain::call_chain_with_fallback_think(
+            provider.as_ref(),
+            request,
+            chain,
+            opts.think,
+        )
+        .await;
         drop(_spinner);
 
         let (mut rx, _used_model) = match chain_result {
             Ok(r) => r,
             Err(e) => {
                 let msg = e.to_string();
-                let display_msg = if msg.len() > 100 { &msg[..100] } else { &msg };
+                let is_retryable = msg.contains("429")
+                    || msg.contains("500")
+                    || msg.contains("502")
+                    || msg.contains("503")
+                    || msg.contains("Too Many Requests")
+                    || msg.contains("timeout");
+                if msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized") {
+                    eprintln!(
+                        "\x1b[33mnsh: authentication error — check your API key: nsh config edit\x1b[0m"
+                    );
+                    mcp_client.lock().await.shutdown().await;
+                    return Ok(());
+                }
+                if is_retryable && iteration < max_iterations - 1 {
+                    let backoff = std::time::Duration::from_secs(2u64.pow(iteration.min(4) as u32));
+                    if opts.force_autorun {
+                        eprintln!(
+                            "\x1b[33mnsh: provider error, retrying in {}s: {}\x1b[0m",
+                            backoff.as_secs(),
+                            crate::util::truncate(&msg, 100)
+                        );
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    } else {
+                        eprintln!("\x1b[33mnsh: provider error: {}\x1b[0m", crate::util::truncate(&msg, 100));
+                        eprint!("\x1b[33mRetry? [Y/n] \x1b[0m");
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                        if crate::tools::read_tty_confirmation_default_yes() {
+                            tokio::time::sleep(backoff).await;
+                            continue;
+                        }
+                    }
+                }
+                let display_msg = crate::util::truncate(&msg, 300);
                 eprintln!(
                     "\x1b[33mnsh: couldn't reach {}: {}\x1b[0m",
                     config.provider.default, display_msg
                 );
-                if msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized") {
-                    eprintln!("  Check your API key: nsh config edit");
-                } else if msg.contains("429") {
-                    eprintln!("  Rate limited. Wait a moment and try again.");
-                } else {
-                    eprintln!("  Try: nsh doctor");
-                }
+                eprintln!("  If this persists, report at: https://github.com/fluffypony/nsh/issues/new");
                 mcp_client.lock().await.shutdown().await;
                 return Ok(());
             }
@@ -319,14 +453,34 @@ pub async fn handle_query(
 
         // If we were offline previously, a user query should immediately trigger a reconnect check
         crate::connectivity::trigger_immediate_check();
-        let response = match streaming::consume_stream(&mut rx, &cancelled).await {
-            Ok(r) => r,
-            Err(e) if e.to_string().contains("interrupted") => {
+        let stream_timeout = std::time::Duration::from_secs(config.provider.timeout_seconds * 3);
+        let response = match tokio::time::timeout(stream_timeout, streaming::consume_stream(&mut rx, &cancelled)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) if e.to_string().contains("interrupted") => {
                 eprintln!("\nnsh: interrupted");
                 mcp_client.lock().await.shutdown().await;
                 return Err(e);
             }
-            Err(e) => return Err(e),
+            Ok(Err(e)) => {
+                eprintln!("\x1b[33mnsh: stream error: {}\x1b[0m", e);
+                if iteration < max_iterations - 1 {
+                    eprintln!("  Retrying...");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                return Err(e);
+            }
+            Err(_) => {
+                eprintln!(
+                    "\x1b[33mnsh: LLM response stream timed out after {}s\x1b[0m",
+                    stream_timeout.as_secs()
+                );
+                if iteration < max_iterations - 1 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                anyhow::bail!("LLM response timed out");
+            }
         };
         let streamed_text_present = streaming::last_stream_had_text();
         streamed_text_shown |= streamed_text_present;
@@ -338,8 +492,11 @@ pub async fn handle_query(
             .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         let response = if !has_tool_calls {
             let caps = crate::config::model_capabilities(&config.provider.default, &chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()));
-            if !used_forced_json {
+            if !used_forced_json && json_retry_count < 3 {
                 force_json_next = true;
+                json_retry_count += 1;
+            } else {
+                force_json_next = false;
             }
             let text_content: String = response
                 .content
@@ -496,6 +653,10 @@ pub async fn handle_query(
         };
 
         messages.push(response.clone());
+        if response.content.is_empty() {
+            messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: "Your response was empty. Please respond with a tool call.".into() }] });
+            continue;
+        }
         // ── Classify tool calls ────────────────────────
         let mut has_terminal_tool = false;
         let mut tool_results: Vec<ContentBlock> = Vec::new();
@@ -511,11 +672,23 @@ pub async fn handle_query(
                         content: wrapped,
                         is_error: true,
                     });
-                    // If the model repeats the same invalid tool call inputs, stop early
+                    // If the model repeats the same invalid tool call inputs, inject correction and continue; abort after 5
                     if repeat_guard.note_invalid(name, input) {
-                        eprintln!("\x1b[33mnsh: model repeated an invalid tool call 3 times; aborting tool loop\x1b[0m");
-                        abort_tool_loop = true;
-                        break;
+                        eprintln!("\x1b[33mnsh: model repeated an invalid tool call — injecting correction\x1b[0m");
+                        let correction = format!(
+                            "CRITICAL: You have made the same invalid tool call for '{}' multiple times with the same bad input. You MUST either: (1) fix the input to match the required schema, (2) use a completely different tool, or (3) use the 'chat' tool to explain what you're trying to do and why you're stuck. Do NOT repeat the same call again.",
+                            name
+                        );
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: crate::security::wrap_tool_result(name, &correction, &boundary),
+                            is_error: true,
+                        });
+                        if repeat_guard.repeat_fail_count >= 5 {
+                            abort_tool_loop = true;
+                            break;
+                        }
+                        continue;
                     }
                     continue;
                 }
@@ -602,27 +775,26 @@ pub async fn handle_query(
                             });
                         } else {
                             has_terminal_tool = true;
-                            tools::chat::execute(
-                                input,
-                                query,
-                                db,
-                                session_id,
-                                opts.private,
-                                config,
-                                !streamed_text_shown,
-                            )?;
+                            if let Err(e) = tools::chat::execute(
+                                input, query, db, session_id, opts.private, config, !streamed_text_shown,
+                            ) {
+                                let err_msg = format!("Error: {e}");
+                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: true });
+                                has_terminal_tool = false;
+                            }
                         }
                     }
                     "write_file" => {
-                        has_terminal_tool = true;
-                        tools::write_file::execute(
-                            input,
-                            query,
-                            db,
-                            session_id,
-                            opts.private,
-                            config,
-                        )?;
+                        match tools::write_file::execute(input, query, db, session_id, opts.private, config) {
+                            Ok(()) => { has_terminal_tool = true; }
+                            Err(e) => {
+                                let err_msg = format!("Failed to write file: {e}");
+                                display_tool_error(&err_msg, opts.json_output);
+                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: true });
+                            }
+                        }
                     }
                     "patch_file" => {
                         match tools::patch_file::execute(
@@ -815,6 +987,7 @@ pub async fn handle_query(
                                             false,
                                         )?;
                                     }
+                                    has_terminal_tool = true;
                                     (summary, false)
                                 }
                                 Err(e) => (format!("Coding agent error: {e}"), true),
@@ -870,8 +1043,10 @@ pub async fn handle_query(
         // ── Execute intermediate tools ─────────────────
         if !parallel_calls.is_empty() {
             let mut futs: Vec<ToolFuture> = Vec::new();
+            let mut input_map: HashMap<String, serde_json::Value> = HashMap::new();
 
             for (id, name, input) in parallel_calls {
+                input_map.insert(id.clone(), input.clone());
                 crate::tui::tool_status(&describe_tool_action(&name, &input));
                 match name.as_str() {
                     "search_history" => {
@@ -1029,10 +1204,7 @@ pub async fn handle_query(
                             let name_ret = name;
                             futs.push(Box::pin(async move {
                                 let mut mc = mcp.lock().await;
-                                let result = mc
-                                    .call_tool(&name_exec, input)
-                                    .await
-                                    .map_err(|e| format!("{e}"));
+                                let result = mc.call_tool(&name_exec, input).await.map_err(|e| format!("{e}"));
                                 (id_ret, name_ret, result)
                             }));
                         } else {
@@ -1110,14 +1282,8 @@ pub async fn handle_query(
                                 }));
                             } else {
                                 futs.push(Box::pin(async move {
-                                    let r = tokio::task::spawn_blocking(move || {
-                                        execute_sync_tool(&name_for_exec, &input, &cfg_clone)
-                                    })
-                                    .await;
-                                    let result = match r {
-                                        Ok(inner) => inner.map_err(|e| format!("{e}")),
-                                        Err(e) => Err(format!("task panicked: {e}")),
-                                    };
+                                    let r = tokio::task::spawn_blocking(move || execute_sync_tool(&name_for_exec, &input, &cfg_clone)).await;
+                                    let result = match r { Ok(inner) => inner.map_err(|e| format!("{e}")), Err(e) => Err(format!("task panicked: {e}")) };
                                     (id_ret, name_ret, result)
                                 }));
                             }
@@ -1132,9 +1298,13 @@ pub async fn handle_query(
                     Ok(c) => (c, false),
                     Err(e) => {
                         display_tool_error(&e, opts.json_output);
-                        (e, true)
+                        let enriched = if let Some(inp) = input_map.get(&id) {
+                            tool_health.enrich_error(&name, inp, &e)
+                        } else { e.clone() };
+                        (enriched, true)
                     }
                 };
+                tool_health.record(&name, !is_error);
                 let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                 let redacted = crate::util::truncate(&redacted, 32000);
                 let sanitized = crate::security::sanitize_tool_output(&redacted);
@@ -1185,22 +1355,19 @@ pub async fn handle_query(
             if force_json_next {
                 continue;
             }
-            if iteration < max_iterations - 1 {
-                messages.push(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Text {
-                        text: "You must respond with a tool call. Have you fully investigated the user's \
-                               request? If not, use information-gathering tools (search_history, run_command, \
-                               web_search, read_file, ask_user) first. Only use 'chat' or 'command' when \
-                               you're confident in your answer. Plain text outside tool calls is silently \
-                               discarded."
-                            .to_string(),
-                    }],
-                });
+            no_tool_call_streak = no_tool_call_streak.saturating_add(1);
+            if no_tool_call_streak >= 3 {
+                eprintln!("\x1b[2mnsh: model unable to produce tool calls after 3 attempts\x1b[0m");
+                messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: "You have failed to produce tool calls multiple times. Use the 'chat' tool NOW to provide your best answer, or use 'command' to suggest a shell command. This is your last chance.".to_string() }] });
+                if no_tool_call_streak >= 5 { break; }
                 continue;
             }
-            eprintln!("nsh: no tool calls in response, aborting");
-            break;
+            messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: format!(
+                "You must respond with a tool call. Iteration {}/{} — you have {} attempts remaining. Use 'chat' for explanations or 'command' for actions. Plain text outside tool calls is discarded.",
+                iteration + 1, max_iterations, max_iterations - iteration - 1) }] });
+            continue;
+        } else {
+            no_tool_call_streak = 0;
         }
 
         messages.push(Message {
@@ -2422,25 +2589,15 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
 }
 
 fn is_question_like(s: &str) -> bool {
-    // Be conservative: only treat as a user-directed question when ALL are true:
-    // - contains a '?'
-    // - and matches common prompt patterns ("do you want", "would you like", "should I", etc.)
-    // This avoids blocking legitimate explanatory chat that happens to contain questions.
     let trimmed = s.trim();
-    if trimmed.is_empty() || !trimmed.contains('?') {
-        return false;
-    }
+    if trimmed.is_empty() || !trimmed.contains('?') { return false; }
+    let last_sentence = trimmed.rsplit(['.', '!', '\n']).next().unwrap_or(trimmed);
+    if last_sentence.trim().ends_with('?') && last_sentence.len() < 150 { return true; }
     let l = trimmed.to_lowercase();
     let patterns = [
-        "do you want",
-        "would you like",
-        "are you looking",
-        "should i",
-        "can you",
-        "could you",
-        "which option",
-        "pick one",
-        "choose",
+        "do you want", "would you like", "are you looking", "should i", "can you", "could you", "which option",
+        "pick one", "choose", "what would you", "let me know", "please confirm", "please specify", "do you prefer",
+        "shall i", "what should",
     ];
     patterns.iter().any(|p| l.contains(p))
 }
@@ -2456,7 +2613,8 @@ mod repeat_guard_tests {
         let payload = serde_json::json!({"memory_type":"semantic","data":{}});
         assert!(!guard.note_invalid(name, &payload));
         assert!(!guard.note_invalid(name, &payload));
-        // Third identical invalid should trigger
+        assert!(!guard.note_invalid(name, &payload));
+        // Fourth identical invalid should trigger
         assert!(guard.note_invalid(name, &payload));
     }
 
@@ -2471,6 +2629,7 @@ mod repeat_guard_tests {
         // different input hash resets counter
         assert!(!guard.note_invalid(name, &p2));
         // repeating new payload now accumulates again
+        assert!(!guard.note_invalid(name, &p2));
         assert!(!guard.note_invalid(name, &p2));
         assert!(guard.note_invalid(name, &p2));
     }
@@ -2491,9 +2650,9 @@ impl RepeatGuard {
         if self.last_tool_signature.as_ref() == Some(&sig) {
             self.repeat_fail_count = self.repeat_fail_count.saturating_add(1);
         } else {
-            self.repeat_fail_count = 0;
+            self.repeat_fail_count = 1;
         }
         self.last_tool_signature = Some(sig);
-        self.repeat_fail_count >= 2
+        self.repeat_fail_count >= 4
     }
 }

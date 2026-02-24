@@ -150,27 +150,31 @@ pub fn execute(
     }
 
     eprintln!();
-    eprint!("{bold_yellow}Apply this patch? [y/N]{reset} ");
-    io::stderr().flush()?;
-
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    let answer = answer.trim().to_lowercase();
-
-    if answer != "y" && answer != "yes" {
-        eprintln!("{dim}patch declined{reset}");
-        if !private {
-            db.insert_conversation(
-                session_id,
-                original_query,
-                "patch_file",
-                &format!("declined: {}", path.display()),
-                Some(reason),
-                false,
-                false,
-            )?;
+    let force_autorun = std::env::var("NSH_FORCE_AUTORUN").ok().as_deref() == Some("1");
+    let auto_approve = force_autorun && config.tools.sensitive_file_access != "block";
+    if auto_approve {
+        eprintln!("\x1b[2m(auto-approved in autorun mode)\x1b[0m");
+    } else {
+        eprint!("{bold_yellow}Apply this patch? [y/N]{reset} ");
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim().to_lowercase();
+        if answer != "y" && answer != "yes" {
+            eprintln!("{dim}patch declined{reset}");
+            if !private {
+                db.insert_conversation(
+                    session_id,
+                    original_query,
+                    "patch_file",
+                    &format!("declined: {}", path.display()),
+                    Some(reason),
+                    false,
+                    false,
+                )?;
+            }
+            return Ok(None);
         }
-        return Ok(None);
     }
 
     let backup = backup_to_trash(&path)?;
