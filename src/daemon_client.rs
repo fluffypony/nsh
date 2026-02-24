@@ -378,8 +378,12 @@ pub fn signal_daemon_restart() -> bool {
 /// (e.g., during daemon restarts). Auto-starts daemon on later retries.
 #[cfg(unix)]
 pub fn send_to_global_with_retry(request: DaemonRequest) -> anyhow::Result<DaemonResponse> {
+    let overall_start = std::time::Instant::now();
     let max_attempts = 6; // ~3s total with backoff
     for attempt in 0..max_attempts {
+        if overall_start.elapsed() > std::time::Duration::from_secs(15) {
+            anyhow::bail!("daemon communication timed out after 15s");
+        }
         match send_to_global(&request) {
             Ok(resp) => return Ok(resp),
             Err(e) if attempt < max_attempts - 1 => {

@@ -1072,18 +1072,28 @@ pub async fn handle_query(
                     "web_search" => {
                         let q = input["query"].as_str().unwrap_or("").to_string();
                         let ws_cfg = config.clone();
+                        let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("web_search"));
                         futs.push(Box::pin(async move {
-                            let r = tools::web_search::execute(&q, &ws_cfg).await;
-                            let result = r.map_err(|e| format!("{e}"));
+                            let fut = tools::web_search::execute(&q, &ws_cfg);
+                            let result = match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+                                Ok(Ok(r)) => Ok(r),
+                                Ok(Err(e)) => Err(format!("{e}")),
+                                Err(_) => Err(format!("Tool 'web_search' timed out after {}s", timeout)),
+                            };
                             (id, name, result)
                         }));
                     }
                     "github" => {
                         let input_clone = input.clone();
                         let cfg_clone = config.clone();
+                        let timeout = input_clone.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("github"));
                         futs.push(Box::pin(async move {
-                            let r = crate::tools::github::execute(&input_clone, &cfg_clone).await;
-                            let result = r.map_err(|e| format!("{e}"));
+                            let fut = crate::tools::github::execute(&input_clone, &cfg_clone);
+                            let result = match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+                                Ok(Ok(r)) => Ok(r),
+                                Ok(Err(e)) => Err(format!("{e}")),
+                                Err(_) => Err(format!("Tool 'github' timed out after {}s", timeout)),
+                            };
                             (id, name, result)
                         }));
                     }
@@ -1202,9 +1212,18 @@ pub async fn handle_query(
                             let name_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
+                            let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("mcp"));
                             futs.push(Box::pin(async move {
-                                let mut mc = mcp.lock().await;
-                                let result = mc.call_tool(&name_exec, input).await.map_err(|e| format!("{e}"));
+                                let result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(timeout),
+                                    async {
+                                        let mut mc = mcp.lock().await;
+                                        mc.call_tool(&name_exec, input).await
+                                    },
+                                )
+                                .await
+                                .map_err(|_| format!("MCP tool '{}' timed out after {}s", name_ret, timeout))
+                                .and_then(|r| r.map_err(|e| format!("{e}")));
                                 (id_ret, name_ret, result)
                             }));
                         } else {
@@ -1274,10 +1293,14 @@ pub async fn handle_query(
                                 }
                             }
                             if let Some(skill) = matched_skill {
+                                let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("skill"));
                                 futs.push(Box::pin(async move {
-                                    let result = crate::skills::execute_skill_async(skill, input)
-                                        .await
-                                        .map_err(|e| format!("{e}"));
+                                    let fut = crate::skills::execute_skill_async(skill, input);
+                                    let result = match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+                                        Ok(Ok(r)) => Ok(r),
+                                        Ok(Err(e)) => Err(format!("{e}")),
+                                        Err(_) => Err(format!("Skill timed out after {}s", timeout)),
+                                    };
                                     (id_ret, name_ret, result)
                                 }));
                             } else {
@@ -1480,6 +1503,45 @@ impossible.
 Information-gathering tools (search_history, grep_file, read_file, list_directory,
 web_search, run_command, ask_user, man_page) can be called multiple times,
 and in parallel when independent.
+
+## Error Handling Behavior
+- You CANNOT report errors to developers. You have NO ability to file bug reports,
+  open issues, send emails, or notify anyone automatically.
+- NEVER say "I've reported this error", "I'll report this to the developers",
+  "I've notified the team", or any similar claim — it is FALSE and misleading.
+- When you encounter an error from a tool call:
+  1. Explain what went wrong in plain language
+  2. Try an alternative approach (different tool, different method, workaround)
+  3. If truly unrecoverable, tell the user to report it themselves at:
+     https://github.com/fluffypony/nsh/issues/new
+  4. Include relevant technical details (error message, tool name, what you were trying)
+- Tool errors are NORMAL and EXPECTED. They do not end your task. Try alternatives:
+  shell commands, different file access methods, web search, ask_user, etc.
+- If read_file fails, try run_command with cat. If grep_file fails, try run_command
+  with grep. If web_search fails, try github. Always have a plan B.
+
+## Tool Execution Timeouts
+All tool calls have automatic timeouts. For run_command and command tools,
+you can set `expected_timeout_seconds` to indicate how long you expect
+the command to take. This helps prevent premature timeouts on long-running
+operations like builds, installs, or large file processing. Examples:
+- `npm install` in a large project: expected_timeout_seconds=180
+- `cargo build --release`: expected_timeout_seconds=300
+- `ls -la`: no need to set (default is fine)
+
+## ask_user Guidance
+When using ask_user, ALWAYS include a `default_response` field containing your
+best guess for the answer. In autorun mode, if the user doesn't respond within
+the configured timeout, this default will be used and you will continue working.
+Make the default_response a reasonable, conservative choice.
+
+## Self-Healing and Recovery
+- If a file edit (write_file/patch_file) or a destructive command breaks the system
+  or causes test failures, do not just "fix forward" by blindly editing again.
+  You can restore from the backup path (e.g. /tmp/nsh-backup-...) that was printed
+  in the tool's output, then devise a new approach.
+- If you have failed with the same tool 3+ times, switch to a COMPLETELY different
+  tool or approach.
 
 ### Command Execution & Gating
 

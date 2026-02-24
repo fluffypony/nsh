@@ -22,6 +22,7 @@ pub mod skill_exists;
 use std::path::PathBuf;
 
 use serde::Serialize;
+use std::io::IsTerminal;
 use serde_json::json;
 
 #[cfg(test)]
@@ -188,6 +189,35 @@ pub fn read_tty_confirmation_default_yes() -> bool {
         }
     };
     !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
+}
+
+/// Read a single line of user input with a timeout (in seconds).
+/// Returns Some(trimmed_line) if input received and non-empty; otherwise None.
+pub fn read_user_input_with_timeout(timeout_secs: u64) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut line = String::new();
+        let result = if std::io::stdin().is_terminal() {
+            std::io::stdin().read_line(&mut line).map(|_| line)
+        } else {
+            match std::fs::File::open("/dev/tty") {
+                Ok(tty) => {
+                    let mut reader = std::io::BufReader::new(tty);
+                    reader.read_line(&mut line).map(|_| line)
+                }
+                Err(_) => return,
+            }
+        };
+        if let Ok(text) = result {
+            let _ = tx.send(text.trim().to_string());
+        }
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
+        Ok(line) if !line.is_empty() => Some(line),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
