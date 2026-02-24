@@ -57,7 +57,10 @@ pub fn execute(
                             eprintln!(
                                 "Cannot confirm — stdin is piped. Aborting dangerous command."
                             );
-                            return Ok(CommandExecutionOutcome::Terminal);
+                            return Ok(CommandExecutionOutcome::ContinueWithResult {
+                                content: "DENIED: dangerous command not approved by user. Try a different approach.".into(),
+                                is_error: true,
+                            });
                         }
                     }
                 }

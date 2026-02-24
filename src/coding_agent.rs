@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::AsyncReadExt;
 
 use crate::config::Config;
 use crate::daemon_db::DbAccess;
@@ -724,8 +723,17 @@ where
 fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
     let lower = command.to_lowercase();
     let file_count = estimate_project_file_count(working_dir, 3000) as u64;
-    let t = if lower.starts_with("cargo test") {
-        180 + file_count / 4
+    // Network-heavy installs: allow longer
+    if lower.contains(" install") &&
+        (lower.starts_with("npm ") || lower.starts_with("pnpm ") || lower.starts_with("yarn ") ||
+         lower.starts_with("pip ") || lower.starts_with("pip3 ") || lower.starts_with("brew ") ||
+         lower.starts_with("apt ") || lower.starts_with("yum ") || lower.starts_with("cargo install"))
+    {
+        return 300u64.min(900);
+    }
+
+    let base = if lower.starts_with("cargo test") {
+        180
     } else if lower.starts_with("cargo build")
         || lower.starts_with("cargo check")
         || lower.starts_with("go test")
@@ -734,13 +742,13 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
         || (lower.contains(" test")
             && (lower.starts_with("npm") || lower.starts_with("pnpm") || lower.starts_with("yarn")))
     {
-        120 + file_count / 5
+        120
     } else if lower.starts_with("ruff")
         || lower.starts_with("eslint")
         || lower.starts_with("black")
         || lower.starts_with("prettier")
     {
-        60 + file_count / 10
+        60
     } else if lower.starts_with("cargo ")
         || lower.starts_with("npm ")
         || lower.starts_with("pnpm ")
@@ -748,7 +756,7 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
         || lower.starts_with("make")
         || lower.starts_with("cmake")
     {
-        90 + file_count / 8
+        90
     } else if lower.starts_with("git ")
         || lower.starts_with("ls")
         || lower.starts_with("cat")
@@ -758,9 +766,12 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
     {
         20
     } else {
-        60 + file_count / 12
+        60
     };
-    t.clamp(15, 900)
+    // Add file_count-based adjustment with saturating add
+    let base: u64 = base;
+    let adjusted = base.saturating_add(file_count / 8);
+    adjusted.clamp(15, 900)
 }
 
 fn estimate_project_file_count(root: &Path, max_entries: usize) -> usize {

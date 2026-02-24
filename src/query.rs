@@ -689,7 +689,7 @@ pub async fn handle_query(
                             abort_tool_loop = true;
                             break;
                         }
-                        // Reset guard to give fresh chances after correction injection
+                        // Reset guard to give fresh chances after correction injection, but only after threshold check
                         repeat_guard = RepeatGuard::default();
                         continue;
                     }
@@ -799,7 +799,7 @@ pub async fn handle_query(
                         }
                     }
                     "write_file" => {
-                        match tools::write_file::execute(input, query, db, session_id, opts.private, config) {
+                        match tools::write_file::execute(input, query, db, session_id, opts.private, config, opts.force_autorun) {
                             Ok(()) => { has_terminal_tool = true; }
                             Err(e) => {
                                 let err_msg = format!("Failed to write file: {e}");
@@ -817,6 +817,7 @@ pub async fn handle_query(
                             session_id,
                             opts.private,
                             config,
+                            opts.force_autorun,
                         ) {
                             Ok(None) => {
                                 has_terminal_tool = true;
@@ -1057,7 +1058,7 @@ pub async fn handle_query(
         }
 
         if abort_tool_loop {
-            // Give the model one more guided attempt instead of breaking immediately
+            // Inject a correction and continue the outer loop per plan 11g
             abort_tool_loop = false;
             messages.push(Message {
                 role: Role::User,

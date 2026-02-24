@@ -227,6 +227,7 @@ pub fn execute(
     session_id: &str,
     private: bool,
     config: &crate::config::Config,
+    force_autorun: bool,
 ) -> anyhow::Result<()> {
     let raw_path = input["path"].as_str().unwrap_or("");
     let content = input["content"].as_str().unwrap_or("");
@@ -276,7 +277,6 @@ pub fn execute(
     }
 
     eprintln!();
-    let force_autorun = std::env::var("NSH_FORCE_AUTORUN").ok().as_deref() == Some("1");
     let auto_approve = force_autorun && config.tools.sensitive_file_access != "block";
     if auto_approve {
         eprintln!("\x1b[2m(auto-approved in autorun mode)\x1b[0m");
@@ -815,7 +815,7 @@ mod tests {
             "path": "/tmp/nsh_test_redact.txt",
             "content": "secret = [REDACTED:api-key]",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
         assert!(
             err.to_string().contains("redaction markers"),
             "expected redaction markers error, got: {err}"
@@ -835,7 +835,7 @@ mod tests {
                 "path": "/tmp/nsh_test_redact2.txt",
                 "content": format!("value = {marker}"),
             });
-            let err = execute(&input, "q", &db, "s", false, &config).unwrap_err();
+            let err = execute(&input, "q", &db, "s", false, &config, false).unwrap_err();
             assert!(
                 err.to_string().contains("redaction markers"),
                 "marker {marker} should be rejected, got: {err}"
@@ -851,7 +851,7 @@ mod tests {
             "path": "",
             "content": "hello",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
         assert!(
             err.to_string().contains("path is required"),
             "expected 'path is required' error, got: {err}"
@@ -865,7 +865,7 @@ mod tests {
         let input = serde_json::json!({
             "content": "hello",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
         assert!(
             err.to_string().contains("path is required"),
             "expected 'path is required' error, got: {err}"
@@ -882,7 +882,7 @@ mod tests {
             "path": ssh_path.to_string_lossy(),
             "content": "key data",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
         assert!(
             err.to_string().contains("blocked"),
             "expected blocked error for sensitive path, got: {err}"
@@ -897,7 +897,7 @@ mod tests {
             "path": "/tmp/foo/../bar",
             "content": "data",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config).unwrap_err();
+        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
         assert!(
             err.to_string().contains("path traversal"),
             "expected path traversal error, got: {err}"

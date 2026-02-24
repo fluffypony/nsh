@@ -84,6 +84,7 @@ pub fn execute(
     session_id: &str,
     private: bool,
     config: &crate::config::Config,
+    force_autorun: bool,
 ) -> anyhow::Result<Option<String>> {
     let raw_path = input["path"].as_str().unwrap_or("");
     let search = input["search"].as_str().unwrap_or("");
@@ -150,7 +151,6 @@ pub fn execute(
     }
 
     eprintln!();
-    let force_autorun = std::env::var("NSH_FORCE_AUTORUN").ok().as_deref() == Some("1");
     let auto_approve = force_autorun && config.tools.sensitive_file_access != "block";
     if auto_approve {
         eprintln!("\x1b[2m(auto-approved in autorun mode)\x1b[0m");
@@ -568,7 +568,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert!(result.is_some());
         assert!(
             result
@@ -586,7 +586,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert!(result.is_some());
         assert!(
             result
@@ -604,7 +604,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert_eq!(result, Some("path is required".into()));
     }
 
@@ -616,7 +616,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert_eq!(result, Some("path is required".into()));
     }
 
@@ -629,7 +629,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert_eq!(result, Some("search is required".into()));
     }
 
@@ -642,7 +642,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("path traversal"));
     }
@@ -656,7 +656,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("cannot read"));
     }
@@ -674,7 +674,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("search text not found"));
     }
@@ -689,7 +689,7 @@ mod tests {
             "search": "[REDACTED:some_token-123]",
             "replace": "x",
         });
-        let result = execute(&input, "q", &db, "s", false, &config).unwrap();
+        let result = execute(&input, "q", &db, "s", false, &config, false).unwrap();
         assert!(
             result
                 .unwrap()
@@ -701,7 +701,7 @@ mod tests {
             "search": "ok",
             "replace": "[REDACTED:A]",
         });
-        let result = execute(&input, "q", &db, "s", false, &config).unwrap();
+        let result = execute(&input, "q", &db, "s", false, &config, false).unwrap();
         assert!(
             result
                 .unwrap()
@@ -719,7 +719,7 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config).unwrap();
+        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
         assert!(result.is_some());
         assert!(result.unwrap().contains("blocked"));
     }
