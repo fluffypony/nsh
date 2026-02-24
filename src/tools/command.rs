@@ -397,31 +397,7 @@ fn format_execution_output(
     }
 }
 
-fn read_tty_confirmation_default_yes() -> bool {
-    use std::io::{BufRead, IsTerminal};
-    let line = if std::io::stdin().is_terminal() {
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_ok() {
-            line
-        } else {
-            return true;
-        }
-    } else {
-        match std::fs::File::open("/dev/tty") {
-            Ok(tty) => {
-                let mut reader = std::io::BufReader::new(tty);
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_ok() {
-                    line
-                } else {
-                    return true;
-                }
-            }
-            Err(_) => return false,
-        }
-    };
-    !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
-}
+// Deprecated local variant; use crate::tools::read_tty_confirmation_default_yes instead.
 
 pub(crate) fn reject_reason_for_generated_command(
     command: &str,

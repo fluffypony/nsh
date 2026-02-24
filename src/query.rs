@@ -755,13 +755,13 @@ pub async fn handle_query(
                                     is_error: true,
                                 });
                             }
-                            tools::command::CommandExecutionOutcome::Terminal => {
+                            Ok(tools::command::CommandExecutionOutcome::Terminal) => {
                                 has_terminal_tool = true;
                             }
-                            tools::command::CommandExecutionOutcome::ContinueWithResult {
+                            Ok(tools::command::CommandExecutionOutcome::ContinueWithResult {
                                 content,
                                 is_error,
-                            } => {
+                            }) => {
                                 let redacted =
                                     crate::redact::redact_secrets(&content, &config.redaction);
                                 let sanitized = crate::security::sanitize_tool_output(&redacted);
