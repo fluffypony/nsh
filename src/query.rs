@@ -684,12 +684,13 @@ pub async fn handle_query(
                             content: crate::security::wrap_tool_result(name, &correction, &boundary),
                             is_error: true,
                         });
-                        // Reset guard to give fresh chances after correction injection
-                        repeat_guard = RepeatGuard::default();
+                        // Only truly abort after 5 repeats
                         if repeat_guard.repeat_fail_count >= 5 {
                             abort_tool_loop = true;
                             break;
                         }
+                        // Reset guard to give fresh chances after correction injection
+                        repeat_guard = RepeatGuard::default();
                         continue;
                     }
                     continue;
