@@ -983,6 +983,7 @@ pub async fn handle_query(
                                 session_id,
                                 &xml_context,
                                 &cancelled,
+                                opts.force_autorun,
                             )
                             .await;
                             let (content, is_error) = match result {

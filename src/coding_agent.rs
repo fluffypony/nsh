@@ -143,6 +143,7 @@ pub async fn run_coding_agent(
     _session_id: &str,
     project_context_xml: &str,
     cancelled: &Arc<AtomicBool>,
+    force_autorun: bool,
 ) -> anyhow::Result<String> {
     let provider = create_provider(&config.provider.default, config)?;
     let model_chain = if config.models.coding.is_empty() {
@@ -318,11 +319,9 @@ pub async fn run_coding_agent(
                             .collect::<Vec<_>>()
                     });
                     let default_resp = input["default_response"].as_str();
-                    let autorun_timeout = if cfg!(feature = "autorun") {
+                    let autorun_timeout = if force_autorun {
                         Some(config.execution.autorun_response_timeout_seconds)
-                    } else {
-                        None
-                    };
+                    } else { None };
                     crate::tools::ask_user::execute(q, options.as_deref(), autorun_timeout, default_resp)
                 }
                 "done" => {
