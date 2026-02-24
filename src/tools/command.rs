@@ -25,7 +25,10 @@ pub fn execute(
 
     if let Some(reason) = reject_reason_for_generated_command(&command, original_query) {
         eprintln!("nsh: skipped invalid generated command ({reason})");
-        return Ok(CommandExecutionOutcome::Terminal);
+        return Ok(CommandExecutionOutcome::ContinueWithResult {
+            content: format!("Command rejected: {reason}. Provide a valid shell command or use other tools."),
+            is_error: true,
+        });
     }
 
     let (risk, reason) = crate::security::assess_command(&command);
@@ -61,7 +64,10 @@ pub fn execute(
             };
             if input_line.trim() != "yes" {
                 eprintln!("Aborted.");
-                return Ok(CommandExecutionOutcome::Terminal);
+                return Ok(CommandExecutionOutcome::ContinueWithResult {
+                    content: "DENIED: dangerous command not approved by user. Try a different approach.".into(),
+                    is_error: true,
+                });
             }
         }
         RiskLevel::Elevated => {
@@ -108,7 +114,7 @@ pub fn execute(
     {
         eprint!("\x1b[1;33mRun intermediate command now? [Y/n]\x1b[0m ");
         let _ = std::io::Write::flush(&mut std::io::stderr());
-        user_confirmed_intermediate = read_tty_confirmation_default_yes();
+        user_confirmed_intermediate = crate::tools::read_tty_confirmation_default_yes();
     }
 
     let auto_execute_pending =
@@ -126,16 +132,75 @@ pub fn execute(
     let execute_via_shell_autorun = should_execute_immediately && !pending;
     if should_execute_immediately && pending {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
+        // Execute with a soft timeout derived from input expected_timeout_seconds
+        let expected_secs = input["expected_timeout_seconds"].as_u64().unwrap_or(120).clamp(1, 3600);
         #[cfg(unix)]
-        let output = std::process::Command::new("sh")
+        let mut child = std::process::Command::new("sh")
             .arg("-c")
             .arg(command.as_str())
-            .output();
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
         #[cfg(windows)]
-        let output = std::process::Command::new("cmd")
+        let mut child = std::process::Command::new("cmd")
             .args(["/C", command.as_str()])
-            .output();
-        let (output_content, is_error, exit_code) = format_execution_output(output, config);
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut output_content = String::new();
+        let mut is_error = false;
+        let mut exit_code = 0;
+        match child {
+            Ok(mut child) => {
+                let start = std::time::Instant::now();
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            let out = child.wait_with_output().unwrap_or_else(|_| std::process::Output{ status, stdout: vec![], stderr: vec![] });
+                            let formatted = format_execution_output(Ok(out), config);
+                            output_content = formatted.0;
+                            is_error = formatted.1;
+                            exit_code = formatted.2;
+                            break;
+                        }
+                        Ok(None) => {
+                            if start.elapsed().as_secs() >= expected_secs {
+                                // Ask whether to continue waiting
+                                eprint!("\x1b[1;33mCommand running > {}s. Continue waiting? [Y/n]\x1b[0m ", expected_secs);
+                                let _ = std::io::Write::flush(&mut std::io::stderr());
+                                let cont = crate::tools::read_tty_confirmation_default_yes();
+                                if !cont {
+                                    let _ = child.kill();
+                                    let _ = child.wait();
+                                    output_content = format!("Command timed out after {}s (user cancelled wait)", expected_secs);
+                                    is_error = true;
+                                    exit_code = 124;
+                                    break;
+                                } else {
+                                    // extend window by expected_secs again
+                                    // reset start to avoid unbounded loop; we keep additional cycles gated by user consent
+                                    // Note: we intentionally do not accumulate to avoid overflow; behavior remains interactive
+                                    // Simply continue looping
+                                }
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                        }
+                        Err(e) => {
+                            output_content = format!("Failed to execute command: {e}");
+                            is_error = true;
+                            exit_code = -1;
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let formatted = format_execution_output(Err(e), config);
+                output_content = formatted.0;
+                is_error = formatted.1;
+                exit_code = formatted.2;
+            }
+        }
 
         // Show the raw command output to the user immediately so they can
         // see what happened, while also returning it back to the model for
@@ -171,13 +236,7 @@ pub fn execute(
         if is_error {
             eprintln!("\x1b[33mcommand exited with code {exit_code}\x1b[0m");
         }
-        if pending {
-            return Ok(CommandExecutionOutcome::ContinueWithResult {
-                content: output_content,
-                is_error,
-            });
-        }
-        return Ok(CommandExecutionOutcome::Terminal);
+        return Ok(CommandExecutionOutcome::ContinueWithResult { content: output_content, is_error });
     }
 
     if config.execution.mode != "confirm" || execute_via_shell_autorun {

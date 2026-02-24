@@ -40,8 +40,17 @@ fn probe_once(url: &str) -> bool {
     if let Ok(u) = Url::parse(url) {
         if let Some(host) = u.host_str() {
             let port = u.port_or_known_default().unwrap_or(80);
-            if std::net::TcpStream::connect_timeout(&format!("{}:{}", host, port).parse().unwrap(), Duration::from_secs(2)).is_ok() {
-                return true;
+            if let Ok(addr) = format!("{}:{}", host, port).parse::<std::net::SocketAddr>() {
+                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+                    return true;
+                }
+            }
+            if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:{}", host, port)) {
+                for addr in addrs {
+                    if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+                        return true;
+                    }
+                }
             }
         }
     }

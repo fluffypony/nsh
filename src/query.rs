@@ -9,13 +9,20 @@ type ToolFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>>;
 
 fn display_tool_error(error: &str, json_output: bool) {
-    if !json_output {
+    if json_output {
+        let event = serde_json::json!({
+            "type": "tool_error",
+            "error": error,
+            "report_url": "https://github.com/fluffypony/nsh/issues/new"
+        });
+        eprintln!("{}", serde_json::to_string(&event).unwrap_or_default());
+    } else {
         eprintln!(
-            "  \x1b[31m↳ error encountered: {}\x1b[0m",
-            crate::util::truncate(error, 200)
+            "  \x1b[31m↳ tool error: {}\x1b[0m",
+            crate::util::truncate(error, 300)
         );
         eprintln!(
-            "  \x1b[2m↳ please report this error here: https://github.com/fluffypony/nsh/issues/new\x1b[0m"
+            "  \x1b[2m↳ if this persists, report at: https://github.com/fluffypony/nsh/issues/new\x1b[0m"
         );
     }
 }
@@ -1148,8 +1155,19 @@ pub async fn handle_query(
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect::<Vec<_>>()
             });
+            let autorun_timeout = if opts.force_autorun {
+                Some(config.execution.autorun_response_timeout_seconds)
+            } else {
+                None
+            };
+            let default_resp = input["default_response"].as_str();
             eprintln!("  \x1b[2m↳ asking for input...\x1b[0m");
-            let (content, is_error) = match tools::ask_user::execute(question, options.as_deref()) {
+            let (content, is_error) = match tools::ask_user::execute(
+                question,
+                options.as_deref(),
+                autorun_timeout,
+                default_resp,
+            ) {
                 Ok(c) => (c, false),
                 Err(e) => (format!("Error: {e}"), true),
             };

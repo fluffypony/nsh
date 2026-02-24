@@ -287,7 +287,13 @@ pub async fn run_coding_agent(
                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                             .collect::<Vec<_>>()
                     });
-                    crate::tools::ask_user::execute(q, options.as_deref())
+                    let default_resp = input["default_response"].as_str();
+                    let autorun_timeout = if cfg!(feature = "autorun") {
+                        Some(config.execution.autorun_response_timeout_seconds)
+                    } else {
+                        None
+                    };
+                    crate::tools::ask_user::execute(q, options.as_deref(), autorun_timeout, default_resp)
                 }
                 "done" => {
                     if let Some(paths) = input["files_changed"].as_array() {

@@ -1,6 +1,11 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Write, IsTerminal};
 
-pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<String> {
+pub fn execute(
+    question: &str,
+    options: Option<&[String]>,
+    autorun_timeout: Option<u64>,
+    default_response: Option<&str>,
+) -> anyhow::Result<String> {
     use crate::tui::{self, BoxStyle, ContentLine};
 
     // Build content lines for the TUI box
@@ -12,14 +17,44 @@ pub fn execute(question: &str, options: Option<&[String]>) -> anyhow::Result<Str
             content.push(ContentLine { text: format!("{}) {}", i + 1, opt), dim: true });
         }
     }
+    if let (Some(timeout), Some(default)) = (autorun_timeout, default_response) {
+        content.push(ContentLine { text: String::new(), dim: true });
+        content.push(ContentLine {
+            text: format!("(auto-answer in {}s: {})", timeout, default),
+            dim: true,
+        });
+    }
     tui::render_box("Question", &content, BoxStyle::Question);
 
     let th = crate::tui::theme::current_theme();
     eprint!("  {}❯{} ", th.accent, th.reset);
     io::stderr().flush()?;
 
-    let input = read_user_input()?;
-    Ok(resolve_option_selection(input, options))
+    if let Some(timeout_secs) = autorun_timeout {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = read_user_input_inner(
+                std::io::stdin().is_terminal(),
+                || std::fs::File::open("/dev/tty"),
+            );
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
+            Ok(Ok(input)) if !input.is_empty() => Ok(resolve_option_selection(input, options)),
+            _ => {
+                let response = default_response
+                    .map(|s| s.to_string())
+                    .or_else(|| options.and_then(|o| o.first().cloned()))
+                    .unwrap_or_else(|| "Proceeding with best judgment".into());
+                eprintln!("\x1b[2m  (timed out, auto-selecting: {})\x1b[0m", response);
+                Ok(resolve_option_selection(response, options))
+            }
+        }
+    } else {
+        let input = read_user_input()?;
+        Ok(resolve_option_selection(input, options))
+    }
 }
 
 fn read_user_input() -> anyhow::Result<String> {
@@ -47,7 +82,7 @@ where
             reader.read_line(&mut input)?;
             Ok(input.trim().to_string())
         }
-        Err(_) => Ok("Cannot ask user — stdin is piped. Proceeding with best guess.".into()),
+        Err(_) => anyhow::bail!("Cannot read user input: stdin is piped and /dev/tty is unavailable. Provide a default_response in autorun mode."),
     }
 }
 
@@ -89,14 +124,11 @@ mod tests {
 
     #[test]
     fn read_user_input_inner_returns_fallback_when_tty_unavailable() {
-        let out = read_user_input_inner(false, || {
+        let err = read_user_input_inner(false, || {
             Err(io::Error::new(io::ErrorKind::NotFound, "no tty"))
         })
-        .expect("fallback should be returned");
-        assert_eq!(
-            out,
-            "Cannot ask user — stdin is piped. Proceeding with best guess."
-        );
+        .unwrap_err();
+        assert!(err.to_string().contains("Cannot read user input: stdin is piped"));
     }
 
     #[test]

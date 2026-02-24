@@ -80,6 +80,16 @@ pub struct ExecutionConfig {
     pub allow_unsafe_autorun: bool,
     pub max_tool_iterations: usize,
     pub confirm_intermediate_steps: bool,
+    // Timeout for individual tool calls (seconds)
+    pub tool_timeout_seconds: u64,
+    // Extension used by some tools when continuing waits (seconds)
+    pub tool_timeout_extension_seconds: u64,
+    // In autorun mode, timeout before auto-answering ask_user prompts (seconds)
+    pub autorun_response_timeout_seconds: u64,
+    // Max total duration for a single query/tool loop (seconds)
+    pub max_query_duration_seconds: u64,
+    // Stall timeout for streaming commands without output (seconds)
+    pub stall_timeout_seconds: u64,
 }
 
 impl Default for ExecutionConfig {
@@ -87,8 +97,13 @@ impl Default for ExecutionConfig {
         Self {
             mode: "prefill".into(),
             allow_unsafe_autorun: false,
-            max_tool_iterations: 30,
+            max_tool_iterations: 50,
             confirm_intermediate_steps: false,
+            tool_timeout_seconds: 60,
+            tool_timeout_extension_seconds: 60,
+            autorun_response_timeout_seconds: 30,
+            max_query_duration_seconds: 300,
+            stall_timeout_seconds: 15,
         }
     }
 }
@@ -1359,6 +1374,20 @@ pub fn build_config_xml(
         "Ask y/n before immediately running pending intermediate commands outside autorun",
         Some("true,false"),
     );
+    opt(
+        &mut x,
+        "tool_timeout_seconds",
+        &config.execution.tool_timeout_seconds.to_string(),
+        "Timeout for individual tool calls in seconds",
+        None,
+    );
+    opt(
+        &mut x,
+        "autorun_response_timeout_seconds",
+        &config.execution.autorun_response_timeout_seconds.to_string(),
+        "In autorun mode, timeout before auto-answering ask_user prompts",
+        None,
+    );
     x.push_str("  </section>\n");
 
     // ── DB ──────────────────────────────────────────────
@@ -1920,9 +1949,9 @@ base_url = "https://custom.api.example.com"
     fn test_execution_config_default() {
         let ec = ExecutionConfig::default();
         assert_eq!(ec.mode, "prefill");
-        assert_eq!(ec.max_tool_iterations, 30);
+        assert_eq!(ec.max_tool_iterations, 50);
         assert!(!ec.confirm_intermediate_steps);
-        assert_eq!(ec.effective_max_tool_iterations(), 30);
+        assert_eq!(ec.effective_max_tool_iterations(), 50);
     }
 
     #[test]
@@ -2107,7 +2136,7 @@ mode = "autorun"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.execution.mode, "autorun");
-        assert_eq!(config.execution.max_tool_iterations, 30);
+        assert_eq!(config.execution.max_tool_iterations, 50);
         assert!(!config.execution.confirm_intermediate_steps);
     }
 

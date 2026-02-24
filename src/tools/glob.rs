@@ -34,8 +34,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     // path, size, perms (octal rwx string)
     let mut matches: Vec<(String, u64, String)> = Vec::new();
     let mut total_matches = 0usize;
-
+    let start = std::time::Instant::now();
     for entry in walker.flatten() {
+        if start.elapsed() > std::time::Duration::from_secs(15) {
+            // We'll append the timeout notice after building 'out'
+            break;
+        }
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
@@ -63,6 +67,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     }
     if total_matches > matches.len() {
         out.push_str(&format!("... and {} more", total_matches - matches.len()));
+    }
+    if start.elapsed() > std::time::Duration::from_secs(15) {
+        out.push_str("\n[glob search timed out after 15s — try a narrower pattern]");
     }
     if out.trim().is_empty() {
         return Ok("No matches found".into());

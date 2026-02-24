@@ -40,6 +40,19 @@ pub fn execute_with_access(
     let max_lines = input["max_lines"].as_u64().unwrap_or(100) as usize;
 
     let path_display = path.display().to_string();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            let ft = meta.file_type();
+            if ft.is_block_device() || ft.is_char_device() || ft.is_fifo() || ft.is_socket() {
+                return Ok(format!(
+                    "Cannot grep '{}': not a regular file. Use run_command with 'grep' instead.",
+                    path.display()
+                ));
+            }
+        }
+    }
     let file = match open_for_read(&path) {
         Ok(f) => f,
         Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),

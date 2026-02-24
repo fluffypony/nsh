@@ -80,6 +80,37 @@ pub fn execute_with_access(
         ));
     }
 
+    // Guard against non-regular files that can block
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if let Ok(meta) = std::fs::symlink_metadata(&path) {
+            let ft = meta.file_type();
+            if ft.is_block_device() || ft.is_char_device() || ft.is_fifo() || ft.is_socket() {
+                return Ok(format!(
+                    "Cannot read '{}': not a regular file (special device/pipe/socket). \
+                     Use run_command with 'cat' or 'head' instead.",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    // Guard against /proc and /sys pseudo-filesystems
+    let path_str = path.to_string_lossy();
+    if (path_str.starts_with("/proc/") || path_str.starts_with("/sys/")) && file_size == 0 {
+        let mut file = open_for_read(&path)?;
+        let mut buf = vec![0u8; 65536]; // 64KB max for pseudo-fs
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(|e| anyhow::anyhow!("Error reading {}: {e}", path.display()))?;
+        let content = String::from_utf8_lossy(&buf[..n]);
+        return Ok(format!(
+            "{}\n\n[pseudo-filesystem file, read {} bytes]",
+            content.trim(),
+            n
+        ));
+    }
+
     // --- Binary check on first bytes ---
     let mut probe_file = match open_for_read(&path) {
         Ok(f) => f,
@@ -192,8 +223,23 @@ fn estimate_line_count(path: &std::path::Path) -> usize {
         Ok(f) => f,
         Err(_) => return 0,
     };
-    let reader = BufReader::new(file);
-    reader.lines().count()
+    let mut reader = BufReader::new(file);
+    let mut count = 0usize;
+    let mut buf = [0u8; 8192];
+    let mut total_read: u64 = 0;
+    let max_bytes: u64 = 50 * 1024 * 1024;
+    loop {
+        match std::io::Read::read(&mut reader, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                total_read += n as u64;
+                count += buf[..n].iter().filter(|&&b| b == b'\n').count();
+                if total_read > max_bytes { break; }
+            }
+            Err(_) => break,
+        }
+    }
+    count
 }
 
 fn format_full_file(

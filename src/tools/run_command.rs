@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::redact;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
     if !config.tools.is_command_allowed(cmd) {
@@ -59,12 +59,42 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
 
     #[cfg(not(windows))]
     let output = {
+        if cmd.trim().is_empty() {
+            return Ok("DENIED: empty command".to_string());
+        }
         let argv =
             shell_words::split(cmd).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
         let (exe, args) = argv
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("empty command"))?;
-        Command::new(exe).args(args).output()?
+
+        let mut child = Command::new(exe)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+
+        let timeout = std::time::Duration::from_secs(
+            config.execution.tool_timeout_seconds.max(30),
+        );
+        let start = std::time::Instant::now();
+        loop {
+            match child.try_wait()? {
+                Some(_status) => break,
+                None => {
+                    if start.elapsed() >= timeout {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Ok(format!(
+                            "Command timed out after {}s. Consider using the `command` tool with `pending: true` for long-running operations.",
+                            timeout.as_secs()
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+        child.wait_with_output()?
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);

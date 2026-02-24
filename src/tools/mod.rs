@@ -29,6 +29,24 @@ pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
     validate_read_path_with_access(raw_path, "block")
 }
 
+/// Heuristic per-tool default timeout in seconds.
+pub fn default_timeout_for_tool(name: &str) -> u64 {
+    match name {
+        "read_file" | "grep_file" | "list_directory" | "glob" => 15,
+        "man_page" => 10,
+        "search_history" | "search_memory" | "core_memory_append"
+        | "core_memory_rewrite" | "store_memory" | "retrieve_secret" => 15,
+        "run_command" => 60,
+        "web_search" | "github" => 45,
+        "manage_config" | "install_skill" | "install_mcp_server" | "skill_exists"
+        | "uninstall_skill" => 30,
+        "code" => 900,
+        _ if name.starts_with("mcp_") => 60,
+        _ if name.starts_with("skill_") => 60,
+        _ => 60,
+    }
+}
+
 pub fn validate_read_path_with_access(
     raw_path: &str,
     sensitive_file_access: &str,
@@ -144,6 +162,34 @@ pub fn read_tty_confirmation() -> bool {
     matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Like read_tty_confirmation but defaults to "No" when a read error occurs.
+/// Useful for potentially dangerous defaults where we should not auto-approve.
+pub fn read_tty_confirmation_default_yes() -> bool {
+    use std::io::{BufRead, IsTerminal};
+    let line = if std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            line
+        } else {
+            return false; // default to No on read error
+        }
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(tty) => {
+                let mut reader = std::io::BufReader::new(tty);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() {
+                    line
+                } else {
+                    return false; // default to No on read error
+                }
+            }
+            Err(_) => return false,
+        }
+    };
+    !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -152,7 +198,7 @@ pub struct ToolDefinition {
 }
 
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
+    let mut defs = vec![
         ToolDefinition {
             name: "command".into(),
             description: "Generate a shell command for the user to \
@@ -183,6 +229,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                              In autorun mode, pending commands execute immediately. In other modes, \
                              the user confirms and you continue.",
                         "default": false
+                    },
+                    "expected_timeout_seconds": {
+                        "type": "integer",
+                        "description": "Your estimated time for this command to complete. Use this for long-running operations like installs, builds, or downloads. Default: 120.",
+                        "default": 120
                     }
                 },
                 "required": ["command", "explanation"]
@@ -471,6 +522,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "reason": {
                         "type": "string",
                         "description": "Why you need this command"
+                    },
+                    "expected_timeout_seconds": {
+                        "type": "integer",
+                        "description": "Expected maximum duration in seconds. If exceeded, the user will be asked whether to continue waiting. Default varies by tool."
                     }
                 },
                 "required": ["command", "reason"]
@@ -496,6 +551,10 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "items": { "type": "string" },
                         "description":
                             "Optional list of choices"
+                    },
+                    "default_response": {
+                        "type": "string",
+                        "description": "The best response to auto-select if the user does not respond within the timeout. REQUIRED when running in autorun mode. Should be a concrete, actionable answer — not empty or 'I don't know'. Choose the safest reasonable default."
                     }
                 },
                 "required": ["question"]
@@ -945,7 +1004,28 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["caption_query"]
             }),
         },
-    ]
+    ];
+
+    // Inject expected_timeout_seconds into tool schemas that don't already have it
+    for def in &mut defs {
+        if let Some(props) = def
+            .parameters
+            .get_mut("properties")
+            .and_then(|p| p.as_object_mut())
+        {
+            if !props.contains_key("expected_timeout_seconds") {
+                props.insert(
+                    "expected_timeout_seconds".to_string(),
+                    serde_json::json!({
+                        "type": "integer",
+                        "description": "Expected maximum duration in seconds. If exceeded, the user will be asked whether to continue waiting. Default varies by tool."
+                    }),
+                );
+            }
+        }
+    }
+
+    defs
 }
 
 #[cfg(test)]
