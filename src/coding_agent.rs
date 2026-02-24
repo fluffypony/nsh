@@ -452,6 +452,14 @@ You complete delegated coding tasks end-to-end by exploring, editing, and verify
   https://github.com/fluffypony/nsh/issues/new
 - Tool errors are recoverable — try alternative tools before giving up.
 
+## Timeouts
+- All tool calls have automatic timeouts. For long-running bash steps,
+  set a suitable `timeout_seconds` or acknowledge progress through output
+  so stall detection does not trigger.
+- If a step legitimately needs more time, prefer specifying a realistic
+  timeout first. The host may extend once using
+  `execution.tool_timeout_extension_seconds` where appropriate.
+
 ## Project context
 {xml_context}
 
@@ -623,15 +631,25 @@ async fn execute_bash(
         .ok_or_else(|| anyhow::anyhow!("failed to capture stderr"))?;
 
     eprintln!("  \x1b[2m↳ output (live):\x1b[0m");
-    let stdout_task = tokio::spawn(read_output_stream(stdout));
-    let stderr_task = tokio::spawn(read_output_stream(stderr));
+    // Stall detection: no output for configured stall timeout
+    let stall_threshold = std::time::Duration::from_secs(config.execution.stall_timeout_seconds);
+    let mut last_output = tokio::time::Instant::now();
+    let stdout_task = {
+        let last_clone = last_output;
+        tokio::spawn(async move {
+            let (s, last_seen) = read_output_stream(stdout, Some(last_clone)).await?;
+            Ok::<(String, tokio::time::Instant), std::io::Error>((s, last_seen))
+        })
+    };
+    let stderr_task = tokio::spawn(async move {
+        let (s, now) = read_output_stream(stderr, None).await?;
+        Ok::<(String, tokio::time::Instant), std::io::Error>((s, now))
+    });
 
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds));
     tokio::pin!(timeout);
 
-    // Stall detection: no output for configured stall timeout
-    let stall_threshold = std::time::Duration::from_secs(config.execution.stall_timeout_seconds);
-    let mut last_output = tokio::time::Instant::now();
+    // Stall detection loop uses last_output maintained by the reader tasks
 
     let status = tokio::select! {
         res = child.wait() => { res? }
@@ -673,8 +691,8 @@ async fn execute_bash(
         }
     };
 
-    let stdout_text = stdout_task.await.map_err(|e| anyhow::anyhow!("stdout task failed: {e}"))??;
-    let stderr_text = stderr_task.await.map_err(|e| anyhow::anyhow!("stderr task failed: {e}"))??;
+    let (stdout_text, _last_seen) = stdout_task.await.map_err(|e| anyhow::anyhow!("stdout task failed: {e}"))??;
+    let (stderr_text, _) = stderr_task.await.map_err(|e| anyhow::anyhow!("stderr task failed: {e}"))??;
 
     let mut combined = String::new();
     combined.push_str(&stdout_text);
@@ -700,7 +718,7 @@ async fn execute_bash(
     ))
 }
 
-async fn read_output_stream<R>(mut reader: R) -> std::io::Result<String>
+async fn read_output_stream<R>(mut reader: R, last: Option<tokio::time::Instant>) -> std::io::Result<(String, tokio::time::Instant)>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -708,6 +726,7 @@ where
 
     let mut out = String::new();
     let mut buf = [0_u8; 2048];
+    let mut last_seen = last.unwrap_or_else(tokio::time::Instant::now);
     loop {
         let n = reader.read(&mut buf).await?;
         if n == 0 {
@@ -716,8 +735,9 @@ where
         let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
         eprint!("{chunk}");
         out.push_str(&chunk);
+        last_seen = tokio::time::Instant::now();
     }
-    Ok(out)
+    Ok((out, last_seen))
 }
 
 fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {

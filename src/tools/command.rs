@@ -140,21 +140,21 @@ pub fn execute(
         // Execute with a soft timeout derived from input expected_timeout_seconds
         let expected_secs = input["expected_timeout_seconds"].as_u64().unwrap_or(120).clamp(1, 3600);
         #[cfg(unix)]
-        let mut child = std::process::Command::new("sh")
+        let child = std::process::Command::new("sh")
             .arg("-c")
             .arg(command.as_str())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
         #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
+        let child = std::process::Command::new("cmd")
             .args(["/C", command.as_str()])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
-        let mut output_content = String::new();
-        let mut is_error = false;
-        let mut exit_code = 0;
+        let mut output_content;
+        let mut is_error;
+        let mut exit_code;
         match child {
             Ok(mut child) => {
                 let start = std::time::Instant::now();

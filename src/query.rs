@@ -1100,12 +1100,13 @@ pub async fn handle_query(
                         let q = input["query"].as_str().unwrap_or("").to_string();
                         let ws_cfg = config.clone();
                         let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("web_search"));
+                        let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
                             let fut = tools::web_search::execute(&q, &ws_cfg);
-                            let result = match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+                            let result = match execute_with_timeout(fut, "web_search", timeout, force_autorun).await {
                                 Ok(Ok(r)) => Ok(r),
                                 Ok(Err(e)) => Err(format!("{e}")),
-                                Err(_) => Err(format!("Tool 'web_search' timed out after {}s", timeout)),
+                                Err(msg) => Err(msg),
                             };
                             (id, name, result)
                         }));
@@ -1114,12 +1115,13 @@ pub async fn handle_query(
                         let input_clone = input.clone();
                         let cfg_clone = config.clone();
                         let timeout = input_clone.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("github"));
+                        let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
                             let fut = crate::tools::github::execute(&input_clone, &cfg_clone);
-                            let result = match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+                            let result = match execute_with_timeout(fut, "github", timeout, force_autorun).await {
                                 Ok(Ok(r)) => Ok(r),
                                 Ok(Err(e)) => Err(format!("{e}")),
-                                Err(_) => Err(format!("Tool 'github' timed out after {}s", timeout)),
+                                Err(msg) => Err(msg),
                             };
                             (id, name, result)
                         }));
@@ -1240,17 +1242,17 @@ pub async fn handle_query(
                             let id_ret = id;
                             let name_ret = name;
                             let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("mcp"));
+                            let force_autorun = opts.force_autorun;
                             futs.push(Box::pin(async move {
-                                let result = tokio::time::timeout(
-                                    std::time::Duration::from_secs(timeout),
-                                    async {
-                                        let mut mc = mcp.lock().await;
-                                        mc.call_tool(&name_exec, input).await
-                                    },
-                                )
-                                .await
-                                .map_err(|_| format!("MCP tool '{}' timed out after {}s", name_ret, timeout))
-                                .and_then(|r| r.map_err(|e| format!("{e}")));
+                                let fut_call = async {
+                                    let mut mc = mcp.lock().await;
+                                    mc.call_tool(&name_exec, input).await
+                                };
+                                let result = match execute_with_timeout(fut_call, &name_ret, timeout, force_autorun).await {
+                                    Ok(Ok(r)) => Ok(r),
+                                    Ok(Err(e)) => Err(format!("{e}")),
+                                    Err(msg) => Err(msg),
+                                };
                                 (id_ret, name_ret, result)
                             }));
                         } else {
@@ -1325,26 +1327,24 @@ pub async fn handle_query(
                             }
                             if let Some(skill) = matched_skill {
                                 let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("skill"));
+                                let force_autorun = opts.force_autorun;
                                 futs.push(Box::pin(async move {
                                     let fut = crate::skills::execute_skill_async(skill, input);
-                                    let result = match tokio::time::timeout(std::time::Duration::from_secs(timeout), fut).await {
+                                    let result = match execute_with_timeout(fut, &name_ret, timeout, force_autorun).await {
                                         Ok(Ok(r)) => Ok(r),
                                         Ok(Err(e)) => Err(format!("{e}")),
-                                        Err(_) => Err(format!("Skill timed out after {}s", timeout)),
+                                        Err(msg) => Err(msg),
                                     };
                                     (id_ret, name_ret, result)
                                 }));
                             } else {
+                                let force_autorun = opts.force_autorun;
                                 futs.push(Box::pin(async move {
                                     let task = tokio::task::spawn_blocking(move || execute_sync_tool(&name_for_exec, &input, &cfg_clone));
-                                    let timed = tokio::time::timeout(std::time::Duration::from_secs(tool_timeout), task).await;
-                                    let result = match timed {
+                                    let result = match execute_with_timeout(task, &name_ret, tool_timeout, force_autorun).await {
                                         Ok(Ok(inner)) => inner.map_err(|e| format!("{e}")),
                                         Ok(Err(e)) => Err(format!("task panicked: {e}")),
-                                        Err(_) => Err(format!(
-                                            "Tool '{}' timed out after {}s — the target may be unreadable or hanging. Try a different approach.",
-                                            name_ret, tool_timeout
-                                        )),
+                                        Err(msg) => Err(msg),
                                     };
                                     (id_ret, name_ret, result)
                                 }));
@@ -1560,13 +1560,18 @@ and in parallel when independent.
   with grep. If web_search fails, try github. Always have a plan B.
 
 ## Tool Execution Timeouts
-All tool calls have automatic timeouts. For run_command and command tools,
+All tool calls have automatic timeouts. For `run_command` and `command`,
 you can set `expected_timeout_seconds` to indicate how long you expect
 the command to take. This helps prevent premature timeouts on long-running
 operations like builds, installs, or large file processing. Examples:
 - `npm install` in a large project: expected_timeout_seconds=180
 - `cargo build --release`: expected_timeout_seconds=300
 - `ls -la`: no need to set (default is fine)
+
+Timeout behavior can be extended once when appropriate using the
+`execution.tool_timeout_extension_seconds` setting. Prefer to set
+`expected_timeout_seconds` accurately per call; the extension is a
+last resort when an operation legitimately needs a bit more time.
 
 ## ask_user Guidance
 When using ask_user, ALWAYS include a `default_response` field containing your

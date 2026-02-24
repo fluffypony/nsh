@@ -35,6 +35,7 @@ pub fn default_timeout_for_tool(name: &str) -> u64 {
     match name {
         "read_file" | "grep_file" | "list_directory" | "glob" => 15,
         "man_page" => 10,
+        "list_tools" | "find_tools" => 10,
         "search_history" | "search_memory" | "core_memory_append"
         | "core_memory_rewrite" | "store_memory" | "retrieve_secret" => 15,
         "run_command" => 60,
