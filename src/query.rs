@@ -684,6 +684,8 @@ pub async fn handle_query(
                             content: crate::security::wrap_tool_result(name, &correction, &boundary),
                             is_error: true,
                         });
+                        // Reset guard to give fresh chances after correction injection
+                        repeat_guard = RepeatGuard::default();
                         if repeat_guard.repeat_fail_count >= 5 {
                             abort_tool_loop = true;
                             break;
@@ -741,7 +743,17 @@ pub async fn handle_query(
                             opts.private,
                             config,
                             opts.force_autorun,
-                        )? {
+                        ) {
+                            Err(e) => {
+                                let err_msg = format!("Command tool error: {e}");
+                                display_tool_error(&err_msg, opts.json_output);
+                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: wrapped,
+                                    is_error: true,
+                                });
+                            }
                             tools::command::CommandExecutionOutcome::Terminal => {
                                 has_terminal_tool = true;
                             }
@@ -804,11 +816,11 @@ pub async fn handle_query(
                             session_id,
                             opts.private,
                             config,
-                        )? {
-                            None => {
+                        ) {
+                            Ok(None) => {
                                 has_terminal_tool = true;
                             }
-                            Some(err_msg) => {
+                            Ok(Some(err_msg)) => {
                                 let sanitized = crate::security::sanitize_tool_output(&err_msg);
                                 let wrapped =
                                     crate::security::wrap_tool_result(name, &sanitized, &boundary);
@@ -817,6 +829,12 @@ pub async fn handle_query(
                                     content: wrapped,
                                     is_error: true,
                                 });
+                            }
+                            Err(e) => {
+                                let err_msg = format!("Failed to apply patch: {e}");
+                                display_tool_error(&err_msg, opts.json_output);
+                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: true });
                             }
                         }
                     }
@@ -1037,7 +1055,13 @@ pub async fn handle_query(
         }
 
         if abort_tool_loop {
-            break;
+            // Give the model one more guided attempt instead of breaking immediately
+            abort_tool_loop = false;
+            messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "Your previous tool calls repeatedly failed with invalid inputs. Try a COMPLETELY DIFFERENT approach. If you cannot proceed, use 'chat' to explain what went wrong and suggest the user try manually.".into() }],
+            });
+            continue;
         }
 
         // ── Execute intermediate tools ─────────────────
@@ -1231,6 +1255,10 @@ pub async fn handle_query(
                             let name_for_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
+                            let tool_timeout = input
+                                .get("expected_timeout_seconds")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(crate::tools::default_timeout_for_tool(&name_for_exec));
                             // Try exact match first
                             let mut matched_skill = skills
                                 .iter()
@@ -1305,8 +1333,16 @@ pub async fn handle_query(
                                 }));
                             } else {
                                 futs.push(Box::pin(async move {
-                                    let r = tokio::task::spawn_blocking(move || execute_sync_tool(&name_for_exec, &input, &cfg_clone)).await;
-                                    let result = match r { Ok(inner) => inner.map_err(|e| format!("{e}")), Err(e) => Err(format!("task panicked: {e}")) };
+                                    let task = tokio::task::spawn_blocking(move || execute_sync_tool(&name_for_exec, &input, &cfg_clone));
+                                    let timed = tokio::time::timeout(std::time::Duration::from_secs(tool_timeout), task).await;
+                                    let result = match timed {
+                                        Ok(Ok(inner)) => inner.map_err(|e| format!("{e}")),
+                                        Ok(Err(e)) => Err(format!("task panicked: {e}")),
+                                        Err(_) => Err(format!(
+                                            "Tool '{}' timed out after {}s — the target may be unreadable or hanging. Try a different approach.",
+                                            name_ret, tool_timeout
+                                        )),
+                                    };
                                     (id_ret, name_ret, result)
                                 }));
                             }

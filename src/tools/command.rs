@@ -106,6 +106,8 @@ pub fn execute(
         RiskLevel::Elevated => config.execution.allow_unsafe_autorun,
         RiskLevel::Dangerous => false,
     };
+    // Auto-approve safe commands in autorun mode
+    let autorun_mode = config.execution.mode == "autorun";
     let mut user_confirmed_intermediate = false;
     if pending
         && !force_autorun
@@ -128,7 +130,7 @@ pub fn execute(
     }
 
     let should_execute_immediately =
-        (force_autorun && can_autorun) || user_confirmed_intermediate || auto_execute_pending;
+        ((force_autorun || autorun_mode) && can_autorun) || user_confirmed_intermediate || auto_execute_pending;
     let execute_via_shell_autorun = should_execute_immediately && !pending;
     if should_execute_immediately && pending {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
