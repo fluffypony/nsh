@@ -152,9 +152,9 @@ pub fn execute(
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
-        let mut output_content;
-        let mut is_error;
-        let mut exit_code;
+        let output_content;
+        let is_error;
+        let exit_code;
         match child {
             Ok(mut child) => {
                 let start = std::time::Instant::now();

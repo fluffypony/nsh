@@ -633,7 +633,7 @@ async fn execute_bash(
     eprintln!("  \x1b[2m↳ output (live):\x1b[0m");
     // Stall detection: no output for configured stall timeout
     let stall_threshold = std::time::Duration::from_secs(config.execution.stall_timeout_seconds);
-    let mut last_output = tokio::time::Instant::now();
+    let last_output = tokio::time::Instant::now();
     let stdout_task = {
         let last_clone = last_output;
         tokio::spawn(async move {
@@ -685,8 +685,7 @@ async fn execute_bash(
                 let _ = child.wait().await;
                 anyhow::bail!("Command cancelled after stall detection");
             }
-            // Reset timer and keep waiting
-            last_output = tokio::time::Instant::now();
+            // Reset timer and keep waiting (timer will re-arm on next loop)
             child.wait().await?
         }
     };
