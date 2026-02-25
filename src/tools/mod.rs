@@ -272,10 +272,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "chat".into(),
-            description: "Final text response. Use ONLY when the task is fully complete, \
-                          you're answering a pure knowledge question, or the task is \
-                          genuinely impossible. This tool ends the autonomous loop — \
-                          never use it to ask questions or when more work remains."
+            description: "Display a text message to the user. Does NOT end the loop — \
+                          use this to explain findings, provide status updates, or \
+                          share information while continuing to work. \
+                          Never use chat to ask questions (use ask_user instead). \
+                          When all work is complete, call 'done' to end the loop."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -901,17 +902,20 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         // ── Done Tool ────────────────────────────────────────────────
         ToolDefinition {
             name: "done".into(),
-            description: "Signal that an autonomous multi-step task is complete. \
-                          Use this when you have finished investigating, executing, \
-                          and verifying — and there is no shell command to leave at \
-                          the user's prompt. Provide a concise result summary."
+            description: "End the autonomous loop. This is the ONLY tool that stops \
+                          execution. You MUST call this when the task is complete or \
+                          when you've decided further progress is not possible. \
+                          Provide a reason: explain what was accomplished (success) \
+                          or why you cannot continue (failure). Never call other \
+                          tools after calling done in the same turn."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "result": {
                         "type": "string",
-                        "description": "Summary of what was achieved"
+                        "description": "Why the loop is ending: what was accomplished, \
+                                        or why you cannot proceed further"
                     }
                 },
                 "required": ["result"]

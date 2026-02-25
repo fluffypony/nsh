@@ -458,30 +458,6 @@ pub(crate) fn reject_reason_for_generated_command(
         }
     }
 
-    // Availability check: if the command references a non-core executable
-    // that is not present in PATH, reject and force the agent to resolve
-    // availability first (e.g., via `which` or installation).
-    if let Some(first) = trimmed_command.split_whitespace().next() {
-        if !first.is_empty()
-            && !is_core_builtin_or_utility(first)
-            && !looks_explicit_cd_target(first)
-            && !first.starts_with('/')
-            && !first.starts_with("./")
-            && !first.starts_with("../")
-            && !first.contains('=')
-        {
-            let in_path = std::env::var("PATH")
-                .unwrap_or_default()
-                .split(':')
-                .any(|dir| std::path::Path::new(dir).join(first).exists());
-            if !in_path {
-                return Some(
-                    "executable not found in PATH; resolve with `which` or install it first",
-                );
-            }
-        }
-    }
-
     None
 }
 
@@ -505,47 +481,6 @@ fn looks_like_natural_language_question(text: &str) -> bool {
     QUESTION_PREFIXES
         .iter()
         .any(|prefix| lower.starts_with(prefix))
-}
-
-fn is_core_builtin_or_utility(name: &str) -> bool {
-    // Shell keywords, builtins, and ubiquitous utilities that are not standalone
-    // executables in PATH but are always available in any POSIX-compatible shell.
-    // Without these, compound commands like `for f in *.log; do ... done` get
-    // falsely rejected because `for` is a keyword, not a binary.
-
-    // Strip leading shell syntax characters (e.g. `(cd ...`, `## {echo ...}`)
-    let stripped = name.trim_start_matches(|c: char| matches!(c, '(' | '{' | '!' | '['));
-    if stripped.is_empty() {
-        return true; // pure shell syntax like `{`, `(`, `!`, `[[`
-    }
-
-    matches!(
-        stripped,
-        // Shell keywords (compound commands, conditionals, loops)
-        "for" | "while" | "until" | "if" | "then" | "else" | "elif" | "fi"
-            | "case" | "esac" | "do" | "done" | "select" | "time" | "coproc"
-            | "function" | "in"
-            // POSIX / Bash / Zsh builtins
-            | "cd" | "pwd" | "echo" | "printf" | "test" | "true" | "false"
-            | "set" | "unset" | "export" | "readonly" | "local" | "declare"
-            | "typeset" | "eval" | "exec" | "source" | "." | "builtin"
-            | "command" | "type" | "hash" | "alias" | "unalias"
-            | "read" | "readarray" | "mapfile" | "getopts"
-            | "shift" | "return" | "exit" | "break" | "continue" | "trap"
-            | "wait" | "jobs" | "fg" | "bg" | "kill" | "suspend" | "disown"
-            | "pushd" | "popd" | "dirs" | "ulimit" | "umask" | "enable"
-            | "shopt" | "let" | "compgen" | "complete" | "compopt"
-            | "caller" | "logout" | "times"
-            // Ubiquitous POSIX utilities (always present on any Unix system)
-            | "ls" | "cat" | "which" | "sleep" | "mkdir" | "rmdir" | "cp"
-            | "mv" | "rm" | "ln" | "touch" | "chmod" | "chown" | "chgrp"
-            | "head" | "tail" | "wc" | "sort" | "uniq" | "cut" | "tr"
-            | "tee" | "xargs" | "find" | "grep" | "egrep" | "fgrep"
-            | "sed" | "awk" | "diff" | "patch" | "basename" | "dirname"
-            | "date" | "env" | "nohup" | "nice" | "stat" | "file"
-            | "tar" | "gzip" | "gunzip" | "bzip2" | "bunzip2"
-            | "curl" | "wget" | "ssh" | "scp" | "rsync"
-    )
 }
 
 fn normalize_command_for_prefill(
@@ -1240,69 +1175,6 @@ mod tests {
         let normalized =
             normalize_command_for_prefill("git status", "show me git status", &db, "default");
         assert_eq!(normalized, "git status");
-    }
-
-    #[test]
-    fn test_reject_reason_allows_for_loop() {
-        let reason = reject_reason_for_generated_command(
-            "for f in *.log; do mv \"$f\" \"$f.bak\"; awk '{ if (length($0) > 150) { print substr($0, 1, 150) } else { print } }' \"$f.bak\" > \"$f\"; done",
-            "trim lines in log files",
-        );
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn test_reject_reason_allows_while_loop() {
-        let reason = reject_reason_for_generated_command(
-            "while read line; do echo \"$line\"; done < file.txt",
-            "read a file",
-        );
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn test_reject_reason_allows_if_statement() {
-        let reason = reject_reason_for_generated_command(
-            "if [ -f foo.txt ]; then cat foo.txt; fi",
-            "check if foo exists",
-        );
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn test_reject_reason_allows_export() {
-        let reason = reject_reason_for_generated_command(
-            "export PATH=$PATH:/usr/local/bin",
-            "add to path",
-        );
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn test_reject_reason_allows_subshell_syntax() {
-        let reason = reject_reason_for_generated_command(
-            "(cd /tmp && ls)",
-            "list files in tmp",
-        );
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn test_reject_reason_allows_awk() {
-        let reason = reject_reason_for_generated_command(
-            "awk '{print $1}' file.txt",
-            "get first column",
-        );
-        assert_eq!(reason, None);
-    }
-
-    #[test]
-    fn test_reject_reason_allows_sed() {
-        let reason = reject_reason_for_generated_command(
-            "sed -i 's/foo/bar/g' file.txt",
-            "replace foo with bar",
-        );
-        assert_eq!(reason, None);
     }
 
     #[test]
