@@ -1,4 +1,6 @@
-# nsh - Natural Shell
+# nsh - The Natural Shell
+
+*Your shell already saw you fail - now it can actually help*
 
 **AI-powered shell assistant for `zsh`, `bash`, `fish`, and PowerShell.**
 
