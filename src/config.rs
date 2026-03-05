@@ -139,11 +139,11 @@ pub struct ModelsConfig {
 
 impl Default for ModelsConfig {
     fn default() -> Self {
-        let (main, fast, coding) = model_defaults::config_model_lists();
+        let defaults = model_defaults::provider_models(model_defaults::DEFAULT_PROVIDER);
         Self {
-            main,
-            fast,
-            coding,
+            main: model_defaults::to_vec(defaults.main),
+            fast: model_defaults::to_vec(defaults.fast),
+            coding: model_defaults::to_vec(defaults.coding),
         }
     }
 }
@@ -193,9 +193,10 @@ pub struct ProviderConfig {
 
 impl Default for ProviderConfig {
     fn default() -> Self {
+        let defaults = model_defaults::provider_models(model_defaults::DEFAULT_PROVIDER);
         Self {
             default: model_defaults::DEFAULT_PROVIDER.into(),
-            model: model_defaults::DEFAULT_PRIMARY_MODEL.into(),
+            model: defaults.default_model.into(),
             fallback_model: Some(model_defaults::DEFAULT_FALLBACK_MODEL.into()),
             web_search_model: model_defaults::DEFAULT_WEB_SEARCH_MODEL.into(),
             openrouter: Some(ProviderAuth::default()),
