@@ -18,11 +18,11 @@ pub const GEMINI_25_PRO_OPENROUTER: &str = "google/gemini-2.5-pro";
 pub const GEMINI_3_PRO_OPENROUTER: &str = "google/gemini-3-pro";
 
 const OPENROUTER_MAIN: &[&str] = &[
-    "google/gemini-2.5-flash",
+    "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3-flash-preview",
     "anthropic/claude-sonnet-4.6",
 ];
-const OPENROUTER_FAST: &[&str] = &["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"];
+const OPENROUTER_FAST: &[&str] = &["google/gemini-3.1-flash-lite-preview", "anthropic/claude-haiku-4.5"];
 const OPENROUTER_CODING: &[&str] = &["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6"];
 
 const ANTHROPIC_MAIN: &[&str] = &["claude-sonnet-4.6"];
@@ -33,16 +33,16 @@ const OPENAI_MAIN: &[&str] = &["gpt-5.2", "gpt-5.1"];
 const OPENAI_FAST: &[&str] = &["gpt-5.1-codex-mini"];
 const OPENAI_CODING: &[&str] = &["gpt-5.2-codex", "gpt-5.1-codex"];
 
-const GEMINI_MAIN: &[&str] = &["gemini-2.5-flash", "gemini-3-flash-preview"];
-const GEMINI_FAST: &[&str] = &["gemini-2.5-flash-lite"];
+const GEMINI_MAIN: &[&str] = &["gemini-3.1-flash-lite-preview", "gemini-3-flash-preview"];
+const GEMINI_FAST: &[&str] = &["gemini-3.1-flash-lite-preview"];
 const GEMINI_CODING: &[&str] = &[
-    "gemini-2.5-pro",
+    "gemini-3.1-pro-preview",
     "gemini-3-pro-preview",
     "gemini-2.5-flash",
 ];
 
 const OPENROUTER_DEFAULTS: ProviderModelDefaults = ProviderModelDefaults {
-    default_model: "google/gemini-2.5-flash",
+    default_model: "google/gemini-3.1-flash-lite-preview",
     main: OPENROUTER_MAIN,
     fast: OPENROUTER_FAST,
     coding: OPENROUTER_CODING,
@@ -63,7 +63,7 @@ const OPENAI_DEFAULTS: ProviderModelDefaults = ProviderModelDefaults {
 };
 
 const GEMINI_DEFAULTS: ProviderModelDefaults = ProviderModelDefaults {
-    default_model: "gemini-2.5-flash",
+    default_model: "gemini-3.1-flash-lite-preview",
     main: GEMINI_MAIN,
     fast: GEMINI_FAST,
     coding: GEMINI_CODING,
