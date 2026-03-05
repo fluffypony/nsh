@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use zeroize::Zeroizing;
 
+use crate::model_defaults;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -137,20 +139,11 @@ pub struct ModelsConfig {
 
 impl Default for ModelsConfig {
     fn default() -> Self {
+        let (main, fast, coding) = model_defaults::config_model_lists();
         Self {
-            main: vec![
-                "google/gemini-2.5-flash".into(),
-                "google/gemini-3-flash-preview".into(),
-                "anthropic/claude-sonnet-4.6".into(),
-            ],
-            fast: vec![
-                "google/gemini-2.5-flash-lite".into(),
-                "anthropic/claude-haiku-4.5".into(),
-            ],
-            coding: vec![
-                "anthropic/claude-opus-4.6".into(),
-                "anthropic/claude-sonnet-4.6".into(),
-            ],
+            main,
+            fast,
+            coding,
         }
     }
 }
@@ -165,8 +158,8 @@ pub struct WebSearchConfig {
 impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
-            provider: "openrouter".into(),
-            model: "perplexity/sonar".into(),
+            provider: model_defaults::DEFAULT_WEB_SEARCH_PROVIDER.into(),
+            model: model_defaults::DEFAULT_WEB_SEARCH_MODEL.into(),
         }
     }
 }
@@ -201,10 +194,10 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            default: "openrouter".into(),
-            model: "google/gemini-2.5-flash".into(),
-            fallback_model: Some("anthropic/claude-sonnet-4.6".into()),
-            web_search_model: "perplexity/sonar".into(),
+            default: model_defaults::DEFAULT_PROVIDER.into(),
+            model: model_defaults::DEFAULT_PRIMARY_MODEL.into(),
+            fallback_model: Some(model_defaults::DEFAULT_FALLBACK_MODEL.into()),
+            web_search_model: model_defaults::DEFAULT_WEB_SEARCH_MODEL.into(),
             openrouter: Some(ProviderAuth::default()),
             anthropic: None,
             openai: None,

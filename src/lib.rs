@@ -26,6 +26,7 @@ pub mod live_update;
 #[allow(dead_code)]
 pub mod mcp;
 pub mod memory;
+pub mod model_defaults;
 pub mod provider;
 #[cfg(unix)]
 pub mod pty;

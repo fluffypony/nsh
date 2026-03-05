@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use crate::model_defaults;
+
 #[derive(Debug, Clone)]
 struct DetectedKey {
     provider: String,
@@ -627,51 +629,12 @@ fn legacy_noninteractive_flow(keys: Vec<DetectedKey>) -> Result<()> {
 }
 
 fn models_for_provider(provider: &str) -> ProviderModels {
-    match provider {
-        "openrouter" => ProviderModels {
-            main: vec![
-                "gpt-5.2".into(),
-                "google/gemini-2.5-flash".into(),
-                "anthropic/claude-sonnet-4.6".into(),
-            ],
-            fast: vec![
-                "gpt-4.1-mini".into(),
-                "anthropic/claude-haiku-4.5".into(),
-            ],
-            coding: vec![
-                "gpt-5.2-codex".into(),
-                "anthropic/claude-sonnet-4.6".into(),
-            ],
-            default_model: "gpt-5.2".into(),
-        },
-        "anthropic" => ProviderModels {
-            main: vec!["claude-sonnet-4.6".into()],
-            fast: vec!["claude-haiku-4.5".into()],
-            coding: vec!["claude-opus-4.6".into(), "claude-sonnet-4.6".into()],
-            default_model: "claude-sonnet-4.6".into(),
-        },
-        "openai" => ProviderModels {
-            main: vec!["gpt-5.2".into(), "gpt-5.1".into()],
-            fast: vec!["gpt-5.1-codex-mini".into()],
-            coding: vec!["gpt-5.2-codex".into(), "gpt-5.1-codex".into()],
-            default_model: "gpt-5.2".into(),
-        },
-        "gemini" => ProviderModels {
-            main: vec!["gemini-2.5-flash".into(), "gemini-3-flash-preview".into()],
-            fast: vec!["gemini-2.5-flash-lite".into()],
-            coding: vec![
-                "gemini-2.5-pro".into(),
-                "gemini-3-pro-preview".into(),
-                "gemini-2.5-flash".into(),
-            ],
-            default_model: "gemini-2.5-flash".into(),
-        },
-        _ => ProviderModels {
-            main: vec!["gpt-5.2".into()],
-            fast: vec!["gpt-4.1-mini".into()],
-            coding: vec!["gpt-5.2-codex".into()],
-            default_model: "gpt-5.2".into(),
-        },
+    let defaults = model_defaults::provider_models(provider);
+    ProviderModels {
+        main: model_defaults::to_vec(defaults.main),
+        fast: model_defaults::to_vec(defaults.fast),
+        coding: model_defaults::to_vec(defaults.coding),
+        default_model: defaults.default_model.to_string(),
     }
 }
 

@@ -147,6 +147,7 @@ fn effective_model_name(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_defaults;
     use crate::provider::{
         ChatRequest, ContentBlock, LlmProvider, Message, Role, StreamEvent, ToolChoice,
     };
@@ -724,12 +725,12 @@ mod tests {
                 Ok(rx)
             }),
         };
-        let chain = vec!["google/gemini-2.5-pro".to_string()];
+        let chain = vec![model_defaults::GEMINI_25_PRO_OPENROUTER.to_string()];
         let (mut rx, model) =
             call_chain_with_fallback_think(&provider, dummy_request(), &chain, true)
                 .await
                 .unwrap();
-        assert_eq!(model, "google/gemini-2.5-pro");
+        assert_eq!(model, model_defaults::GEMINI_25_PRO_OPENROUTER);
         let first = rx.recv().await.unwrap();
         assert!(matches!(first, StreamEvent::TextDelta(t) if t == "thought"));
     }
@@ -746,13 +747,13 @@ mod tests {
                 Ok(rx)
             }),
         };
-        let chain = vec!["google/gemini-3-pro".to_string()];
+        let chain = vec![model_defaults::GEMINI_3_PRO_OPENROUTER.to_string()];
         let mut req = dummy_request();
         req.extra_body = Some(serde_json::json!({"temperature": 0.5}));
         let (_, model) = call_chain_with_fallback_think(&provider, req, &chain, true)
             .await
             .unwrap();
-        assert_eq!(model, "google/gemini-3-pro");
+        assert_eq!(model, model_defaults::GEMINI_3_PRO_OPENROUTER);
     }
 
     #[tokio::test]
@@ -912,13 +913,13 @@ mod tests {
                 Ok(rx)
             }),
         };
-        let chain = vec!["google/gemini-2.5-pro".to_string()];
+        let chain = vec![model_defaults::GEMINI_25_PRO_OPENROUTER.to_string()];
         let mut req = dummy_request();
         req.extra_body = None;
         let (_, model) = call_chain_with_fallback_think(&provider, req, &chain, true)
             .await
             .unwrap();
-        assert_eq!(model, "google/gemini-2.5-pro");
+        assert_eq!(model, model_defaults::GEMINI_25_PRO_OPENROUTER);
     }
 
     #[tokio::test]
