@@ -62,6 +62,8 @@ __nsh_query_ignore_exit_code() {
 }
 
 __nsh_emit_iterm2_cwd() {
+    [[ "${NSH_NO_ITERM2_CWD:-}" == "1" ]] && return 0
+    [[ -n "${TMUX:-}" || "${TERM:-}" == screen* ]] && return 0
     [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]] || return 0
     local path="$PWD"
     path="${path//%/%25}"
@@ -70,8 +72,7 @@ __nsh_emit_iterm2_cwd() {
     path="${path//\?/%3F}"
     path="${path//;/%3B}"
     local host="${HOSTNAME:-localhost}"
-    printf '\033]7;file://%s%s\007' "$host" "$path"
-    printf '\033]1337;CurrentDir=%s\007' "$PWD"
+    printf '\033]7;file://%s%s\033\\' "$host" "$path"
 }
 
 # ── Nested shell guard ──────────────────────────────────
@@ -86,7 +87,7 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     # Only reinstall hooks if not already present
     case ";${PROMPT_COMMAND:-};" in
         *";__nsh_prompt_command;"*) ;;
-        *) PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+        *) PROMPT_COMMAND="__nsh_prompt_command;__nsh_check_pending${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
     esac
     trap '__nsh_debug_trap' DEBUG
     return 0
@@ -158,7 +159,7 @@ __nsh_ensure_hooks() {
     # Idempotent: only add our hooks if not already present to prevent growth on reloads
     case ";${PROMPT_COMMAND:-};" in
         *";__nsh_prompt_command;"*) ;;
-        *) PROMPT_COMMAND="__nsh_check_pending;__nsh_prompt_command${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+        *) PROMPT_COMMAND="__nsh_prompt_command;__nsh_check_pending${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
     esac
     trap '__nsh_debug_trap' DEBUG 2>/dev/null
 }
@@ -192,6 +193,11 @@ __nsh_prompt_command() {
     fi
 
     if [[ -n "$cmd" ]]; then
+        # If user ran a command that wasn't the pending nsh command, clear pending state
+        if [[ -n "${__nsh_pending_cmd:-}" && "$cmd" != "$__nsh_pending_cmd" ]]; then
+            __nsh_clear_pending_command
+        fi
+
         # Deduplication guard
         if [[ "$cmd" == "$__nsh_last_recorded_cmd" && "$start" == "$__nsh_last_recorded_start" ]]; then
             return
@@ -242,8 +248,8 @@ __nsh_prompt_command() {
         if [[ -n "${__nsh_pending_cmd:-}" && "$cmd" == "$__nsh_pending_cmd" ]]; then
             command rm -f "$pending_flag"
             __nsh_pending_cmd=""
-            nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &
-            disown 2>/dev/null
+            printf '\x1b[2m  nsh: continuing task...\x1b[0m\n' >&2
+            command nsh query -- "__NSH_CONTINUE__"
         fi
     fi
 
@@ -307,17 +313,20 @@ __nsh_check_pending() {
         command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __nsh_pending_cmd="$cmd"
+            # Brief yield for writer to create autorun marker
+            if [[ ! -f "$autorun_file" ]]; then
+                sleep 0.01
+            fi
             if [[ -f "$autorun_file" ]]; then
                 command rm -f "$autorun_file"
                 history -s -- "$cmd"
                 builtin eval -- "$cmd"
                 return
             fi
-            # Method 1: READLINE_LINE (bash 5.1+)
+            # Non-autorun: prefill the editing buffer (let bash add to history when user runs it)
+            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
             READLINE_LINE="$cmd"
             READLINE_POINT=${#cmd}
-            # Method 2: Fallback — push to history so user presses Up
-            history -s -- "$cmd"
         fi
     fi
     # Time-based hook version check (~60s cooldown)

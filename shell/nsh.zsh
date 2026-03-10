@@ -115,6 +115,8 @@ __nsh_clear_pending_command() {
 }
 
 __nsh_emit_iterm2_cwd() {
+    [[ "${NSH_NO_ITERM2_CWD:-}" == "1" ]] && return 0
+    [[ -n "${TMUX:-}" || "${TERM:-}" == screen* ]] && return 0
     [[ "${TERM_PROGRAM:-}" == "iTerm.app" ]] || return 0
     local path="$PWD"
     path="${path//%/%25}"
@@ -123,8 +125,7 @@ __nsh_emit_iterm2_cwd() {
     path="${path//\?/%3F}"
     path="${path//;/%3B}"
     local host="${HOST:-localhost}"
-    printf '\033]7;file://%s%s\007' "$host" "$path"
-    printf '\033]1337;CurrentDir=%s\007' "$PWD"
+    printf '\033]7;file://%s%s\033\\' "$host" "$path"
 }
 
 __nsh_load_suppressed_exit_codes() {
@@ -199,6 +200,10 @@ if [[ -n "${NSH_SESSION_ID:-}" ]]; then
     alias '?!'='noglob nsh_query_private'
     autoload -Uz add-zsh-hook
     __nsh_install_accept_line_widget
+    add-zsh-hook -d preexec __nsh_preexec 2>/dev/null
+    add-zsh-hook -d precmd __nsh_run_deferred 2>/dev/null
+    add-zsh-hook -d precmd __nsh_precmd 2>/dev/null
+    add-zsh-hook -d precmd __nsh_check_pending 2>/dev/null
     add-zsh-hook preexec __nsh_preexec
     add-zsh-hook precmd __nsh_run_deferred
     add-zsh-hook precmd __nsh_precmd
@@ -330,6 +335,11 @@ __nsh_precmd() {
     # Skip if no command was recorded
     [[ -z "${cmd:-}" ]] && return
 
+    # If user ran a command that wasn't the pending nsh command, clear pending state
+    if [[ -n "$cmd" && -n "${__NSH_PENDING_CMD:-}" && "$cmd" != "$__NSH_PENDING_CMD" ]]; then
+        __nsh_clear_pending_command
+    fi
+
     # Deduplication guard
     if [[ "$cmd" == "$__NSH_LAST_RECORDED_CMD" && "$start" == "$__NSH_LAST_RECORDED_START" ]]; then
         return
@@ -390,7 +400,8 @@ __nsh_precmd() {
         if [[ -n "${__NSH_PENDING_CMD:-}" && "$cmd" == "$__NSH_PENDING_CMD" ]]; then
             command rm -f "$pending_flag"
             __NSH_PENDING_CMD=""
-            nsh query -- "__NSH_CONTINUE__" >/dev/null 2>&1 &!
+            printf '\x1b[2m  nsh: continuing task...\x1b[0m\n' >&2
+            command nsh query -- "__NSH_CONTINUE__"
         fi
     fi
 
@@ -469,14 +480,18 @@ __nsh_check_pending() {
         command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __NSH_PENDING_CMD="$cmd"
+            # Brief yield for writer to create autorun marker
+            if [[ ! -f "$autorun_file" ]]; then
+                sleep 0.01
+            fi
             if [[ -f "$autorun_file" ]]; then
                 command rm -f "$autorun_file"
                 print -s -- "$cmd"
                 builtin eval -- "$cmd"
                 return 0
             fi
-            print -s -- "$cmd"
-            # print -z pushes text onto the editing buffer
+            # Non-autorun: prefill the editing buffer (let zsh add to history when user runs it)
+            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
             print -z "$cmd"
         fi
     fi

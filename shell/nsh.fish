@@ -71,6 +71,12 @@ function __nsh_query_ignore_exit_code
 end
 
 function __nsh_emit_iterm2_cwd
+    if set -q NSH_NO_ITERM2_CWD; and test "$NSH_NO_ITERM2_CWD" = "1"
+        return
+    end
+    if set -q TMUX; or string match -q 'screen*' -- "$TERM"
+        return
+    end
     if test "$TERM_PROGRAM" != "iTerm.app"
         return
     end
@@ -89,8 +95,7 @@ function __nsh_emit_iterm2_cwd
         set host $HOSTNAME
     end
 
-    printf '\033]7;file://%s%s\007' $host $path
-    printf '\033]1337;CurrentDir=%s\007' "$PWD"
+    printf '\033]7;file://%s%s\033\\' $host $path
 end
 
 # ── Nested shell guard ──────────────────────────────────
@@ -231,6 +236,11 @@ function __nsh_postexec --on-event fish_postexec
         return
     end
 
+    # If user ran a command that wasn't the pending nsh command, clear pending state
+    if test -n "$cmd" -a -n "$__nsh_pending_cmd" -a "$cmd" != "$__nsh_pending_cmd"
+        __nsh_clear_pending_command
+    end
+
     # Deduplication guard
     if test "$cmd" = "$__nsh_last_recorded_cmd" -a "$start" = "$__nsh_last_recorded_start"
         return
@@ -279,8 +289,8 @@ function __nsh_postexec --on-event fish_postexec
         if test -n "$__nsh_pending_cmd" -a "$cmd" = "$__nsh_pending_cmd"
             command rm -f $pending_flag
             set -g __nsh_pending_cmd ""
-            nsh query -- "__NSH_CONTINUE__" &>/dev/null &
-            disown 2>/dev/null
+            printf '\x1b[2m  nsh: continuing task...\x1b[0m\n' >&2
+            command nsh query -- "__NSH_CONTINUE__"
         end
     end
 
@@ -343,12 +353,17 @@ function __nsh_check_pending --on-event fish_prompt
         command rm -f $cmd_file
         if test -n "$cmd"
             set -g __nsh_pending_cmd $cmd
+            # Brief yield for writer to create autorun marker
+            if not test -f $autorun_file
+                sleep 0.01
+            end
             if test -f $autorun_file
                 command rm -f $autorun_file
                 builtin history append -- "$cmd" 2>/dev/null
                 builtin eval -- "$cmd"
                 return
             end
+            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
             commandline -r -- "$cmd"
             commandline -f repaint
         end
