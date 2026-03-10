@@ -108,7 +108,7 @@ fn resolve_core() -> Option<std::path::PathBuf> {
             let _ = std::fs::create_dir_all(&managed_dir);
             let managed_path = managed_dir.join(core_name);
             let tmp = managed_path.with_extension("tmp");
-            if std::fs::copy(sibling, &tmp).is_ok() {
+            let installed = std::fs::copy(sibling, &tmp).is_ok() && {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -117,11 +117,9 @@ fn resolve_core() -> Option<std::path::PathBuf> {
                         std::fs::Permissions::from_mode(0o755),
                     );
                 }
-                let _ = std::fs::rename(&tmp, &managed_path);
-                managed_path
-            } else {
-                sibling.clone()
-            }
+                std::fs::rename(&tmp, &managed_path).is_ok()
+            };
+            if installed { managed_path } else { sibling.clone() }
         }
         (None, None) => return None,
     };
