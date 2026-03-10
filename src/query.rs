@@ -653,8 +653,21 @@ pub async fn handle_query(
         };
 
         messages.push(response.clone());
-        if response.content.is_empty() {
-            messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: "Your response was empty. Please respond with a tool call.".into() }] });
+
+        // Detect empty or meaningless responses (no tool calls, only whitespace text)
+        let has_meaningful_content = response.content.iter().any(|b| match b {
+            ContentBlock::Text { text } => !text.trim().is_empty(),
+            ContentBlock::ToolUse { .. } => true,
+            _ => false,
+        });
+        if !has_meaningful_content {
+            messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Your response was empty. Please respond with a tool call or explanation.".into(),
+                }],
+            });
+            no_tool_call_streak = no_tool_call_streak.saturating_add(1);
             continue;
         }
         // ── Classify tool calls ────────────────────────
@@ -1401,10 +1414,11 @@ pub async fn handle_query(
                 continue;
             }
             no_tool_call_streak = no_tool_call_streak.saturating_add(1);
-            if no_tool_call_streak >= 3 {
-                eprintln!("\x1b[2mnsh: model unable to produce tool calls after 3 attempts\x1b[0m");
+            if no_tool_call_streak >= 5 {
+                force_json_next = false;
+                eprintln!("\x1b[2mnsh: model unable to produce tool calls after 5 attempts\x1b[0m");
                 messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: "You have failed to produce tool calls multiple times. Use the 'chat' tool NOW to provide your best answer, or use 'command' to suggest a shell command. This is your last chance.".to_string() }] });
-                if no_tool_call_streak >= 5 { break; }
+                if no_tool_call_streak >= 8 { break; }
                 continue;
             }
             messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: format!(
@@ -1726,15 +1740,14 @@ for complex multi-file coding tasks.
 Use this PROACTIVELY to resolve ambiguous package names, verify installation
 methods, and debug errors after local checks.
 
-**run_command** — To silently run a safe, read-only command and get its
-output without bothering the user. This is the preferred first tool for
-local command/tool/package resolution before web search.
-
-Preferred usage: status and discovery commands (e.g., `launchctl list`,
-`systemctl status`, `crontab -l`, `which <name>`, `brew list`, `git status`).
-Use `command` with `pending=true` when you need the interactive shell context
-or when subsequent steps depend on interpreting the output in a multi-step
-sequence.
+**run_command** — Execute a shell command for quick, non-interactive local
+inspection. Use for: which, --version, ls, cat, grep, git status, brew info,
+brew list, and similar short-lived read-only probes.
+Do NOT use run_command for: package installs/upgrades (brew install, apt
+install, npm install, cargo install, pip install), commands that may prompt
+for passwords or confirmation, long-running builds/tests/downloads, or
+anything that needs shell aliases, functions, or state.
+Use the `command` tool with pending=true for all of the above.
 
 **ask_user** — When the request is ambiguous and you've found multiple possible
 interpretations through investigation. Present the specific options you discovered
@@ -2387,30 +2400,51 @@ These are frequently-needed patterns that users expect you to know:
 - When locale suggests non-English, respond in that language for chat,
   but always generate commands in English/ASCII.
 
-## Multi-step sequences
-Use pending=true liberally to create multi-step workflows. When you set
-pending=true on a command, you'll receive a continuation message after
-execution. The LAST command in a sequence must NOT have pending=true.
+## Output Verification
+When a command returns exit code 0, do NOT assume it succeeded. ALWAYS read the
+actual output text and verify the command achieved its intended purpose:
+- Check for warning lines, partial failures, "nothing to do", or "not found" messages.
+- If you installed something, verify the binary exists and runs with --version.
+- If output is empty for a command that normally produces output, investigate.
+- Many tools (brew, npm, pip, ln, cp, apt) return exit code 0 but emit warnings or
+  partial errors in stdout/stderr. Parse the actual text before proceeding.
+- "exit code: 0" only means the process terminated normally — not that your goal
+  was accomplished. Treat the output as the ground truth, not the exit code.
+- Silence is not success. For side-effect commands (ln, mv, chmod, mkdir, cp,
+  launchctl, systemctl, brew services), run an explicit verification step
+  (ls -la, test -L, which, --version) before declaring success.
 
-When pending=true and the command is safe, it runs automatically and you
-receive the output as a tool result. In autorun mode, pending commands
-execute immediately. In prefill mode, the user runs each command and you
-resume automatically afterward. Either way, pending=true enables you to
-work autonomously across multiple steps.
+## Multi-step sequences
+Use pending=true when you need to see the result before deciding the next step.
 
 USE pending=true for:
-- Investigation commands (checking versions, listing packages, reading configs)
-- Installation steps where you need to verify each succeeded
-- Configuration sequences where later steps depend on earlier results
-- Diagnostic chains where you narrow down a problem step by step
-- Any time the next action depends on the result of the current one
+- Investigation commands (checking versions, listing files)
+- Installations, builds, tests, and downloads
+- ANY command where you need to verify it succeeded before declaring success
+- The final state-changing command if you must verify the outcome before done
+
+ONLY omit pending (or set pending=false) for:
+- Commands that change shell state (cd, export, source)
+- Interactive TUI applications (vim, nano, htop)
+- The final output command if the user just asked you to print something
+- When you explicitly want to hand a command to the user for review
+
+If you use pending=true, you MUST call done when the overall task is complete.
 
 NEVER stop partway through a multi-step task. If you started installing
 something and it requires additional configuration, keep going. If a step
-fails, diagnose the error and try a different approach. Don't be afraid of
-long sequences. A 6-step installation that works is infinitely better than
-a 1-step suggestion that might not. The user asked you to do something —
-follow through until it's done.
+fails, diagnose the error and try a different approach.
+
+## Interactive & Long-Running Commands
+- For commands that require interactive input (sudo, passwd, ssh-keygen), they
+  may prompt for passwords. The user can interact with these prompts directly.
+- For package manager commands (brew, apt, dnf, npm install, pip install,
+  cargo build), ALWAYS set expected_timeout_seconds to at least 300.
+  For brew update && brew upgrade or equivalent, use 600.
+- Prefer splitting long chained operations (brew update && brew upgrade)
+  into separate steps so each can be verified independently.
+- Do not use $(pwd) or backticks for the current directory. Use $PWD, ./,
+  or the literal path from context.
 
 ## Autonomous Task Completion
 
@@ -2737,6 +2771,11 @@ struct RepeatGuard {
 
 impl RepeatGuard {
     fn note_invalid(&mut self, name: &str, input: &serde_json::Value) -> bool {
+        // Pending commands are part of multi-step workflows; don't penalize repetition
+        if name == "command" && input.get("pending").and_then(|v| v.as_bool()).unwrap_or(false) {
+            self.repeat_fail_count = 0;
+            return false;
+        }
         use sha2::Digest;
         let mut hasher = sha2::Sha256::new();
         hasher.update(input.to_string().as_bytes());
