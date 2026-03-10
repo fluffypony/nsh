@@ -149,6 +149,8 @@ pub async fn consume_stream(
     rx: &mut mpsc::Receiver<StreamEvent>,
     cancelled: &Arc<AtomicBool>,
 ) -> anyhow::Result<Message> {
+    // Ensure spinner is stopped before streaming begins to prevent race
+    hide_spinner();
     LAST_STREAM_HAD_TEXT.store(false, Ordering::SeqCst);
     let mut is_streaming = false;
     let mut json_display = if JSON_OUTPUT.load(Ordering::SeqCst) {

@@ -185,7 +185,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             // Clear stale update markers since this is a fresh shell session
             let nsh_dir = config::Config::nsh_dir();
             let _ = std::fs::remove_file(nsh_dir.join("update_notice"));
-            let script = init::generate_init_script(&shell);
+            let mut script = init::generate_init_script(&shell);
+            // Inject NSH_NO_ITERM2_CWD if config disables iTerm2 CWD reporting
+            if let Ok(cfg) = config::Config::load() {
+                if !cfg.shell_hooks.iterm2_cwd_reporting {
+                    let inject = match shell.as_str() {
+                        "zsh" | "bash" => "export NSH_NO_ITERM2_CWD=1\n",
+                        "fish" => "set -gx NSH_NO_ITERM2_CWD 1\n",
+                        _ => "",
+                    };
+                    if !inject.is_empty() {
+                        script = format!("{inject}{script}");
+                    }
+                }
+            }
             print!("{script}");
         }
 
