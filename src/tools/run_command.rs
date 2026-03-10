@@ -101,6 +101,8 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
 
         let (tx_out, rx_out) = std::sync::mpsc::channel();
         let (tx_err, rx_err) = std::sync::mpsc::channel();
+        let redaction_cfg_out = config.redaction.clone();
+        let redaction_cfg_err = config.redaction.clone();
 
         std::thread::spawn(move || {
             use std::io::Read;
@@ -109,7 +111,8 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             while let Ok(n) = stdout_reader.read(&mut buf) {
                 if n == 0 { break; }
                 let chunk = String::from_utf8_lossy(&buf[..n]);
-                eprint!("{chunk}");
+                let redacted = redact::redact_secrets(&chunk, &redaction_cfg_out);
+                eprint!("{redacted}");
                 full.extend_from_slice(&buf[..n]);
             }
             let _ = tx_out.send(full);
@@ -122,7 +125,8 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             while let Ok(n) = stderr_reader.read(&mut buf) {
                 if n == 0 { break; }
                 let chunk = String::from_utf8_lossy(&buf[..n]);
-                eprint!("{chunk}");
+                let redacted = redact::redact_secrets(&chunk, &redaction_cfg_err);
+                eprint!("{redacted}");
                 full.extend_from_slice(&buf[..n]);
             }
             let _ = tx_err.send(full);

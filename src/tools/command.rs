@@ -189,6 +189,8 @@ pub fn execute(
 
                 let last_output = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
                 let json_mode = crate::streaming::json_output_enabled();
+                let redaction_stdout = config.redaction.clone();
+                let redaction_stderr = config.redaction.clone();
 
                 let last_out_stdout = std::sync::Arc::clone(&last_output);
                 let stdout_thread = std::thread::spawn(move || {
@@ -202,7 +204,9 @@ pub fn execute(
                                 Ok(0) => break,
                                 Ok(n) => {
                                     if !json_mode {
-                                        let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                                        let chunk = String::from_utf8_lossy(&buf[..n]);
+                                        let redacted = crate::redact::redact_secrets(&chunk, &redaction_stdout);
+                                        let _ = std::io::Write::write_all(&mut std::io::stderr(), redacted.as_bytes());
                                         let _ = std::io::Write::flush(&mut std::io::stderr());
                                     }
                                     accumulated.extend_from_slice(&buf[..n]);
@@ -227,7 +231,9 @@ pub fn execute(
                                 Ok(0) => break,
                                 Ok(n) => {
                                     if !json_mode {
-                                        let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                                        let chunk = String::from_utf8_lossy(&buf[..n]);
+                                        let redacted = crate::redact::redact_secrets(&chunk, &redaction_stderr);
+                                        let _ = std::io::Write::write_all(&mut std::io::stderr(), redacted.as_bytes());
                                         let _ = std::io::Write::flush(&mut std::io::stderr());
                                     }
                                     accumulated.extend_from_slice(&buf[..n]);
