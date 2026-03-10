@@ -279,7 +279,9 @@ fn sanitize_input(bytes: &[u8]) -> Vec<u8> {
         .filter(|&b| {
             matches!(
                 b,
-                0x0A | 0x0D | 0x09 | 0x1B | 0x08 | 0x20..=0x7E | 0x80..=0xFF
+                // 0x07 (BEL) is kept because it terminates OSC sequences — dropping
+                // it causes the vt100 capture parser to never see the end of OSC.
+                0x07 | 0x0A | 0x0D | 0x09 | 0x1B | 0x08 | 0x20..=0x7E | 0x80..=0xFF
             )
         })
         .collect()
@@ -662,6 +664,10 @@ fn handle_io(
     const TARGET: usize = 256 * 1024;
     if pending_pty_write.len() > HARD_CAP {
         let drain_amount = pending_pty_write.len() - TARGET;
+        tracing::warn!(
+            "nsh: pending PTY write buffer overflow, dropping {} bytes of input",
+            drain_amount
+        );
         pending_pty_write.drain(0..drain_amount);
     }
 
@@ -1005,10 +1011,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_input_strips_null_and_bell() {
+    fn test_sanitize_input_strips_null_preserves_bell() {
         let input = b"hello\x00\x07world";
         let sanitized = sanitize_input(input);
-        assert_eq!(sanitized, b"helloworld");
+        assert_eq!(sanitized, b"hello\x07world");
     }
 
     #[test]
@@ -1877,7 +1883,7 @@ mod tests {
             let input = [b];
             let result = sanitize_input(&input);
             match b {
-                0x0A | 0x0D | 0x09 | 0x1B | 0x08 => assert_eq!(result, vec![b]),
+                0x07 | 0x0A | 0x0D | 0x09 | 0x1B | 0x08 => assert_eq!(result, vec![b]),
                 _ => assert!(result.is_empty(), "byte {b:#04x} should be filtered"),
             }
         }
@@ -2101,7 +2107,7 @@ mod tests {
     fn test_sanitize_input_mixed_high_and_filtered() {
         let input = vec![0x00, 0x80, 0x01, 0xBF, 0x07, 0xFF];
         let result = sanitize_input(&input);
-        assert_eq!(result, vec![0x80, 0xBF, 0xFF]);
+        assert_eq!(result, vec![0x80, 0xBF, 0x07, 0xFF]);
     }
 
     #[test]
@@ -2346,10 +2352,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_input_filters_null_and_bell() {
+    fn test_sanitize_input_filters_null_preserves_bell() {
         let input = vec![0x00, 0x07, b'A', 0x02, b'B'];
         let result = sanitize_input(&input);
-        assert_eq!(result, vec![b'A', b'B']);
+        assert_eq!(result, vec![0x07, b'A', b'B']);
     }
 
     #[test]
@@ -2374,7 +2380,7 @@ mod tests {
             0x1D, 0x1E, 0x1F,
         ];
         let result = sanitize_input(&input);
-        assert_eq!(result, vec![0x08, 0x09, 0x0A, 0x0D, 0x1B]);
+        assert_eq!(result, vec![0x07, 0x08, 0x09, 0x0A, 0x0D, 0x1B]);
     }
 
     // --- detect_scrolled_lines with various overlapping patterns ---
@@ -2958,9 +2964,10 @@ mod tests {
     fn test_sanitize_input_full_byte_range() {
         let input: Vec<u8> = (0x00..=0xFFu8).collect();
         let result = sanitize_input(&input);
-        for b in 0x00..=0x07u8 {
+        for b in 0x00..=0x06u8 {
             assert!(!result.contains(&b), "byte {b:#04x} should be filtered");
         }
+        assert!(result.contains(&0x07), "BEL (0x07) should be preserved for OSC termination");
         assert!(result.contains(&0x08));
         assert!(result.contains(&0x09));
         assert!(result.contains(&0x0A));
