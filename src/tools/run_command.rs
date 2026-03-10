@@ -13,9 +13,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 eprintln!("  $ {cmd}");
                 eprint!("  {}Type 'yes' to proceed: {}", th.error, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
-                let mut line = String::new();
-                std::io::stdin().read_line(&mut line).unwrap_or(0);
-                if line.trim() != "yes" {
+                if !crate::tools::read_tty_yes_confirmation() {
                     return Ok("DENIED: dangerous command not approved".to_string());
                 }
             }
@@ -34,7 +32,7 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 eprintln!("\n  {}Agent wants to run:{} $ {}", th.dim, th.reset, cmd);
                 eprint!("  {}Allow? [Y/n]{} ", th.warning, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
-                if !crate::tools::read_tty_confirmation() {
+                if !crate::tools::read_tty_confirmation_default_yes() {
                     return Ok("DENIED: command not approved".to_string());
                 }
             }

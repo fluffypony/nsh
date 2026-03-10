@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write, IsTerminal};
+use std::io::{self, BufRead, Write};
 
 pub fn execute(
     question: &str,
@@ -31,40 +31,15 @@ pub fn execute(
     io::stderr().flush()?;
 
     if let Some(timeout_secs) = autorun_timeout {
-        let (tx, rx) = std::sync::mpsc::channel();
-        // Read from /dev/tty directly to avoid racing with child processes for stdin.
-        // Note: if the timeout fires, this thread leaks until the user types something.
-        std::thread::spawn(move || {
-            let result = match std::fs::File::open("/dev/tty") {
-                Ok(tty) => {
-                    let mut reader = io::BufReader::new(tty);
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Ok(_) => Ok(line.trim().to_string()),
-                        Err(e) => Err(anyhow::anyhow!("failed to read from tty: {e}")),
-                    }
-                }
-                Err(_) => {
-                    // Fallback to stdin if /dev/tty not available
-                    read_user_input_inner(
-                        std::io::stdin().is_terminal(),
-                        || std::fs::File::open("/dev/tty"),
-                    )
-                }
-            };
-            let _ = tx.send(result);
-        });
-
-        match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
-            Ok(Ok(input)) if !input.is_empty() => Ok(resolve_option_selection(input, options)),
-            _ => {
-                let response = default_response
-                    .map(|s| s.to_string())
-                    .or_else(|| options.and_then(|o| o.first().cloned()))
-                    .unwrap_or_else(|| "Proceeding with best judgment".into());
-                eprintln!("\x1b[2m  (timed out, auto-selecting: {})\x1b[0m", response);
-                Ok(resolve_option_selection(response, options))
-            }
+        if let Some(input) = crate::tools::read_user_input_with_timeout(timeout_secs) {
+            Ok(resolve_option_selection(input, options))
+        } else {
+            let response = default_response
+                .map(|s| s.to_string())
+                .or_else(|| options.and_then(|o| o.first().cloned()))
+                .unwrap_or_else(|| "Proceeding with best judgment".into());
+            eprintln!("\x1b[2m  (timed out, auto-selecting: {})\x1b[0m", response);
+            Ok(resolve_option_selection(response, options))
         }
     } else {
         let input = read_user_input()?;

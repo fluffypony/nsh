@@ -32,14 +32,8 @@ fn schedule_for_attempt(attempt: usize) -> Duration {
 }
 
 fn probe_once(url: &str) -> bool {
-    // Wrap in a thread with timeout to prevent hanging DNS resolution from
-    // blocking the connectivity monitoring thread indefinitely.
-    let url_owned = url.to_string();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(probe_once_inner(&url_owned));
-    });
-    rx.recv_timeout(Duration::from_secs(5)).unwrap_or(false)
+    // Probe inline with explicit socket/DNS timeouts to avoid leaking helper threads.
+    probe_once_inner(url)
 }
 
 fn probe_once_inner(url: &str) -> bool {
@@ -51,11 +45,33 @@ fn probe_once_inner(url: &str) -> bool {
                     return true;
                 }
             }
-            if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:{}", host, port)) {
-                for addr in addrs {
-                    if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
-                        return true;
+
+            // Resolve with explicit timeout to avoid blocking this monitoring thread
+            // on slow or wedged system DNS resolvers.
+            let resolved: Vec<std::net::SocketAddr> = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(async move {
+                    use hickory_resolver::Resolver;
+                    let resolver = match Resolver::builder_tokio() {
+                        Ok(builder) => builder.build(),
+                        Err(_) => return Vec::new(),
+                    };
+                    match tokio::time::timeout(Duration::from_secs(3), resolver.lookup_ip(host)).await {
+                        Ok(Ok(lookup)) => lookup
+                            .iter()
+                            .map(|ip| std::net::SocketAddr::new(ip, port))
+                            .collect(),
+                        _ => Vec::new(),
                     }
+                }),
+                Err(_) => Vec::new(),
+            };
+
+            for addr in resolved {
+                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+                    return true;
                 }
             }
         }

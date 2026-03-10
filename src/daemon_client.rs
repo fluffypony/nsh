@@ -353,7 +353,7 @@ pub fn signal_daemon_restart() -> bool {
         let lockfile = crate::config::Config::nsh_dir().join("restart.lock");
         if let Ok(meta) = std::fs::metadata(&lockfile) {
             if let Ok(modified) = meta.modified() {
-                if modified.elapsed().map(|d| d.as_secs() < 30).unwrap_or(false) {
+                if modified.elapsed().map(|d| d.as_secs() < 60).unwrap_or(false) {
                     tracing::debug!("restart.lock fresh; skipping SIGHUP");
                     return false;
                 }

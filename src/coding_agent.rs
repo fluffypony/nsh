@@ -196,7 +196,7 @@ pub async fn run_coding_agent(
         }],
     }];
 
-    let max_iterations = std::cmp::max(config.execution.effective_max_tool_iterations(), 50);
+    let max_iterations = config.execution.effective_max_tool_iterations();
     let mut modified_files = HashSet::<String>::new();
     let mut last_text = String::new();
 
@@ -601,6 +601,7 @@ async fn execute_bash(
     let timeout_seconds = explicit_timeout
         .unwrap_or_else(|| estimate_timeout_seconds(command, working_dir))
         .clamp(1, 1200);
+    let timeout_extension_seconds = config.execution.tool_timeout_extension_seconds.max(1);
     if explicit_timeout.is_some() {
         eprintln!("  \x1b[2m↳ running: {command} (timeout {timeout_seconds}s)\x1b[0m");
     } else {
@@ -651,13 +652,26 @@ async fn execute_bash(
         Ok::<(String, tokio::time::Instant), std::io::Error>((s, now))
     });
 
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds));
-    tokio::pin!(timeout);
+    let mut timeout_duration = std::time::Duration::from_secs(timeout_seconds);
+    let timeout_sleep = tokio::time::sleep(timeout_duration);
+    tokio::pin!(timeout_sleep);
+    let mut elapsed_total = timeout_seconds;
+    let mut timeout_extended_once = false;
 
     let status = loop {
         tokio::select! {
             res = child.wait() => { break res?; }
-            _ = &mut timeout => {
+            _ = &mut timeout_sleep => {
+                if !timeout_extended_once {
+                    timeout_extended_once = true;
+                    timeout_duration = std::time::Duration::from_secs(timeout_extension_seconds);
+                    elapsed_total = elapsed_total.saturating_add(timeout_extension_seconds);
+                    eprintln!(
+                        "\n\x1b[2m↳ command still running after {timeout_seconds}s, extending by {timeout_extension_seconds}s\x1b[0m"
+                    );
+                    timeout_sleep.as_mut().reset(tokio::time::Instant::now() + timeout_duration);
+                    continue;
+                }
                 let _ = child.start_kill();
                 #[cfg(unix)]
                 if let Some(id) = child.id() {
@@ -665,7 +679,7 @@ async fn execute_bash(
                     unsafe { libc::kill(id as i32, libc::SIGTERM); }
                 }
                 let _ = child.wait().await;
-                anyhow::bail!("command timed out after {timeout_seconds}s");
+                anyhow::bail!("command timed out after {elapsed_total}s");
             }
             _ = wait_for_cancel(cancelled) => {
                 let _ = child.start_kill();

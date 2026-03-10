@@ -22,7 +22,6 @@ pub mod skill_exists;
 use std::path::PathBuf;
 
 use serde::Serialize;
-use std::io::IsTerminal;
 use serde_json::json;
 
 #[cfg(test)]
@@ -164,6 +163,34 @@ pub fn read_tty_confirmation() -> bool {
     matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
+/// Strict confirmation that only accepts "yes".
+/// Used for dangerous actions requiring explicit typed acknowledgement.
+pub fn read_tty_yes_confirmation() -> bool {
+    use std::io::{BufRead, IsTerminal};
+    let line = if std::io::stdin().is_terminal() {
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_ok() {
+            line
+        } else {
+            return false;
+        }
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(tty) => {
+                let mut reader = std::io::BufReader::new(tty);
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_ok() {
+                    line
+                } else {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    };
+    line.trim().eq_ignore_ascii_case("yes")
+}
+
 /// Like read_tty_confirmation but defaults to "No" when a read error occurs.
 /// Useful for potentially dangerous defaults where we should not auto-approve.
 pub fn read_tty_confirmation_default_yes() -> bool {
@@ -214,30 +241,45 @@ pub fn read_tty_confirmation_safe() -> bool {
 /// Read a single line of user input with a timeout (in seconds).
 /// Returns Some(trimmed_line) if input received and non-empty; otherwise None.
 pub fn read_user_input_with_timeout(timeout_secs: u64) -> Option<String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        use std::io::BufRead;
-        let mut line = String::new();
-        let result = if std::io::stdin().is_terminal() {
-            std::io::stdin().read_line(&mut line).map(|_| line)
-        } else {
-            match std::fs::File::open("/dev/tty") {
-                Ok(tty) => {
-                    let mut reader = std::io::BufReader::new(tty);
-                    reader.read_line(&mut line).map(|_| line)
-                }
-                Err(_) => return,
-            }
-        };
-        if let Ok(text) = result {
-            let _ = tx.send(text.trim().to_string());
-        }
-    });
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-    match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
-        Ok(line) if !line.is_empty() => Some(line),
-        _ => None,
+    let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
+    let start = std::time::Instant::now();
+    let mut line = String::new();
+
+    while start.elapsed() < timeout {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let wait = remaining.min(std::time::Duration::from_millis(200));
+        let polled = match event::poll(wait) {
+            Ok(v) => v,
+            Err(_) => return None,
+        };
+        if !polled {
+            continue;
+        }
+
+        match event::read() {
+            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Enter => {
+                    let trimmed = line.trim().to_string();
+                    return if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    };
+                }
+                KeyCode::Char(c) => line.push(c),
+                KeyCode::Backspace => {
+                    line.pop();
+                }
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => return None,
+        }
     }
+
+    None
 }
 
 #[derive(Debug, Clone, Serialize)]

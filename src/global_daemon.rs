@@ -213,7 +213,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                                     let path = entry.path();
                                     if path.join(".git").is_dir() {
                                         let _ = std::process::Command::new("git")
-                                            .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"]) 
+                                            .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"])
+                                            .stdin(std::process::Stdio::null())
                                             .status();
                                     }
                                 }
@@ -1624,7 +1625,11 @@ fn handle_global_connection(
             }
         }
         DaemonRequest::EndSession { session } => {
-            if let Ok(mut guard) = active_sessions.write() { let _ = guard.remove(session); }
+            if let Ok(mut guard) = active_sessions.write() {
+                if let Some(info) = guard.remove(session) {
+                    cleanup_session_artifacts(session, &info);
+                }
+            }
         }
         _ => {}
     }

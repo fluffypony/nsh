@@ -34,6 +34,7 @@ async fn execute_with_timeout<F, T>(
     fut: F,
     tool_name: &str,
     timeout_secs: u64,
+    extension_secs: u64,
     force_autorun: bool,
 ) -> Result<T, String>
 where
@@ -42,26 +43,34 @@ where
     tokio::pin!(fut);
     let mut total_elapsed = 0u64;
     let initial_timeout = timeout_secs.max(1);
+    let extension_timeout = extension_secs.max(1);
+    let mut current_timeout = initial_timeout;
+    let mut used_auto_extension = false;
 
     loop {
-        let wait_secs = if total_elapsed == 0 { initial_timeout } else { initial_timeout };
-        match tokio::time::timeout(std::time::Duration::from_secs(wait_secs), &mut fut).await {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(current_timeout),
+            &mut fut,
+        )
+        .await
+        {
             Ok(result) => return Ok(result),
             Err(_) => {
-                total_elapsed = total_elapsed.saturating_add(wait_secs);
+                total_elapsed = total_elapsed.saturating_add(current_timeout);
 
                 if force_autorun {
-                    // In autorun, auto-extend once (up to a max) then fail
-                    let max_auto = if tool_name == "code" { 900 } else { 300 };
-                    if total_elapsed < max_auto {
+                    // In autorun, auto-extend once, then fail fast with diagnostics.
+                    if !used_auto_extension {
+                        used_auto_extension = true;
+                        current_timeout = extension_timeout;
                         eprintln!(
-                            "\x1b[2m  ↳ {} still running ({}s), auto-extending...\x1b[0m",
-                            tool_name, total_elapsed
+                            "\x1b[2m  ↳ {} still running ({}s), auto-extending by {}s...\x1b[0m",
+                            tool_name, total_elapsed, extension_timeout
                         );
                         continue;
                     }
                     return Err(format!(
-                        "Tool '{}' timed out after {}s in autorun mode. Try a different approach.",
+                        "Tool '{}' timed out after {}s in autorun mode (including one extension). Try a different approach.",
                         tool_name, total_elapsed
                     ));
                 }
@@ -84,7 +93,8 @@ where
                         tool_name, total_elapsed
                     ));
                 }
-                // continue waiting
+                // Continue waiting with extension window to avoid repeated prompts.
+                current_timeout = extension_timeout;
             }
         }
     }
@@ -1096,10 +1106,19 @@ pub async fn handle_query(
                         let q = input["query"].as_str().unwrap_or("").to_string();
                         let ws_cfg = config.clone();
                         let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("web_search"));
+                        let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
                             let fut = tools::web_search::execute(&q, &ws_cfg);
-                            let result = match execute_with_timeout(fut, "web_search", timeout, force_autorun).await {
+                            let result = match execute_with_timeout(
+                                fut,
+                                "web_search",
+                                timeout,
+                                extension_timeout,
+                                force_autorun,
+                            )
+                            .await
+                            {
                                 Ok(Ok(r)) => Ok(r),
                                 Ok(Err(e)) => Err(format!("{e}")),
                                 Err(msg) => Err(msg),
@@ -1111,10 +1130,19 @@ pub async fn handle_query(
                         let input_clone = input.clone();
                         let cfg_clone = config.clone();
                         let timeout = input_clone.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("github"));
+                        let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
                             let fut = crate::tools::github::execute(&input_clone, &cfg_clone);
-                            let result = match execute_with_timeout(fut, "github", timeout, force_autorun).await {
+                            let result = match execute_with_timeout(
+                                fut,
+                                "github",
+                                timeout,
+                                extension_timeout,
+                                force_autorun,
+                            )
+                            .await
+                            {
                                 Ok(Ok(r)) => Ok(r),
                                 Ok(Err(e)) => Err(format!("{e}")),
                                 Err(msg) => Err(msg),
@@ -1238,13 +1266,22 @@ pub async fn handle_query(
                             let id_ret = id;
                             let name_ret = name;
                             let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("mcp"));
+                            let extension_timeout = config.execution.tool_timeout_extension_seconds;
                             let force_autorun = opts.force_autorun;
                             futs.push(Box::pin(async move {
                                 let fut_call = async {
                                     let mut mc = mcp.lock().await;
                                     mc.call_tool(&name_exec, input).await
                                 };
-                                let result = match execute_with_timeout(fut_call, &name_ret, timeout, force_autorun).await {
+                                let result = match execute_with_timeout(
+                                    fut_call,
+                                    &name_ret,
+                                    timeout,
+                                    extension_timeout,
+                                    force_autorun,
+                                )
+                                .await
+                                {
                                     Ok(Ok(r)) => Ok(r),
                                     Ok(Err(e)) => Err(format!("{e}")),
                                     Err(msg) => Err(msg),
@@ -1323,10 +1360,19 @@ pub async fn handle_query(
                             }
                             if let Some(skill) = matched_skill {
                                 let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("skill"));
+                                let extension_timeout = config.execution.tool_timeout_extension_seconds;
                                 let force_autorun = opts.force_autorun;
                                 futs.push(Box::pin(async move {
                                     let fut = crate::skills::execute_skill_async(skill, input);
-                                    let result = match execute_with_timeout(fut, &name_ret, timeout, force_autorun).await {
+                                    let result = match execute_with_timeout(
+                                        fut,
+                                        &name_ret,
+                                        timeout,
+                                        extension_timeout,
+                                        force_autorun,
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(r)) => Ok(r),
                                         Ok(Err(e)) => Err(format!("{e}")),
                                         Err(msg) => Err(msg),
@@ -1335,9 +1381,18 @@ pub async fn handle_query(
                                 }));
                             } else {
                                 let force_autorun = opts.force_autorun;
+                                let extension_timeout = config.execution.tool_timeout_extension_seconds;
                                 futs.push(Box::pin(async move {
                                     let task = tokio::task::spawn_blocking(move || execute_sync_tool(&name_for_exec, &input, &cfg_clone));
-                                    let result = match execute_with_timeout(task, &name_ret, tool_timeout, force_autorun).await {
+                                    let result = match execute_with_timeout(
+                                        task,
+                                        &name_ret,
+                                        tool_timeout,
+                                        extension_timeout,
+                                        force_autorun,
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(inner)) => inner.map_err(|e| format!("{e}")),
                                         Ok(Err(e)) => Err(format!("task panicked: {e}")),
                                         Err(msg) => Err(msg),
