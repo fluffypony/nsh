@@ -18,6 +18,17 @@ pub fn execute(
     config: &crate::config::Config,
     force_autorun: bool,
 ) -> anyhow::Result<CommandExecutionOutcome> {
+    // Clean stale pending files from a previous invocation
+    {
+        let nsh_dir = crate::config::Config::nsh_dir();
+        let stale_cmd = nsh_dir.join(format!("pending_cmd_{session_id}"));
+        if stale_cmd.exists() {
+            let _ = std::fs::remove_file(&stale_cmd);
+            let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
+            let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
+        }
+    }
+
     let raw_command = input["command"].as_str().unwrap_or("");
     let explanation = input["explanation"].as_str().unwrap_or("");
     let pending = input["pending"].as_bool().unwrap_or(false);
@@ -31,7 +42,12 @@ pub fn execute(
         });
     }
 
-    let (risk, reason) = crate::security::assess_command(&command);
+    // Normalize benign cwd substitutions before risk assessment to avoid false positives
+    let cwd_str = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string());
+    let risk_command = command.replace("$(pwd)", &cwd_str).replace("`pwd`", &cwd_str);
+    let (risk, reason) = crate::security::assess_command(&risk_command);
 
     match &risk {
         RiskLevel::Dangerous => {
@@ -97,7 +113,13 @@ pub fn execute(
                     eprintln!("\x1b[2m  {explanation}\x1b[0m");
                 }
             }
-            _ => {
+            RiskLevel::Elevated => {
+                if !explanation.is_empty() {
+                    eprintln!("\x1b[2m  {explanation}\x1b[0m");
+                }
+                eprintln!("\x1b[2m  $ {command}\x1b[0m");
+            }
+            RiskLevel::Dangerous => {
                 display_command_preview(&command, explanation, &risk);
                 eprintln!("\x1b[2m  ↵ Enter to run · Edit first · Ctrl-C to cancel\x1b[0m");
             }
@@ -137,55 +159,160 @@ pub fn execute(
     let execute_via_shell_autorun = should_execute_immediately && !pending;
     if should_execute_immediately && pending {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
-        // Execute with a soft timeout derived from input expected_timeout_seconds
-        let expected_secs = input["expected_timeout_seconds"].as_u64().unwrap_or(120).clamp(1, 3600);
+        eprintln!("\x1b[2m  ⟳ intermediate step — nsh will continue automatically after this finishes\x1b[0m");
+        let mut expected_secs = input["expected_timeout_seconds"].as_u64().unwrap_or(300).clamp(5, 3600);
+
         #[cfg(unix)]
         let child = std::process::Command::new("sh")
             .arg("-c")
             .arg(command.as_str())
+            .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
         #[cfg(windows)]
         let child = std::process::Command::new("cmd")
             .args(["/C", command.as_str()])
+            .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();
+
         let output_content;
         let is_error;
         let exit_code;
+
         match child {
             Ok(mut child) => {
-                let start = std::time::Instant::now();
+                let stdout_pipe = child.stdout.take();
+                let stderr_pipe = child.stderr.take();
+
+                let last_output = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+                let json_mode = crate::streaming::json_output_enabled();
+
+                let last_out_stdout = std::sync::Arc::clone(&last_output);
+                let stdout_thread = std::thread::spawn(move || {
+                    let mut accumulated = Vec::new();
+                    if let Some(pipe) = stdout_pipe {
+                        use std::io::Read;
+                        let mut reader = std::io::BufReader::new(pipe);
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            match reader.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if !json_mode {
+                                        let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                                    }
+                                    accumulated.extend_from_slice(&buf[..n]);
+                                    *last_out_stdout.lock().unwrap() = std::time::Instant::now();
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    String::from_utf8_lossy(&accumulated).into_owned()
+                });
+
+                let last_out_stderr = std::sync::Arc::clone(&last_output);
+                let stderr_thread = std::thread::spawn(move || {
+                    let mut accumulated = Vec::new();
+                    if let Some(pipe) = stderr_pipe {
+                        use std::io::Read;
+                        let mut reader = std::io::BufReader::new(pipe);
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            match reader.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if !json_mode {
+                                        let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
+                                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                                    }
+                                    accumulated.extend_from_slice(&buf[..n]);
+                                    *last_out_stderr.lock().unwrap() = std::time::Instant::now();
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    String::from_utf8_lossy(&accumulated).into_owned()
+                });
+
+                let mut start = std::time::Instant::now();
+                let mut has_prompted_once = false;
+
                 loop {
                     match child.try_wait() {
                         Ok(Some(status)) => {
-                            let out = child.wait_with_output().unwrap_or_else(|_| std::process::Output{ status, stdout: vec![], stderr: vec![] });
-                            let formatted = format_execution_output(Ok(out), config);
-                            output_content = formatted.0;
-                            is_error = formatted.1;
-                            exit_code = formatted.2;
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            let stdout_text = stdout_thread.join().unwrap_or_default();
+                            let stderr_text = stderr_thread.join().unwrap_or_default();
+
+                            exit_code = status.code().unwrap_or(-1);
+                            is_error = exit_code != 0;
+
+                            let mut result = String::new();
+                            if !stdout_text.trim().is_empty() {
+                                result.push_str(&crate::util::truncate(&stdout_text, 8000));
+                            }
+                            if !stderr_text.trim().is_empty() {
+                                if !result.is_empty() { result.push_str("\n--- stderr ---\n"); }
+                                result.push_str(&crate::util::truncate(&stderr_text, 4000));
+                            }
+                            result.push_str(&format!("\n[exit code: {}]", exit_code));
+
+                            // Annotate if exit code 0 but output contains error patterns
+                            if exit_code == 0 {
+                                let combined_lower = result.to_lowercase();
+                                let warning_patterns = [
+                                    "error:", "failed", "fatal:", "permission denied",
+                                    "not found", "cannot", "unable to", "refused",
+                                    "timeout", "timed out",
+                                ];
+                                if warning_patterns.iter().any(|p| combined_lower.contains(p)) {
+                                    result.push_str(
+                                        "\n\n[NOTE: exit code 0 but output contains error-like patterns — verify the command actually succeeded]"
+                                    );
+                                }
+                            }
+
+                            output_content = crate::redact::redact_secrets(&result, &config.redaction);
                             break;
                         }
                         Ok(None) => {
-                            if start.elapsed().as_secs() >= expected_secs {
-                                // Ask whether to continue waiting
-                                eprint!("\x1b[1;33mCommand running > {}s. Continue waiting? [Y/n]\x1b[0m ", expected_secs);
-                                let _ = std::io::Write::flush(&mut std::io::stderr());
-                                let cont = crate::tools::read_tty_confirmation_default_yes();
-                                if !cont {
-                                    let _ = child.kill();
-                                    let _ = child.wait();
-                                    output_content = format!("Command timed out after {}s (user cancelled wait)", expected_secs);
-                                    is_error = true;
-                                    exit_code = 124;
-                                    break;
+                            let last_out_age = last_output.lock().unwrap().elapsed();
+                            let elapsed = start.elapsed().as_secs();
+
+                            if elapsed >= expected_secs && last_out_age > std::time::Duration::from_secs(30) {
+                                if !has_prompted_once {
+                                    eprintln!(
+                                        "\n\x1b[2m  ⏱ Command running for {}s with no recent output (waiting…)\x1b[0m",
+                                        elapsed
+                                    );
+                                    has_prompted_once = true;
+                                    start = std::time::Instant::now();
                                 } else {
-                                    // extend window by expected_secs again
-                                    // reset start to avoid unbounded loop; we keep additional cycles gated by user consent
-                                    // Note: we intentionally do not accumulate to avoid overflow; behavior remains interactive
-                                    // Simply continue looping
+                                    eprint!(
+                                        "\n\x1b[1;33mNo output for {}s (total {}s). Continue waiting? [Y/n]\x1b[0m ",
+                                        last_out_age.as_secs(), elapsed
+                                    );
+                                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                                    let cont = crate::tools::read_tty_confirmation_default_yes();
+                                    if !cont {
+                                        let _ = child.kill();
+                                        let _ = child.wait();
+                                        output_content = format!(
+                                            "Command timed out after {}s (user cancelled wait)", elapsed
+                                        );
+                                        is_error = true;
+                                        exit_code = 124;
+                                        break;
+                                    } else {
+                                        start = std::time::Instant::now();
+                                        expected_secs = (expected_secs * 2).min(1800);
+                                    }
                                 }
                             }
                             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -207,13 +334,6 @@ pub fn execute(
             }
         }
 
-        // Show the raw command output to the user immediately so they can
-        // see what happened, while also returning it back to the model for
-        // interpretation on the next turn. The content here is already
-        // redacted by format_execution_output.
-        if !output_content.trim().is_empty() {
-            eprintln!("{output_content}");
-        }
         if !private {
             let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
             let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
@@ -239,39 +359,18 @@ pub fn execute(
             );
         }
         if is_error {
-            eprintln!("\x1b[33mcommand exited with code {exit_code}\x1b[0m");
+            eprintln!("\n\x1b[33mcommand exited with code {exit_code}\x1b[0m");
         }
         return Ok(CommandExecutionOutcome::ContinueWithResult { content: output_content, is_error });
     }
 
     if config.execution.mode != "confirm" || execute_via_shell_autorun {
-        // Write command to pending file for shell hook to pick up
+        // Write pending files for shell hook to pick up.
+        // Order matters: cmd_file is written LAST because it's the trigger
+        // the shell hook polls for. Writing it before the flags creates a race.
         let nsh_dir = crate::config::Config::nsh_dir();
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
 
-        // Atomic write: temp file + rename, with 0o600 permissions
-        {
-            use std::io::Write;
-            let tmp = cmd_file.with_extension("tmp");
-            #[cfg(unix)]
-            use std::os::unix::fs::OpenOptionsExt;
-            #[cfg(unix)]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            #[cfg(not(unix))]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)?;
-            f.write_all(command.as_bytes())?;
-            std::fs::rename(&tmp, &cmd_file)?;
-        }
-
+        // 1. Write pending_flag FIRST (if pending)
         if pending {
             let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
             let tmp = pending_file.with_extension("tmp");
@@ -303,6 +402,7 @@ pub fn execute(
             let _ = std::fs::remove_file(&stale_flag);
         }
 
+        // 2. Write autorun flag SECOND (if autorun)
         let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
         if execute_via_shell_autorun {
             let tmp = autorun_file.with_extension("tmp");
@@ -329,6 +429,30 @@ pub fn execute(
             eprintln!("\x1b[2m(auto-running)\x1b[0m");
         } else {
             let _ = std::fs::remove_file(&autorun_file);
+        }
+
+        // 3. Write cmd_file LAST — this is the trigger the shell hook polls for
+        let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+        {
+            use std::io::Write;
+            let tmp = cmd_file.with_extension("tmp");
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+            #[cfg(unix)]
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            #[cfg(not(unix))]
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)?;
+            f.write_all(command.as_bytes())?;
+            std::fs::rename(&tmp, &cmd_file)?;
         }
     }
 
