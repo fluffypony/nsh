@@ -706,12 +706,6 @@ fn execute_write(
             let _ = std::fs::write(&marker, "");
             DaemonResponse::ok()
         }
-        DaemonRequest::GetVersion => DaemonResponse::ok_with_data(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "build_version": env!("NSH_BUILD_VERSION"),
-            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
-            "protocol_version": crate::daemon::DAEMON_PROTOCOL_VERSION,
-        })),
         DaemonRequest::Record {
             session,
             command,
@@ -1177,6 +1171,12 @@ fn execute_read(
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_read.request", &req_dbg);
     match request {
+        DaemonRequest::GetVersion => DaemonResponse::ok_with_data(serde_json::json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "build_version": env!("NSH_BUILD_VERSION"),
+            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
+            "protocol_version": crate::daemon::DAEMON_PROTOCOL_VERSION,
+        })),
         DaemonRequest::SearchHistory { query, limit } => match db.search_history(&query, limit) {
             Ok(results) => {
                 let json: Vec<serde_json::Value> = results

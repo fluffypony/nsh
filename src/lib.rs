@@ -1280,7 +1280,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 if bv.is_empty() {
                     eprintln!("  Daemon:     v{dv}");
                 } else {
-                    eprintln!("  Daemon:     {bv} (core {dv})");
+                    eprintln!("  Daemon:     v{dv} (build: {bv})");
                 }
             }
             eprintln!("  Session:    {session_id}");
