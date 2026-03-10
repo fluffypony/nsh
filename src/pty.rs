@@ -76,6 +76,15 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
         .set((real_stdin.as_raw_fd(), original_termios.clone()))
         .ok();
 
+    // Apply original terminal attributes to PTY slave so apps inside
+    // the wrapped shell see identical terminal behavior (fixes opt-key
+    // mapping, IUTF8, 8-bit character handling in iTerm2, etc.)
+    let _ = termios::tcsetattr(
+        pty.slave.as_fd(),
+        termios::OptionalActions::Now,
+        &original_termios,
+    );
+
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some((fd, termios)) = RESTORE_TERMIOS.get() {
