@@ -215,6 +215,8 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                                         let _ = std::process::Command::new("git")
                                             .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"])
                                             .stdin(std::process::Stdio::null())
+                                            .stdout(std::process::Stdio::null())
+                                            .stderr(std::process::Stdio::null())
                                             .status();
                                     }
                                 }

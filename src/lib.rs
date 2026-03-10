@@ -1624,8 +1624,19 @@ fn redact_config_keys(val: &mut toml::Value) {
 }
 
 fn check_daemon_versions(session_id: &str) {
-    // Centralized debounce now happens in daemon_client::ensure_daemon_version_matches()
     let _ = session_id;
+    static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if CHECKED
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
+    {
+        let _ = daemon_client::ensure_daemon_version_matches();
+    }
 }
 
 fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
