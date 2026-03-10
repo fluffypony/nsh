@@ -192,6 +192,25 @@ pub fn read_tty_confirmation_default_yes() -> bool {
     !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
 }
 
+/// Read confirmation from /dev/tty directly, avoiding stdin conflicts
+/// with child processes that inherit stdin. Returns true if user presses
+/// Enter or 'y'; false on 'n'/'no' or read failure.
+pub fn read_tty_confirmation_safe() -> bool {
+    match std::fs::File::open("/dev/tty") {
+        Ok(tty) => {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(tty);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_ok() {
+                !matches!(line.trim().to_lowercase().as_str(), "n" | "no")
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
 /// Read a single line of user input with a timeout (in seconds).
 /// Returns Some(trimmed_line) if input received and non-empty; otherwise None.
 pub fn read_user_input_with_timeout(timeout_secs: u64) -> Option<String> {

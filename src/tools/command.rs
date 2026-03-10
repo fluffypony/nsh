@@ -305,7 +305,7 @@ pub fn execute(
                                         last_out_age.as_secs(), elapsed
                                     );
                                     let _ = std::io::Write::flush(&mut std::io::stderr());
-                                    let cont = crate::tools::read_tty_confirmation_default_yes();
+                                    let cont = crate::tools::read_tty_confirmation_safe();
                                     if !cont {
                                         let _ = child.kill();
                                         let _ = child.wait();
