@@ -1202,9 +1202,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_input_all_filtered() {
-        let input = b"\x00\x01\x02\x03\x04\x05\x06\x07";
+    fn test_sanitize_input_most_low_control_filtered() {
+        // 0x00-0x06 are filtered, 0x07 (BEL) is preserved
+        let input = b"\x00\x01\x02\x03\x04\x05\x06";
         assert!(sanitize_input(input).is_empty());
+        // BEL alone should be preserved
+        assert_eq!(sanitize_input(b"\x07"), vec![0x07]);
     }
 
     #[test]

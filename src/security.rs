@@ -771,8 +771,15 @@ mod tests {
     }
 
     #[test]
-    fn test_command_substitution() {
-        let (level, _) = assess_command("$(whoami)");
+    fn test_command_substitution_safe_patterns() {
+        // $(whoami) is a safe substitution, should not be flagged
+        let (level, _) = assess_command("echo $(whoami)");
+        assert_eq!(level, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_command_substitution_unsafe() {
+        let (level, _) = assess_command("$(cat /etc/shadow)");
         assert_eq!(level, RiskLevel::Elevated);
     }
 

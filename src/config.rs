@@ -1578,7 +1578,7 @@ mod tests {
     fn test_config_default_values() {
         let config = Config::default();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(config.provider.model, "google/gemini-2.5-flash");
+        assert_eq!(config.provider.model, "google/gemini-3.1-flash-lite-preview");
         assert_eq!(config.provider.web_search_model, "perplexity/sonar");
         assert_eq!(
             config.hints.normalized_suppressed_exit_codes(),
@@ -1600,7 +1600,7 @@ default = "openrouter"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(config.provider.model, "google/gemini-2.5-flash");
+        assert_eq!(config.provider.model, "google/gemini-3.1-flash-lite-preview");
     }
 
     #[test]
@@ -1805,7 +1805,7 @@ chat_color = "red"
     fn test_config_from_empty_string() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(config.provider.model, "google/gemini-2.5-flash");
+        assert_eq!(config.provider.model, "google/gemini-3.1-flash-lite-preview");
         assert_eq!(config.context.history_limit, 20);
         assert!(config.redaction.enabled);
     }
@@ -3770,7 +3770,7 @@ key = "value"
     fn test_provider_config_defaults() {
         let p = ProviderConfig::default();
         assert_eq!(p.default, "openrouter");
-        assert_eq!(p.model, "google/gemini-2.5-flash");
+        assert_eq!(p.model, "google/gemini-3.1-flash-lite-preview");
         assert_eq!(
             p.fallback_model.as_deref(),
             Some("anthropic/claude-sonnet-4.6")
