@@ -631,62 +631,86 @@ async fn execute_bash(
         .ok_or_else(|| anyhow::anyhow!("failed to capture stderr"))?;
 
     eprintln!("  \x1b[2m↳ output (live):\x1b[0m");
-    // Stall detection: no output for configured stall timeout
-    let stall_threshold = std::time::Duration::from_secs(config.execution.stall_timeout_seconds);
-    let last_output = tokio::time::Instant::now();
-    let stdout_task = {
-        let last_clone = last_output;
-        tokio::spawn(async move {
-            let (s, last_seen) = read_output_stream(stdout, Some(last_clone)).await?;
-            Ok::<(String, tokio::time::Instant), std::io::Error>((s, last_seen))
-        })
-    };
+    // Stall detection: shared atomic timestamp updated by reader tasks
+    let stall_threshold = std::time::Duration::from_secs(config.execution.stall_timeout_seconds.max(30));
+    let last_output_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    ));
+
+    let epoch_stdout = std::sync::Arc::clone(&last_output_epoch);
+    let stdout_task = tokio::spawn(async move {
+        let (s, last_seen) = read_output_stream(stdout, Some(epoch_stdout)).await?;
+        Ok::<(String, tokio::time::Instant), std::io::Error>((s, last_seen))
+    });
+    let epoch_stderr = std::sync::Arc::clone(&last_output_epoch);
     let stderr_task = tokio::spawn(async move {
-        let (s, now) = read_output_stream(stderr, None).await?;
+        let (s, now) = read_output_stream(stderr, Some(epoch_stderr)).await?;
         Ok::<(String, tokio::time::Instant), std::io::Error>((s, now))
     });
 
     let timeout = tokio::time::sleep(std::time::Duration::from_secs(timeout_seconds));
     tokio::pin!(timeout);
 
-    // Stall detection loop uses last_output maintained by the reader tasks
-
-    let status = tokio::select! {
-        res = child.wait() => { res? }
-        _ = &mut timeout => {
-            let _ = child.start_kill();
-            #[cfg(unix)]
-            if let Some(id) = child.id() {
-                unsafe { libc::kill(-(id as i32), libc::SIGTERM); }
-            }
-            let _ = child.wait().await;
-            anyhow::bail!("command timed out after {timeout_seconds}s");
-        }
-        _ = wait_for_cancel(cancelled) => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            anyhow::bail!("command interrupted");
-        }
-        _ = tokio::time::sleep_until(last_output + stall_threshold) => {
-            // No output seen for stall threshold; offer prompt to continue/cancel
-            eprintln!("\n\x1b[33m⏳ No output for {}s. [Enter] continue, [c] cancel\x1b[0m", stall_threshold.as_secs());
-            let should_cancel = tokio::task::spawn_blocking(|| {
-                match crate::tools::read_user_input_with_timeout(10) {
-                    Some(s) if s.to_lowercase() == "c" => true,
-                    _ => false,
-                }
-            }).await.unwrap_or(false);
-            if should_cancel {
+    let status = loop {
+        tokio::select! {
+            res = child.wait() => { break res?; }
+            _ = &mut timeout => {
                 let _ = child.start_kill();
                 #[cfg(unix)]
                 if let Some(id) = child.id() {
-                    unsafe { libc::kill(-(id as i32), libc::SIGTERM); }
+                    // Kill the child process only (not process group)
+                    unsafe { libc::kill(id as i32, libc::SIGTERM); }
                 }
                 let _ = child.wait().await;
-                anyhow::bail!("Command cancelled after stall detection");
+                anyhow::bail!("command timed out after {timeout_seconds}s");
             }
-            // Reset timer and keep waiting (timer will re-arm on next loop)
-            child.wait().await?
+            _ = wait_for_cancel(cancelled) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                anyhow::bail!("command interrupted");
+            }
+            _ = async {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    let last = last_output_epoch.load(std::sync::atomic::Ordering::Relaxed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if now.saturating_sub(last) >= stall_threshold.as_secs() {
+                        return;
+                    }
+                }
+            } => {
+                eprintln!("\n\x1b[33m⏳ No output for {}s. [Enter] continue, [c] cancel\x1b[0m", stall_threshold.as_secs());
+                let should_cancel = tokio::task::spawn_blocking(|| {
+                    match crate::tools::read_user_input_with_timeout(10) {
+                        Some(s) if s.to_lowercase() == "c" => true,
+                        _ => false,
+                    }
+                }).await.unwrap_or(false);
+                if should_cancel {
+                    let _ = child.start_kill();
+                    #[cfg(unix)]
+                    if let Some(id) = child.id() {
+                        unsafe { libc::kill(id as i32, libc::SIGTERM); }
+                    }
+                    let _ = child.wait().await;
+                    anyhow::bail!("Command cancelled after stall detection");
+                }
+                // Reset the last output timestamp so stall detection resets
+                last_output_epoch.store(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                continue;
+            }
         }
     };
 
@@ -717,7 +741,7 @@ async fn execute_bash(
     ))
 }
 
-async fn read_output_stream<R>(mut reader: R, last: Option<tokio::time::Instant>) -> std::io::Result<(String, tokio::time::Instant)>
+async fn read_output_stream<R>(mut reader: R, epoch: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>) -> std::io::Result<(String, tokio::time::Instant)>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -725,7 +749,7 @@ where
 
     let mut out = String::new();
     let mut buf = [0_u8; 2048];
-    let mut last_seen = last.unwrap_or_else(tokio::time::Instant::now);
+    let mut last_seen = tokio::time::Instant::now();
     loop {
         let n = reader.read(&mut buf).await?;
         if n == 0 {
@@ -735,6 +759,15 @@ where
         eprint!("{chunk}");
         out.push_str(&chunk);
         last_seen = tokio::time::Instant::now();
+        if let Some(ref epoch) = epoch {
+            epoch.store(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
     }
     Ok((out, last_seen))
 }
@@ -928,8 +961,13 @@ fn is_dev_command_allowed(command: &str) -> bool {
         "ruff", "git", "wc", "head", "tail", "cat", "find", "grep", "sort", "uniq", "diff",
         "which", "file", "stat", "ls", "tree", "echo", "env", "pwd",
     ];
-    // Command substitution hides nested execution from token-based validation.
-    if command.contains("$(") || command.contains('`') {
+    // Command substitution: only block when combined with dangerous patterns
+    let lower = command.to_lowercase();
+    if (command.contains("$(") || command.contains('`'))
+        && (lower.contains("eval")
+            || ((lower.contains("curl") || lower.contains("wget"))
+                && (lower.contains("| sh") || lower.contains("| bash"))))
+    {
         return false;
     }
 
@@ -956,9 +994,10 @@ fn is_dev_command_allowed(command: &str) -> bool {
 
             if bin == "git" {
                 let Some(sub) = parts.next() else {
-                    return false;
+                    // `git` with no subcommand just shows help
+                    continue;
                 };
-                if !matches!(sub, "diff" | "status" | "log" | "branch") {
+                if !matches!(sub, "diff" | "status" | "log" | "branch" | "show" | "rev-parse" | "remote" | "tag" | "stash") {
                     return false;
                 }
             }
