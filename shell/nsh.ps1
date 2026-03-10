@@ -44,9 +44,17 @@ function global:prompt {
     # restart_needed and update_available markers are obsolete under shim/core split
     $noticeFile = Join-Path $HOME ".nsh\update_notice"
     if (Test-Path $noticeFile) {
-        $msg = Get-Content $noticeFile -Raw
-        Write-Host "  nsh: $msg" -ForegroundColor DarkGray
         Remove-Item $noticeFile -Force -ErrorAction SilentlyContinue
+        # Auto-reload hooks by re-evaluating init script
+        try {
+            $env:NSH_NO_WRAP = "1"
+            Invoke-Expression (& nsh init powershell 2>$null)
+            Remove-Item Env:\NSH_NO_WRAP -ErrorAction SilentlyContinue
+            $env:NSH_HOOK_HASH = (& nsh init powershell --hash 2>$null)
+            Write-Host "  nsh: shell hooks updated - hooks reloaded automatically." -ForegroundColor DarkGray
+        } catch {
+            Remove-Item Env:\NSH_NO_WRAP -ErrorAction SilentlyContinue
+        }
     }
     "PS $pwd> "
 }

@@ -375,7 +375,9 @@ __nsh_precmd() {
                     printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
                     unset _NSH_RELOADING
                 else
-                    printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
+                    # ZLE is active — defer reload to next prompt when safe
+                    local _notice="$HOME/.nsh/update_notice"
+                    [[ ! -f "$_notice" ]] && printf '%s' "hooks_updated" >| "$_notice" 2>/dev/null
                 fi
             fi
         fi

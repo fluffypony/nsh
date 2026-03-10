@@ -85,7 +85,7 @@ fn resolve_core() -> Option<std::path::PathBuf> {
                     // Sibling is newer (cargo install case) — sync to managed
                     let _ = std::fs::create_dir_all(&managed_dir);
                     let tmp = managed.with_extension("tmp");
-                    if std::fs::copy(sibling, &tmp).is_ok() {
+                    let synced = std::fs::copy(sibling, &tmp).is_ok() && {
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
@@ -94,9 +94,10 @@ fn resolve_core() -> Option<std::path::PathBuf> {
                                 std::fs::Permissions::from_mode(0o755),
                             );
                         }
-                        let _ = std::fs::rename(&tmp, managed);
-                    }
-                    managed.clone()
+                        std::fs::rename(&tmp, managed).is_ok()
+                    };
+                    // If sync succeeded, use managed; otherwise use sibling directly
+                    if synced { managed.clone() } else { sibling.clone() }
                 }
                 _ => managed.clone(), // Managed is newer or same (self-update case)
             }
