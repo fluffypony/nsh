@@ -50,21 +50,28 @@ fn main() {
         if is_core { "1" } else { "0" }
     );
 
-    // Compute a hash of shell hook templates so we can detect when hooks changed
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
+    // Compute a stable hash of shell hook templates so we can detect when hooks changed.
+    // Uses FNV-1a instead of DefaultHasher which is not stable across Rust versions.
+    fn stable_fnv1a(data: &[u8]) -> u64 {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for &byte in data {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+    let mut combined = Vec::new();
     for shell_file in &[
         "shell/nsh.zsh",
         "shell/nsh.bash",
         "shell/nsh.fish",
         "shell/nsh.ps1",
     ] {
-        if let Ok(content) = std::fs::read_to_string(shell_file) {
-            content.hash(&mut hasher);
+        if let Ok(content) = std::fs::read(shell_file) {
+            combined.extend_from_slice(&content);
         }
     }
-    let hook_hash = format!("{:016x}", hasher.finish());
+    let hook_hash = format!("{:016x}", stable_fnv1a(&combined));
     println!("cargo:rustc-env=NSH_HOOK_HASH={hook_hash}");
 
     // Re-run build script if shell scripts change

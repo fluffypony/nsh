@@ -453,7 +453,7 @@ pub async fn handle_query(
 
         // If we were offline previously, a user query should immediately trigger a reconnect check
         crate::connectivity::trigger_immediate_check();
-        let stream_timeout = std::time::Duration::from_secs(config.provider.timeout_seconds * 3);
+        let stream_timeout = std::time::Duration::from_secs(config.provider.timeout_seconds * 5);
         let response = match tokio::time::timeout(stream_timeout, streaming::consume_stream(&mut rx, &cancelled)).await {
             Ok(Ok(r)) => r,
             Ok(Err(e)) if e.to_string().contains("interrupted") => {

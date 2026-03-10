@@ -537,12 +537,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "run_command".into(),
-            description: "Execute a shell command in the background and return its output. \
-                          THIS IS YOUR PRIMARY INVESTIGATIVE AND EXECUTION TOOL. Use it to \
-                          check versions, compile code, run tests, install packages, and \
-                          perform any intermediate steps. You can call this multiple times \
-                          to pursue a goal autonomously. The user will be prompted to approve \
-                          commands not in the strict allowlist."
+            description: "Execute a shell command for quick, non-interactive local inspection. \
+                          Use for: which, --version, ls, cat, grep, git status, brew info, and similar \
+                          short-lived read-only probes. Do NOT use for: package installs/upgrades, \
+                          interactive commands, password prompts, or long-running operations. \
+                          Use the `command` tool with pending=true for those."
                 .into(),
             parameters: json!({
                 "type": "object",

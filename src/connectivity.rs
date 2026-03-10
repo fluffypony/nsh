@@ -32,11 +32,17 @@ fn schedule_for_attempt(attempt: usize) -> Duration {
 }
 
 fn probe_once(url: &str) -> bool {
-    // Use a blocking check in a dedicated thread to avoid introducing async here.
-    // reqwest Client::builder().build() creates a handle; send() is async, so use a tiny blocking client via ureq fallback.
-    // If ureq not available, fall back to TcpStream as a very rough check.
-    // Basic TCP connectivity probe to host:port parsed from URL; if this succeeds, we assume online.
-    // Fallback: treat http(s) as online if DNS resolution works quickly.
+    // Wrap in a thread with timeout to prevent hanging DNS resolution from
+    // blocking the connectivity monitoring thread indefinitely.
+    let url_owned = url.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(probe_once_inner(&url_owned));
+    });
+    rx.recv_timeout(Duration::from_secs(5)).unwrap_or(false)
+}
+
+fn probe_once_inner(url: &str) -> bool {
     if let Ok(u) = Url::parse(url) {
         if let Some(host) = u.host_str() {
             let port = u.port_or_known_default().unwrap_or(80);

@@ -9,7 +9,7 @@ pub fn trivial_summary(cmd: &str, exit_code: i32, output: &str) -> Option<String
         "pwd" => Some("Printed working directory".into()),
         "true" | "false" => Some(format!("Built-in returned {exit_code}")),
         _ if output.trim().is_empty() && exit_code == 0 => {
-            Some(format!("Ran `{cmd}` successfully (no output)"))
+            Some(format!("Ran `{cmd}` (exit 0, no output)"))
         }
         _ if output.trim().len() < 20 => None,
         _ => None,
@@ -105,7 +105,7 @@ mod tests {
     fn test_trivial_summary_no_output_success() {
         assert_eq!(
             trivial_summary("mkdir foo", 0, ""),
-            Some("Ran `mkdir foo` successfully (no output)".into())
+            Some("Ran `mkdir foo` (exit 0, no output)".into())
         );
     }
 
@@ -284,7 +284,7 @@ mod tests {
     fn test_trivial_summary_empty_command() {
         assert_eq!(
             trivial_summary("", 0, ""),
-            Some("Ran `` successfully (no output)".into())
+            Some("Ran `` (exit 0, no output)".into())
         );
     }
 
@@ -308,7 +308,7 @@ mod tests {
     fn test_trivial_summary_whitespace_output_success() {
         assert_eq!(
             trivial_summary("touch file", 0, "   \n\t  "),
-            Some("Ran `touch file` successfully (no output)".into())
+            Some("Ran `touch file` (exit 0, no output)".into())
         );
     }
 

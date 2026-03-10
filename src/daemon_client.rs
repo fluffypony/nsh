@@ -307,7 +307,7 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
         .unwrap_or_default()
         .as_secs();
     let last = LAST_VERSION_CHECK.load(AtomicOrdering::Relaxed);
-    if now.saturating_sub(last) < 30 {
+    if now.saturating_sub(last) < 60 {
         return Ok(());
     }
     LAST_VERSION_CHECK.store(now, AtomicOrdering::Relaxed);

@@ -105,7 +105,7 @@ impl Default for ExecutionConfig {
             tool_timeout_extension_seconds: 60,
             autorun_response_timeout_seconds: 30,
             max_query_duration_seconds: 300,
-            stall_timeout_seconds: 15,
+            stall_timeout_seconds: 30,
         }
     }
 }
@@ -120,12 +120,15 @@ impl ExecutionConfig {
 #[serde(default)]
 pub struct ShellHooksConfig {
     pub auto_refresh: bool,
+    pub iterm2_cwd_reporting: bool,
 }
 
 impl Default for ShellHooksConfig {
     fn default() -> Self {
-        // Enable automatic shell hook refresh by default
-        Self { auto_refresh: true }
+        Self {
+            auto_refresh: true,
+            iterm2_cwd_reporting: true,
+        }
     }
 }
 

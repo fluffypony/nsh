@@ -32,11 +32,26 @@ pub fn execute(
 
     if let Some(timeout_secs) = autorun_timeout {
         let (tx, rx) = std::sync::mpsc::channel();
+        // Read from /dev/tty directly to avoid racing with child processes for stdin.
+        // Note: if the timeout fires, this thread leaks until the user types something.
         std::thread::spawn(move || {
-            let result = read_user_input_inner(
-                std::io::stdin().is_terminal(),
-                || std::fs::File::open("/dev/tty"),
-            );
+            let result = match std::fs::File::open("/dev/tty") {
+                Ok(tty) => {
+                    let mut reader = io::BufReader::new(tty);
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(_) => Ok(line.trim().to_string()),
+                        Err(e) => Err(anyhow::anyhow!("failed to read from tty: {e}")),
+                    }
+                }
+                Err(_) => {
+                    // Fallback to stdin if /dev/tty not available
+                    read_user_input_inner(
+                        std::io::stdin().is_terminal(),
+                        || std::fs::File::open("/dev/tty"),
+                    )
+                }
+            };
             let _ = tx.send(result);
         });
 

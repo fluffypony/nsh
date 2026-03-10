@@ -37,9 +37,10 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             // Pull updates
             eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
             let status = std::process::Command::new("git")
-                .args(["-C", dest.to_string_lossy().as_ref(), "pull", "--ff-only"])
+                .args(["-C", dest.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
+                .stdin(std::process::Stdio::null())
                 .status()?;
             if !status.success() {
                 anyhow::bail!("git pull failed for {}", dest.display());

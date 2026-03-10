@@ -587,65 +587,77 @@ fn run_memory_thread(
     let llm = crate::memory::llm_adapter::ProviderLlmClient::new(&config);
 
     // Process tasks: recv() blocks this thread until a task arrives (or channel closes).
-    // Each task is executed via block_on for the async LLM calls.
+    // Each task is executed via block_on for the async LLM calls, wrapped in
+    // catch_unwind to prevent a panic from killing the memory thread.
     while let Ok(task) = rx.recv() {
-        match task {
-            MemoryTask::FlushIngestion => {
-                rt.block_on(async {
-                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.flush_ingestion(&llm)).await {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory flush_ingestion error: {e}");
-                            log_daemon("memory.flush.error", &e.to_string());
+        let task_name = match &task {
+            MemoryTask::FlushIngestion => "flush_ingestion",
+            MemoryTask::IngestBatch { .. } => "ingest_batch",
+            MemoryTask::RunReflection => "run_reflection",
+            MemoryTask::BootstrapScan => "bootstrap_scan",
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match task {
+                MemoryTask::FlushIngestion => {
+                    rt.block_on(async {
+                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.flush_ingestion(&llm)).await {
+                            Ok(Err(e)) => {
+                                tracing::debug!("memory flush_ingestion error: {e}");
+                                log_daemon("memory.flush.error", &e.to_string());
+                            }
+                            Err(_) => {
+                                tracing::warn!("memory flush_ingestion timed out after 120s");
+                            }
+                            _ => {}
                         }
-                        Err(_) => {
-                            tracing::warn!("memory flush_ingestion timed out after 120s");
+                    });
+                }
+                MemoryTask::IngestBatch { events } => {
+                    rt.block_on(async {
+                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.ingest_batch(&events, &llm)).await {
+                            Ok(Err(e)) => {
+                                tracing::debug!("memory ingest_batch error: {e}");
+                                log_daemon("memory.ingest.error", &e.to_string());
+                            }
+                            Err(_) => {
+                                tracing::warn!("memory ingest_batch timed out after 120s");
+                            }
+                            _ => {}
                         }
-                        _ => {}
-                    }
-                });
+                    });
+                }
+                MemoryTask::RunReflection => {
+                    rt.block_on(async {
+                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.run_reflection(&llm)).await {
+                            Ok(Err(e)) => {
+                                tracing::debug!("memory run_reflection error: {e}");
+                                log_daemon("memory.reflection.error", &e.to_string());
+                            }
+                            Err(_) => {
+                                tracing::warn!("memory run_reflection timed out after 120s");
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+                MemoryTask::BootstrapScan => {
+                    rt.block_on(async {
+                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.bootstrap_scan(&llm)).await {
+                            Ok(Err(e)) => {
+                                tracing::debug!("memory bootstrap_scan error: {e}");
+                                log_daemon("memory.bootstrap.error", &e.to_string());
+                            }
+                            Err(_) => {
+                                tracing::warn!("memory bootstrap_scan timed out after 120s");
+                            }
+                            _ => {}
+                        }
+                    });
+                }
             }
-            MemoryTask::IngestBatch { events } => {
-                rt.block_on(async {
-                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.ingest_batch(&events, &llm)).await {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory ingest_batch error: {e}");
-                            log_daemon("memory.ingest.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory ingest_batch timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            MemoryTask::RunReflection => {
-                rt.block_on(async {
-                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.run_reflection(&llm)).await {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory run_reflection error: {e}");
-                            log_daemon("memory.reflection.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory run_reflection timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            MemoryTask::BootstrapScan => {
-                rt.block_on(async {
-                    match tokio::time::timeout(std::time::Duration::from_secs(120), memory.bootstrap_scan(&llm)).await {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory bootstrap_scan error: {e}");
-                            log_daemon("memory.bootstrap.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory bootstrap_scan timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
+        }));
+        if let Err(e) = result {
+            log_daemon("memory.thread.panic", &format!("panic in {task_name}: {e:?}"));
         }
     }
 
