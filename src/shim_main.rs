@@ -56,16 +56,9 @@ fn resolve_core() -> Option<std::path::PathBuf> {
         if p.is_file() { Some(p) } else { None }
     };
 
-    // Primary managed location: ~/.nsh/bin/nsh-core (or Config::nsh_dir())
+    // Primary managed location: Config::nsh_dir()/bin/nsh-core
     let managed_dir = nsh::config::Config::nsh_dir().join("bin");
-    let managed_core = find_core(&managed_dir).or_else(|| {
-        if let Ok(home) = std::env::var("HOME") {
-            let p = std::path::PathBuf::from(home).join(".nsh").join("bin");
-            if p != managed_dir { find_core(&p) } else { None }
-        } else {
-            None
-        }
-    });
+    let managed_core = find_core(&managed_dir);
 
     // Sibling to current exe (cargo install puts nsh + nsh-core in the same dir)
     let sibling_core = std::env::current_exe().ok()
