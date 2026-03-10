@@ -24,41 +24,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nested_shell_guard_zsh() {
+    fn test_session_init_guard_zsh() {
         let script = generate_init_script("zsh");
         assert!(
             script.contains("exec nsh wrap"),
             "Zsh init script should auto-wrap when not already wrapped"
         );
+        // Session init is conditional (only when NSH_SESSION_ID is not set)
         assert!(
-            script.contains("if [[ -n \"${NSH_SESSION_ID:-}\" ]]"),
-            "Zsh init script should contain NSH_SESSION_ID early-exit guard"
+            script.contains("if [[ -z \"${NSH_SESSION_ID:-}\" ]]"),
+            "Zsh init script should have conditional session init block"
         );
-        // The guard should appear before the session ID export
-        let guard_pos = script.find("if [[ -n \"${NSH_SESSION_ID:-}\" ]]").unwrap();
-        let export_pos = script.find("export NSH_SESSION_ID=").unwrap();
+        // Function definitions should appear BEFORE the session init block
+        let func_pos = script.find("__nsh_preexec()").unwrap();
+        let init_pos = script.find("if [[ -z \"${NSH_SESSION_ID:-}\" ]]").unwrap();
         assert!(
-            guard_pos < export_pos,
-            "Nested shell guard should come before session ID export"
+            func_pos < init_pos,
+            "Hook functions should be defined before session init block"
+        );
+        // Exports should appear before session init (unconditional)
+        let export_hash_pos = script.find("export NSH_HOOK_HASH=").unwrap();
+        assert!(
+            export_hash_pos < init_pos,
+            "Hook hash export should be unconditional (before session init)"
         );
     }
 
     #[test]
-    fn test_nested_shell_guard_bash() {
+    fn test_session_init_guard_bash() {
         let script = generate_init_script("bash");
         assert!(
             script.contains("exec nsh wrap"),
             "Bash init script should auto-wrap when not already wrapped"
         );
+        // Session init is conditional (only when NSH_SESSION_ID is not set)
         assert!(
-            script.contains("if [[ -n \"${NSH_SESSION_ID:-}\" ]]"),
-            "Bash init script should contain NSH_SESSION_ID early-exit guard"
+            script.contains("if [[ -z \"${NSH_SESSION_ID:-}\" ]]"),
+            "Bash init script should have conditional session init block"
         );
-        let guard_pos = script.find("if [[ -n \"${NSH_SESSION_ID:-}\" ]]").unwrap();
-        let export_pos = script.find("export NSH_SESSION_ID=").unwrap();
+        // Function definitions should appear BEFORE the session init block
+        let func_pos = script.find("__nsh_prompt_command()").unwrap();
+        let init_pos = script.find("if [[ -z \"${NSH_SESSION_ID:-}\" ]]").unwrap();
         assert!(
-            guard_pos < export_pos,
-            "Nested shell guard should come before session ID export"
+            func_pos < init_pos,
+            "Hook functions should be defined before session init block"
         );
     }
 
@@ -432,6 +441,118 @@ mod tests {
         assert!(
             script.contains("file://"),
             "fish init should emit standard OSC 7 file:// CWD escape"
+        );
+    }
+
+    #[test]
+    fn test_zsh_post_init_integrity_check() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("typeset -f"),
+            "zsh init should verify hook functions exist after init"
+        );
+        assert!(
+            script.contains("shell integration broken"),
+            "zsh init should warn if hook functions are missing"
+        );
+    }
+
+    #[test]
+    fn test_bash_post_init_integrity_check() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("declare -F"),
+            "bash init should verify hook functions exist after init"
+        );
+        assert!(
+            script.contains("shell integration broken"),
+            "bash init should warn if hook functions are missing"
+        );
+    }
+
+    #[test]
+    fn test_fish_post_init_integrity_check() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("functions -q"),
+            "fish init should verify hook functions exist after init"
+        );
+        assert!(
+            script.contains("shell integration broken"),
+            "fish init should warn if hook functions are missing"
+        );
+    }
+
+    #[test]
+    fn test_zsh_session_owner_pid_guard() {
+        let script = generate_init_script("zsh");
+        assert!(
+            script.contains("__NSH_SESSION_OWNER_PID"),
+            "zsh init should track session owner PID to prevent subshell cleanup"
+        );
+    }
+
+    #[test]
+    fn test_bash_session_owner_pid_guard() {
+        let script = generate_init_script("bash");
+        assert!(
+            script.contains("__NSH_SESSION_OWNER_PID"),
+            "bash init should track session owner PID to prevent subshell cleanup"
+        );
+    }
+
+    #[test]
+    fn test_fish_session_owner_pid_guard() {
+        let script = generate_init_script("fish");
+        assert!(
+            script.contains("__NSH_SESSION_OWNER_PID"),
+            "fish init should track session owner PID to prevent subshell cleanup"
+        );
+    }
+
+    #[test]
+    fn test_ps1_session_owner_pid_guard() {
+        let script = generate_init_script("powershell");
+        assert!(
+            script.contains("__NSH_SESSION_OWNER_PID"),
+            "powershell init should track session owner PID to prevent subshell cleanup"
+        );
+    }
+
+    #[test]
+    fn test_zsh_unconditional_exports() {
+        let script = generate_init_script("zsh");
+        // NSH_HOOK_HASH and NSH_HOOKS_VERSION should be set unconditionally
+        // (outside the session init block)
+        let export_pos = script.find("export NSH_HOOK_HASH=").unwrap();
+        let init_pos = script.find("if [[ -z \"${NSH_SESSION_ID:-}\" ]]").unwrap();
+        assert!(
+            export_pos < init_pos,
+            "NSH_HOOK_HASH should be exported unconditionally before session init"
+        );
+    }
+
+    #[test]
+    fn test_bash_unconditional_exports() {
+        let script = generate_init_script("bash");
+        let export_pos = script.find("export NSH_HOOK_HASH=").unwrap();
+        let init_pos = script.find("if [[ -z \"${NSH_SESSION_ID:-}\" ]]").unwrap();
+        assert!(
+            export_pos < init_pos,
+            "NSH_HOOK_HASH should be exported unconditionally before session init"
+        );
+    }
+
+    #[test]
+    fn test_fish_unconditional_exports() {
+        let script = generate_init_script("fish");
+        let export_pos = script.find("set -gx NSH_HOOK_HASH").unwrap();
+        // Use the session init comment marker to find the right block
+        // (not the `if not set -q NSH_SESSION_ID` in __nsh_clear_pending_command)
+        let init_pos = script.find("# \u{2500}\u{2500} Session init").unwrap();
+        assert!(
+            export_pos < init_pos,
+            "NSH_HOOK_HASH should be exported unconditionally before session init"
         );
     }
 }

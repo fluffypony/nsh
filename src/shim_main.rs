@@ -49,32 +49,81 @@ fn main() {
 }
 
 fn resolve_core() -> Option<std::path::PathBuf> {
-    // Primary: ~/.nsh/bin/nsh-core
-    if let Ok(home) = std::env::var("HOME") {
-        let p = std::path::PathBuf::from(home)
-            .join(".nsh")
-            .join("bin")
-            .join("nsh-core");
-        if p.is_file() {
-            return Some(p);
+    let core_name = if cfg!(windows) { "nsh-core.exe" } else { "nsh-core" };
+
+    let find_core = |dir: &std::path::Path| -> Option<std::path::PathBuf> {
+        let p = dir.join(core_name);
+        if p.is_file() { Some(p) } else { None }
+    };
+
+    // Primary managed location: ~/.nsh/bin/nsh-core (or Config::nsh_dir())
+    let managed_dir = nsh::config::Config::nsh_dir().join("bin");
+    let managed_core = find_core(&managed_dir).or_else(|| {
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(home).join(".nsh").join("bin");
+            if p != managed_dir { find_core(&p) } else { None }
+        } else {
+            None
         }
-    }
+    });
 
-    // Also check via Config::nsh_dir() for non-standard locations
-    let config_path = nsh::config::Config::nsh_dir().join("bin").join("nsh-core");
-    if config_path.is_file() {
-        return Some(config_path);
-    }
+    // Sibling to current exe (cargo install puts nsh + nsh-core in the same dir)
+    let sibling_core = std::env::current_exe().ok()
+        .and_then(|e| e.parent().map(|d| d.to_path_buf()))
+        .and_then(|d| find_core(&d));
 
-    // Fallback: nsh-core alongside this binary
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("nsh-core");
-            if p.is_file() {
-                return Some(p);
+    // If both exist and are different paths, prefer the newer one and sync to managed location
+    let core_path = match (&managed_core, &sibling_core) {
+        (Some(managed), Some(sibling)) if managed != sibling => {
+            let managed_mtime = std::fs::metadata(managed)
+                .and_then(|m| m.modified()).ok();
+            let sibling_mtime = std::fs::metadata(sibling)
+                .and_then(|m| m.modified()).ok();
+
+            match (managed_mtime, sibling_mtime) {
+                (Some(m_t), Some(s_t)) if s_t > m_t => {
+                    // Sibling is newer (cargo install case) — sync to managed
+                    let _ = std::fs::create_dir_all(&managed_dir);
+                    let tmp = managed.with_extension("tmp");
+                    if std::fs::copy(sibling, &tmp).is_ok() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(
+                                &tmp,
+                                std::fs::Permissions::from_mode(0o755),
+                            );
+                        }
+                        let _ = std::fs::rename(&tmp, managed);
+                    }
+                    managed.clone()
+                }
+                _ => managed.clone(), // Managed is newer or same (self-update case)
             }
         }
-    }
+        (Some(managed), _) => managed.clone(),
+        (None, Some(sibling)) => {
+            // No managed core yet — install sibling as managed
+            let _ = std::fs::create_dir_all(&managed_dir);
+            let managed_path = managed_dir.join(core_name);
+            let tmp = managed_path.with_extension("tmp");
+            if std::fs::copy(sibling, &tmp).is_ok() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &tmp,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                let _ = std::fs::rename(&tmp, &managed_path);
+                managed_path
+            } else {
+                sibling.clone()
+            }
+        }
+        (None, None) => return None,
+    };
 
-    None
+    Some(core_path)
 }

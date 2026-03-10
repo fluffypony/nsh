@@ -191,69 +191,7 @@ nsh_query_private() {
     command nsh query --private -- "$@"
 }
 
-# ── Nested shell guard ──────────────────────────────────
-if [[ -n "${NSH_SESSION_ID:-}" ]]; then
-    __nsh_load_suppressed_exit_codes
-    # Already inside nsh — only reinstall hooks, skip session init
-    alias '?'='noglob nsh_query'
-    alias '??'='noglob nsh_query_think'
-    alias '?!'='noglob nsh_query_private'
-    autoload -Uz add-zsh-hook
-    __nsh_install_accept_line_widget
-    add-zsh-hook -d preexec __nsh_preexec 2>/dev/null
-    add-zsh-hook -d precmd __nsh_run_deferred 2>/dev/null
-    add-zsh-hook -d precmd __nsh_precmd 2>/dev/null
-    add-zsh-hook -d precmd __nsh_check_pending 2>/dev/null
-    add-zsh-hook preexec __nsh_preexec
-    add-zsh-hook precmd __nsh_run_deferred
-    add-zsh-hook precmd __nsh_precmd
-    add-zsh-hook precmd __nsh_check_pending
-    # Periodic hook version check (~every 20 commands) and immediate notice if update marker exists
-    (( __nsh_cmd_counter = ${__nsh_cmd_counter:-0} + 1 ))
-    local _notice_file="$HOME/.nsh/update_notice"
-    if [[ -f "$_notice_file" && -z "${_NSH_RELOADING:-}" ]]; then
-        # Atomically claim notice and ignore stale (>5m)
-        local _claimed="/tmp/.nsh_update_claimed.$$"
-        if command mv -f "$_notice_file" "$_claimed" 2>/dev/null; then
-            local _age=$(( EPOCHSECONDS - $(stat -f %m "$_claimed" 2>/dev/null || echo 0) ))
-            if (( _age <= 300 )); then
-                _NSH_RELOADING=1
-                NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
-                NSH_HOOK_HASH="$(command nsh init zsh --hash 2>/dev/null)"
-                printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
-                unset _NSH_RELOADING
-            fi
-            command rm -f -- "$_claimed" 2>/dev/null
-        fi
-    fi
-    if (( __nsh_cmd_counter % 20 == 0 )); then
-        local _disk_hook_hash
-        _disk_hook_hash="$(command nsh init zsh --hash 2>/dev/null)"
-        if [[ -n "$_disk_hook_hash" && "$_disk_hook_hash" != "$NSH_HOOK_HASH" && -z "${_NSH_RELOADING:-}" ]]; then
-            _NSH_RELOADING=1
-            NSH_NO_WRAP=1 eval "$(command nsh init zsh)" 2>/dev/null || true
-            NSH_HOOK_HASH="$_disk_hook_hash"
-            printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
-            unset _NSH_RELOADING
-        fi
-    fi
-    return 0
-fi
-
-# ── Session management ──────────────────────────────────
-export NSH_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
-export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
-export NSH_HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
-export NSH_HOOK_HASH="__HOOK_HASH__"
-export NSH_HOOKS_VERSION="__NSH_VERSION__"
-__nsh_load_suppressed_exit_codes
-
-# If a pending update was staged, show a one-time notice immediately at session start
-if [[ -f "$HOME/.nsh/update_notice" ]]; then
-    printf '\x1b[2m  nsh: shell hooks updated — run `exec $SHELL` or open a new terminal to refresh\x1b[0m\n' >&2
-    command rm -f -- "$HOME/.nsh/update_notice" 2>/dev/null
-fi
-
+# ── CWD restore helper (definition only) ────────────────
 __nsh_restore_last_cwd() {
     local restore_cwd
     restore_cwd="$(command nsh session last-cwd --tty "$NSH_TTY" 2>/dev/null)" || return 0
@@ -262,19 +200,10 @@ __nsh_restore_last_cwd() {
         builtin cd -- "$restore_cwd" 2>/dev/null || true
     fi
 }
-__nsh_restore_last_cwd
 
-# Start session asynchronously
-nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "zsh" --pid "$$" >/dev/null 2>&1 &!
-
-# ── Aliases for ? and ?? ────────────────────────────────
-alias '?'='noglob nsh_query'
-alias '??'='noglob nsh_query_think'
-alias '?!'='noglob nsh_query_private'
-
-# ── State variables ─────────────────────────────────────
-__NSH_LAST_RECORDED_CMD=""
-__NSH_LAST_RECORDED_START=""
+# ── State variables (non-clobbering on reload) ──────────
+: ${__NSH_LAST_RECORDED_CMD:=""}
+: ${__NSH_LAST_RECORDED_START:=""}
 
 # ── preexec: fires BEFORE each command executes ─────────
 __nsh_preexec() {
@@ -497,21 +426,63 @@ __nsh_check_pending() {
     fi
 }
 
-# Install hooks
+# ── Cleanup (with session-owner guard) ──────────────────
+__nsh_cleanup() {
+    if [[ "$$" == "${__NSH_SESSION_OWNER_PID:-}" ]]; then
+        nsh session end --session "$NSH_SESSION_ID" 2>/dev/null
+        if [[ -n "$NSH_TTY" ]]; then
+            local _tty_safe="${NSH_TTY//\//_}"
+            command rm -f "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+        fi
+    fi
+}
+
+# ── Always-run: exports, aliases, hooks ─────────────────
+export NSH_HOOK_HASH="__HOOK_HASH__"
+export NSH_HOOKS_VERSION="__NSH_VERSION__"
+__nsh_load_suppressed_exit_codes
+
+alias '?'='noglob nsh_query'
+alias '??'='noglob nsh_query_think'
+alias '?!'='noglob nsh_query_private'
+
+# Hook installation (idempotent: remove then add)
 autoload -Uz add-zsh-hook
 __nsh_install_accept_line_widget
+add-zsh-hook -d preexec __nsh_preexec 2>/dev/null
+add-zsh-hook -d precmd __nsh_run_deferred 2>/dev/null
+add-zsh-hook -d precmd __nsh_precmd 2>/dev/null
+add-zsh-hook -d precmd __nsh_check_pending 2>/dev/null
 add-zsh-hook preexec __nsh_preexec
 add-zsh-hook precmd __nsh_run_deferred
 add-zsh-hook precmd __nsh_precmd
 add-zsh-hook precmd __nsh_check_pending
 
-# ── Cleanup on exit ─────────────────────────────────────
-__nsh_cleanup() {
-    nsh session end --session "$NSH_SESSION_ID" 2>/dev/null
-    # Remove per-TTY CWD file
-    if [[ -n "$NSH_TTY" ]]; then
-        local _tty_safe="${NSH_TTY//\//_}"
-        command rm -f "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+# ── Session init (ONE TIME ONLY) ────────────────────────
+if [[ -z "${NSH_SESSION_ID:-}" ]]; then
+    export NSH_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
+    export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
+    export NSH_HISTFILE="${HISTFILE:-$HOME/.zsh_history}"
+    export __NSH_SESSION_OWNER_PID="$$"
+
+    # Silently consume any stale update notice (hooks are already current
+    # since this is a fresh eval of the current init script)
+    if [[ -f "$HOME/.nsh/update_notice" ]]; then
+        command rm -f -- "$HOME/.nsh/update_notice" 2>/dev/null
     fi
-}
+
+    __nsh_restore_last_cwd
+
+    # Start session asynchronously
+    nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "zsh" --pid "$$" >/dev/null 2>&1 &!
+fi
+
 trap __nsh_cleanup EXIT
+
+# ── Post-init hook integrity check ──────────────────────
+for _nsh_fn in __nsh_preexec __nsh_precmd __nsh_check_pending; do
+    if ! typeset -f "$_nsh_fn" >/dev/null 2>&1; then
+        printf '\x1b[31mnsh: critical: hook function %s not defined after init — shell integration broken\x1b[0m\n' "$_nsh_fn" >&2
+    fi
+done
+unset _nsh_fn

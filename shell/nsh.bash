@@ -8,6 +8,11 @@ if [[ -z "${NSH_PTY_ACTIVE:-}" && -z "${NSH_NO_WRAP:-}" ]] && [[ $- == *i* ]] &&
     return 0
 fi
 
+# ── WSL detection ───────────────────────────────────────
+if [[ -f /proc/version ]] && grep -qi microsoft /proc/version 2>/dev/null; then
+    export NSH_IS_WSL=1
+fi
+
 __nsh_clear_pending_command() {
     [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
     command rm -f \
@@ -75,36 +80,7 @@ __nsh_emit_iterm2_cwd() {
     printf '\033]7;file://%s%s\033\\' "$host" "$path"
 }
 
-# ── Nested shell guard ──────────────────────────────────
-if [[ -n "${NSH_SESSION_ID:-}" ]]; then
-    __nsh_load_suppressed_exit_codes
-    nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query -- "$@"; }
-    nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --think -- "$@"; }
-    nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --private -- "$@"; }
-    alias '?'='nsh_query'
-    alias '??'='nsh_query_think'
-    alias '?!'='nsh_query_private'
-    # Only reinstall hooks if not already present
-    case ";${PROMPT_COMMAND:-};" in
-        *";__nsh_prompt_command;"*) ;;
-        *) PROMPT_COMMAND="__nsh_prompt_command;__nsh_check_pending${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
-    esac
-    trap '__nsh_debug_trap' DEBUG
-    return 0
-fi
-
-# Detect WSL for any WSL-specific adjustments
-if [[ -f /proc/version ]] && grep -qi microsoft /proc/version 2>/dev/null; then
-    export NSH_IS_WSL=1
-fi
-
-export NSH_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
-export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
-export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"
-export NSH_HOOK_HASH="__HOOK_HASH__"
-export NSH_HOOKS_VERSION="__NSH_VERSION__"
-__nsh_load_suppressed_exit_codes
-
+# ── CWD restore helper (definition only) ────────────────
 __nsh_restore_last_cwd() {
     local restore_cwd
     restore_cwd="$(command nsh session last-cwd --tty "$NSH_TTY" 2>/dev/null)" || return 0
@@ -112,25 +88,17 @@ __nsh_restore_last_cwd() {
         builtin cd -- "$restore_cwd" 2>/dev/null || true
     fi
 }
-__nsh_restore_last_cwd
 
-# Start session asynchronously
-nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --pid "$$" >/dev/null 2>&1 &
-disown 2>/dev/null
-
-# ── Aliases ─────────────────────────────────────────────
+# ── Query functions ─────────────────────────────────────
 nsh_query() { history -s -- "? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query -- "$@"; }
 nsh_query_think() { history -s -- "?? $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --think -- "$@"; }
 nsh_query_private() { history -s -- "?! $*"; __nsh_clear_pending_command; __nsh_query_ignore_exit_code "$@" && return 0; command nsh query --private -- "$@"; }
-alias '?'='nsh_query'
-alias '??'='nsh_query_think'
-alias '?!'='nsh_query_private'
 
-# ── State variables ─────────────────────────────────────
-__nsh_cmd=""
-__nsh_cmd_start=""
-__nsh_last_recorded_cmd=""
-__nsh_last_recorded_start=""
+# ── State variables (non-clobbering on reload) ──────────
+: ${__nsh_cmd:=""}
+: ${__nsh_cmd_start:=""}
+: ${__nsh_last_recorded_cmd:=""}
+: ${__nsh_last_recorded_start:=""}
 
 __nsh_debug_trap() {
     if [[ -z "$__nsh_cmd" && -n "$BASH_COMMAND" ]]; then
@@ -346,15 +314,56 @@ __nsh_check_pending() {
     fi
 }
 
-trap '__nsh_debug_trap' DEBUG
-
-
+# ── Cleanup (with session-owner guard) ──────────────────
 __nsh_cleanup() {
-    nsh session end --session "$NSH_SESSION_ID" 2>/dev/null
-    # Remove per-TTY CWD file
-    if [[ -n "$NSH_TTY" ]]; then
-        local _tty_safe="${NSH_TTY//\//_}"
-        command rm -f "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+    if [[ "$$" == "${__NSH_SESSION_OWNER_PID:-}" ]]; then
+        nsh session end --session "$NSH_SESSION_ID" 2>/dev/null
+        if [[ -n "$NSH_TTY" ]]; then
+            local _tty_safe="${NSH_TTY//\//_}"
+            command rm -f "$HOME/.nsh/cwd_${_tty_safe}" 2>/dev/null
+        fi
     fi
 }
+
+# ── Always-run: exports, aliases, hooks ─────────────────
+export NSH_HOOK_HASH="__HOOK_HASH__"
+export NSH_HOOKS_VERSION="__NSH_VERSION__"
+__nsh_load_suppressed_exit_codes
+
+alias '?'='nsh_query'
+alias '??'='nsh_query_think'
+alias '?!'='nsh_query_private'
+
+# Hook registration (idempotent)
+case ";${PROMPT_COMMAND:-};" in
+    *";__nsh_prompt_command;"*) ;;
+    *) PROMPT_COMMAND="__nsh_prompt_command;__nsh_check_pending${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
+esac
+trap '__nsh_debug_trap' DEBUG
+
+# ── Session init (ONE TIME ONLY) ────────────────────────
+if [[ -z "${NSH_SESSION_ID:-}" ]]; then
+    export NSH_SESSION_ID="${NSH_WRAP_SESSION_ID:-__SESSION_ID__}"
+    export NSH_TTY="${NSH_ORIG_TTY:-$(tty)}"
+    export NSH_HISTFILE="${HISTFILE:-$HOME/.bash_history}"
+    export __NSH_SESSION_OWNER_PID="$$"
+
+    if [[ -f "$HOME/.nsh/update_notice" ]]; then
+        command rm -f -- "$HOME/.nsh/update_notice" 2>/dev/null
+    fi
+
+    __nsh_restore_last_cwd
+
+    nsh session start --session "$NSH_SESSION_ID" --tty "$NSH_TTY" --shell "bash" --pid "$$" >/dev/null 2>&1 &
+    disown 2>/dev/null
+fi
+
 trap '__nsh_cleanup' EXIT
+
+# ── Post-init hook integrity check ──────────────────────
+for _nsh_fn in __nsh_prompt_command __nsh_check_pending __nsh_debug_trap; do
+    if ! declare -F "$_nsh_fn" >/dev/null 2>&1; then
+        printf '\x1b[31mnsh: critical: hook function %s not defined after init — shell integration broken\x1b[0m\n' "$_nsh_fn" >&2
+    fi
+done
+unset _nsh_fn

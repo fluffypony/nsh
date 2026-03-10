@@ -74,11 +74,12 @@ fn main() {
     let hook_hash = format!("{:016x}", stable_fnv1a(&combined));
     println!("cargo:rustc-env=NSH_HOOK_HASH={hook_hash}");
 
-    // Re-run build script if shell scripts change
+    // Re-run build script if shell scripts or init logic change
     println!("cargo:rerun-if-changed=shell/nsh.zsh");
     println!("cargo:rerun-if-changed=shell/nsh.bash");
     println!("cargo:rerun-if-changed=shell/nsh.fish");
     println!("cargo:rerun-if-changed=shell/nsh.ps1");
+    println!("cargo:rerun-if-changed=src/init.rs");
 }
 
 fn git_short_sha() -> Option<String> {

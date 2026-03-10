@@ -11,17 +11,9 @@ if (-not $IsWindows -and -not $env:NSH_PTY_ACTIVE -and -not $env:NSH_NO_WRAP) {
     return
 }
 
-if ($env:NSH_SESSION_ID) {
-    return
-}
-
-$env:NSH_SESSION_ID = if ($env:NSH_WRAP_SESSION_ID) { $env:NSH_WRAP_SESSION_ID } else { "__SESSION_ID__" }
-$env:NSH_PTY_ACTIVE = "0"
+# ── Always-run: exports, functions, prompt ──────────────
 $env:NSH_HOOK_HASH = "__HOOK_HASH__"
 $env:NSH_HOOKS_VERSION = "__NSH_VERSION__"
-$global:NshLastRestartWarn = $null
-$global:NshLastUpdateNotify = $null
-$global:NshCmdCounter = 0
 
 function global:? {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$args)
@@ -80,8 +72,20 @@ if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
     }
 }
 
-Register-EngineEvent PowerShell.Exiting -Action {
-    try {
-        nsh session end --session "$env:NSH_SESSION_ID" 2>$null
-    } catch {}
-} | Out-Null
+# ── Session init (ONE TIME ONLY) ────────────────────────
+if (-not $env:NSH_SESSION_ID) {
+    $env:NSH_SESSION_ID = if ($env:NSH_WRAP_SESSION_ID) { $env:NSH_WRAP_SESSION_ID } else { "__SESSION_ID__" }
+    $env:NSH_PTY_ACTIVE = "0"
+    $env:__NSH_SESSION_OWNER_PID = $PID
+    $global:NshLastRestartWarn = $null
+    $global:NshLastUpdateNotify = $null
+    $global:NshCmdCounter = 0
+
+    Register-EngineEvent PowerShell.Exiting -Action {
+        if ($PID -eq $env:__NSH_SESSION_OWNER_PID) {
+            try {
+                nsh session end --session "$env:NSH_SESSION_ID" 2>$null
+            } catch {}
+        }
+    } | Out-Null
+}

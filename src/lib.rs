@@ -117,6 +117,27 @@ pub fn main_inner() -> anyhow::Result<()> {
 
     security::secure_nsh_directory();
 
+    // ── Build fingerprint checkpoint ───────────────────────
+    // Deterministic: fires on the FIRST invocation after any binary change.
+    // No cooldowns, no polling intervals.
+    {
+        let nsh_dir = config::Config::nsh_dir();
+        let fp_path = nsh_dir.join("build.fingerprint");
+        let current_fp = env!("NSH_BUILD_FINGERPRINT");
+        let stored_fp = std::fs::read_to_string(&fp_path).unwrap_or_default();
+        if stored_fp.trim() != current_fp {
+            let _ = std::fs::create_dir_all(&nsh_dir);
+            let _ = std::fs::write(&fp_path, current_fp);
+            // Signal daemon restart if running a different build
+            if daemon_client::is_global_daemon_running() {
+                daemon_client::signal_daemon_restart();
+            }
+            // Write hook update notice for shells to reload on next prompt
+            let notice = nsh_dir.join("update_notice");
+            let _ = std::fs::write(&notice, "hooks_updated");
+        }
+    }
+
     let cli = Cli::parse();
 
     if let Commands::Nshd = cli.command {
@@ -300,20 +321,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             shell,
         } => {
             let session_for_checks = session.clone();
-            // Zero-cost hook hash check: if the shell-exported hash mismatches the embedded one,
-            // write a one-shot update notice for shells to reload hooks.
-            if let Ok(env_hash) = std::env::var("NSH_HOOK_HASH") {
-                if !env_hash.is_empty() && env_hash != env!("NSH_HOOK_HASH") {
-                    let dir = config::Config::nsh_dir();
-                    let notice = dir.join("update_notice");
-                    let tmp = dir.join("update_notice.tmp");
-                    let _ = std::fs::write(&tmp, "hooks_updated");
-                    let _ = std::fs::rename(&tmp, &notice);
-                    // Also notify the current session immediately via per-session message file
-                    let msg_path = dir.join(format!("nsh_msg_{}", session));
-                    let _ = std::fs::write(&msg_path, "hooks_updated\n");
-                }
-            }
+            maybe_stage_hook_reload_notice(Some(&session));
             let request = daemon::DaemonRequest::Record {
                 session: session.clone(),
                 command,
@@ -983,6 +991,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 let _ = fast_cwd::update_tty_cwd(tty, cwd);
             }
 
+            // Hook hash check for Record and Heartbeat actions
+            if matches!(&action, DaemonSendAction::Record { .. } | DaemonSendAction::Heartbeat { .. }) {
+                maybe_stage_hook_reload_notice(Some(&session_id));
+            }
+
             let request = match &action {
                 DaemonSendAction::Record {
                     session,
@@ -1257,7 +1270,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             };
 
             eprintln!("nsh status:");
-            eprintln!("  Client:     {build_version}");
+            eprintln!("  Core:       {build_version}");
             // Show daemon version
             if let Ok(daemon::DaemonResponse::Ok { data: Some(d) }) =
                 daemon_client::send_to_global(&daemon::DaemonRequest::Status)
@@ -1332,13 +1345,24 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             let hooks_outdated = std::env::var("NSH_HOOK_HASH")
                 .map(|h| h != env!("NSH_HOOK_HASH"))
                 .unwrap_or(false);
+            if hooks_outdated {
+                // Ensure update_notice exists so shells auto-reload on next prompt
+                let notice = config::Config::nsh_dir().join("update_notice");
+                if !notice.exists() {
+                    let _ = std::fs::write(&notice, "hooks_updated");
+                }
+            }
             eprintln!(
                 "  Hooks:      {}",
                 if hooks_outdated {
-                    "outdated (run `exec $SHELL` or open new terminal)"
+                    "outdated (auto-refresh pending \u{2014} will reload on next prompt)"
                 } else {
                     "current"
                 }
+            );
+            // Also trigger hook reload notice from status command
+            maybe_stage_hook_reload_notice(
+                std::env::var("NSH_SESSION_ID").ok().as_deref()
             );
         }
         Commands::Completions { shell } => {
@@ -1620,6 +1644,24 @@ fn redact_config_keys(val: &mut toml::Value) {
             }
         }
         _ => {}
+    }
+}
+
+fn maybe_stage_hook_reload_notice(session: Option<&str>) {
+    if let Ok(env_hash) = std::env::var("NSH_HOOK_HASH") {
+        if !env_hash.is_empty() && env_hash != env!("NSH_HOOK_HASH") {
+            let dir = config::Config::nsh_dir();
+            // Atomic write of update_notice
+            let notice = dir.join("update_notice");
+            let tmp = dir.join("update_notice.tmp");
+            let _ = std::fs::write(&tmp, "hooks_updated");
+            let _ = std::fs::rename(&tmp, &notice);
+            // Also notify the current session via per-session message file
+            if let Some(sess) = session {
+                let msg_path = dir.join(format!("nsh_msg_{}", sess));
+                let _ = std::fs::write(&msg_path, "hooks_updated\n");
+            }
+        }
     }
 }
 

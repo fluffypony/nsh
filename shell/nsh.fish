@@ -98,96 +98,15 @@ function __nsh_emit_iterm2_cwd
     printf '\033]7;file://%s%s\033\\' $host $path
 end
 
-# ── Nested shell guard ──────────────────────────────────
-if set -q NSH_SESSION_ID
-    __nsh_load_suppressed_exit_codes
-    function nsh_query --wraps='nsh query --'
-        builtin history add -- "? $argv" 2>/dev/null
-        __nsh_clear_pending_command
-        __nsh_query_ignore_exit_code $argv; and return 0
-        command nsh query -- $argv
-    end
-    function nsh_query_think --wraps='nsh query --think --'
-        builtin history add -- "?? $argv" 2>/dev/null
-        __nsh_clear_pending_command
-        __nsh_query_ignore_exit_code $argv; and return 0
-        command nsh query --think -- $argv
-    end
-    function nsh_query_private --wraps='nsh query --private --'
-        builtin history add -- "?! $argv" 2>/dev/null
-        __nsh_clear_pending_command
-        __nsh_query_ignore_exit_code $argv; and return 0
-        command nsh query --private -- $argv
-    end
-    abbr -a '?' -- 'nsh_query'
-    abbr -a '??' -- 'nsh_query_think'
-    abbr -a '?!' -- 'nsh_query_private'
-    return 0
-end
-
-if set -q NSH_WRAP_SESSION_ID
-    set -gx NSH_SESSION_ID "$NSH_WRAP_SESSION_ID"
-else
-    set -gx NSH_SESSION_ID "__SESSION_ID__"
-end
-if set -q NSH_ORIG_TTY
-    set -gx NSH_TTY "$NSH_ORIG_TTY"
-else
-    set -gx NSH_TTY (tty)
-end
-set -gx NSH_HISTFILE ~/.local/share/fish/fish_history
-set -gx NSH_HOOK_HASH "__HOOK_HASH__"
-set -gx NSH_HOOKS_VERSION "__NSH_VERSION__"
-set -g __nsh_last_restart_warn 0
-set -g __nsh_last_update_notify 0
-set -g __nsh_cmd_counter 0
-__nsh_load_suppressed_exit_codes
-
+# ── CWD restore helper (definition only) ────────────────
 function __nsh_restore_last_cwd
     set -l restore_cwd (command nsh session last-cwd --tty "$NSH_TTY" 2>/dev/null)
     if test -n "$restore_cwd"; and test -d "$restore_cwd"; and test "$PWD" != "$restore_cwd"
         builtin cd -- "$restore_cwd" 2>/dev/null
     end
 end
-__nsh_restore_last_cwd
 
-# Start session asynchronously
-nsh session start --session $NSH_SESSION_ID --tty $NSH_TTY --shell fish --pid $fish_pid &>/dev/null &
-disown 2>/dev/null
-
-# ── Abbreviations for ? and ?? ──────────────────────────
-function nsh_query --wraps='nsh query --'
-    builtin history add -- "? $argv" 2>/dev/null
-    __nsh_clear_pending_command
-    __nsh_query_ignore_exit_code $argv; and return 0
-    command nsh query -- $argv
-end
-function nsh_query_think --wraps='nsh query --think --'
-    builtin history add -- "?? $argv" 2>/dev/null
-    __nsh_clear_pending_command
-    __nsh_query_ignore_exit_code $argv; and return 0
-    command nsh query --think -- $argv
-end
-function nsh_query_private --wraps='nsh query --private --'
-    builtin history add -- "?! $argv" 2>/dev/null
-    __nsh_clear_pending_command
-    __nsh_query_ignore_exit_code $argv; and return 0
-    command nsh query --private -- $argv
-end
-abbr -a '?' -- 'nsh_query'
-abbr -a '??' -- 'nsh_query_think'
-abbr -a '?!' -- 'nsh_query_private'
-
-# ── State variables ─────────────────────────────────────
-set -g __nsh_cmd ""
-set -g __nsh_cmd_start ""
-set -g __nsh_cwd ""
-set -g __nsh_last_recorded_cmd ""
-set -g __nsh_last_recorded_start ""
-set -g __nsh_pending_cmd ""
-set -g __nsh_last_heartbeat 0
-
-# ── preexec: fires BEFORE each command executes ─────────
+# ── Hook functions (ALWAYS defined unconditionally) ─────
 function __nsh_preexec --on-event fish_preexec
     set -g __nsh_cmd $argv[1]
     set -g __nsh_cmd_start (date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -205,7 +124,6 @@ function __nsh_preexec --on-event fish_preexec
     end
 end
 
-# ── postexec: fires AFTER each command completes ────────
 function __nsh_postexec --on-event fish_postexec
     set -l exit_code $status
     set -l cmd $__nsh_cmd
@@ -385,12 +303,84 @@ function __nsh_check_pending --on-event fish_prompt
     end
 end
 
-# ── Cleanup on exit ─────────────────────────────────────
+# ── Cleanup (with session-owner guard) ──────────────────
 function __nsh_cleanup --on-event fish_exit
-    nsh session end --session $NSH_SESSION_ID 2>/dev/null
-    # Remove per-TTY CWD file
-    if set -q NSH_TTY
-        set -l _tty_safe (string replace -a '/' '_' "$NSH_TTY")
-        command rm -f "$HOME/.nsh/cwd_$_tty_safe" 2>/dev/null
+    if test "$fish_pid" = "$__NSH_SESSION_OWNER_PID"
+        nsh session end --session $NSH_SESSION_ID 2>/dev/null
+        if set -q NSH_TTY
+            set -l _tty_safe (string replace -a '/' '_' "$NSH_TTY")
+            command rm -f "$HOME/.nsh/cwd_$_tty_safe" 2>/dev/null
+        end
+    end
+end
+
+# ── Always-run: exports, abbreviations ──────────────────
+set -gx NSH_HOOK_HASH "__HOOK_HASH__"
+set -gx NSH_HOOKS_VERSION "__NSH_VERSION__"
+set -g __nsh_last_restart_warn 0
+set -g __nsh_last_update_notify 0
+set -g __nsh_cmd_counter 0
+__nsh_load_suppressed_exit_codes
+
+function nsh_query --wraps='nsh query --'
+    builtin history add -- "? $argv" 2>/dev/null
+    __nsh_clear_pending_command
+    __nsh_query_ignore_exit_code $argv; and return 0
+    command nsh query -- $argv
+end
+function nsh_query_think --wraps='nsh query --think --'
+    builtin history add -- "?? $argv" 2>/dev/null
+    __nsh_clear_pending_command
+    __nsh_query_ignore_exit_code $argv; and return 0
+    command nsh query --think -- $argv
+end
+function nsh_query_private --wraps='nsh query --private --'
+    builtin history add -- "?! $argv" 2>/dev/null
+    __nsh_clear_pending_command
+    __nsh_query_ignore_exit_code $argv; and return 0
+    command nsh query --private -- $argv
+end
+abbr -a '?' -- 'nsh_query'
+abbr -a '??' -- 'nsh_query_think'
+abbr -a '?!' -- 'nsh_query_private'
+
+# ── State variables ─────────────────────────────────────
+set -g __nsh_cmd ""
+set -g __nsh_cmd_start ""
+set -g __nsh_cwd ""
+set -g __nsh_last_recorded_cmd ""
+set -g __nsh_last_recorded_start ""
+set -g __nsh_pending_cmd ""
+set -g __nsh_last_heartbeat 0
+
+# ── Session init (ONE TIME ONLY) ────────────────────────
+if not set -q NSH_SESSION_ID
+    if set -q NSH_WRAP_SESSION_ID
+        set -gx NSH_SESSION_ID "$NSH_WRAP_SESSION_ID"
+    else
+        set -gx NSH_SESSION_ID "__SESSION_ID__"
+    end
+    if set -q NSH_ORIG_TTY
+        set -gx NSH_TTY "$NSH_ORIG_TTY"
+    else
+        set -gx NSH_TTY (tty)
+    end
+    set -gx NSH_HISTFILE ~/.local/share/fish/fish_history
+    set -gx __NSH_SESSION_OWNER_PID $fish_pid
+
+    if test -f "$HOME/.nsh/update_notice"
+        command rm -f "$HOME/.nsh/update_notice" 2>/dev/null
+    end
+
+    __nsh_restore_last_cwd
+
+    nsh session start --session $NSH_SESSION_ID --tty $NSH_TTY --shell fish --pid $fish_pid &>/dev/null &
+    disown 2>/dev/null
+end
+
+# ── Post-init hook integrity check ──────────────────────
+for _nsh_fn in __nsh_preexec __nsh_postexec __nsh_check_pending
+    if not functions -q $_nsh_fn
+        printf '\x1b[31mnsh: critical: hook function %s not defined after init — shell integration broken\x1b[0m\n' $_nsh_fn >&2
     end
 end

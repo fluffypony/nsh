@@ -307,36 +307,38 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
         .unwrap_or_default()
         .as_secs();
     let last = LAST_VERSION_CHECK.load(AtomicOrdering::Relaxed);
-    if now.saturating_sub(last) < 60 {
+    if now.saturating_sub(last) < 10 {
         return Ok(());
     }
     LAST_VERSION_CHECK.store(now, AtomicOrdering::Relaxed);
     let our_version = env!("CARGO_PKG_VERSION");
     let our_build = env!("NSH_BUILD_VERSION");
+    let our_fingerprint = env!("NSH_BUILD_FINGERPRINT");
     if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
         send_to_global(&crate::daemon::DaemonRequest::Status)
     {
         let daemon_ver = d.get("version").and_then(|v| v.as_str());
         let daemon_build = d.get("build_version").and_then(|v| v.as_str());
+        let daemon_fingerprint = d.get("build_fingerprint").and_then(|v| v.as_str());
 
         let version_mismatch = daemon_ver != Some(our_version);
         let build_mismatch = match daemon_build {
             Some(b) => b != our_build,
             None => false, // if build not reported, don't flap; version check still applies
         };
+        let fingerprint_mismatch = match daemon_fingerprint {
+            Some(f) => f != our_fingerprint,
+            None => true, // Missing fingerprint = assume mismatch (old daemon)
+        };
 
-        if version_mismatch || build_mismatch {
+        if version_mismatch || build_mismatch || fingerprint_mismatch {
             tracing::info!(
-                "daemon restart: version_mismatch={} build_mismatch={} (daemon_ver={:?}, daemon_build={:?}, our_ver={}, our_build={})",
+                "daemon version/build mismatch detected, performing stop+restart (ver={} build={} fp={})",
                 version_mismatch,
                 build_mismatch,
-                daemon_ver,
-                daemon_build,
-                our_version,
-                our_build
+                fingerprint_mismatch,
             );
-            let _ = signal_daemon_restart();
-            // Allow a short window for graceful drain and re-exec, then ensure running
+            stop_global_daemon();
             std::thread::sleep(std::time::Duration::from_millis(500));
             let _ = ensure_global_daemon_running();
         }
@@ -353,7 +355,7 @@ pub fn signal_daemon_restart() -> bool {
         let lockfile = crate::config::Config::nsh_dir().join("restart.lock");
         if let Ok(meta) = std::fs::metadata(&lockfile) {
             if let Ok(modified) = meta.modified() {
-                if modified.elapsed().map(|d| d.as_secs() < 60).unwrap_or(false) {
+                if modified.elapsed().map(|d| d.as_secs() < 10).unwrap_or(false) {
                     tracing::debug!("restart.lock fresh; skipping SIGHUP");
                     return false;
                 }

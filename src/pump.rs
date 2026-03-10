@@ -926,6 +926,8 @@ fn handle_local_capture_request(
         crate::daemon::DaemonRequest::Status => {
             crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
+                "build_version": env!("NSH_BUILD_VERSION"),
+                "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
                 "pid": std::process::id(),
                 "daemon_type": "per_session",
             }))

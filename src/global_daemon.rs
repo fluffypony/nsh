@@ -467,7 +467,19 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         } else if let Ok(exe) = std::env::current_exe() {
             exe
         } else {
-            return Ok(());
+            // Fallback: try cargo bin location
+            let cargo_home = std::env::var("CARGO_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    dirs::home_dir().unwrap_or_default().join(".cargo")
+                });
+            let cargo_nsh = cargo_home.join("bin").join("nsh");
+            if cargo_nsh.exists() {
+                cargo_nsh
+            } else {
+                tracing::error!("cannot find binary for re-exec");
+                return Ok(());
+            }
         };
         // Write restart marker for startup cooldown
         let _ = std::fs::write(&restart_marker, chrono::Utc::now().to_rfc3339());
@@ -1379,6 +1391,8 @@ fn execute_read(
         }
         DaemonRequest::Status => DaemonResponse::ok_with_data(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
+            "build_version": env!("NSH_BUILD_VERSION"),
+            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
             "pid": std::process::id(),
             "daemon_type": "global",
         })),
