@@ -58,7 +58,6 @@ fn spinner_frames() -> &'static [String] {
     })
 }
 
-#[allow(dead_code)]
 pub fn show_spinner() {
     SPINNER_ACTIVE.store(true, Ordering::SeqCst);
     let handle = std::thread::spawn(move || {
@@ -153,11 +152,9 @@ pub async fn consume_stream(
     hide_spinner();
     LAST_STREAM_HAD_TEXT.store(false, Ordering::SeqCst);
     let mut is_streaming = false;
-    let mut json_display = if JSON_OUTPUT.load(Ordering::SeqCst) {
-        Some(crate::json_display::JsonDisplay::new())
-    } else {
-        None
-    };
+    let mut json_display = JSON_OUTPUT
+        .load(Ordering::SeqCst)
+        .then_some(crate::json_display::JsonDisplay);
     let color = chat_color().to_string();
     let (msg, _usage) = crate::stream_consumer::consume_stream(rx, cancelled, &mut |event| {
         if let Some(display) = json_display.as_mut() {

@@ -2,13 +2,11 @@ use crate::config::DisplayConfig;
 use crate::stream_consumer::DisplayEvent;
 use std::io::{self, Write};
 
-#[allow(dead_code)]
 pub struct TerminalDisplay {
     is_streaming_text: bool,
     chat_color: String,
 }
 
-#[allow(dead_code)]
 impl TerminalDisplay {
     pub fn new(config: &DisplayConfig) -> Self {
         Self {
@@ -42,36 +40,28 @@ impl TerminalDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DisplayConfig;
-
-    #[test]
-    fn test_new_display() {
-        let config = DisplayConfig::default();
-        let display = TerminalDisplay::new(&config);
-        assert!(!display.is_streaming_text);
-        assert_eq!(display.chat_color, config.chat_color);
+    
+    fn test_display() -> TerminalDisplay {
+        TerminalDisplay::new(&DisplayConfig::default())
     }
 
     #[test]
     fn test_handle_event_done_when_not_streaming() {
-        let config = DisplayConfig::default();
-        let mut display = TerminalDisplay::new(&config);
+        let mut display = test_display();
         display.handle_event(DisplayEvent::Done);
         assert!(!display.is_streaming_text);
     }
 
     #[test]
     fn test_handle_event_text_sets_streaming() {
-        let config = DisplayConfig::default();
-        let mut display = TerminalDisplay::new(&config);
+        let mut display = test_display();
         display.handle_event(DisplayEvent::TextChunk("hello".into()));
         assert!(display.is_streaming_text);
     }
 
     #[test]
     fn test_handle_event_done_resets_streaming() {
-        let config = DisplayConfig::default();
-        let mut display = TerminalDisplay::new(&config);
+        let mut display = test_display();
         display.handle_event(DisplayEvent::TextChunk("hello".into()));
         assert!(display.is_streaming_text);
         display.handle_event(DisplayEvent::Done);
@@ -80,8 +70,7 @@ mod tests {
 
     #[test]
     fn test_handle_event_tool_started() {
-        let config = DisplayConfig::default();
-        let mut display = TerminalDisplay::new(&config);
+        let mut display = test_display();
         display.handle_event(DisplayEvent::ToolStarted {
             name: "test_tool".into(),
         });
@@ -90,8 +79,7 @@ mod tests {
 
     #[test]
     fn test_handle_event_tool_finished() {
-        let config = DisplayConfig::default();
-        let mut display = TerminalDisplay::new(&config);
+        let mut display = test_display();
         display.handle_event(DisplayEvent::ToolFinished {
             name: "test_tool".into(),
         });

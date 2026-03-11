@@ -1,15 +1,9 @@
 use crate::stream_consumer::DisplayEvent;
 use std::io::{self, Write};
 
-#[allow(dead_code)]
 pub struct JsonDisplay;
 
-#[allow(dead_code)]
 impl JsonDisplay {
-    pub fn new() -> Self {
-        Self
-    }
-
     pub fn handle_event(&mut self, event: DisplayEvent) {
         let json = match event {
             DisplayEvent::TextChunk(text) => {
@@ -33,7 +27,7 @@ impl JsonDisplay {
 
 impl Default for JsonDisplay {
     fn default() -> Self {
-        Self::new()
+        Self
     }
 }
 
@@ -42,13 +36,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_json_display_new() {
-        let _d = JsonDisplay::new();
-    }
-
-    #[test]
     fn test_json_display_handles_all_events() {
-        let mut d = JsonDisplay::new();
+        let mut d = JsonDisplay;
         d.handle_event(DisplayEvent::TextChunk("hi".into()));
         d.handle_event(DisplayEvent::ToolStarted {
             name: "test_tool".into(),
