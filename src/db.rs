@@ -355,6 +355,16 @@ pub struct Db {
     max_output_bytes: usize,
 }
 
+pub struct ResourceMemoryWrite<'a> {
+    pub resource_type: &'a str,
+    pub file_path: Option<&'a str>,
+    pub file_hash: Option<&'a str>,
+    pub title: &'a str,
+    pub summary: &'a str,
+    pub content: Option<&'a str>,
+    pub search_keywords: &'a str,
+}
+
 #[allow(dead_code)]
 impl Db {
     fn to_fts_literal_query(query: &str) -> String {
@@ -919,38 +929,41 @@ impl Db {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn store_resource_memory(
-        &self,
-        resource_type: &str,
-        file_path: Option<&str>,
-        file_hash: Option<&str>,
-        title: &str,
-        summary: &str,
-        content: Option<&str>,
-        search_keywords: &str,
-    ) -> anyhow::Result<String> {
-        if let Some(path) = file_path {
+    pub fn store_resource_memory(&self, resource: &ResourceMemoryWrite<'_>) -> anyhow::Result<String> {
+        if let Some(path) = resource.file_path {
+            let hash = resource
+                .file_hash
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "store_resource_memory requires non-empty file_hash when file_path is set"
+                    )
+                })?;
             crate::memory::store::resource::upsert_by_path(
                 &self.conn,
-                resource_type,
-                path,
-                file_hash.unwrap_or(""),
-                title,
-                summary,
-                content,
-                search_keywords,
+                &crate::memory::store::resource::ResourceWrite {
+                    resource_type: resource.resource_type,
+                    file_path: Some(path),
+                    file_hash: Some(hash),
+                    title: resource.title,
+                    summary: resource.summary,
+                    content: resource.content,
+                    search_keywords: resource.search_keywords,
+                },
             )
         } else {
             crate::memory::store::resource::insert(
                 &self.conn,
-                resource_type,
-                None,
-                file_hash,
-                title,
-                summary,
-                content,
-                search_keywords,
+                &crate::memory::store::resource::ResourceWrite {
+                    resource_type: resource.resource_type,
+                    file_path: None,
+                    file_hash: resource.file_hash,
+                    title: resource.title,
+                    summary: resource.summary,
+                    content: resource.content,
+                    search_keywords: resource.search_keywords,
+                },
             )
         }
     }
@@ -1275,8 +1288,14 @@ impl Db {
             all_params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             let sensitivity_str: String = row.get(4)?;
-            let sensitivity = crate::memory::types::Sensitivity::parse(&sensitivity_str)
-                .map_err(|_| rusqlite::Error::InvalidColumnType(4, "sensitivity".into(), rusqlite::types::Type::Text))?;
+            let sensitivity =
+                crate::memory::types::Sensitivity::parse(&sensitivity_str).map_err(|_| {
+                    rusqlite::Error::InvalidColumnType(
+                        4,
+                        "sensitivity".into(),
+                        rusqlite::types::Type::Text,
+                    )
+                })?;
             Ok(crate::memory::types::KnowledgeEntry {
                 id: row.get(0)?,
                 entry_type: row.get(1)?,

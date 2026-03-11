@@ -3,7 +3,7 @@ use anyhow::anyhow;
 use crate::daemon::{DaemonRequest, DaemonResponse};
 use crate::db::{
     CommandEntityMatch, CommandForSummary, CommandWithSummary, ConversationExchange, Db,
-    HistoryMatch, OtherSessionSummary,
+    HistoryMatch, OtherSessionSummary, ResourceMemoryWrite,
 };
 use crate::memory::types::{MemoryOp, MemoryType};
 
@@ -307,12 +307,12 @@ impl DbAccess for Db {
                 details,
                 search_keywords,
             } => self.store_semantic_memory(
-                    &name,
-                    &category,
-                    &summary,
-                    details.as_deref(),
-                    &search_keywords,
-                )?,
+                &name,
+                &category,
+                &summary,
+                details.as_deref(),
+                &search_keywords,
+            )?,
             MemoryOp::ProceduralInsert {
                 entry_type,
                 trigger_pattern,
@@ -320,12 +320,12 @@ impl DbAccess for Db {
                 steps,
                 search_keywords,
             } => self.store_procedural_memory(
-                    &entry_type,
-                    &trigger_pattern,
-                    &summary,
-                    &steps,
-                    &search_keywords,
-                )?,
+                &entry_type,
+                &trigger_pattern,
+                &summary,
+                &steps,
+                &search_keywords,
+            )?,
             MemoryOp::ResourceInsert {
                 resource_type,
                 file_path,
@@ -334,15 +334,15 @@ impl DbAccess for Db {
                 summary,
                 content,
                 search_keywords,
-            } => self.store_resource_memory(
-                    &resource_type,
-                    file_path.as_deref(),
-                    file_hash.as_deref(),
-                    &title,
-                    &summary,
-                    content.as_deref(),
-                    &search_keywords,
-                )?,
+            } => self.store_resource_memory(&ResourceMemoryWrite {
+                resource_type: &resource_type,
+                file_path: file_path.as_deref(),
+                file_hash: file_hash.as_deref(),
+                title: &title,
+                summary: &summary,
+                content: content.as_deref(),
+                search_keywords: &search_keywords,
+            })?,
             MemoryOp::KnowledgeInsert {
                 entry_type,
                 caption,
@@ -392,7 +392,10 @@ fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::
             name: required("name")?,
             category: required("category")?,
             summary: required("summary")?,
-            details: obj.get("details").and_then(|v| v.as_str()).map(str::to_string),
+            details: obj
+                .get("details")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             search_keywords: required("search_keywords")?,
         }),
         MemoryType::Procedural => {
@@ -416,11 +419,20 @@ fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::
         }
         MemoryType::Resource => Ok(MemoryOp::ResourceInsert {
             resource_type: required("resource_type")?,
-            file_path: obj.get("file_path").and_then(|v| v.as_str()).map(str::to_string),
-            file_hash: obj.get("file_hash").and_then(|v| v.as_str()).map(str::to_string),
+            file_path: obj
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            file_hash: obj
+                .get("file_hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             title: required("title")?,
             summary: required("summary")?,
-            content: obj.get("content").and_then(|v| v.as_str()).map(str::to_string),
+            content: obj
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             search_keywords: required("search_keywords")?,
         }),
         MemoryType::Knowledge => Ok(MemoryOp::KnowledgeInsert {
@@ -435,7 +447,10 @@ fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::
             search_keywords: required("search_keywords")?,
         }),
         MemoryType::Episodic | MemoryType::Core => {
-            anyhow::bail!("memory store does not support type '{}'; use dedicated APIs", memory_type.as_str())
+            anyhow::bail!(
+                "memory store does not support type '{}'; use dedicated APIs",
+                memory_type.as_str()
+            )
         }
     }
 }
@@ -1052,12 +1067,79 @@ mod tests {
 
         assert_eq!(db.list_all_semantic().expect("semantic list").len(), 1);
         assert_eq!(db.list_all_procedural().expect("procedural list").len(), 1);
-        assert_eq!(db.search_resource_fts("readme", 10).expect("resource search").len(), 1);
+        assert_eq!(
+            db.search_resource_fts("readme", 10)
+                .expect("resource search")
+                .len(),
+            1
+        );
         assert_eq!(
             db.search_knowledge_fts("token", 10, &["low", "medium", "high"])
                 .expect("knowledge search")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn db_memory_store_resource_rejects_path_without_hash() {
+        let db = Db::open_in_memory().expect("open in-memory db");
+
+        let err = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Resource,
+            r#"{"resource_type":"doc","file_path":"/tmp/readme.md","title":"README","summary":"docs","search_keywords":"readme docs"}"#,
+        )
+        .expect_err("resource with file_path but no file_hash should fail");
+
+        assert!(
+            err.to_string().contains("requires non-empty file_hash"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn db_memory_store_resource_rejects_path_with_blank_hash() {
+        let db = Db::open_in_memory().expect("open in-memory db");
+
+        let err = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Resource,
+            r#"{"resource_type":"doc","file_path":"/tmp/readme.md","file_hash":"   ","title":"README","summary":"docs","search_keywords":"readme docs"}"#,
+        )
+        .expect_err("resource with blank file_hash should fail");
+
+        assert!(
+            err.to_string().contains("requires non-empty file_hash"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn db_memory_store_resource_upserts_with_path_and_hash() {
+        let db = Db::open_in_memory().expect("open in-memory db");
+
+        let id1 = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Resource,
+            r#"{"resource_type":"doc","file_path":"/tmp/readme.md","file_hash":"hash-v1","title":"README","summary":"docs v1","search_keywords":"readme docs"}"#,
+        )
+        .expect("initial resource insert should succeed");
+
+        let id2 = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Resource,
+            r#"{"resource_type":"doc","file_path":"/tmp/readme.md","file_hash":"hash-v2","title":"README","summary":"docs v2","search_keywords":"readme docs"}"#,
+        )
+        .expect("upsert should succeed");
+
+        assert_eq!(id1, id2, "same file_path should upsert existing row");
+        assert_eq!(
+            db.search_resource_fts("docs", 10)
+                .expect("resource search")
+                .len(),
+            1,
+            "upsert should not duplicate rows"
         );
     }
 
