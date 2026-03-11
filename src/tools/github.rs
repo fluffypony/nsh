@@ -131,6 +131,15 @@ pub async fn execute(input: &serde_json::Value, config: &Config) -> anyhow::Resu
     }
 }
 
+pub async fn execute_with_context(
+    input: &serde_json::Value,
+    ctx: &crate::tools::ToolHandlerContext,
+) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
+    Ok(crate::tools::ToolInvocationOutcome::from_result(
+        execute(input, &ctx.config).await,
+    ))
+}
+
 // ─── fetch_readme ────────────────────────────────────────────────────
 
 async fn fetch_readme(

@@ -1,6 +1,7 @@
 pub mod ask_user;
 pub mod chat;
 pub mod command;
+pub mod github;
 pub mod glob;
 pub mod grep_file;
 pub mod install_mcp;
@@ -13,16 +14,64 @@ pub mod patch_file;
 pub mod read_file;
 pub mod run_command;
 pub mod search_history;
+pub mod skill_exists;
+pub mod uninstall_skill;
 pub mod web_search;
 pub mod write_file;
-pub mod github;
-pub mod uninstall_skill;
-pub mod skill_exists;
 
 use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::json;
+
+#[derive(Debug, Clone)]
+pub enum ToolInvocationOutcome {
+    Success(String),
+    Failure(String),
+}
+
+#[derive(Clone)]
+pub struct ToolHandlerContext {
+    pub config: crate::config::Config,
+}
+
+impl ToolHandlerContext {
+    pub fn new(config: &crate::config::Config) -> Self {
+        Self {
+            config: config.clone(),
+        }
+    }
+}
+
+impl ToolInvocationOutcome {
+    pub fn success(content: impl Into<String>) -> Self {
+        Self::Success(content.into())
+    }
+
+    pub fn failure(content: impl Into<String>) -> Self {
+        Self::Failure(content.into())
+    }
+
+    pub fn from_result(result: anyhow::Result<String>) -> Self {
+        match result {
+            Ok(content) => Self::Success(content),
+            Err(err) => Self::Failure(err.to_string()),
+        }
+    }
+
+    pub fn into_parts(self) -> (String, bool) {
+        match self {
+            Self::Success(content) => (content, false),
+            Self::Failure(content) => (content, true),
+        }
+    }
+
+    pub fn into_content(self) -> String {
+        match self {
+            Self::Success(content) | Self::Failure(content) => content,
+        }
+    }
+}
 
 #[cfg(test)]
 pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
@@ -35,8 +84,12 @@ pub fn default_timeout_for_tool(name: &str) -> u64 {
         "read_file" | "grep_file" | "list_directory" | "glob" => 15,
         "man_page" => 10,
         "list_tools" | "find_tools" => 10,
-        "search_history" | "search_memory" | "core_memory_append"
-        | "core_memory_rewrite" | "store_memory" | "retrieve_secret" => 15,
+        "search_history"
+        | "search_memory"
+        | "core_memory_append"
+        | "core_memory_rewrite"
+        | "store_memory"
+        | "retrieve_secret" => 15,
         "run_command" => 60,
         "web_search" | "github" => 45,
         "manage_config" | "install_skill" | "install_mcp_server" | "skill_exists"
@@ -116,7 +169,10 @@ pub fn validate_read_path_with_access(
                 if canonical.starts_with(&dir_canonical) {
                     if sensitive_file_access == "ask" {
                         let th = crate::tui::theme::current_theme();
-                        eprintln!("{}⚠ '{raw_path}' is in a sensitive directory{}", th.warning, th.reset);
+                        eprintln!(
+                            "{}⚠ '{raw_path}' is in a sensitive directory{}",
+                            th.warning, th.reset
+                        );
                         eprint!("{}Allow access? [y/N]{} ", th.warning, th.reset);
                         let _ = std::io::Write::flush(&mut std::io::stderr());
                         if read_tty_confirmation() {
@@ -424,8 +480,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "grep_file".into(),
-            description: "Search for a pattern in a file or read \
-                          specific lines."
+            description: "Search for a regex pattern in a file. \
+                          Use read_file to read file contents."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -436,8 +492,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "pattern": {
                         "type": "string",
-                        "description":
-                            "Regex pattern (omit to read the file)"
+                        "description": "Regex pattern to search for"
                     },
                     "context_lines": {
                         "type": "integer",
@@ -451,7 +506,7 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "default": 100
                     }
                 },
-                "required": ["path"]
+                "required": ["path", "pattern"]
             }),
         },
         ToolDefinition {
@@ -1573,10 +1628,14 @@ mod tests {
         let tools = all_tool_definitions();
         let gf = tools.iter().find(|t| t.name == "grep_file").unwrap();
         let props = gf.parameters["properties"].as_object().unwrap();
+        let required = gf.parameters["required"].as_array().unwrap();
         assert!(props.contains_key("path"));
         assert!(props.contains_key("pattern"));
         assert!(props.contains_key("context_lines"));
         assert!(props.contains_key("max_lines"));
+        assert_eq!(required.len(), 2);
+        assert!(required.contains(&serde_json::json!("path")));
+        assert!(required.contains(&serde_json::json!("pattern")));
         assert_eq!(props["context_lines"]["default"], 3);
         assert_eq!(props["max_lines"]["default"], 100);
     }

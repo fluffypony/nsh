@@ -1208,6 +1208,7 @@ pub async fn handle_query(
         if !parallel_calls.is_empty() {
             let mut futs: Vec<ToolFuture> = Vec::new();
             let mut input_map: HashMap<String, serde_json::Value> = HashMap::new();
+            let tool_ctx = tools::ToolHandlerContext::new(config);
 
             for (id, name, input) in parallel_calls {
                 input_map.insert(id.clone(), input.clone());
@@ -1235,7 +1236,7 @@ pub async fn handle_query(
                     }
                     "web_search" => {
                         let q = input["query"].as_str().unwrap_or("").to_string();
-                        let ws_cfg = config.clone();
+                        let ws_ctx = tool_ctx.clone();
                         let timeout = input
                             .get("expected_timeout_seconds")
                             .and_then(|v| v.as_u64())
@@ -1243,7 +1244,7 @@ pub async fn handle_query(
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
-                            let fut = tools::web_search::execute(&q, &ws_cfg);
+                            let fut = tools::web_search::execute_with_context(&q, &ws_ctx);
                             let result = match execute_with_timeout(
                                 fut,
                                 "web_search",
@@ -1253,7 +1254,7 @@ pub async fn handle_query(
                             )
                             .await
                             {
-                                Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
+                                Ok(Ok(outcome)) => Ok(outcome),
                                 Ok(Err(e)) => Err(format!("{e}")),
                                 Err(msg) => Err(msg),
                             };
@@ -1262,7 +1263,7 @@ pub async fn handle_query(
                     }
                     "github" => {
                         let input_clone = input.clone();
-                        let cfg_clone = config.clone();
+                        let github_ctx = tool_ctx.clone();
                         let timeout = input_clone
                             .get("expected_timeout_seconds")
                             .and_then(|v| v.as_u64())
@@ -1270,7 +1271,8 @@ pub async fn handle_query(
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
-                            let fut = crate::tools::github::execute(&input_clone, &cfg_clone);
+                            let fut =
+                                crate::tools::github::execute_with_context(&input_clone, &github_ctx);
                             let result = match execute_with_timeout(
                                 fut,
                                 "github",
@@ -1280,7 +1282,7 @@ pub async fn handle_query(
                             )
                             .await
                             {
-                                Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
+                                Ok(Ok(outcome)) => Ok(outcome),
                                 Ok(Err(e)) => Err(format!("{e}")),
                                 Err(msg) => Err(msg),
                             };
@@ -1570,7 +1572,20 @@ pub async fn handle_query(
             let results = futures::future::join_all(futs).await;
             for (id, name, result) in results {
                 let (content, is_error) = match result {
-                    Ok(outcome) => outcome.into_parts(),
+                    Ok(outcome) => {
+                        let (content, is_error) = outcome.into_parts();
+                        if is_error {
+                            display_tool_error(&content, opts.json_output);
+                            let enriched = if let Some(inp) = input_map.get(&id) {
+                                tool_health.enrich_error(&name, inp, &content)
+                            } else {
+                                content
+                            };
+                            (enriched, true)
+                        } else {
+                            (content, false)
+                        }
+                    }
                     Err(e) => {
                         display_tool_error(&e, opts.json_output);
                         let enriched = if let Some(inp) = input_map.get(&id) {
