@@ -574,9 +574,12 @@ fn cliproxy_status_includes_update_meta_fields() {
 
     // Seed DB meta with expected keys
     let db = nsh::db::Db::open().expect("db open");
-    db.set_meta("cliproxyapi_last_update_check", "2026-02-22T12:00:03Z").unwrap();
-    db.set_meta("cliproxyapi_last_update_status", "up_to_date").unwrap();
-    db.set_meta("cliproxyapi_installed_version", "6.6.80").unwrap();
+    db.set_meta("cliproxyapi_last_update_check", "2026-02-22T12:00:03Z")
+        .unwrap();
+    db.set_meta("cliproxyapi_last_update_status", "up_to_date")
+        .unwrap();
+    db.set_meta("cliproxyapi_installed_version", "6.6.80")
+        .unwrap();
 
     // Call the inline handler via the same route lib uses
     // We cannot easily spin the real daemon here; instead exercise the same
@@ -589,7 +592,16 @@ fn cliproxy_status_includes_update_meta_fields() {
         other => panic!("unexpected response: {other:?}"),
     };
 
-    assert!(resp.get("last_update_check").is_some(), "missing last_update_check");
-    assert!(resp.get("last_update_status").is_some(), "missing last_update_status");
-    assert!(resp.get("installed_version").is_some(), "missing installed_version");
+    assert!(
+        resp.get("last_update_check").is_some(),
+        "missing last_update_check"
+    );
+    assert!(
+        resp.get("last_update_status").is_some(),
+        "missing last_update_status"
+    );
+    assert!(
+        resp.get("installed_version").is_some(),
+        "missing installed_version"
+    );
 }

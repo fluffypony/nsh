@@ -13,24 +13,26 @@ pub struct OpenAICompatProvider {
     debug_provider_name: String,
 }
 
+pub struct OpenAICompatProviderConfig {
+    pub api_key: Zeroizing<String>,
+    pub base_url: String,
+    pub fallback_model: Option<String>,
+    pub extra_headers: Vec<(String, String)>,
+    pub timeout_seconds: u64,
+    pub debug_provider_name: String,
+}
+
 impl OpenAICompatProvider {
-    pub fn new(
-        api_key: Zeroizing<String>,
-        base_url: String,
-        fallback_model: Option<String>,
-        extra_headers: Vec<(String, String)>,
-        timeout_seconds: u64,
-        debug_provider_name: String,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: OpenAICompatProviderConfig) -> anyhow::Result<Self> {
         Ok(Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_seconds))
+                .timeout(std::time::Duration::from_secs(config.timeout_seconds))
                 .build()?,
-            api_key,
-            base_url,
-            fallback_model,
-            extra_headers,
-            debug_provider_name,
+            api_key: config.api_key,
+            base_url: config.base_url,
+            fallback_model: config.fallback_model,
+            extra_headers: config.extra_headers,
+            debug_provider_name: config.debug_provider_name,
         })
     }
 
@@ -765,14 +767,14 @@ mod tests {
     }
 
     fn make_provider() -> OpenAICompatProvider {
-        OpenAICompatProvider::new(
-            Zeroizing::new("test-key".into()),
-            "https://api.example.com".into(),
-            None,
-            vec![],
-            30,
-            "test".into(),
-        )
+        OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("test-key".into()),
+            base_url: "https://api.example.com".into(),
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
         .unwrap()
     }
 
@@ -1336,27 +1338,27 @@ mod tests {
 
     #[test]
     fn provider_new_constructs_successfully() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("key".into()),
-            "https://api.example.com".into(),
-            Some("fallback-model".into()),
-            vec![("X-Custom".into(), "val".into())],
-            60,
-            "test".into(),
-        );
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("key".into()),
+            base_url: "https://api.example.com".into(),
+            fallback_model: Some("fallback-model".into()),
+            extra_headers: vec![("X-Custom".into(), "val".into())],
+            timeout_seconds: 60,
+            debug_provider_name: "test".into(),
+        });
         assert!(provider.is_ok());
     }
 
     #[test]
     fn provider_new_zero_timeout() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("key".into()),
-            "http://localhost".into(),
-            None,
-            vec![],
-            0,
-            "test".into(),
-        );
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("key".into()),
+            base_url: "http://localhost".into(),
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 0,
+            debug_provider_name: "test".into(),
+        });
         assert!(provider.is_ok());
     }
 
@@ -1640,17 +1642,17 @@ mod tests {
 
     #[test]
     fn provider_new_with_fallback_and_extra_headers() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("sk-test".into()),
-            "https://openrouter.ai/api/v1".into(),
-            Some("gpt-3.5-turbo".into()),
-            vec![
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("sk-test".into()),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            fallback_model: Some("gpt-3.5-turbo".into()),
+            extra_headers: vec![
                 ("X-Title".into(), "MyApp".into()),
                 ("HTTP-Referer".into(), "https://example.com".into()),
             ],
-            120,
-            "test".into(),
-        );
+            timeout_seconds: 120,
+            debug_provider_name: "test".into(),
+        });
         assert!(provider.is_ok());
         let p = provider.unwrap();
         assert_eq!(p.base_url, "https://openrouter.ai/api/v1");
@@ -1733,14 +1735,14 @@ mod tests {
 
     #[test]
     fn build_http_request_sets_authorization_and_extra_headers() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("test-api-key".into()),
-            "https://api.example.com".into(),
-            None,
-            vec![("X-Custom".into(), "custom-val".into())],
-            30,
-            "test".into(),
-        )
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("test-api-key".into()),
+            base_url: "https://api.example.com".into(),
+            fallback_model: None,
+            extra_headers: vec![("X-Custom".into(), "custom-val".into())],
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
         .unwrap();
         let body = json!({"model": "gpt-4"});
         let req = provider.build_http_request(&body, "gpt-4");
@@ -1756,14 +1758,14 @@ mod tests {
 
     #[test]
     fn build_http_request_anthropic_openrouter_adds_beta_header() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("key".into()),
-            "https://openrouter.ai/api/v1".into(),
-            None,
-            vec![],
-            30,
-            "test".into(),
-        )
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("key".into()),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
         .unwrap();
         let body = json!({"model": "claude-3.5-sonnet"});
         let req = provider.build_http_request(&body, "claude-3.5-sonnet");
@@ -1776,14 +1778,14 @@ mod tests {
 
     #[test]
     fn build_http_request_anthropic_non_openrouter_no_beta_header() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("key".into()),
-            "https://api.anthropic.com".into(),
-            None,
-            vec![],
-            30,
-            "test".into(),
-        )
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("key".into()),
+            base_url: "https://api.anthropic.com".into(),
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
         .unwrap();
         let body = json!({"model": "claude-3.5-sonnet"});
         let req = provider.build_http_request(&body, "claude-3.5-sonnet");
@@ -1793,14 +1795,14 @@ mod tests {
 
     #[test]
     fn build_http_request_non_anthropic_openrouter_no_beta_header() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("key".into()),
-            "https://openrouter.ai/api/v1".into(),
-            None,
-            vec![],
-            30,
-            "test".into(),
-        )
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("key".into()),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
         .unwrap();
         let body = json!({"model": "gpt-4"});
         let req = provider.build_http_request(&body, "gpt-4");
@@ -1810,18 +1812,18 @@ mod tests {
 
     #[test]
     fn build_http_request_multiple_extra_headers() {
-        let provider = OpenAICompatProvider::new(
-            Zeroizing::new("key".into()),
-            "https://api.example.com".into(),
-            None,
-            vec![
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("key".into()),
+            base_url: "https://api.example.com".into(),
+            fallback_model: None,
+            extra_headers: vec![
                 ("X-First".into(), "one".into()),
                 ("X-Second".into(), "two".into()),
                 ("X-Third".into(), "three".into()),
             ],
-            30,
-            "test".into(),
-        )
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
         .unwrap();
         let body = json!({"model": "gpt-4"});
         let req = provider.build_http_request(&body, "gpt-4");

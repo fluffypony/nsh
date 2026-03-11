@@ -3,11 +3,11 @@
 pub mod ansi;
 pub mod audit;
 pub mod autoconfigure;
-pub mod cliproxyapi;
-pub mod update_checker;
 pub mod cli;
+pub mod cliproxyapi;
 pub mod coding_agent;
 pub mod config;
+pub mod connectivity;
 pub mod context;
 pub mod daemon;
 pub mod daemon_client;
@@ -42,11 +42,11 @@ pub mod skills;
 pub mod stream_consumer;
 pub mod streaming;
 pub mod summary;
-pub mod tools;
-pub mod util;
-pub mod tui;
-pub mod connectivity;
 pub mod tool_health;
+pub mod tools;
+pub mod tui;
+pub mod update_checker;
+pub mod util;
 
 pub mod shim;
 
@@ -197,7 +197,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::Init { shell, hash } => {
             // Log init starts for audit/debug tracing
             let sid = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(none)".into());
-            let init_json = serde_json::json!({"shell": shell, "hash": hash, "session_id": sid}).to_string();
+            let init_json =
+                serde_json::json!({"shell": shell, "hash": hash, "session_id": sid}).to_string();
             crate::debug_io::daemon_log("daemon.log", "init_start", &init_json);
             if hash {
                 println!("{}", env!("NSH_HOOK_HASH"));
@@ -923,11 +924,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                                 return Ok(());
                             }
                         };
-                        let _ = send_to_global_or_fallback(
-                            &daemon::DaemonRequest::MemoryClearByType {
+                        let _ =
+                            send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearByType {
                                 memory_type: parsed_type,
-                            },
-                        );
+                            });
                         eprintln!("{memory_type} memories cleared.");
                     } else {
                         let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearAll);
@@ -981,7 +981,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 DaemonSendAction::Record { session, .. } => session.clone(),
                 DaemonSendAction::Heartbeat { session } => session.clone(),
                 DaemonSendAction::CaptureMark { session } => session.clone(),
-                DaemonSendAction::Status | DaemonSendAction::CliProxyEnsure | DaemonSendAction::CliProxyStatus | DaemonSendAction::CliProxyRestart | DaemonSendAction::CheckUpdates => {
+                DaemonSendAction::Status
+                | DaemonSendAction::CliProxyEnsure
+                | DaemonSendAction::CliProxyStatus
+                | DaemonSendAction::CliProxyRestart
+                | DaemonSendAction::CheckUpdates => {
                     std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
                 }
             };
@@ -991,7 +995,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
             }
 
             // Hook hash check for Record and Heartbeat actions
-            if matches!(&action, DaemonSendAction::Record { .. } | DaemonSendAction::Heartbeat { .. }) {
+            if matches!(
+                &action,
+                DaemonSendAction::Record { .. } | DaemonSendAction::Heartbeat { .. }
+            ) {
                 maybe_stage_hook_reload_notice(Some(&session_id));
             }
 
@@ -1069,7 +1076,11 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         });
                     }
                     DaemonSendAction::CaptureMark { .. } => {}
-                    DaemonSendAction::Status | DaemonSendAction::CliProxyEnsure | DaemonSendAction::CliProxyStatus | DaemonSendAction::CliProxyRestart | DaemonSendAction::CheckUpdates => {
+                    DaemonSendAction::Status
+                    | DaemonSendAction::CliProxyEnsure
+                    | DaemonSendAction::CliProxyStatus
+                    | DaemonSendAction::CliProxyRestart
+                    | DaemonSendAction::CheckUpdates => {
                         eprintln!("nsh: daemon not running");
                     }
                 },
@@ -1275,7 +1286,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 daemon_client::send_to_global(&daemon::DaemonRequest::Status)
             {
                 let dv = d.get("version").and_then(|v| v.as_str()).unwrap_or("");
-                let bv = d.get("build_version").and_then(|v| v.as_str()).unwrap_or("");
+                let bv = d
+                    .get("build_version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if bv.is_empty() {
                     eprintln!("  Daemon:     v{dv}");
                 } else {
@@ -1332,7 +1346,9 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                         if last_check_pretty.is_empty() {
                             eprintln!("  Updates:    last_check={last_check} status={last_status}");
                         } else {
-                            eprintln!("  Updates:    last_check={last_check} ({last_check_pretty}) status={last_status}");
+                            eprintln!(
+                                "  Updates:    last_check={last_check} ({last_check_pretty}) status={last_status}"
+                            );
                         }
                     }
                 }
@@ -1360,9 +1376,7 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
             );
             // Also trigger hook reload notice from status command
-            maybe_stage_hook_reload_notice(
-                std::env::var("NSH_SESSION_ID").ok().as_deref()
-            );
+            maybe_stage_hook_reload_notice(std::env::var("NSH_SESSION_ID").ok().as_deref());
         }
         Commands::Completions { shell } => {
             use clap::CommandFactory;

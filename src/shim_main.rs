@@ -49,7 +49,11 @@ fn main() {
 }
 
 fn resolve_core() -> Option<std::path::PathBuf> {
-    let core_name = if cfg!(windows) { "nsh-core.exe" } else { "nsh-core" };
+    let core_name = if cfg!(windows) {
+        "nsh-core.exe"
+    } else {
+        "nsh-core"
+    };
 
     let find_core = |dir: &std::path::Path| -> Option<std::path::PathBuf> {
         let p = dir.join(core_name);
@@ -61,17 +65,16 @@ fn resolve_core() -> Option<std::path::PathBuf> {
     let managed_core = find_core(&managed_dir);
 
     // Sibling to current exe (cargo install puts nsh + nsh-core in the same dir)
-    let sibling_core = std::env::current_exe().ok()
+    let sibling_core = std::env::current_exe()
+        .ok()
         .and_then(|e| e.parent().map(|d| d.to_path_buf()))
         .and_then(|d| find_core(&d));
 
     // If both exist and are different paths, prefer the newer one and sync to managed location
     let core_path = match (&managed_core, &sibling_core) {
         (Some(managed), Some(sibling)) if managed != sibling => {
-            let managed_mtime = std::fs::metadata(managed)
-                .and_then(|m| m.modified()).ok();
-            let sibling_mtime = std::fs::metadata(sibling)
-                .and_then(|m| m.modified()).ok();
+            let managed_mtime = std::fs::metadata(managed).and_then(|m| m.modified()).ok();
+            let sibling_mtime = std::fs::metadata(sibling).and_then(|m| m.modified()).ok();
 
             match (managed_mtime, sibling_mtime) {
                 (Some(m_t), Some(s_t)) if s_t > m_t => {
@@ -90,7 +93,11 @@ fn resolve_core() -> Option<std::path::PathBuf> {
                         std::fs::rename(&tmp, managed).is_ok()
                     };
                     // If sync succeeded, use managed; otherwise use sibling directly
-                    if synced { managed.clone() } else { sibling.clone() }
+                    if synced {
+                        managed.clone()
+                    } else {
+                        sibling.clone()
+                    }
                 }
                 _ => managed.clone(), // Managed is newer or same (self-update case)
             }
@@ -105,14 +112,15 @@ fn resolve_core() -> Option<std::path::PathBuf> {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(
-                        &tmp,
-                        std::fs::Permissions::from_mode(0o755),
-                    );
+                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
                 }
                 std::fs::rename(&tmp, &managed_path).is_ok()
             };
-            if installed { managed_path } else { sibling.clone() }
+            if installed {
+                managed_path
+            } else {
+                sibling.clone()
+            }
         }
         (None, None) => return None,
     };

@@ -437,7 +437,8 @@ impl McpClient {
         for (server_name, server) in &self.servers {
             for tool in &server.tools {
                 // Apply disable/rename filters from config if available
-                let (mut disabled, mut rename): (Vec<String>, HashMap<String, String>) = (Vec::new(), HashMap::new());
+                let (mut disabled, mut rename): (Vec<String>, HashMap<String, String>) =
+                    (Vec::new(), HashMap::new());
                 if let Some(cfg) = crate::config::Config::load().ok().map(|c| c.mcp.servers) {
                     if let Some(sc) = cfg.get(server_name) {
                         disabled = sc.disable_tools.clone();
@@ -445,14 +446,23 @@ impl McpClient {
                     }
                 }
                 if disabled.iter().any(|s| {
-                    if s.is_empty() { return false; }
+                    if s.is_empty() {
+                        return false;
+                    }
                     // Support both substring and glob patterns
-                    if tool.name.contains(s) { return true; }
-                    glob::Pattern::new(s).map(|p| p.matches(&tool.name)).unwrap_or(false)
+                    if tool.name.contains(s) {
+                        return true;
+                    }
+                    glob::Pattern::new(s)
+                        .map(|p| p.matches(&tool.name))
+                        .unwrap_or(false)
                 }) {
                     continue;
                 }
-                let display_name = rename.get(&tool.name).cloned().unwrap_or_else(|| tool.name.clone());
+                let display_name = rename
+                    .get(&tool.name)
+                    .cloned()
+                    .unwrap_or_else(|| tool.name.clone());
                 defs.push(ToolDefinition {
                     name: format!("mcp_{server_name}_{}", display_name),
                     description: tool.description.clone(),

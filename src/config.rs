@@ -1381,7 +1381,10 @@ pub fn build_config_xml(
     opt(
         &mut x,
         "autorun_response_timeout_seconds",
-        &config.execution.autorun_response_timeout_seconds.to_string(),
+        &config
+            .execution
+            .autorun_response_timeout_seconds
+            .to_string(),
         "In autorun mode, timeout before auto-answering ask_user prompts",
         None,
     );
@@ -1578,7 +1581,10 @@ mod tests {
     fn test_config_default_values() {
         let config = Config::default();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(config.provider.model, "google/gemini-3.1-flash-lite-preview");
+        assert_eq!(
+            config.provider.model,
+            "google/gemini-3.1-flash-lite-preview"
+        );
         assert_eq!(config.provider.web_search_model, "perplexity/sonar");
         assert_eq!(
             config.hints.normalized_suppressed_exit_codes(),
@@ -1600,7 +1606,10 @@ default = "openrouter"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(config.provider.model, "google/gemini-3.1-flash-lite-preview");
+        assert_eq!(
+            config.provider.model,
+            "google/gemini-3.1-flash-lite-preview"
+        );
     }
 
     #[test]
@@ -1805,7 +1814,10 @@ chat_color = "red"
     fn test_config_from_empty_string() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.provider.default, "openrouter");
-        assert_eq!(config.provider.model, "google/gemini-3.1-flash-lite-preview");
+        assert_eq!(
+            config.provider.model,
+            "google/gemini-3.1-flash-lite-preview"
+        );
         assert_eq!(config.context.history_limit, 20);
         assert!(config.redaction.enabled);
     }

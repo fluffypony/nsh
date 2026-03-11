@@ -91,11 +91,7 @@ pub fn load_skills() -> Vec<Skill> {
 
 /// Scan subdirectories of `dir` for cloned skill repos.
 /// Priority: skill.toml/nsh.toml > SKILL.md/skill.md > README.md
-fn load_repo_skills_from_dir(
-    dir: &Path,
-    is_project: bool,
-    skills: &mut HashMap<String, Skill>,
-) {
+fn load_repo_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<String, Skill>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -180,8 +176,7 @@ fn load_markdown_skill(dir: &Path, is_project: bool) -> Option<Skill> {
             .name
             .unwrap_or_else(|| sanitize_skill_name(&dir_name));
         let description = frontmatter.description.unwrap_or_else(|| {
-            extract_first_paragraph(&body)
-                .unwrap_or_else(|| format!("Skill from {dir_name}"))
+            extract_first_paragraph(&body).unwrap_or_else(|| format!("Skill from {dir_name}"))
         });
 
         return Some(Skill {
@@ -271,7 +266,13 @@ fn parse_skill_frontmatter(content: &str) -> (SkillFrontmatter, String) {
 /// Sanitize a directory name into a valid skill name (alphanumeric + underscores).
 fn sanitize_skill_name(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -395,9 +396,7 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
 
 /// Returns true if a skill is doc-only (no command or runtime+script).
 fn is_doc_only(skill: &Skill) -> bool {
-    skill.command.trim().is_empty()
-        && skill.runtime.is_none()
-        && skill.docs.is_some()
+    skill.command.trim().is_empty() && skill.runtime.is_none() && skill.docs.is_some()
 }
 
 pub fn skill_tool_definitions(skills: &[Skill]) -> Vec<ToolDefinition> {
@@ -510,9 +509,18 @@ pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result
             command = command.replace(&format!("{{{param_name}}}"), value);
         }
         #[cfg(unix)]
-        { std::process::Command::new("sh").arg("-c").arg(&command).output()? }
+        {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&command)
+                .output()?
+        }
         #[cfg(windows)]
-        { std::process::Command::new("cmd").args(["/C", &command]).output()? }
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", &command])
+                .output()?
+        }
     };
 
     let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -534,10 +542,7 @@ pub fn execute_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result
 
 fn execute_doc_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<String> {
     let docs = skill.docs.as_deref().unwrap_or("");
-    let user_input = input
-        .get("input")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let user_input = input.get("input").and_then(|v| v.as_str()).unwrap_or("");
 
     let mut result = String::new();
     if !user_input.is_empty() {
@@ -598,7 +603,10 @@ fn resolve_runtime_binary(rt: &str) -> Option<(String, Vec<String>)> {
     }
 }
 
-fn execute_code_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result<std::process::Output> {
+fn execute_code_skill(
+    skill: &Skill,
+    input: &serde_json::Value,
+) -> anyhow::Result<std::process::Output> {
     let rt = skill
         .runtime
         .as_ref()
@@ -612,8 +620,16 @@ fn execute_code_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Resul
         .ok_or_else(|| anyhow::anyhow!(format!("runtime not found in PATH: {rt}")))?;
 
     // Write script to a temp file with appropriate extension for better DX
-    let ext = if bin.contains("python") { "py" } else if bin.contains("node") { "js" } else { "txt" };
-    let mut file = tempfile::Builder::new().suffix(&format!(".{ext}")).tempfile()?;
+    let ext = if bin.contains("python") {
+        "py"
+    } else if bin.contains("node") {
+        "js"
+    } else {
+        "txt"
+    };
+    let mut file = tempfile::Builder::new()
+        .suffix(&format!(".{ext}"))
+        .tempfile()?;
     use std::io::Write as _;
     file.write_all(script.as_bytes())?;
     let script_path = file.path().to_path_buf();

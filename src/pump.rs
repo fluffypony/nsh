@@ -2972,7 +2972,10 @@ mod tests {
         for b in 0x00..=0x06u8 {
             assert!(!result.contains(&b), "byte {b:#04x} should be filtered");
         }
-        assert!(result.contains(&0x07), "BEL (0x07) should be preserved for OSC termination");
+        assert!(
+            result.contains(&0x07),
+            "BEL (0x07) should be preserved for OSC termination"
+        );
         assert!(result.contains(&0x08));
         assert!(result.contains(&0x09));
         assert!(result.contains(&0x0A));

@@ -22,7 +22,10 @@ const OPENROUTER_MAIN: &[&str] = &[
     "google/gemini-3-flash-preview",
     "anthropic/claude-sonnet-4.6",
 ];
-const OPENROUTER_FAST: &[&str] = &["google/gemini-3.1-flash-lite-preview", "anthropic/claude-haiku-4.5"];
+const OPENROUTER_FAST: &[&str] = &[
+    "google/gemini-3.1-flash-lite-preview",
+    "anthropic/claude-haiku-4.5",
+];
 const OPENROUTER_CODING: &[&str] = &["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6"];
 
 const ANTHROPIC_MAIN: &[&str] = &["claude-sonnet-4.6"];

@@ -140,7 +140,11 @@ pub fn render_box(label: &str, content: &[ContentLine], box_style: BoxStyle) {
     let bold = th.bold;
 
     // Top border: ╭─ label ──────────╮
-    let label_display = if label.is_empty() { String::new() } else { format!(" {label} ") };
+    let label_display = if label.is_empty() {
+        String::new()
+    } else {
+        format!(" {label} ")
+    };
     let label_len = label_display.chars().count();
     let top_dashes = box_width.saturating_sub(3 + label_len); // 3 = ╭─ + ╮
     eprintln!(
@@ -163,17 +167,17 @@ pub fn render_box(label: &str, content: &[ContentLine], box_style: BoxStyle) {
 
     // Bottom border: ╰──────────────────╯
     let bottom_dashes = box_width.saturating_sub(2);
-    eprintln!(
-        "  {border_color}╰{:─<bottom_dashes$}╯{reset}",
-        ""
-    );
+    eprintln!("  {border_color}╰{:─<bottom_dashes$}╯{reset}", "");
 }
 
 /// Convenience: render a simple info/status box with a single text block.
 pub fn render_simple_box(label: &str, text: &str, box_style: BoxStyle) {
     render_box(
         label,
-        &[ContentLine { text: text.to_string(), dim: false }],
+        &[ContentLine {
+            text: text.to_string(),
+            dim: false,
+        }],
         box_style,
     );
 }
@@ -187,7 +191,13 @@ pub fn section_header(title: &str) {
     let label_len = label.chars().count();
     let padding = w.saturating_sub(label_len + 3);
     let th = crate::tui::theme::current_theme();
-    eprintln!("  {}── {} {}{}", th.accent, title, "─".repeat(padding), th.reset);
+    eprintln!(
+        "  {}── {} {}{}",
+        th.accent,
+        title,
+        "─".repeat(padding),
+        th.reset
+    );
 }
 
 /// Print a subtle horizontal rule.
@@ -202,19 +212,28 @@ pub fn hr() {
 /// Tool action indicator: ◆ doing something…
 pub fn tool_status(message: &str) {
     let th = crate::tui::theme::current_theme();
-    eprintln!("  {}◆{} {}{}{}", th.accent, th.reset, th.dim, message, th.reset);
+    eprintln!(
+        "  {}◆{} {}{}{}",
+        th.accent, th.reset, th.dim, message, th.reset
+    );
 }
 
 /// Error indicator: ✖ something failed
 pub fn tool_error(message: &str) {
     let th = crate::tui::theme::current_theme();
-    eprintln!("  {}✖{} {}{}{}", th.error, th.reset, th.error, message, th.reset);
+    eprintln!(
+        "  {}✖{} {}{}{}",
+        th.error, th.reset, th.error, message, th.reset
+    );
 }
 
 /// Success indicator: ✓ something worked
 pub fn tool_success(message: &str) {
     let th = crate::tui::theme::current_theme();
-    eprintln!("  {}✓{} {}{}{}", th.success, th.reset, th.dim, message, th.reset);
+    eprintln!(
+        "  {}✓{} {}{}{}",
+        th.success, th.reset, th.dim, message, th.reset
+    );
 }
 
 // ─── Tool Start/Finish Dividers ─────────────────────────────────────
