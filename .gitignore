@@ -1,3 +1,5 @@
 target/
 dist/
 AGENTS.md
+.desloppify/
+scorecard.png
