@@ -119,18 +119,25 @@ pub fn create_provider(
     config: &ProviderFactoryConfig,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     if let Some(openai_cfg) = routing::resolve_openai_compat_config(provider_name, config)? {
-        return Ok(Box::new(openai_compat::OpenAICompatProvider::new(openai_cfg)?));
+        return Ok(Box::new(openai_compat::OpenAICompatProvider::new(
+            openai_cfg,
+        )?));
     }
 
     match provider_name {
-        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(&config.provider)?)),
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(
+            &config.provider,
+        )?)),
         _ => anyhow::bail!("Unknown provider: {provider_name}"),
     }
 }
 
 pub fn with_transport_base_url(request: &ChatRequest, base_url: &str) -> ChatRequest {
     let mut out = request.clone();
-    let mut extra = out.extra_body.take().unwrap_or_else(|| serde_json::json!({}));
+    let mut extra = out
+        .extra_body
+        .take()
+        .unwrap_or_else(|| serde_json::json!({}));
     if let serde_json::Value::Object(map) = &mut extra {
         map.insert(
             "_transport_base_url".to_string(),
@@ -288,8 +295,9 @@ mod tests {
         let err = parse_openai_response(&resp)
             .expect_err("non-string tool-call arguments should fail parser");
         assert!(
-            err.to_string()
-                .contains("Tool call arguments for tool 'test' (id 'call_4') must be a JSON string"),
+            err.to_string().contains(
+                "Tool call arguments for tool 'test' (id 'call_4') must be a JSON string"
+            ),
             "unexpected error: {err}"
         );
     }
@@ -308,8 +316,9 @@ mod tests {
         let err = parse_openai_response(&resp)
             .expect_err("missing tool-call arguments should fail parser");
         assert!(
-            err.to_string()
-                .contains("Tool call arguments for tool 'test' (id 'call_5') must be a JSON string"),
+            err.to_string().contains(
+                "Tool call arguments for tool 'test' (id 'call_5') must be a JSON string"
+            ),
             "unexpected error: {err}"
         );
     }

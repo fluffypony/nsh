@@ -2937,7 +2937,10 @@ mod tests {
         assert!(xml.starts_with("<context>"));
         assert!(xml.ends_with("</context>"));
         assert_eq!(ctx.history.conversation_history.len(), 1);
-        assert_eq!(ctx.history.conversation_history[0].query, "how do I list files");
+        assert_eq!(
+            ctx.history.conversation_history[0].query,
+            "how do I list files"
+        );
         assert_eq!(ctx.history.conversation_history[0].response, "ls -la");
     }
 
@@ -3933,7 +3936,8 @@ mod tests {
     #[test]
     fn test_build_xml_context_scrollback_multiline() {
         let mut ctx = make_minimal_ctx();
-        ctx.terminal.scrollback_text = "$ cargo build\n   Compiling nsh v0.1.0\n    Finished".into();
+        ctx.terminal.scrollback_text =
+            "$ cargo build\n   Compiling nsh v0.1.0\n    Finished".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("Compiling nsh"));
         assert!(xml.contains("Finished"));
@@ -6464,7 +6468,10 @@ mod tests {
             ctx.history.conversation_history[0].explanation.as_deref(),
             Some("list all files")
         );
-        assert_eq!(ctx.history.conversation_history[0].result_exit_code, Some(0));
+        assert_eq!(
+            ctx.history.conversation_history[0].result_exit_code,
+            Some(0)
+        );
     }
 
     #[test]

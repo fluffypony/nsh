@@ -249,7 +249,6 @@ impl Sensitivity {
             _ => anyhow::bail!("invalid sensitivity: {s}"),
         }
     }
-
 }
 
 impl std::fmt::Display for Sensitivity {

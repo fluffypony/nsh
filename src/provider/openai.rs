@@ -1,7 +1,9 @@
 use super::openai_compat::OpenAICompatProviderConfig;
 use crate::config::ProviderConfig;
 
-pub fn build_openai_compat_config(provider: &ProviderConfig) -> anyhow::Result<OpenAICompatProviderConfig> {
+pub fn build_openai_compat_config(
+    provider: &ProviderConfig,
+) -> anyhow::Result<OpenAICompatProviderConfig> {
     let auth = provider
         .openai
         .as_ref()

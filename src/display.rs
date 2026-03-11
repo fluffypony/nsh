@@ -40,7 +40,7 @@ impl TerminalDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     fn test_display() -> TerminalDisplay {
         TerminalDisplay::new(&DisplayConfig::default())
     }

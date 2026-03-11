@@ -349,15 +349,13 @@ impl DbAccess for Db {
                 secret_value,
                 sensitivity,
                 search_keywords,
-            } => {
-                self.store_knowledge_memory(
-                    &entry_type,
-                    &caption,
-                    &secret_value,
-                    sensitivity,
-                    &search_keywords,
-                )?
-            }
+            } => self.store_knowledge_memory(
+                &entry_type,
+                &caption,
+                &secret_value,
+                sensitivity,
+                &search_keywords,
+            )?,
             _ => anyhow::bail!("unsupported memory store operation"),
         };
 
@@ -441,9 +439,9 @@ fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::
             sensitivity: match obj.get("sensitivity") {
                 None => Sensitivity::Medium,
                 Some(value) => {
-                    let raw = value
-                        .as_str()
-                        .ok_or_else(|| anyhow!("memory store field 'sensitivity' must be a string"))?;
+                    let raw = value.as_str().ok_or_else(|| {
+                        anyhow!("memory store field 'sensitivity' must be a string")
+                    })?;
                     Sensitivity::parse(raw)?
                 }
             },

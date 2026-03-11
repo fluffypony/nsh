@@ -27,11 +27,9 @@ where
     let ws_model = &config.web_search.model;
     let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
     let model_caps = crate::config::model_capabilities(ws_provider_name, ws_model);
-    let transport_base_url = provider::routing::resolve_openai_compat_config(
-        ws_provider_name,
-        &provider_cfg,
-    )?
-    .map(|cfg| cfg.base_url);
+    let transport_base_url =
+        provider::routing::resolve_openai_compat_config(ws_provider_name, &provider_cfg)?
+            .map(|cfg| cfg.base_url);
 
     let provider = match provider_factory(ws_provider_name, &provider_cfg) {
         Ok(p) => p,
@@ -200,17 +198,21 @@ mod tests {
         let captured_request: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
         let captured_request_for_provider = Arc::clone(&captured_request);
 
-        let _ = execute_with_provider_factory("latest rust release", &config, |_provider_name, _cfg| {
-            Ok(Box::new(StubProvider {
-                captured_request: Some(Arc::clone(&captured_request_for_provider)),
-                message: Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: "result".into(),
-                    }],
-                },
-            }))
-        })
+        let _ = execute_with_provider_factory(
+            "latest rust release",
+            &config,
+            |_provider_name, _cfg| {
+                Ok(Box::new(StubProvider {
+                    captured_request: Some(Arc::clone(&captured_request_for_provider)),
+                    message: Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text {
+                            text: "result".into(),
+                        }],
+                    },
+                }))
+            },
+        )
         .await
         .expect("execute should succeed");
 

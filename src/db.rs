@@ -929,7 +929,10 @@ impl Db {
         )
     }
 
-    pub fn store_resource_memory(&self, resource: &ResourceMemoryWrite<'_>) -> anyhow::Result<String> {
+    pub fn store_resource_memory(
+        &self,
+        resource: &ResourceMemoryWrite<'_>,
+    ) -> anyhow::Result<String> {
         if let Some(path) = resource.file_path {
             let hash = resource
                 .file_hash

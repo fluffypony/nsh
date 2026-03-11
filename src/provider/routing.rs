@@ -16,8 +16,16 @@ pub fn resolve_openai_compat_config(
     config: &super::ProviderFactoryConfig,
 ) -> anyhow::Result<Option<OpenAICompatProviderConfig>> {
     let cfg = match provider_name {
-        "openrouter" => return Ok(Some(super::openrouter::build_openrouter_compat_config(&config.provider)?)),
-        "openai" => return Ok(Some(super::openai::build_openai_compat_config(&config.provider)?)),
+        "openrouter" => {
+            return Ok(Some(super::openrouter::build_openrouter_compat_config(
+                &config.provider,
+            )?));
+        }
+        "openai" => {
+            return Ok(Some(super::openai::build_openai_compat_config(
+                &config.provider,
+            )?));
+        }
         "gemini" => {
             let auth = config
                 .provider
@@ -79,7 +87,10 @@ pub fn resolve_openai_compat_config(
     Ok(Some(cfg))
 }
 
-fn provider_auth<'a>(provider_name: &str, provider: &'a crate::config::ProviderConfig) -> Option<&'a ProviderAuth> {
+fn provider_auth<'a>(
+    provider_name: &str,
+    provider: &'a crate::config::ProviderConfig,
+) -> Option<&'a ProviderAuth> {
     match provider_name {
         "z_ai" => provider.z_ai.as_ref(),
         "minimax" => provider.minimax.as_ref(),
@@ -128,15 +139,16 @@ mod tests {
         });
         let cfg = cfg_from(config);
 
-        let resolved = resolve_openai_compat_config("anthropic", &cfg).expect("resolve should succeed");
+        let resolved =
+            resolve_openai_compat_config("anthropic", &cfg).expect("resolve should succeed");
         assert!(resolved.is_none());
     }
 
     #[test]
     fn resolve_openai_compat_config_returns_none_for_unknown() {
         let cfg = cfg_from(crate::config::Config::default());
-        let resolved = resolve_openai_compat_config("unknown-provider", &cfg)
-            .expect("resolve should succeed");
+        let resolved =
+            resolve_openai_compat_config("unknown-provider", &cfg).expect("resolve should succeed");
         assert!(resolved.is_none());
     }
 
@@ -205,7 +217,10 @@ mod tests {
     #[test]
     fn model_name_for_transport_keeps_model_for_non_sidecar_base() {
         assert_eq!(
-            model_name_for_transport("anthropic/claude-sonnet-4.6", "https://api.openrouter.ai/v1"),
+            model_name_for_transport(
+                "anthropic/claude-sonnet-4.6",
+                "https://api.openrouter.ai/v1"
+            ),
             "anthropic/claude-sonnet-4.6"
         );
     }

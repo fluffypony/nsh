@@ -1291,8 +1291,10 @@ pub async fn handle_query(
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
-                            let fut =
-                                crate::tools::github::execute_with_context(&input_clone, &github_ctx);
+                            let fut = crate::tools::github::execute_with_context(
+                                &input_clone,
+                                &github_ctx,
+                            );
                             let result = match execute_with_timeout(
                                 fut,
                                 "github",
@@ -2783,9 +2785,8 @@ fn execute_sync_tool_outcome(
     input: &serde_json::Value,
     config: &Config,
 ) -> anyhow::Result<tools::ToolInvocationOutcome> {
-    let sfa_read = tools::normalize_sensitive_file_access_mode(
-        config.tools.sensitive_file_access.as_str(),
-    );
+    let sfa_read =
+        tools::normalize_sensitive_file_access_mode(config.tools.sensitive_file_access.as_str());
     match name {
         "grep_file" => tools::grep_file::execute_outcome_with_access(input, sfa_read),
         "read_file" => tools::read_file::execute_outcome_with_access(input, sfa_read),

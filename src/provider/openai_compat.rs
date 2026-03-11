@@ -166,8 +166,10 @@ impl LlmProvider for OpenAICompatProvider {
                 if let Some(fallback) = &self.fallback_model {
                     tracing::warn!("Primary model failed ({status}), trying fallback: {fallback}");
                     let mut fb = body.clone();
-                    let fallback_model =
-                        crate::provider::routing::model_name_for_transport(fallback, &self.base_url);
+                    let fallback_model = crate::provider::routing::model_name_for_transport(
+                        fallback,
+                        &self.base_url,
+                    );
                     fb["model"] = json!(&fallback_model);
                     let resp2 = self.build_http_request(&fb, &fallback_model).send().await?;
                     let status2 = resp2.status();
@@ -233,8 +235,10 @@ impl LlmProvider for OpenAICompatProvider {
                 if let Some(fallback) = &self.fallback_model {
                     tracing::warn!("Primary failed ({status}), stream fallback: {fallback}");
                     let mut fb = body.clone();
-                    let fallback_model =
-                        crate::provider::routing::model_name_for_transport(fallback, &self.base_url);
+                    let fallback_model = crate::provider::routing::model_name_for_transport(
+                        fallback,
+                        &self.base_url,
+                    );
                     fb["model"] = json!(&fallback_model);
                     let resp2 = self.build_http_request(&fb, &fallback_model).send().await?;
                     let status2 = resp2.status();
