@@ -117,9 +117,13 @@ pub fn create_provider(
     config: &ProviderFactoryConfig,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     match provider_name {
-        "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(&config.provider)?)),
+        "openrouter" => Ok(Box::new(openai_compat::OpenAICompatProvider::new(
+            openrouter::build_openrouter_compat_config(&config.provider)?,
+        )?)),
         "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(&config.provider)?)),
-        "openai" => Ok(Box::new(openai::OpenAIProvider::new(&config.provider)?)),
+        "openai" => Ok(Box::new(openai_compat::OpenAICompatProvider::new(
+            openai::build_openai_compat_config(&config.provider)?,
+        )?)),
         "gemini" => {
             let auth = config
                 .provider
