@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::provider::{self, ChatRequest, ContentBlock, Message, Role, ToolChoice};
+use serde_json::json;
 
 pub async fn execute(query: &str, config: &Config) -> anyhow::Result<String> {
     execute_with_provider_factory(query, config, provider::create_provider).await
@@ -25,6 +26,7 @@ where
     let ws_provider_name = &config.web_search.provider;
     let ws_model = &config.web_search.model;
     let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
+    let model_caps = crate::config::model_capabilities(ws_provider_name, ws_model);
 
     let provider = match provider_factory(ws_provider_name, &provider_cfg) {
         Ok(p) => p,
@@ -41,7 +43,9 @@ where
 
     let request = ChatRequest {
         model: ws_model.clone(),
-        system: "Provide a concise factual answer with sources. Be brief.".into(),
+        system:
+            "Provide a concise factual answer with sources. If web retrieval is available, use it and cite URLs."
+                .into(),
         messages: vec![Message {
             role: Role::User,
             content: vec![ContentBlock::Text {
@@ -52,7 +56,13 @@ where
         tool_choice: ToolChoice::None,
         max_tokens: 1024,
         stream: false,
-        extra_body: None,
+        extra_body: if model_caps.supports_web_search {
+            // Enable provider-native web retrieval when the selected provider/model
+            // supports it (for example OpenAI web-search-capable models).
+            Some(json!({ "web_search_options": {} }))
+        } else {
+            None
+        },
     };
 
     let response = provider.complete(request).await?;
@@ -163,12 +173,46 @@ mod tests {
         assert!(matches!(request.tool_choice, ToolChoice::None));
         assert!(!request.stream);
         assert_eq!(request.max_tokens, 1024);
+        assert!(request.extra_body.is_none());
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, Role::User));
         assert!(matches!(
             request.messages[0].content.as_slice(),
             [ContentBlock::Text { text }] if text == "find docs"
         ));
+    }
+
+    #[tokio::test]
+    async fn execute_sets_web_search_options_for_supported_models() {
+        let mut config = Config::default();
+        config.web_search.provider = "openai".into();
+        config.web_search.model = "gpt-5.2".into();
+        let captured_request: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
+        let captured_request_for_provider = Arc::clone(&captured_request);
+
+        let _ = execute_with_provider_factory("latest rust release", &config, |_provider_name, _cfg| {
+            Ok(Box::new(StubProvider {
+                captured_request: Some(Arc::clone(&captured_request_for_provider)),
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "result".into(),
+                    }],
+                },
+            }))
+        })
+        .await
+        .expect("execute should succeed");
+
+        let request = captured_request
+            .lock()
+            .expect("lock captured request")
+            .clone()
+            .expect("request should be captured");
+        assert_eq!(
+            request.extra_body,
+            Some(json!({ "web_search_options": {} }))
+        );
     }
 
     #[tokio::test]

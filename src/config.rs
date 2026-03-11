@@ -727,8 +727,9 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
         caps.supports_json_mode = false; // conservative
     }
 
-    // OpenAI native web search preview (Responses API). We only hint here — provider layer may ignore.
-    if p == "openai" && (m.contains("gpt-5.2") || m.contains("gpt-5-search")) {
+    // OpenAI native web search support: keep matching conservative to avoid
+    // sending OpenAI-specific search options to incompatible model variants.
+    if p == "openai" && !m.contains("codex") && (m == "gpt-5.2" || m.contains("gpt-5-search")) {
         caps.supports_web_search = true;
     }
 
@@ -749,6 +750,7 @@ mod tests_model_capabilities {
         let caps = model_capabilities("openai", "gpt-5.2-codex");
         assert!(!caps.supports_tool_calling);
         assert!(!caps.supports_json_mode);
+        assert!(!caps.supports_web_search);
     }
 
     #[test]
