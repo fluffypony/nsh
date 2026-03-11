@@ -250,10 +250,6 @@ impl Sensitivity {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str_lossy(s: &str) -> Self {
-        Self::parse(s).unwrap_or(Sensitivity::Low)
-    }
 }
 
 impl std::fmt::Display for Sensitivity {
@@ -464,7 +460,7 @@ pub enum MemoryOp {
         entry_type: String,
         caption: String,
         secret_value: String,
-        sensitivity: String,
+        sensitivity: Sensitivity,
         search_keywords: String,
     },
     KnowledgeDelete {
@@ -710,15 +706,6 @@ mod tests {
         assert_eq!(Sensitivity::parse("low").unwrap(), Sensitivity::Low);
         assert!(Sensitivity::parse("unknown").is_err());
         assert!(Sensitivity::parse("").is_err());
-    }
-
-    #[test]
-    fn sensitivity_from_str_lossy_defaults() {
-        assert_eq!(Sensitivity::from_str_lossy("high"), Sensitivity::High);
-        assert_eq!(Sensitivity::from_str_lossy("medium"), Sensitivity::Medium);
-        assert_eq!(Sensitivity::from_str_lossy("low"), Sensitivity::Low);
-        assert_eq!(Sensitivity::from_str_lossy("unknown"), Sensitivity::Low);
-        assert_eq!(Sensitivity::from_str_lossy(""), Sensitivity::Low);
     }
 
     #[test]

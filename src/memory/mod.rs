@@ -687,13 +687,12 @@ impl MemorySystem {
                 sensitivity,
                 search_keywords,
             } => {
-                let parsed_sensitivity = Sensitivity::parse(sensitivity)?;
                 store::knowledge::insert(
                     conn,
                     entry_type,
                     caption,
                     secret_value,
-                    parsed_sensitivity,
+                    *sensitivity,
                     search_keywords,
                 )?;
             }

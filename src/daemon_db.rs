@@ -5,7 +5,7 @@ use crate::db::{
     CommandEntityMatch, CommandForSummary, CommandWithSummary, ConversationExchange, Db,
     HistoryMatch, OtherSessionSummary, ResourceMemoryWrite,
 };
-use crate::memory::types::{MemoryOp, MemoryType};
+use crate::memory::types::{MemoryOp, MemoryType, Sensitivity};
 
 pub trait DbAccess {
     fn get_conversations(
@@ -350,7 +350,6 @@ impl DbAccess for Db {
                 sensitivity,
                 search_keywords,
             } => {
-                let sensitivity = crate::memory::types::Sensitivity::parse(&sensitivity)?;
                 self.store_knowledge_memory(
                     &entry_type,
                     &caption,
@@ -439,11 +438,15 @@ fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::
             entry_type: required("entry_type")?,
             caption: required("caption")?,
             secret_value: required("secret_value")?,
-            sensitivity: obj
-                .get("sensitivity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("medium")
-                .to_string(),
+            sensitivity: match obj.get("sensitivity") {
+                None => Sensitivity::Medium,
+                Some(value) => {
+                    let raw = value
+                        .as_str()
+                        .ok_or_else(|| anyhow!("memory store field 'sensitivity' must be a string"))?;
+                    Sensitivity::parse(raw)?
+                }
+            },
             search_keywords: required("search_keywords")?,
         }),
         MemoryType::Episodic | MemoryType::Core => {
@@ -976,7 +979,7 @@ impl DbAccess for DaemonDb {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::memory::types::{MemoryType, Sensitivity};
+    use crate::memory::types::MemoryType;
     use serial_test::serial;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
@@ -1145,7 +1148,7 @@ mod tests {
 
     #[test]
     fn memory_store_op_rejects_invalid_knowledge_sensitivity() {
-        let op = memory_store_op(
+        let err = memory_store_op(
             MemoryType::Knowledge,
             serde_json::json!({
                 "entry_type": "token",
@@ -1155,14 +1158,32 @@ mod tests {
                 "search_keywords": "token"
             }),
         )
-        .expect("op creation should succeed");
+        .expect_err("invalid sensitivity should be rejected");
 
-        if let MemoryOp::KnowledgeInsert { sensitivity, .. } = op {
-            assert_eq!(sensitivity, "critical");
-            assert!(Sensitivity::parse(&sensitivity).is_err());
-        } else {
-            panic!("expected knowledge insert");
-        }
+        assert!(
+            err.to_string().contains("invalid sensitivity"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn memory_store_op_rejects_non_string_knowledge_sensitivity() {
+        let err = memory_store_op(
+            MemoryType::Knowledge,
+            serde_json::json!({
+                "entry_type": "token",
+                "caption": "test",
+                "secret_value": "val",
+                "sensitivity": 123,
+                "search_keywords": "token"
+            }),
+        )
+        .expect_err("non-string sensitivity should be rejected");
+
+        assert!(
+            err.to_string().contains("must be a string"),
+            "unexpected error: {err}"
+        );
     }
 
     fn spawn_mock_global_daemon(
