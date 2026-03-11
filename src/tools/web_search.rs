@@ -11,12 +11,13 @@ async fn execute_with_provider_factory<F>(
     provider_factory: F,
 ) -> anyhow::Result<String>
 where
-    F: Fn(&str, &Config) -> anyhow::Result<Box<dyn provider::LlmProvider>>,
+    F: Fn(&str, &provider::ProviderFactoryConfig) -> anyhow::Result<Box<dyn provider::LlmProvider>>,
 {
     let ws_provider_name = &config.web_search.provider;
     let ws_model = &config.web_search.model;
+    let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
 
-    let provider = match provider_factory(ws_provider_name, config) {
+    let provider = match provider_factory(ws_provider_name, &provider_cfg) {
         Ok(p) => p,
         Err(e) => {
             if ws_provider_name == "ollama" {

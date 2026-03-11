@@ -40,7 +40,8 @@ pub async fn generate_llm_summary(
     config: &crate::config::Config,
 ) -> anyhow::Result<String> {
     let prompt = build_summary_prompt(cmd);
-    let provider = crate::provider::create_provider(&config.provider.default, config)?;
+    let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
+    let provider = crate::provider::create_provider(&provider_cfg.default, &provider_cfg)?;
     let model = config
         .models
         .fast

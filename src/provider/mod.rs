@@ -96,15 +96,30 @@ pub trait LlmProvider: Send + Sync {
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>>;
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderFactoryConfig {
+    pub default: String,
+    pub provider: crate::config::ProviderConfig,
+}
+
+impl ProviderFactoryConfig {
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            default: config.provider.default.clone(),
+            provider: config.provider.clone(),
+        }
+    }
+}
+
 /// Factory: create a provider by name.
 pub fn create_provider(
     provider_name: &str,
-    config: &crate::config::Config,
+    config: &ProviderFactoryConfig,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
     match provider_name {
-        "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(config)?)),
-        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(config)?)),
-        "openai" => Ok(Box::new(openai::OpenAIProvider::new(config)?)),
+        "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(&config.provider)?)),
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(&config.provider)?)),
+        "openai" => Ok(Box::new(openai::OpenAIProvider::new(&config.provider)?)),
         "gemini" => {
             let auth = config
                 .provider
@@ -112,12 +127,14 @@ pub fn create_provider(
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Gemini not configured"))?;
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                auth.resolve_api_key("gemini")?,
-                "https://generativelanguage.googleapis.com/v1beta/openai".into(),
-                None,
-                vec![],
-                config.provider.timeout_seconds,
-                "gemini".to_string(),
+                openai_compat::OpenAICompatProviderConfig {
+                    api_key: auth.resolve_api_key("gemini")?,
+                    base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+                    fallback_model: None,
+                    extra_headers: vec![],
+                    timeout_seconds: config.provider.timeout_seconds,
+                    debug_provider_name: "gemini".to_string(),
+                },
             )?))
         }
         "ollama" => {
@@ -129,12 +146,14 @@ pub fn create_provider(
                 .and_then(|a| a.resolve_api_key("ollama").ok())
                 .unwrap_or_else(|| zeroize::Zeroizing::new("ollama".into()));
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                api_key,
-                base_url,
-                config.provider.fallback_model.clone(),
-                vec![],
-                config.provider.timeout_seconds,
-                "ollama".to_string(),
+                openai_compat::OpenAICompatProviderConfig {
+                    api_key,
+                    base_url,
+                    fallback_model: config.provider.fallback_model.clone(),
+                    extra_headers: vec![],
+                    timeout_seconds: config.provider.timeout_seconds,
+                    debug_provider_name: "ollama".to_string(),
+                },
             )?))
         }
         // CLIProxyAPI-backed subscriptions and sidecar-routed providers
@@ -143,12 +162,14 @@ pub fn create_provider(
             let base_url = format!("http://127.0.0.1:{port}/v1");
             let api_key = zeroize::Zeroizing::new("nsh-internal".into());
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                api_key,
-                base_url,
-                config.provider.fallback_model.clone(),
-                vec![],
-                config.provider.timeout_seconds,
-                provider_name.to_string(),
+                openai_compat::OpenAICompatProviderConfig {
+                    api_key,
+                    base_url,
+                    fallback_model: config.provider.fallback_model.clone(),
+                    extra_headers: vec![],
+                    timeout_seconds: config.provider.timeout_seconds,
+                    debug_provider_name: provider_name.to_string(),
+                },
             )?))
         }
         // BYOK third-party providers (to be completed with config entries)
@@ -172,18 +193,26 @@ pub fn create_provider(
                     });
                     (url, k)
                 } else {
-                    (crate::provider::openai_compat::cliproxyapi_base_url(), zeroize::Zeroizing::new("nsh-internal".into()))
+                    (
+                        crate::provider::openai_compat::cliproxyapi_base_url(),
+                        zeroize::Zeroizing::new("nsh-internal".into()),
+                    )
                 }
             } else {
-                (crate::provider::openai_compat::cliproxyapi_base_url(), zeroize::Zeroizing::new("nsh-internal".into()))
+                (
+                    crate::provider::openai_compat::cliproxyapi_base_url(),
+                    zeroize::Zeroizing::new("nsh-internal".into()),
+                )
             };
             Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                api_key,
-                base_url,
-                config.provider.fallback_model.clone(),
-                vec![],
-                config.provider.timeout_seconds,
-                provider_name.to_string(),
+                openai_compat::OpenAICompatProviderConfig {
+                    api_key,
+                    base_url,
+                    fallback_model: config.provider.fallback_model.clone(),
+                    extra_headers: vec![],
+                    timeout_seconds: config.provider.timeout_seconds,
+                    debug_provider_name: provider_name.to_string(),
+                },
             )?))
         }
         _ => anyhow::bail!("Unknown provider: {provider_name}"),
@@ -350,7 +379,7 @@ mod tests {
 
     #[test]
     fn create_provider_unknown_name_returns_error() {
-        let config = crate::config::Config::default();
+        let config = ProviderFactoryConfig::from_config(&crate::config::Config::default());
         let result = create_provider("nonexistent", &config);
         let err = result.err().expect("should be an error");
         assert!(err.to_string().contains("Unknown provider"));
@@ -364,7 +393,8 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let result = create_provider("openrouter", &config);
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("openrouter", &provider_config);
         assert!(result.is_ok());
     }
 
@@ -376,7 +406,8 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let result = create_provider("anthropic", &config);
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("anthropic", &provider_config);
         assert!(result.is_ok());
     }
 
@@ -388,7 +419,8 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let result = create_provider("openai", &config);
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("openai", &provider_config);
         assert!(result.is_ok());
     }
 
@@ -396,7 +428,8 @@ mod tests {
     fn create_provider_gemini_without_config_returns_error() {
         let mut config = crate::config::Config::default();
         config.provider.gemini = None;
-        let result = create_provider("gemini", &config);
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("gemini", &provider_config);
         let err = result.err().expect("should be an error");
         assert!(err.to_string().contains("Gemini not configured"));
     }
@@ -405,7 +438,8 @@ mod tests {
     fn create_provider_ollama_without_config_uses_defaults() {
         let mut config = crate::config::Config::default();
         config.provider.ollama = None;
-        let result = create_provider("ollama", &config);
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("ollama", &provider_config);
         assert!(result.is_ok());
     }
 
@@ -417,7 +451,8 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let result = create_provider("gemini", &config);
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("gemini", &provider_config);
         assert!(result.is_ok());
     }
 

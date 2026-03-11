@@ -2,6 +2,7 @@ use reqwest::Client;
 use serde_json::json;
 use zeroize::Zeroizing;
 
+use crate::config::ProviderConfig;
 use crate::provider::*;
 
 pub struct AnthropicProvider {
@@ -11,17 +12,14 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(config: &crate::config::Config) -> anyhow::Result<Self> {
-        let auth = config
-            .provider
+    pub fn new(provider: &ProviderConfig) -> anyhow::Result<Self> {
+        let auth = provider
             .anthropic
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Anthropic not configured"))?;
         Ok(Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(
-                    config.provider.timeout_seconds,
-                ))
+                .timeout(std::time::Duration::from_secs(provider.timeout_seconds))
                 .build()?,
             api_key: auth.resolve_api_key("anthropic")?,
             base_url: auth
@@ -308,7 +306,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        AnthropicProvider::new(&config).unwrap()
+        AnthropicProvider::new(&config.provider).unwrap()
     }
 
     fn make_request(
@@ -508,7 +506,7 @@ mod tests {
     fn test_new_missing_config() {
         let mut config = crate::config::Config::default();
         config.provider.anthropic = None;
-        let result = AnthropicProvider::new(&config);
+        let result = AnthropicProvider::new(&config.provider);
         assert!(result.is_err());
     }
 
@@ -728,7 +726,7 @@ mod tests {
             api_key_cmd: None,
             base_url: Some("https://custom.proxy.example.com".into()),
         });
-        let provider = AnthropicProvider::new(&config).unwrap();
+        let provider = AnthropicProvider::new(&config.provider).unwrap();
         assert_eq!(provider.base_url, "https://custom.proxy.example.com");
     }
 

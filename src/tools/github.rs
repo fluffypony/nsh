@@ -22,10 +22,7 @@ fn parse_repo_spec(input: &str) -> anyhow::Result<(String, String, Option<String
     // Full URL
     if input.starts_with("http://") || input.starts_with("https://") {
         if let Ok(url) = Url::parse(input) {
-            let segments: Vec<&str> = url
-                .path_segments()
-                .map(|c| c.collect())
-                .unwrap_or_default();
+            let segments: Vec<&str> = url.path_segments().map(|c| c.collect()).unwrap_or_default();
             if segments.len() >= 2 {
                 let owner = segments[0].to_string();
                 let repo = segments[1].trim_end_matches(".git").to_string();
@@ -46,9 +43,7 @@ fn parse_repo_spec(input: &str) -> anyhow::Result<(String, String, Option<String
     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
         Ok((parts[0].to_string(), parts[1].to_string(), None))
     } else {
-        anyhow::bail!(
-            "Invalid repo format '{input}'. Expected 'owner/repo' or a full GitHub URL."
-        )
+        anyhow::bail!("Invalid repo format '{input}'. Expected 'owner/repo' or a full GitHub URL.")
     }
 }
 
@@ -89,9 +84,7 @@ fn check_rate_limit(headers: &reqwest::header::HeaderMap) {
                     let th = crate::tui::theme::current_theme();
                     eprintln!(
                         "  {}⚠ GitHub API rate limit nearly exhausted ({} remaining){}",
-                        th.warning,
-                        n,
-                        th.reset
+                        th.warning, n, th.reset
                     );
                 }
             }
@@ -187,7 +180,8 @@ async fn process_readme_content(
     }
 
     // Feed through fast LLM to extract only goal-relevant information
-    let provider = provider::create_provider(&config.provider.default, config)?;
+    let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
+    let provider = provider::create_provider(&provider_cfg.default, &provider_cfg)?;
     let model = config
         .models
         .fast
@@ -311,9 +305,7 @@ async fn fetch_file(
 ) -> anyhow::Result<String> {
     // Try raw.githubusercontent.com first (doesn't consume API rate limit)
     for branch in &["HEAD", "main", "master"] {
-        let url = format!(
-            "https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-    );
+        let url = format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}");
         let resp = client.get(&url).send().await?;
         if resp.status().is_success() {
             let content = resp.text().await?;

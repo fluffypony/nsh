@@ -27,8 +27,8 @@ impl ProviderLlmClient {
 #[async_trait::async_trait]
 impl MemoryLlmClient for ProviderLlmClient {
     async fn complete_json(&self, prompt: &str) -> anyhow::Result<serde_json::Value> {
-        let provider =
-            crate::provider::create_provider(&self.config.provider.default, &self.config)?;
+        let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(&self.config);
+        let provider = crate::provider::create_provider(&provider_cfg.default, &provider_cfg)?;
         let model = self.fast_model();
         let request = crate::provider::ChatRequest {
             model,

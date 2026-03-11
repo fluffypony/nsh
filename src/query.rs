@@ -5,8 +5,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::{config::Config, context, daemon_db::DbAccess, provider::*, streaming, tools};
 use std::collections::{HashMap, HashSet};
 
-type ToolFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = (String, String, Result<String, String>)>>>;
+type ToolFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = (String, String, Result<tools::ToolInvocationOutcome, String>),
+            >,
+    >,
+>;
 
 fn display_tool_error(error: &str, json_output: bool) {
     if json_output {
@@ -48,11 +53,7 @@ where
     let mut used_auto_extension = false;
 
     loop {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(current_timeout),
-            &mut fut,
-        )
-        .await
+        match tokio::time::timeout(std::time::Duration::from_secs(current_timeout), &mut fut).await
         {
             Ok(result) => return Ok(result),
             Err(_) => {
@@ -82,11 +83,10 @@ where
                 );
                 eprint!("\x1b[1;33m  Continue waiting? [Y/n] \x1b[0m");
                 let _ = std::io::Write::flush(&mut std::io::stderr());
-                let keep_waiting = tokio::task::spawn_blocking(
-                    crate::tools::read_tty_confirmation_default_yes,
-                )
-                .await
-                .unwrap_or(false);
+                let keep_waiting =
+                    tokio::task::spawn_blocking(crate::tools::read_tty_confirmation_default_yes)
+                        .await
+                        .unwrap_or(false);
                 if !keep_waiting {
                     return Err(format!(
                         "Tool '{}' cancelled by user after {}s timeout. Try a different approach.",
@@ -147,7 +147,8 @@ pub async fn handle_query(
         _ => query,
     };
 
-    let provider = create_provider(&config.provider.default, config)?;
+    let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
+    let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
     let chain: Vec<String> = if config.models.main.is_empty() {
         vec![config.provider.model.clone()]
     } else {
@@ -302,9 +303,8 @@ pub async fn handle_query(
 
     // Cumulative time budget for this query
     let query_start = std::time::Instant::now();
-    let max_query_duration = std::time::Duration::from_secs(
-        config.execution.max_query_duration_seconds,
-    );
+    let max_query_duration =
+        std::time::Duration::from_secs(config.execution.max_query_duration_seconds);
 
     // Conversation history from this session
     for exchange in &ctx.conversation_history {
@@ -350,7 +350,10 @@ pub async fn handle_query(
             let total = max_query_duration.as_secs().max(1);
             let remaining_pct = 100u64.saturating_sub(elapsed.as_secs() * 100 / total);
             if remaining_pct <= 20 && remaining_pct > 0 && iteration > 0 {
-                eprintln!("\x1b[2m  ⏱ {}% of time budget remaining\x1b[0m", remaining_pct);
+                eprintln!(
+                    "\x1b[2m  ⏱ {}% of time budget remaining\x1b[0m",
+                    remaining_pct
+                );
                 messages.push(Message {
                     role: Role::User,
                     content: vec![ContentBlock::Text { text: format!(
@@ -397,8 +400,18 @@ pub async fn handle_query(
             messages: messages.clone(),
             tools: tool_defs.clone(),
             tool_choice: {
-                let caps = crate::config::model_capabilities(&config.provider.default, &chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()));
-                if caps.supports_tool_calling { ToolChoice::Required } else { ToolChoice::Auto }
+                let caps = crate::config::model_capabilities(
+                    &config.provider.default,
+                    &chain
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| config.provider.model.clone()),
+                );
+                if caps.supports_tool_calling {
+                    ToolChoice::Required
+                } else {
+                    ToolChoice::Auto
+                }
             },
             max_tokens: 4096,
             stream: true,
@@ -410,13 +423,9 @@ pub async fn handle_query(
         } else {
             Some(streaming::SpinnerGuard::new())
         };
-        let chain_result = chain::call_chain_with_fallback_think(
-            provider.as_ref(),
-            request,
-            chain,
-            opts.think,
-        )
-        .await;
+        let chain_result =
+            chain::call_chain_with_fallback_think(provider.as_ref(), request, chain, opts.think)
+                .await;
         drop(_spinner);
 
         let (mut rx, _used_model) = match chain_result {
@@ -447,7 +456,10 @@ pub async fn handle_query(
                         tokio::time::sleep(backoff).await;
                         continue;
                     } else {
-                        eprintln!("\x1b[33mnsh: provider error: {}\x1b[0m", crate::util::truncate(&msg, 100));
+                        eprintln!(
+                            "\x1b[33mnsh: provider error: {}\x1b[0m",
+                            crate::util::truncate(&msg, 100)
+                        );
                         eprint!("\x1b[33mRetry? [Y/n] \x1b[0m");
                         let _ = std::io::Write::flush(&mut std::io::stderr());
                         if crate::tools::read_tty_confirmation_default_yes() {
@@ -461,7 +473,9 @@ pub async fn handle_query(
                     "\x1b[33mnsh: couldn't reach {}: {}\x1b[0m",
                     config.provider.default, display_msg
                 );
-                eprintln!("  If this persists, report at: https://github.com/fluffypony/nsh/issues/new");
+                eprintln!(
+                    "  If this persists, report at: https://github.com/fluffypony/nsh/issues/new"
+                );
                 mcp_client.lock().await.shutdown().await;
                 return Ok(());
             }
@@ -470,7 +484,12 @@ pub async fn handle_query(
         // If we were offline previously, a user query should immediately trigger a reconnect check
         crate::connectivity::trigger_immediate_check();
         let stream_timeout = std::time::Duration::from_secs(config.provider.timeout_seconds * 5);
-        let response = match tokio::time::timeout(stream_timeout, streaming::consume_stream(&mut rx, &cancelled)).await {
+        let response = match tokio::time::timeout(
+            stream_timeout,
+            streaming::consume_stream(&mut rx, &cancelled),
+        )
+        .await
+        {
             Ok(Ok(r)) => r,
             Ok(Err(e)) if e.to_string().contains("interrupted") => {
                 eprintln!("\nnsh: interrupted");
@@ -506,7 +525,13 @@ pub async fn handle_query(
             .iter()
             .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
         let response = if !has_tool_calls {
-            let caps = crate::config::model_capabilities(&config.provider.default, &chain.first().cloned().unwrap_or_else(|| config.provider.model.clone()));
+            let caps = crate::config::model_capabilities(
+                &config.provider.default,
+                &chain
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| config.provider.model.clone()),
+            );
             if !used_forced_json && json_retry_count < 3 {
                 force_json_next = true;
                 json_retry_count += 1;
@@ -585,7 +610,11 @@ pub async fn handle_query(
                     tool_choice: crate::provider::ToolChoice::None,
                     max_tokens: 1024,
                     stream: false,
-                    extra_body: if caps.supports_json_mode { Some(serde_json::json!({"response_format": {"type": "json_object"}})) } else { None },
+                    extra_body: if caps.supports_json_mode {
+                        Some(serde_json::json!({"response_format": {"type": "json_object"}}))
+                    } else {
+                        None
+                    },
                 };
                 if let Ok(json) = crate::json_extract::extract_with_retry(
                     provider.as_ref(),
@@ -617,50 +646,50 @@ pub async fn handle_query(
                         response
                     }
                 } else {
-                // If validation failed, try looser parse to catch simple command/chat shapes
-                if let Some(json) = crate::json_extract::extract_json(&text_content) {
-                    if let Some(name) = json
-                        .get("tool")
-                        .or(json.get("name"))
-                        .and_then(|v| v.as_str())
-                    {
-                        let input = json
-                            .get("input")
-                            .or(json.get("arguments"))
-                            .cloned()
-                            .unwrap_or(json.clone());
-                        Message {
-                            role: Role::Assistant,
-                            content: vec![ContentBlock::ToolUse {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                name: name.to_string(),
-                                input,
-                            }],
-                        }
-                    } else if json.get("command").is_some() {
-                        Message {
-                            role: Role::Assistant,
-                            content: vec![ContentBlock::ToolUse {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                name: "command".to_string(),
-                                input: json,
-                            }],
-                        }
-                    } else if json.get("response").is_some() {
-                        Message {
-                            role: Role::Assistant,
-                            content: vec![ContentBlock::ToolUse {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                name: "chat".to_string(),
-                                input: json,
-                            }],
+                    // If validation failed, try looser parse to catch simple command/chat shapes
+                    if let Some(json) = crate::json_extract::extract_json(&text_content) {
+                        if let Some(name) = json
+                            .get("tool")
+                            .or(json.get("name"))
+                            .and_then(|v| v.as_str())
+                        {
+                            let input = json
+                                .get("input")
+                                .or(json.get("arguments"))
+                                .cloned()
+                                .unwrap_or(json.clone());
+                            Message {
+                                role: Role::Assistant,
+                                content: vec![ContentBlock::ToolUse {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    name: name.to_string(),
+                                    input,
+                                }],
+                            }
+                        } else if json.get("command").is_some() {
+                            Message {
+                                role: Role::Assistant,
+                                content: vec![ContentBlock::ToolUse {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    name: "command".to_string(),
+                                    input: json,
+                                }],
+                            }
+                        } else if json.get("response").is_some() {
+                            Message {
+                                role: Role::Assistant,
+                                content: vec![ContentBlock::ToolUse {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    name: "chat".to_string(),
+                                    input: json,
+                                }],
+                            }
+                        } else {
+                            response
                         }
                     } else {
                         response
                     }
-                } else {
-                    response
-                }
                 }
             }
         } else {
@@ -679,7 +708,9 @@ pub async fn handle_query(
             messages.push(Message {
                 role: Role::User,
                 content: vec![ContentBlock::Text {
-                    text: "Your response was empty. Please respond with a tool call or explanation.".into(),
+                    text:
+                        "Your response was empty. Please respond with a tool call or explanation."
+                            .into(),
                 }],
             });
             no_tool_call_streak = no_tool_call_streak.saturating_add(1);
@@ -702,14 +733,20 @@ pub async fn handle_query(
                     });
                     // If the model repeats the same invalid tool call inputs, inject correction and continue; abort after 5
                     if repeat_guard.note_invalid(name, input) {
-                        eprintln!("\x1b[33mnsh: model repeated an invalid tool call — injecting correction\x1b[0m");
+                        eprintln!(
+                            "\x1b[33mnsh: model repeated an invalid tool call — injecting correction\x1b[0m"
+                        );
                         let correction = format!(
                             "CRITICAL: You have made the same invalid tool call for '{}' multiple times with the same bad input. You MUST either: (1) fix the input to match the required schema, (2) use a completely different tool, or (3) use the 'chat' tool to explain what you're trying to do and why you're stuck. Do NOT repeat the same call again.",
                             name
                         );
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: crate::security::wrap_tool_result(name, &correction, &boundary),
+                            content: crate::security::wrap_tool_result(
+                                name,
+                                &correction,
+                                &boundary,
+                            ),
                             is_error: true,
                         });
                         // Only truly abort after 5 repeats
@@ -735,14 +772,17 @@ pub async fn handle_query(
                                 crate::tools::memory::validate_store_memory_input(pt, data)
                             });
                             if let Err(msg) = validation {
-                                let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
+                                let wrapped =
+                                    crate::security::wrap_tool_result(name, &msg, &boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
                                     is_error: true,
                                 });
                                 if repeat_guard.note_invalid(name, input) {
-                                    eprintln!("\x1b[33mnsh: repeated invalid semantic store_memory; aborting tool loop\x1b[0m");
+                                    eprintln!(
+                                        "\x1b[33mnsh: repeated invalid semantic store_memory; aborting tool loop\x1b[0m"
+                                    );
                                     abort_tool_loop = true;
                                     break;
                                 }
@@ -781,7 +821,8 @@ pub async fn handle_query(
                             Err(e) => {
                                 let err_msg = format!("Command tool error: {e}");
                                 display_tool_error(&err_msg, opts.json_output);
-                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                let wrapped =
+                                    crate::security::wrap_tool_result(name, &err_msg, &boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -821,18 +862,39 @@ pub async fn handle_query(
                         ) {
                             Ok(()) => {
                                 deferred_chat_renders.push(response_text);
-                                let wrapped = crate::security::wrap_tool_result(name, "Message displayed.", &boundary);
-                                tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
+                                let wrapped = crate::security::wrap_tool_result(
+                                    name,
+                                    "Message displayed.",
+                                    &boundary,
+                                );
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: wrapped,
+                                    is_error: false,
+                                });
                             }
                             Err(e) => {
                                 let err_msg = format!("Error: {e}");
-                                let wrapped = crate::security::wrap_tool_result(name, &err_msg, &boundary);
-                                tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: true });
+                                let wrapped =
+                                    crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                tool_results.push(ContentBlock::ToolResult {
+                                    tool_use_id: id.clone(),
+                                    content: wrapped,
+                                    is_error: true,
+                                });
                             }
                         }
                     }
                     "write_file" => {
-                        let (content, is_error) = match tools::write_file::execute(input, query, db, session_id, opts.private, config, opts.force_autorun) {
+                        let (content, is_error) = match tools::write_file::execute(
+                            input,
+                            query,
+                            db,
+                            session_id,
+                            opts.private,
+                            config,
+                            opts.force_autorun,
+                        ) {
                             Ok(()) => ("File written successfully.".to_string(), false),
                             Err(e) => {
                                 let err_msg = format!("Failed to write file: {e}");
@@ -841,7 +903,11 @@ pub async fn handle_query(
                             }
                         };
                         let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
-                        tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error });
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: wrapped,
+                            is_error,
+                        });
                     }
                     "patch_file" => {
                         let (content, is_error) = match tools::patch_file::execute(
@@ -864,7 +930,11 @@ pub async fn handle_query(
                             }
                         };
                         let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
-                        tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error });
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: wrapped,
+                            is_error,
+                        });
                     }
                     "manage_config" => {
                         let result = tools::manage_config::execute(input);
@@ -872,8 +942,7 @@ pub async fn handle_query(
                             Ok(msg) => (msg, false),
                             Err(e) => (format!("Error: {e}"), true),
                         };
-                        let wrapped =
-                            crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -886,8 +955,7 @@ pub async fn handle_query(
                             Ok(msg) => (msg, false),
                             Err(e) => (format!("Error: {e}"), true),
                         };
-                        let wrapped =
-                            crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -900,8 +968,7 @@ pub async fn handle_query(
                             Ok(msg) => (msg, false),
                             Err(e) => (format!("Error: {e}"), true),
                         };
-                        let wrapped =
-                            crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -932,17 +999,40 @@ pub async fn handle_query(
                                 }
                                 loaded_classes.insert(class_name.to_string());
                             }
-                            let summary = defs.iter().map(|d| format!("- {}", d.name)).collect::<Vec<_>>().join("\n");
-                            eprintln!("\n  {}✓{} loaded tools from class '{}':\n{}", th.success, th.reset, class_name, summary);
+                            let summary = defs
+                                .iter()
+                                .map(|d| format!("- {}", d.name))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            eprintln!(
+                                "\n  {}✓{} loaded tools from class '{}':\n{}",
+                                th.success, th.reset, class_name, summary
+                            );
                             let wrapped = crate::security::wrap_tool_result(
                                 &name,
-                                &format!("Loaded {} tool(s) from class '{}'", defs.len(), class_name),
+                                &format!(
+                                    "Loaded {} tool(s) from class '{}'",
+                                    defs.len(),
+                                    class_name
+                                ),
                                 &boundary,
                             );
-                            tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: wrapped,
+                                is_error: false,
+                            });
                         } else {
-                            let wrapped = crate::security::wrap_tool_result(&name, &format!("Class '{}' not found", class_name), &boundary);
-                            tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: true });
+                            let wrapped = crate::security::wrap_tool_result(
+                                &name,
+                                &format!("Class '{}' not found", class_name),
+                                &boundary,
+                            );
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: id.clone(),
+                                content: wrapped,
+                                is_error: true,
+                            });
                         }
                     }
                     "find_tools" => {
@@ -951,19 +1041,38 @@ pub async fn handle_query(
                         let goal_lc = goal.to_lowercase();
                         for (class, defs) in &class_tools {
                             // Simple heuristic: match by class name or tool names
-                            let hay = format!("{} {}", class, defs.iter().map(|d| &d.name).cloned().collect::<Vec<_>>().join(" "));
+                            let hay = format!(
+                                "{} {}",
+                                class,
+                                defs.iter()
+                                    .map(|d| &d.name)
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(" ")
+                            );
                             if hay.to_lowercase().contains(&goal_lc) {
                                 suggestions.push((class.clone(), defs.len()));
                             }
                         }
                         if suggestions.is_empty() {
-                            suggestions = class_tools.keys().take(10).map(|c| (c.clone(), class_tools[c].len())).collect();
+                            suggestions = class_tools
+                                .keys()
+                                .take(10)
+                                .map(|c| (c.clone(), class_tools[c].len()))
+                                .collect();
                         }
                         let mut body = if suggestions.is_empty() {
                             "No matching tool classes found. Use list_tools(class_name) after reviewing available classes.".to_string()
                         } else {
-                            let list = suggestions.iter().map(|(c, n)| format!("- {} ({} tools)", c, n)).collect::<Vec<_>>().join("\n");
-                            format!("Tool classes that may help:\n{}\nUse list_tools(class_name) to load one.", list)
+                            let list = suggestions
+                                .iter()
+                                .map(|(c, n)| format!("- {} ({} tools)", c, n))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            format!(
+                                "Tool classes that may help:\n{}\nUse list_tools(class_name) to load one.",
+                                list
+                            )
                         };
                         // If limited/no suggestions, perform a quick web discovery to enrich results
                         if suggestions.len() < 2 {
@@ -977,7 +1086,11 @@ pub async fn handle_query(
                             }
                         }
                         let wrapped = crate::security::wrap_tool_result(&name, &body, &boundary);
-                        tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: wrapped,
+                            is_error: false,
+                        });
                     }
                     "code" => {
                         let task = input["task"].as_str().unwrap_or("");
@@ -1123,7 +1236,10 @@ pub async fn handle_query(
                     "web_search" => {
                         let q = input["query"].as_str().unwrap_or("").to_string();
                         let ws_cfg = config.clone();
-                        let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("web_search"));
+                        let timeout = input
+                            .get("expected_timeout_seconds")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(crate::tools::default_timeout_for_tool("web_search"));
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
@@ -1137,7 +1253,7 @@ pub async fn handle_query(
                             )
                             .await
                             {
-                                Ok(Ok(r)) => Ok(r),
+                                Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
                                 Ok(Err(e)) => Err(format!("{e}")),
                                 Err(msg) => Err(msg),
                             };
@@ -1147,7 +1263,10 @@ pub async fn handle_query(
                     "github" => {
                         let input_clone = input.clone();
                         let cfg_clone = config.clone();
-                        let timeout = input_clone.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("github"));
+                        let timeout = input_clone
+                            .get("expected_timeout_seconds")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(crate::tools::default_timeout_for_tool("github"));
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
@@ -1161,7 +1280,7 @@ pub async fn handle_query(
                             )
                             .await
                             {
-                                Ok(Ok(r)) => Ok(r),
+                                Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
                                 Ok(Err(e)) => Err(format!("{e}")),
                                 Err(msg) => Err(msg),
                             };
@@ -1283,7 +1402,10 @@ pub async fn handle_query(
                             let name_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
-                            let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("mcp"));
+                            let timeout = input
+                                .get("expected_timeout_seconds")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(crate::tools::default_timeout_for_tool("mcp"));
                             let extension_timeout = config.execution.tool_timeout_extension_seconds;
                             let force_autorun = opts.force_autorun;
                             futs.push(Box::pin(async move {
@@ -1300,7 +1422,7 @@ pub async fn handle_query(
                                 )
                                 .await
                                 {
-                                    Ok(Ok(r)) => Ok(r),
+                                    Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
                                     Ok(Err(e)) => Err(format!("{e}")),
                                     Err(msg) => Err(msg),
                                 };
@@ -1324,7 +1446,8 @@ pub async fn handle_query(
                             // attempt a simple fuzzy match to map to an existing installed skill.
                             if matched_skill.is_none() && name_for_exec.starts_with("skill_") {
                                 let req = name_for_exec.trim_start_matches("skill_");
-                                let candidates: Vec<&crate::skills::Skill> = skills.iter().collect();
+                                let candidates: Vec<&crate::skills::Skill> =
+                                    skills.iter().collect();
                                 // Heuristic: try common suffix trims and then minimal edit distance <= 2
                                 let trims = ["er", "or", "r", "s", "ing", "izer", "ise", "ize"];
                                 let mut bases = vec![req.to_string()];
@@ -1334,7 +1457,13 @@ pub async fn handle_query(
                                     }
                                 }
                                 // Prefer substring proximity
-                                if let Some(s) = candidates.iter().find(|s| bases.iter().any(|b| s.name == *b || s.name.starts_with(b) || b.starts_with(&s.name))) {
+                                if let Some(s) = candidates.iter().find(|s| {
+                                    bases.iter().any(|b| {
+                                        s.name == *b
+                                            || s.name.starts_with(b)
+                                            || b.starts_with(&s.name)
+                                    })
+                                }) {
                                     matched_skill = Some((**s).clone());
                                 } else {
                                     // Fallback: minimal edit distance
@@ -1342,18 +1471,22 @@ pub async fn handle_query(
                                         let mut dp = vec![0usize; (b.len() + 1) * (a.len() + 1)];
                                         let w = b.len() + 1;
                                         // first column
-                                        for (i, cell) in dp.iter_mut().step_by(w).take(a.len() + 1).enumerate() {
+                                        for (i, cell) in
+                                            dp.iter_mut().step_by(w).take(a.len() + 1).enumerate()
+                                        {
                                             *cell = i;
                                         }
                                         // first row
-                                        for (j, cell) in dp.iter_mut().take(b.len() + 1).enumerate() {
+                                        for (j, cell) in dp.iter_mut().take(b.len() + 1).enumerate()
+                                        {
                                             *cell = j;
                                         }
                                         let ab: Vec<char> = a.chars().collect();
                                         let bb: Vec<char> = b.chars().collect();
                                         for i in 1..=ab.len() {
                                             for j in 1..=bb.len() {
-                                                let cost = if ab[i - 1] == bb[j - 1] { 0 } else { 1 };
+                                                let cost =
+                                                    if ab[i - 1] == bb[j - 1] { 0 } else { 1 };
                                                 let del = dp[(i - 1) * w + j] + 1;
                                                 let ins = dp[i * w + (j - 1)] + 1;
                                                 let sub = dp[(i - 1) * w + (j - 1)] + cost;
@@ -1377,8 +1510,12 @@ pub async fn handle_query(
                                 }
                             }
                             if let Some(skill) = matched_skill {
-                                let timeout = input.get("expected_timeout_seconds").and_then(|v| v.as_u64()).unwrap_or(crate::tools::default_timeout_for_tool("skill"));
-                                let extension_timeout = config.execution.tool_timeout_extension_seconds;
+                                let timeout = input
+                                    .get("expected_timeout_seconds")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(crate::tools::default_timeout_for_tool("skill"));
+                                let extension_timeout =
+                                    config.execution.tool_timeout_extension_seconds;
                                 let force_autorun = opts.force_autorun;
                                 futs.push(Box::pin(async move {
                                     let fut = crate::skills::execute_skill_async(skill, input);
@@ -1391,7 +1528,7 @@ pub async fn handle_query(
                                     )
                                     .await
                                     {
-                                        Ok(Ok(r)) => Ok(r),
+                                        Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
                                         Ok(Err(e)) => Err(format!("{e}")),
                                         Err(msg) => Err(msg),
                                     };
@@ -1399,9 +1536,16 @@ pub async fn handle_query(
                                 }));
                             } else {
                                 let force_autorun = opts.force_autorun;
-                                let extension_timeout = config.execution.tool_timeout_extension_seconds;
+                                let extension_timeout =
+                                    config.execution.tool_timeout_extension_seconds;
                                 futs.push(Box::pin(async move {
-                                    let task = tokio::task::spawn_blocking(move || execute_sync_tool(&name_for_exec, &input, &cfg_clone));
+                                    let task = tokio::task::spawn_blocking(move || {
+                                        execute_sync_tool_outcome(
+                                            &name_for_exec,
+                                            &input,
+                                            &cfg_clone,
+                                        )
+                                    });
                                     let result = match execute_with_timeout(
                                         task,
                                         &name_ret,
@@ -1426,12 +1570,14 @@ pub async fn handle_query(
             let results = futures::future::join_all(futs).await;
             for (id, name, result) in results {
                 let (content, is_error) = match result {
-                    Ok(c) => (c, false),
+                    Ok(outcome) => outcome.into_parts(),
                     Err(e) => {
                         display_tool_error(&e, opts.json_output);
                         let enriched = if let Some(inp) = input_map.get(&id) {
                             tool_health.enrich_error(&name, inp, &e)
-                        } else { e.clone() };
+                        } else {
+                            e.clone()
+                        };
                         (enriched, true)
                     }
                 };
@@ -1491,7 +1637,9 @@ pub async fn handle_query(
                 force_json_next = false;
                 eprintln!("\x1b[2mnsh: model unable to produce tool calls after 5 attempts\x1b[0m");
                 messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: "You have failed to produce tool calls multiple times. Use the 'chat' tool NOW to provide your best answer, or use 'command' to suggest a shell command. This is your last chance.".to_string() }] });
-                if no_tool_call_streak >= 8 { break; }
+                if no_tool_call_streak >= 8 {
+                    break;
+                }
                 continue;
             }
             messages.push(Message { role: Role::User, content: vec![ContentBlock::Text { text: format!(
@@ -2595,30 +2743,36 @@ Skill installation guidelines:
 
 // memory XML removed entirely
 
-fn execute_sync_tool(
+fn execute_sync_tool_outcome(
     name: &str,
     input: &serde_json::Value,
     config: &Config,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<tools::ToolInvocationOutcome> {
     // let sfa = &config.tools.sensitive_file_access; // not used for read-only tools below
     // For read-only file tools, prefer interactive confirmation on sensitive paths
     // regardless of global config, so the user can grant access and proceed.
     let sfa_read = "ask";
     match name {
-        "grep_file" => tools::grep_file::execute_with_access(input, sfa_read),
-        "read_file" => tools::read_file::execute_with_access(input, sfa_read),
-        "list_directory" => tools::list_directory::execute_with_access(input, sfa_read),
-        "glob" => tools::glob::execute(input),
+        "grep_file" => tools::grep_file::execute_outcome_with_access(input, sfa_read),
+        "read_file" => tools::read_file::execute_outcome_with_access(input, sfa_read),
+        "list_directory" => tools::list_directory::execute_outcome_with_access(input, sfa_read),
+        "glob" => tools::glob::execute_outcome_with_access(input, sfa_read),
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("");
-            tools::run_command::execute(cmd, config)
+            Ok(tools::ToolInvocationOutcome::from_result(
+                tools::run_command::execute(cmd, config),
+            ))
         }
         "man_page" => {
             let cmd = input["command"].as_str().unwrap_or("");
             let section = input["section"].as_u64().map(|s| s as u8);
-            tools::man_page::execute(cmd, section)
+            Ok(tools::ToolInvocationOutcome::from_result(
+                tools::man_page::execute(cmd, section),
+            ))
         }
-        unknown => Ok(format!("Unknown tool: {unknown}")),
+        unknown => Ok(tools::ToolInvocationOutcome::failure(format!(
+            "Unknown tool: {unknown}"
+        ))),
     }
 }
 
@@ -2647,7 +2801,7 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
             if let Some(pat) = input["pattern"].as_str() {
                 format!("searching {path} for /{pat}/")
             } else {
-                format!("reading {path}")
+                format!("searching {path} for /(missing pattern)/")
             }
         }
         "read_file" => {
@@ -2736,26 +2890,64 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
 fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), String> {
     if name == "install_skill" {
         // Repo mode: just needs a repo/url — skip all other validation
-        let have_repo = input.get("repo").or_else(|| input.get("url"))
-            .and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let have_repo = input
+            .get("repo")
+            .or_else(|| input.get("url"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
         // Also detect URLs passed in name field
-        let name_is_url = input.get("name").and_then(|v| v.as_str())
-            .map(|s| s.contains("github.com") || s.contains("gitlab.com") || s.starts_with("https://") || s.starts_with("http://"))
+        let name_is_url = input
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                s.contains("github.com")
+                    || s.contains("gitlab.com")
+                    || s.starts_with("https://")
+                    || s.starts_with("http://")
+            })
             .unwrap_or(false);
         if have_repo || name_is_url {
             return Ok(());
         }
         // Manual mode: require name + description + (command OR runtime+script OR docs)
-        let have_name = input.get("name").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
-        let have_desc = input.get("description").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let have_name = input
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+        let have_desc = input
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
         if !have_name || !have_desc {
-            return Err("Missing required field 'name' or 'description' for tool 'install_skill'. \
-                        To install from a Git repo, pass repo=URL instead.".to_string());
+            return Err(
+                "Missing required field 'name' or 'description' for tool 'install_skill'. \
+                        To install from a Git repo, pass repo=URL instead."
+                    .to_string(),
+            );
         }
-        let have_command = input.get("command").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let have_runtime = input.get("runtime").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let have_script = input.get("script").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
-        let have_docs = input.get("docs").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let have_command = input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let have_runtime = input
+            .get("runtime")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let have_script = input
+            .get("script")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let have_docs = input
+            .get("docs")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
         if !(have_command || (have_runtime && have_script) || have_docs) {
             return Err("Provide either 'command', both 'runtime' and 'script', or 'docs' for 'install_skill'".to_string());
         }
@@ -2851,7 +3043,12 @@ struct RepeatGuard {
 impl RepeatGuard {
     fn note_invalid(&mut self, name: &str, input: &serde_json::Value) -> bool {
         // Pending commands are part of multi-step workflows; don't penalize repetition
-        if name == "command" && input.get("pending").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if name == "command"
+            && input
+                .get("pending")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        {
             self.repeat_fail_count = 0;
             return false;
         }
