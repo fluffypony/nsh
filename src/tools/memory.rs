@@ -5,13 +5,14 @@
 //! and retrieve_secret.
 
 use crate::daemon_db::DbAccess;
+use crate::memory::types::{MemoryType, Sensitivity};
 
-pub(crate) fn validate_store_memory_input(memory_type: &str, data: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn validate_store_memory_input(memory_type: MemoryType, data: &serde_json::Value) -> Result<(), String> {
     let obj = data
         .as_object()
         .ok_or_else(|| "store_memory 'data' must be a JSON object".to_string())?;
     match memory_type {
-        "semantic" => {
+        MemoryType::Semantic => {
             for req in ["name", "category", "summary", "search_keywords"] {
                 if !obj.contains_key(req)
                     || obj.get(req)
@@ -23,7 +24,7 @@ pub(crate) fn validate_store_memory_input(memory_type: &str, data: &serde_json::
                 }
             }
         }
-        "procedural" => {
+        MemoryType::Procedural => {
             for req in ["entry_type", "summary", "steps", "search_keywords"] {
                 if !obj.contains_key(req) {
                     return Err(format!("Procedural memory missing required field '{req}'"));
@@ -33,7 +34,7 @@ pub(crate) fn validate_store_memory_input(memory_type: &str, data: &serde_json::
                 return Err("Procedural memory 'steps' must be an array".into());
             }
         }
-        "resource" => {
+        MemoryType::Resource => {
             for req in ["resource_type", "title", "summary", "search_keywords"] {
                 if !obj.contains_key(req)
                     || obj.get(req)
@@ -45,7 +46,7 @@ pub(crate) fn validate_store_memory_input(memory_type: &str, data: &serde_json::
                 }
             }
         }
-        "knowledge" => {
+        MemoryType::Knowledge => {
             for req in ["entry_type", "caption", "secret_value", "search_keywords"] {
                 if !obj.contains_key(req)
                     || obj.get(req)
@@ -56,8 +57,14 @@ pub(crate) fn validate_store_memory_input(memory_type: &str, data: &serde_json::
                     return Err(format!("Knowledge memory missing required field '{req}'"));
                 }
             }
+            let sensitivity = obj.get("sensitivity").and_then(|v| v.as_str()).unwrap_or("medium");
+            Sensitivity::parse(sensitivity)
+                .map_err(|e| format!("Knowledge memory has invalid sensitivity: {e}"))?;
         }
-        _ => {}
+        MemoryType::Core => {
+            return Err("store_memory does not support 'core'; use core_memory_append/core_memory_rewrite".into());
+        }
+        MemoryType::Episodic => {}
     }
     Ok(())
 }
@@ -72,7 +79,7 @@ pub fn execute_search_memory(
     let mt = if memory_type == "all" {
         None
     } else {
-        Some(memory_type)
+        Some(MemoryType::parse(memory_type).map_err(|e| e.to_string())?)
     };
     db.memory_search(query, mt, limit)
         .map_err(|e| format!("Memory search error: {e}"))
@@ -106,9 +113,10 @@ pub fn execute_store_memory(
     memory_type: &str,
     data: &serde_json::Value,
 ) -> Result<String, String> {
+    let parsed_type = MemoryType::parse(memory_type).map_err(|e| format!("Error: {e}"))?;
     // Validate minimal schema up front to avoid noisy daemon errors
-    validate_store_memory_input(memory_type, data)?;
-    db.memory_store(memory_type, &data.to_string())
+    validate_store_memory_input(parsed_type, data)?;
+    db.memory_store(parsed_type, &data.to_string())
         .map(|id| format!("Stored in {memory_type} memory (id: {id})"))
         .map_err(|e| format!("Error: {e}"))
 }
@@ -132,13 +140,13 @@ mod tests {
             "summary": "CLI to humanize ls -lR output",
             "search_keywords": "humanizer ls pretty"
         });
-        assert!(validate_store_memory_input("semantic", &data).is_ok());
+        assert!(validate_store_memory_input(MemoryType::Semantic, &data).is_ok());
     }
 
     #[test]
     fn validate_semantic_missing_field() {
         let data = json!({ "name": "X" });
-        let err = validate_store_memory_input("semantic", &data).unwrap_err();
+        let err = validate_store_memory_input(MemoryType::Semantic, &data).unwrap_err();
         assert!(err.contains("missing required field"));
     }
 
@@ -150,7 +158,7 @@ mod tests {
             "steps": "not an array",
             "search_keywords": "deploy"
         });
-        let err = validate_store_memory_input("procedural", &data).unwrap_err();
+        let err = validate_store_memory_input(MemoryType::Procedural, &data).unwrap_err();
         assert!(err.contains("steps"));
     }
 
@@ -162,7 +170,7 @@ mod tests {
             "summary": "Important notes",
             "search_keywords": "readme doc"
         });
-        assert!(validate_store_memory_input("resource", &data).is_ok());
+        assert!(validate_store_memory_input(MemoryType::Resource, &data).is_ok());
     }
 
     #[test]
@@ -173,6 +181,19 @@ mod tests {
             "secret_value": "abc123",
             "search_keywords": "token api"
         });
-        assert!(validate_store_memory_input("knowledge", &data).is_ok());
+        assert!(validate_store_memory_input(MemoryType::Knowledge, &data).is_ok());
+    }
+
+    #[test]
+    fn validate_knowledge_invalid_sensitivity() {
+        let data = json!({
+            "entry_type": "token",
+            "caption": "API token",
+            "secret_value": "abc123",
+            "sensitivity": "critical",
+            "search_keywords": "token api"
+        });
+        let err = validate_store_memory_input(MemoryType::Knowledge, &data).unwrap_err();
+        assert!(err.contains("invalid sensitivity"));
     }
 }

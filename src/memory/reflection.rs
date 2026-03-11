@@ -88,19 +88,8 @@ Respond ONLY with the JSON array.
     prompt
 }
 
-pub fn parse_reflection_response(response: &str) -> Vec<MemoryOp> {
-    let trimmed = response.trim();
-    let json_str = if let Some(start) = trimmed.find('[') {
-        if let Some(end) = trimmed.rfind(']') {
-            &trimmed[start..=end]
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-
-    match serde_json::from_str::<Vec<MemoryOp>>(json_str) {
+pub fn parse_reflection_response(response: &serde_json::Value) -> Vec<MemoryOp> {
+    match serde_json::from_value::<Vec<MemoryOp>>(response.clone()) {
         Ok(ops) => crate::memory::ingestion::extractor::validate_keyword_presence(ops),
         Err(e) => {
             tracing::warn!("Failed to parse reflection response: {e}");
@@ -181,14 +170,16 @@ mod tests {
 
     #[test]
     fn parse_reflection_response_valid() {
-        let resp = r#"[{"op": "NoOp", "reason": "nothing to consolidate"}]"#;
-        let ops = parse_reflection_response(resp);
+        let resp = serde_json::json!([
+            {"op": "NoOp", "reason": "nothing to consolidate"}
+        ]);
+        let ops = parse_reflection_response(&resp);
         assert_eq!(ops.len(), 1);
     }
 
     #[test]
     fn parse_reflection_response_invalid() {
-        let ops = parse_reflection_response("not json");
+        let ops = parse_reflection_response(&serde_json::json!("not json"));
         assert!(ops.is_empty());
     }
 
@@ -260,27 +251,43 @@ mod tests {
 
     #[test]
     fn parse_reflection_response_semantic_insert() {
-        let resp = r#"[{"op": "SemanticInsert", "name": "Docker usage", "category": "tools", "summary": "Uses Docker for containerization", "search_keywords": "docker container"}]"#;
-        let ops = parse_reflection_response(resp);
+        let resp = serde_json::json!([
+            {
+                "op": "SemanticInsert",
+                "name": "Docker usage",
+                "category": "tools",
+                "summary": "Uses Docker for containerization",
+                "search_keywords": "docker container"
+            }
+        ]);
+        let ops = parse_reflection_response(&resp);
         assert_eq!(ops.len(), 1);
         assert!(matches!(&ops[0], MemoryOp::SemanticInsert { .. }));
     }
 
     #[test]
     fn parse_reflection_response_mixed_ops() {
-        let resp = r#"[
+        let resp = serde_json::json!([
             {"op": "SemanticInsert", "name": "fact", "category": "general", "summary": "test", "search_keywords": "test"},
             {"op": "EpisodicDelete", "ids": ["ep_1", "ep_2"]},
             {"op": "CoreAppend", "label": "human", "content": "prefers vim"}
-        ]"#;
-        let ops = parse_reflection_response(resp);
+        ]);
+        let ops = parse_reflection_response(&resp);
         assert_eq!(ops.len(), 3);
     }
 
     #[test]
     fn parse_reflection_adds_missing_keywords() {
-        let resp = r#"[{"op": "SemanticInsert", "name": "fact", "category": "general", "summary": "Uses Docker for development workflow", "search_keywords": ""}]"#;
-        let ops = parse_reflection_response(resp);
+        let resp = serde_json::json!([
+            {
+                "op": "SemanticInsert",
+                "name": "fact",
+                "category": "general",
+                "summary": "Uses Docker for development workflow",
+                "search_keywords": ""
+            }
+        ]);
+        let ops = parse_reflection_response(&resp);
         match &ops[0] {
             MemoryOp::SemanticInsert {
                 search_keywords, ..

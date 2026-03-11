@@ -4,10 +4,10 @@ use rusqlite::Connection;
 
 // Active bootstrap scan is orchestrated by MemorySystem::bootstrap_scan to avoid holding locks across awaits
 
-pub fn parse_bootstrap_response(response: &str, default_desc: &str) -> (String, String) {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(response.trim()) {
-        let summary = v["summary"].as_str().unwrap_or(default_desc).to_string();
-        let keywords = v["keywords"].as_str().unwrap_or("").to_string();
+pub fn parse_bootstrap_response(response: &serde_json::Value, default_desc: &str) -> (String, String) {
+    if let Some(v) = response.as_object() {
+        let summary = v.get("summary").and_then(|s| s.as_str()).unwrap_or(default_desc).to_string();
+        let keywords = v.get("keywords").and_then(|s| s.as_str()).unwrap_or("").to_string();
         (summary, keywords)
     } else {
         (default_desc.to_string(), String::new())
@@ -69,15 +69,16 @@ mod tests {
 
     #[test]
     fn parse_bootstrap_response_valid() {
-        let resp = r#"{"summary": "Uses git with aliases", "keywords": "git alias config"}"#;
-        let (summary, keywords) = parse_bootstrap_response(resp, "default");
+        let resp = serde_json::json!({"summary": "Uses git with aliases", "keywords": "git alias config"});
+        let (summary, keywords) = parse_bootstrap_response(&resp, "default");
         assert_eq!(summary, "Uses git with aliases");
         assert_eq!(keywords, "git alias config");
     }
 
     #[test]
     fn parse_bootstrap_response_invalid() {
-        let (summary, keywords) = parse_bootstrap_response("not json", "default desc");
+        let resp = serde_json::json!("not json");
+        let (summary, keywords) = parse_bootstrap_response(&resp, "default desc");
         assert_eq!(summary, "default desc");
         assert!(keywords.is_empty());
     }
@@ -120,8 +121,8 @@ mod tests {
 
     #[test]
     fn parse_bootstrap_response_partial() {
-        let resp = r#"{"summary": "has aliases"}"#;
-        let (summary, keywords) = parse_bootstrap_response(resp, "default");
+        let resp = serde_json::json!({"summary": "has aliases"});
+        let (summary, keywords) = parse_bootstrap_response(&resp, "default");
         assert_eq!(summary, "has aliases");
         assert!(keywords.is_empty());
     }

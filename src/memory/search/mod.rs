@@ -6,11 +6,14 @@ use rusqlite::Connection;
 pub fn search_all(
     conn: &Connection,
     query: &str,
+    memory_type: Option<MemoryType>,
     limit_per_type: usize,
 ) -> anyhow::Result<Vec<SearchResult>> {
     let mut results = Vec::new();
+    let include = |mt: MemoryType| memory_type.is_none() || memory_type == Some(mt);
 
-    if let Ok(episodic) =
+    if include(MemoryType::Episodic)
+        && let Ok(episodic) =
         crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None, None)
     {
         for e in episodic {
@@ -23,7 +26,10 @@ pub fn search_all(
         }
     }
 
-    if let Ok(semantic) = crate::memory::store::semantic::search_bm25(conn, query, limit_per_type) {
+    if include(MemoryType::Semantic)
+        && let Ok(semantic) =
+            crate::memory::store::semantic::search_bm25(conn, query, limit_per_type)
+    {
         for s in semantic {
             results.push(SearchResult {
                 memory_type: MemoryType::Semantic,
@@ -34,7 +40,8 @@ pub fn search_all(
         }
     }
 
-    if let Ok(procedural) =
+    if include(MemoryType::Procedural)
+        && let Ok(procedural) =
         crate::memory::store::procedural::search_bm25(conn, query, limit_per_type)
     {
         for p in procedural {
@@ -47,7 +54,10 @@ pub fn search_all(
         }
     }
 
-    if let Ok(resource) = crate::memory::store::resource::search_bm25(conn, query, limit_per_type) {
+    if include(MemoryType::Resource)
+        && let Ok(resource) =
+            crate::memory::store::resource::search_bm25(conn, query, limit_per_type)
+    {
         for r in resource {
             results.push(SearchResult {
                 memory_type: MemoryType::Resource,
@@ -58,12 +68,14 @@ pub fn search_all(
         }
     }
 
-    if let Ok(knowledge) = crate::memory::store::knowledge::search_bm25(
+    if include(MemoryType::Knowledge)
+        && let Ok(knowledge) = crate::memory::store::knowledge::search_bm25(
         conn,
         query,
         limit_per_type,
         Sensitivity::Medium,
-    ) {
+    )
+    {
         for k in knowledge {
             results.push(SearchResult {
                 memory_type: MemoryType::Knowledge,
@@ -91,7 +103,7 @@ mod tests {
     #[test]
     fn search_all_empty_db() {
         let conn = setup();
-        let results = search_all(&conn, "test query", 10).unwrap();
+        let results = search_all(&conn, "test query", None, 10).unwrap();
         assert!(results.is_empty());
     }
 
@@ -126,7 +138,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_all(&conn, "cargo build", 10).unwrap();
+        let results = search_all(&conn, "cargo build", None, 10).unwrap();
         assert!(
             results.len() >= 2,
             "should find results across episodic and semantic"
@@ -153,7 +165,7 @@ mod tests {
             .unwrap();
         }
 
-        let results = search_all(&conn, "rust programming", 2).unwrap();
+        let results = search_all(&conn, "rust programming", None, 2).unwrap();
         // limit_per_type=2 means at most 2 per memory type
         let semantic_count = results
             .iter()
@@ -165,7 +177,7 @@ mod tests {
     #[test]
     fn search_all_empty_query_no_crash() {
         let conn = setup();
-        let results = search_all(&conn, "", 10).unwrap();
+        let results = search_all(&conn, "", None, 10).unwrap();
         assert!(results.is_empty());
     }
 
@@ -183,7 +195,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_all(&conn, "github token", 10).unwrap();
+        let results = search_all(&conn, "github token", None, 10).unwrap();
         assert!(!results.is_empty());
         let k = results
             .iter()
@@ -207,7 +219,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_all(&conn, "deploy production", 10).unwrap();
+        let results = search_all(&conn, "deploy production", None, 10).unwrap();
         let p = results
             .iter()
             .find(|r| r.memory_type == MemoryType::Procedural);
@@ -230,10 +242,44 @@ mod tests {
         )
         .unwrap();
 
-        let results = search_all(&conn, "git config", 10).unwrap();
+        let results = search_all(&conn, "git config", None, 10).unwrap();
         let r = results
             .iter()
             .find(|r| r.memory_type == MemoryType::Resource);
         assert!(r.is_some(), "should find resource entries");
+    }
+
+    #[test]
+    fn search_all_filters_requested_type() {
+        let conn = setup();
+
+        crate::memory::store::episodic::insert(
+            &conn,
+            &crate::memory::types::EpisodicEventCreate {
+                event_type: crate::memory::types::EventType::CommandExecution,
+                actor: crate::memory::types::Actor::User,
+                summary: "Ran cargo test".into(),
+                details: None,
+                command: Some("cargo test".into()),
+                exit_code: Some(0),
+                working_dir: None,
+                project_context: None,
+                search_keywords: "cargo test".into(),
+            },
+        )
+        .unwrap();
+        crate::memory::store::semantic::insert_or_update(
+            &conn,
+            "testing preference",
+            "workflow",
+            "Prefers cargo test before commit",
+            None,
+            "cargo test",
+        )
+        .unwrap();
+
+        let results = search_all(&conn, "cargo test", Some(MemoryType::Semantic), 10).unwrap();
+        assert!(!results.is_empty());
+        assert!(results.iter().all(|r| r.memory_type == MemoryType::Semantic));
     }
 }

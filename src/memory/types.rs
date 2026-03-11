@@ -241,13 +241,18 @@ impl Sensitivity {
         }
     }
 
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
-            "high" => Sensitivity::High,
-            "medium" => Sensitivity::Medium,
-            _ => Sensitivity::Low,
+            "low" => Ok(Sensitivity::Low),
+            "medium" => Ok(Sensitivity::Medium),
+            "high" => Ok(Sensitivity::High),
+            _ => anyhow::bail!("invalid sensitivity: {s}"),
         }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str_lossy(s: &str) -> Self {
+        Self::parse(s).unwrap_or(Sensitivity::Low)
     }
 }
 
@@ -515,6 +520,18 @@ impl MemoryType {
             MemoryType::Knowledge => "knowledge",
         }
     }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "core" => Ok(MemoryType::Core),
+            "episodic" => Ok(MemoryType::Episodic),
+            "semantic" => Ok(MemoryType::Semantic),
+            "procedural" => Ok(MemoryType::Procedural),
+            "resource" => Ok(MemoryType::Resource),
+            "knowledge" => Ok(MemoryType::Knowledge),
+            _ => anyhow::bail!("unknown memory type: {s}"),
+        }
+    }
 }
 
 impl std::fmt::Display for MemoryType {
@@ -687,12 +704,21 @@ mod tests {
     }
 
     #[test]
-    fn sensitivity_from_str_defaults() {
-        assert_eq!(Sensitivity::from_str("high"), Sensitivity::High);
-        assert_eq!(Sensitivity::from_str("medium"), Sensitivity::Medium);
-        assert_eq!(Sensitivity::from_str("low"), Sensitivity::Low);
-        assert_eq!(Sensitivity::from_str("unknown"), Sensitivity::Low);
-        assert_eq!(Sensitivity::from_str(""), Sensitivity::Low);
+    fn sensitivity_parse_rejects_invalid() {
+        assert_eq!(Sensitivity::parse("high").unwrap(), Sensitivity::High);
+        assert_eq!(Sensitivity::parse("medium").unwrap(), Sensitivity::Medium);
+        assert_eq!(Sensitivity::parse("low").unwrap(), Sensitivity::Low);
+        assert!(Sensitivity::parse("unknown").is_err());
+        assert!(Sensitivity::parse("").is_err());
+    }
+
+    #[test]
+    fn sensitivity_from_str_lossy_defaults() {
+        assert_eq!(Sensitivity::from_str_lossy("high"), Sensitivity::High);
+        assert_eq!(Sensitivity::from_str_lossy("medium"), Sensitivity::Medium);
+        assert_eq!(Sensitivity::from_str_lossy("low"), Sensitivity::Low);
+        assert_eq!(Sensitivity::from_str_lossy("unknown"), Sensitivity::Low);
+        assert_eq!(Sensitivity::from_str_lossy(""), Sensitivity::Low);
     }
 
     #[test]
@@ -710,6 +736,24 @@ mod tests {
         assert_eq!(format!("{}", MemoryType::Procedural), "procedural");
         assert_eq!(format!("{}", MemoryType::Resource), "resource");
         assert_eq!(format!("{}", MemoryType::Knowledge), "knowledge");
+    }
+
+    #[test]
+    fn memory_type_parse_rejects_unknown() {
+        assert_eq!(MemoryType::parse("core").unwrap(), MemoryType::Core);
+        assert_eq!(MemoryType::parse("episodic").unwrap(), MemoryType::Episodic);
+        assert_eq!(MemoryType::parse("semantic").unwrap(), MemoryType::Semantic);
+        assert_eq!(
+            MemoryType::parse("procedural").unwrap(),
+            MemoryType::Procedural
+        );
+        assert_eq!(MemoryType::parse("resource").unwrap(), MemoryType::Resource);
+        assert_eq!(
+            MemoryType::parse("knowledge").unwrap(),
+            MemoryType::Knowledge
+        );
+        assert!(MemoryType::parse("all").is_err());
+        assert!(MemoryType::parse("").is_err());
     }
 
     #[test]

@@ -862,7 +862,10 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 } => {
                     let request = daemon::DaemonRequest::MemorySearch {
                         query,
-                        memory_type: r#type,
+                        memory_type: match r#type {
+                            Some(mt) => Some(crate::memory::types::MemoryType::parse(&mt)?),
+                            None => None,
+                        },
                         limit,
                     };
                     match send_to_global_or_fallback(&request)? {
@@ -909,26 +912,22 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
                 }
                 MemoryAction::Clear { r#type } => {
                     if let Some(ref memory_type) = r#type {
-                        let valid = [
-                            "episodic",
-                            "semantic",
-                            "procedural",
-                            "resource",
-                            "knowledge",
-                            "core",
-                        ];
-                        if !valid.contains(&memory_type.as_str()) {
-                            eprintln!(
-                                "Unknown memory type '{}'. Valid types: {}",
-                                memory_type,
-                                valid.join(", ")
-                            );
-                            return Ok(());
-                        }
-                        let _ =
-                            send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearByType {
-                                memory_type: memory_type.clone(),
-                            });
+                        let parsed_type = match crate::memory::types::MemoryType::parse(memory_type)
+                        {
+                            Ok(mt) => mt,
+                            Err(_) => {
+                                eprintln!(
+                                    "Unknown memory type '{}'. Valid types: episodic, semantic, procedural, resource, knowledge, core",
+                                    memory_type,
+                                );
+                                return Ok(());
+                            }
+                        };
+                        let _ = send_to_global_or_fallback(
+                            &daemon::DaemonRequest::MemoryClearByType {
+                                memory_type: parsed_type,
+                            },
+                        );
                         eprintln!("{memory_type} memories cleared.");
                     } else {
                         let _ = send_to_global_or_fallback(&daemon::DaemonRequest::MemoryClearAll);

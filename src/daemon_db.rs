@@ -5,6 +5,7 @@ use crate::db::{
     CommandEntityMatch, CommandForSummary, CommandWithSummary, ConversationExchange, Db,
     HistoryMatch, OtherSessionSummary,
 };
+use crate::memory::types::{MemoryOp, MemoryType};
 
 pub trait DbAccess {
     fn get_conversations(
@@ -74,12 +75,12 @@ pub trait DbAccess {
     fn memory_search(
         &self,
         query: &str,
-        memory_type: Option<&str>,
+        memory_type: Option<MemoryType>,
         limit: usize,
     ) -> anyhow::Result<String>;
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()>;
-    fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String>;
+    fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String>;
     fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String>;
     // Note: event recording is routed via daemon requests from query flow; no direct trait use required.
 }
@@ -220,11 +221,11 @@ impl DbAccess for Db {
     fn memory_search(
         &self,
         query: &str,
-        memory_type: Option<&str>,
+        memory_type: Option<MemoryType>,
         limit: usize,
     ) -> anyhow::Result<String> {
         let mut results = serde_json::Map::new();
-        let should_search = |mt: &str| memory_type.is_none() || memory_type == Some(mt);
+        let should_search = |mt: MemoryType| memory_type.is_none() || memory_type == Some(mt);
 
         // Parse temporal expressions to constrain episodic search by time range
         let temporal_range =
@@ -234,7 +235,7 @@ impl DbAccess for Db {
             temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
         let since_ref = since_str.as_deref();
 
-        if should_search("episodic") {
+        if should_search(MemoryType::Episodic) {
             match self.search_episodic_fts_since(query, limit, None, since_ref) {
                 Ok(items) => {
                     results.insert("episodic".into(), serde_json::to_value(&items)?);
@@ -244,7 +245,7 @@ impl DbAccess for Db {
                 }
             }
         }
-        if should_search("semantic") {
+        if should_search(MemoryType::Semantic) {
             match self.search_semantic_fts(query, limit) {
                 Ok(items) => {
                     results.insert("semantic".into(), serde_json::to_value(&items)?);
@@ -254,7 +255,7 @@ impl DbAccess for Db {
                 }
             }
         }
-        if should_search("procedural") {
+        if should_search(MemoryType::Procedural) {
             match self.search_procedural_fts(query, limit) {
                 Ok(items) => {
                     results.insert("procedural".into(), serde_json::to_value(&items)?);
@@ -264,7 +265,7 @@ impl DbAccess for Db {
                 }
             }
         }
-        if should_search("resource") {
+        if should_search(MemoryType::Resource) {
             match self.search_resource_fts(query, limit) {
                 Ok(items) => {
                     results.insert("resource".into(), serde_json::to_value(&items)?);
@@ -274,7 +275,7 @@ impl DbAccess for Db {
                 }
             }
         }
-        if should_search("knowledge") {
+        if should_search(MemoryType::Knowledge) {
             match self.search_knowledge_fts(query, limit, &["low", "medium"]) {
                 Ok(items) => {
                     results.insert("knowledge".into(), serde_json::to_value(&items)?);
@@ -295,39 +296,73 @@ impl DbAccess for Db {
         Ok(self.update_core_block(label, content)?)
     }
 
-    fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String> {
-        let mut data: serde_json::Value = serde_json::from_str(data_json)?;
-        let id = crate::memory::types::generate_id(match memory_type {
-            "episodic" => "ep",
-            "semantic" => "sem",
-            "procedural" => "proc",
-            "resource" => "res",
-            "knowledge" => "kv",
-            _ => "mem",
-        });
-        match memory_type {
-            "semantic" => {
-                // Ensure an id is present to satisfy struct deserialization
-                if let Some(obj) = data.as_object_mut() {
-                    obj.entry("id").or_insert(serde_json::Value::String(id.clone()));
-                }
-                let item = serde_json::from_value::<crate::memory::types::SemanticItem>(data)?;
-                self.conn_execute_batch(&format!(
-                    "INSERT OR REPLACE INTO semantic_memory (id, name, category, summary, details, search_keywords) \
-                     VALUES ('{}', '{}', '{}', '{}', {}, '{}')",
-                    item.id.replace('\'', "''"),
-                    item.name.replace('\'', "''"),
-                    item.category.replace('\'', "''"),
-                    item.summary.replace('\'', "''"),
-                    item.details.as_ref().map_or("NULL".into(), |d| format!("'{}'", d.replace('\'', "''"))),
-                    item.search_keywords.replace('\'', "''"),
-                ))?;
+    fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String> {
+        let data: serde_json::Value = serde_json::from_str(data_json)?;
+        let op = memory_store_op(memory_type, data)?;
+        let id_out = match op {
+            MemoryOp::SemanticInsert {
+                name,
+                category,
+                summary,
+                details,
+                search_keywords,
+            } => self.store_semantic_memory(
+                    &name,
+                    &category,
+                    &summary,
+                    details.as_deref(),
+                    &search_keywords,
+                )?,
+            MemoryOp::ProceduralInsert {
+                entry_type,
+                trigger_pattern,
+                summary,
+                steps,
+                search_keywords,
+            } => self.store_procedural_memory(
+                    &entry_type,
+                    &trigger_pattern,
+                    &summary,
+                    &steps,
+                    &search_keywords,
+                )?,
+            MemoryOp::ResourceInsert {
+                resource_type,
+                file_path,
+                file_hash,
+                title,
+                summary,
+                content,
+                search_keywords,
+            } => self.store_resource_memory(
+                    &resource_type,
+                    file_path.as_deref(),
+                    file_hash.as_deref(),
+                    &title,
+                    &summary,
+                    content.as_deref(),
+                    &search_keywords,
+                )?,
+            MemoryOp::KnowledgeInsert {
+                entry_type,
+                caption,
+                secret_value,
+                sensitivity,
+                search_keywords,
+            } => {
+                let sensitivity = crate::memory::types::Sensitivity::parse(&sensitivity)?;
+                self.store_knowledge_memory(
+                    &entry_type,
+                    &caption,
+                    &secret_value,
+                    sensitivity,
+                    &search_keywords,
+                )?
             }
-            _ => {
-                // For other types, store as-is — the daemon handler will use the memory system
-            }
-        }
-        Ok(id)
+            _ => anyhow::bail!("unsupported memory store operation"),
+        };
+
+        Ok(id_out)
     }
 
     fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
@@ -336,6 +371,73 @@ impl DbAccess for Db {
     }
 
     // memory_record_event removed from trait
+}
+
+fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::Result<MemoryOp> {
+    let obj = data
+        .as_object()
+        .ok_or_else(|| anyhow!("memory store data must be a JSON object"))?;
+
+    let required = |key: &str| -> anyhow::Result<String> {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("memory store missing required field '{key}'"))
+    };
+
+    match memory_type {
+        MemoryType::Semantic => Ok(MemoryOp::SemanticInsert {
+            name: required("name")?,
+            category: required("category")?,
+            summary: required("summary")?,
+            details: obj.get("details").and_then(|v| v.as_str()).map(str::to_string),
+            search_keywords: required("search_keywords")?,
+        }),
+        MemoryType::Procedural => {
+            let steps = obj
+                .get("steps")
+                .ok_or_else(|| anyhow!("memory store missing required field 'steps'"))?;
+            if !steps.is_array() {
+                anyhow::bail!("memory store field 'steps' must be an array");
+            }
+            Ok(MemoryOp::ProceduralInsert {
+                entry_type: required("entry_type")?,
+                trigger_pattern: obj
+                    .get("trigger_pattern")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_default(),
+                summary: required("summary")?,
+                steps: serde_json::to_string(steps)?,
+                search_keywords: required("search_keywords")?,
+            })
+        }
+        MemoryType::Resource => Ok(MemoryOp::ResourceInsert {
+            resource_type: required("resource_type")?,
+            file_path: obj.get("file_path").and_then(|v| v.as_str()).map(str::to_string),
+            file_hash: obj.get("file_hash").and_then(|v| v.as_str()).map(str::to_string),
+            title: required("title")?,
+            summary: required("summary")?,
+            content: obj.get("content").and_then(|v| v.as_str()).map(str::to_string),
+            search_keywords: required("search_keywords")?,
+        }),
+        MemoryType::Knowledge => Ok(MemoryOp::KnowledgeInsert {
+            entry_type: required("entry_type")?,
+            caption: required("caption")?,
+            secret_value: required("secret_value")?,
+            sensitivity: obj
+                .get("sensitivity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("medium")
+                .to_string(),
+            search_keywords: required("search_keywords")?,
+        }),
+        MemoryType::Episodic | MemoryType::Core => {
+            anyhow::bail!("memory store does not support type '{}'; use dedicated APIs", memory_type.as_str())
+        }
+    }
 }
 
 #[derive(Default)]
@@ -807,12 +909,12 @@ impl DbAccess for DaemonDb {
     fn memory_search(
         &self,
         query: &str,
-        memory_type: Option<&str>,
+        memory_type: Option<MemoryType>,
         limit: usize,
     ) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemorySearch {
             query: query.to_string(),
-            memory_type: memory_type.map(String::from),
+            memory_type,
             limit,
         })?);
         Ok(serde_json::to_string(&data)?)
@@ -834,9 +936,9 @@ impl DbAccess for DaemonDb {
         Ok(())
     }
 
-    fn memory_store(&self, memory_type: &str, data_json: &str) -> anyhow::Result<String> {
+    fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemoryStore {
-            memory_type: memory_type.to_string(),
+            memory_type,
             data_json: data_json.to_string(),
         })?);
         Ok(data
@@ -859,6 +961,7 @@ impl DbAccess for DaemonDb {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::memory::types::{MemoryType, Sensitivity};
     use serial_test::serial;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
@@ -909,6 +1012,75 @@ mod tests {
         let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
         let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
         (home, home_guard, xdg_config_guard, xdg_data_guard)
+    }
+
+    #[test]
+    fn db_memory_store_supports_all_store_memory_types() {
+        let db = Db::open_in_memory().expect("open in-memory db");
+
+        let sem_id = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Semantic,
+            r#"{"name":"tooling","category":"project","summary":"uses cargo","search_keywords":"cargo tooling"}"#,
+        )
+        .expect("store semantic");
+        assert!(sem_id.starts_with("sem_"));
+
+        let proc_id = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Procedural,
+            r#"{"entry_type":"workflow","trigger_pattern":"deploy","summary":"deploy app","steps":["build","ship"],"search_keywords":"deploy workflow"}"#,
+        )
+        .expect("store procedural");
+        assert!(proc_id.starts_with("proc_"));
+
+        let res_id = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Resource,
+            r#"{"resource_type":"doc","title":"README","summary":"docs","search_keywords":"readme docs"}"#,
+        )
+        .expect("store resource");
+        assert!(res_id.starts_with("res_"));
+
+        let kv_id = <Db as DbAccess>::memory_store(
+            &db,
+            MemoryType::Knowledge,
+            r#"{"entry_type":"token","caption":"test token","secret_value":"abc123","sensitivity":"high","search_keywords":"token test"}"#,
+        )
+        .expect("store knowledge");
+        assert!(kv_id.starts_with("kv_"));
+
+        assert_eq!(db.list_all_semantic().expect("semantic list").len(), 1);
+        assert_eq!(db.list_all_procedural().expect("procedural list").len(), 1);
+        assert_eq!(db.search_resource_fts("readme", 10).expect("resource search").len(), 1);
+        assert_eq!(
+            db.search_knowledge_fts("token", 10, &["low", "medium", "high"])
+                .expect("knowledge search")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn memory_store_op_rejects_invalid_knowledge_sensitivity() {
+        let op = memory_store_op(
+            MemoryType::Knowledge,
+            serde_json::json!({
+                "entry_type": "token",
+                "caption": "test",
+                "secret_value": "val",
+                "sensitivity": "critical",
+                "search_keywords": "token"
+            }),
+        )
+        .expect("op creation should succeed");
+
+        if let MemoryOp::KnowledgeInsert { sensitivity, .. } = op {
+            assert_eq!(sensitivity, "critical");
+            assert!(Sensitivity::parse(&sensitivity).is_err());
+        } else {
+            panic!("expected knowledge insert");
+        }
     }
 
     fn spawn_mock_global_daemon(

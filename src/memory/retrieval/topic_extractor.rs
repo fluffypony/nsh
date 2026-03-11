@@ -65,11 +65,9 @@ async fn extract_with_llm(input: &str, llm: &dyn MemoryLlmClient) -> anyhow::Res
          Return ONLY a JSON array of strings, no other text.\n\nQuery: {input}"
     );
     let response = llm.complete_json(&prompt).await?;
-    let trimmed = response.trim();
-    if let Ok(keywords) = serde_json::from_str::<Vec<String>>(trimmed) {
-        Ok(keywords)
-    } else {
-        Ok(extract_keywords_basic(input))
+    match serde_json::from_value::<Vec<String>>(response) {
+        Ok(keywords) => Ok(keywords),
+        Err(_) => Ok(extract_keywords_basic(input)),
     }
 }
 

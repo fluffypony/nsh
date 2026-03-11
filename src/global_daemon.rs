@@ -16,7 +16,49 @@ enum MemoryTask {
     BootstrapScan,
 }
 
+fn normalize_memory_type_for_search(
+    requested: Option<crate::memory::types::MemoryType>,
+) -> Option<crate::memory::types::MemoryType> {
+    match requested {
+        Some(crate::memory::types::MemoryType::Core) => None,
+        other => other,
+    }
+}
+
+fn parse_memory_json(input: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(input).unwrap_or_else(|_| serde_json::json!({}))
+}
+
 type MemoryTaskSender = mpsc::Sender<MemoryTask>;
+
+enum MemoryQueueDecision {
+    Enqueued,
+    Busy,
+}
+
+impl MemoryQueueDecision {
+    fn as_status(&self) -> &'static str {
+        match self {
+            MemoryQueueDecision::Enqueued => "queued",
+            MemoryQueueDecision::Busy => "already_queued",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MemoryQueueGuards {
+    reflection_pending: Arc<AtomicBool>,
+    bootstrap_pending: Arc<AtomicBool>,
+}
+
+impl MemoryQueueGuards {
+    fn new() -> Self {
+        Self {
+            reflection_pending: Arc::new(AtomicBool::new(false)),
+            bootstrap_pending: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
 
 // In-memory active session tracking for per-session notifications
 #[derive(Clone)]
@@ -118,6 +160,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     // ── Memory system ──────────────────────────────────
     let config = crate::config::Config::load().unwrap_or_default();
     let db_path = crate::config::Config::nsh_dir().join("nsh.db");
+    let memory_queue_guards = MemoryQueueGuards::new();
     let memory = Arc::new(
         crate::memory::MemorySystem::open(config.memory.clone(), db_path).unwrap_or_else(|e| {
             log_daemon("memory.init.error", &e.to_string());
@@ -134,10 +177,16 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let (memory_tx, memory_rx) = mpsc::channel::<MemoryTask>();
     let memory_for_thread = Arc::clone(&memory);
     let config_for_memory = config.clone();
+    let memory_guards_for_thread = memory_queue_guards.clone();
     let memory_thread = std::thread::Builder::new()
         .name("nshd-memory".into())
         .spawn(move || {
-            run_memory_thread(memory_for_thread, memory_rx, config_for_memory);
+            run_memory_thread(
+                memory_for_thread,
+                memory_rx,
+                config_for_memory,
+                memory_guards_for_thread,
+            );
         })?;
 
     let (write_tx, write_rx) = mpsc::channel::<WriteCommand>();
@@ -146,10 +195,17 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     let memory_for_writer = Arc::clone(&memory);
     let memory_tx_for_writer = memory_tx.clone();
+    let memory_guards_for_writer = memory_queue_guards.clone();
     let write_thread = std::thread::Builder::new()
         .name("nshd-writer".into())
         .spawn(move || {
-            run_write_thread(write_db, write_rx, memory_for_writer, memory_tx_for_writer);
+            run_write_thread(
+                write_db,
+                write_rx,
+                memory_for_writer,
+                memory_tx_for_writer,
+                memory_guards_for_writer,
+            );
         })?;
 
     let read_threads: Vec<_> = read_dbs
@@ -169,14 +225,26 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     // Startup maintenance tasks (wire MemorySystem methods to avoid dead code and keep system tidy)
     if !memory.has_bootstrapped() {
-        let _ = memory_tx.send(MemoryTask::BootstrapScan);
+        if let Err(e) = enqueue_unique_memory_task(
+            &memory_tx,
+            &memory_queue_guards,
+            MemoryTask::BootstrapScan,
+        ) {
+            tracing::debug!("bootstrap task enqueue failed at startup: {e}");
+        }
     }
     if memory.should_run_decay() {
         let _ = memory_tx.send(MemoryTask::FlushIngestion);
         let _ = send_memory_decay_once(&memory);
     }
     if memory.should_run_reflection() {
-        let _ = memory_tx.send(MemoryTask::RunReflection);
+        if let Err(e) = enqueue_unique_memory_task(
+            &memory_tx,
+            &memory_queue_guards,
+            MemoryTask::RunReflection,
+        ) {
+            tracing::debug!("reflection task enqueue failed at startup: {e}");
+        }
     }
 
     let active_conns = Arc::new(AtomicUsize::new(0));
@@ -509,6 +577,7 @@ fn run_write_thread(
     rx: mpsc::Receiver<WriteCommand>,
     memory: Arc<crate::memory::MemorySystem>,
     memory_tx: MemoryTaskSender,
+    queue_guards: MemoryQueueGuards,
 ) {
     // Track last known project root per session for ProjectSwitch detection
     let mut session_project_roots: std::collections::HashMap<String, String> =
@@ -540,6 +609,7 @@ fn run_write_thread(
                         cmd.request,
                         &memory,
                         &memory_tx,
+                        &queue_guards,
                         &mut session_project_roots,
                     );
                     pending.push((cmd.reply, resp));
@@ -561,6 +631,7 @@ fn run_write_thread(
                         cmd.request,
                         &memory,
                         &memory_tx,
+                        &queue_guards,
                         &mut session_project_roots,
                     );
                     let _ = cmd.reply.send(resp);
@@ -573,6 +644,7 @@ fn run_write_thread(
                 cmd.request,
                 &memory,
                 &memory_tx,
+                &queue_guards,
                 &mut session_project_roots,
             );
             let _ = cmd.reply.send(resp);
@@ -584,6 +656,7 @@ fn run_memory_thread(
     memory: Arc<crate::memory::MemorySystem>,
     rx: mpsc::Receiver<MemoryTask>,
     config: crate::config::Config,
+    queue_guards: MemoryQueueGuards,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -671,6 +744,21 @@ fn run_memory_thread(
                 }
             }
         }));
+
+        // Always clear queue flags, even after panic, so maintenance work can be retried.
+        match task_name {
+            "run_reflection" => {
+                queue_guards
+                    .reflection_pending
+                    .store(false, Ordering::SeqCst);
+            }
+            "bootstrap_scan" => {
+                queue_guards
+                    .bootstrap_pending
+                    .store(false, Ordering::SeqCst);
+            }
+            _ => {}
+        }
         if let Err(e) = result {
             log_daemon("memory.thread.panic", &format!("panic in {task_name}: {e:?}"));
         }
@@ -695,6 +783,7 @@ fn execute_write(
     request: DaemonRequest,
     memory: &crate::memory::MemorySystem,
     memory_tx: &MemoryTaskSender,
+    queue_guards: &MemoryQueueGuards,
     session_project_roots: &mut std::collections::HashMap<String, String>,
 ) -> DaemonResponse {
     let req_dbg = format!("{request:?}");
@@ -1068,23 +1157,22 @@ fn execute_write(
             memory_type,
             data_json,
         } => {
+            let tool = "store_memory".to_string();
+            let input = serde_json::json!({
+                "memory_type": memory_type.as_str(),
+                "data": parse_memory_json(&data_json)
+            });
+            if let Err(e) = crate::security::assess_memory_tool_call(&tool, &input, &[]) {
+                return DaemonResponse::error(format!("Security check failed: {e}"));
+            }
             use crate::daemon_db::DbAccess;
-            match DbAccess::memory_store(db, &memory_type, &data_json) {
+            match DbAccess::memory_store(db, memory_type, &data_json) {
                 Ok(id) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
         DaemonRequest::MemoryDelete { memory_type, id } => {
-            use crate::memory::types::MemoryType;
-            let mt = match memory_type.as_str() {
-                "episodic" => MemoryType::Episodic,
-                "semantic" => MemoryType::Semantic,
-                "procedural" => MemoryType::Procedural,
-                "resource" => MemoryType::Resource,
-                "knowledge" => MemoryType::Knowledge,
-                _ => return DaemonResponse::error(format!("unknown memory type: {memory_type}")),
-            };
-            match memory.delete_memory(mt, &id) {
+            match memory.delete_memory(memory_type, &id) {
                 Ok(()) => DaemonResponse::ok(),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -1100,23 +1188,33 @@ fn execute_write(
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::MemoryRunReflection => {
-            if memory_tx.send(MemoryTask::RunReflection).is_err() {
-                tracing::debug!("memory thread disconnected, reflection skipped");
+            match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::RunReflection) {
+                Ok(status) => {
+                    return DaemonResponse::ok_with_data(serde_json::json!({"status": status.as_status()}));
+                }
+                Err(e) => {
+                    tracing::debug!("memory thread disconnected, reflection skipped: {e}");
+                    return DaemonResponse::error(e.to_string());
+                }
             }
-            DaemonResponse::ok()
         }
         DaemonRequest::MemoryBootstrapScan => {
-            if memory_tx.send(MemoryTask::BootstrapScan).is_err() {
-                tracing::debug!("memory thread disconnected, bootstrap skipped");
+            match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::BootstrapScan) {
+                Ok(status) => {
+                    return DaemonResponse::ok_with_data(serde_json::json!({"status": status.as_status()}));
+                }
+                Err(e) => {
+                    tracing::debug!("memory thread disconnected, bootstrap skipped: {e}");
+                    return DaemonResponse::error(e.to_string());
+                }
             }
-            DaemonResponse::ok()
         }
         DaemonRequest::MemoryClearAll => match memory.clear_all() {
             Ok(()) => DaemonResponse::ok(),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::MemoryClearByType { memory_type } => {
-            match db.clear_memories_by_type(&memory_type) {
+            match db.clear_memories_by_type(memory_type) {
                 Ok(()) => DaemonResponse::ok(),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -1139,6 +1237,36 @@ fn execute_write(
             resp
         }
     }
+}
+
+fn enqueue_unique_memory_task(
+    memory_tx: &MemoryTaskSender,
+    queue_guards: &MemoryQueueGuards,
+    task: MemoryTask,
+) -> anyhow::Result<MemoryQueueDecision> {
+    let pending_flag = match task {
+        MemoryTask::RunReflection => Some(&queue_guards.reflection_pending),
+        MemoryTask::BootstrapScan => Some(&queue_guards.bootstrap_pending),
+        _ => None,
+    };
+
+    if let Some(flag) = pending_flag {
+        if flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(MemoryQueueDecision::Busy);
+        }
+    }
+
+    if memory_tx.send(task).is_err() {
+        if let Some(flag) = pending_flag {
+            flag.store(false, Ordering::SeqCst);
+        }
+        anyhow::bail!("memory thread disconnected");
+    }
+
+    Ok(MemoryQueueDecision::Enqueued)
 }
 
 fn run_read_thread(
@@ -1446,11 +1574,11 @@ fn execute_read(
         }
         DaemonRequest::MemorySearch {
             query,
-            memory_type: _,
+            memory_type,
             limit,
         } => {
             // Use MemorySystem search across all types for now
-            match memory.search(&query, None, limit) {
+            match memory.search(&query, normalize_memory_type_for_search(memory_type), limit) {
                 Ok(results) => {
                     let json: Vec<serde_json::Value> = results
                         .into_iter()
@@ -1486,6 +1614,11 @@ fn execute_read(
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::MemoryRetrieveSecret { caption_query } => {
+            let tool = "retrieve_secret".to_string();
+            let input = serde_json::json!({ "caption_query": caption_query });
+            if let Err(e) = crate::security::assess_memory_tool_call(&tool, &input, &[]) {
+                return DaemonResponse::error(format!("Security check failed: {e}"));
+            }
             match db.search_knowledge_fts(&caption_query, 3, &["low", "medium", "high"]) {
                 Ok(results) => {
                     let json: Vec<serde_json::Value> = results
