@@ -58,15 +58,16 @@ pub fn copy_winsize(from: BorrowedFd, to: BorrowedFd) -> anyhow::Result<()> {
 
 /// Run the user's shell inside a PTY, capturing output into a scrollback
 /// buffer. This is the `nsh wrap` entrypoint.
-pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
+pub fn run_wrapped_shell(
+    shell: &str,
+    wrap_config: &crate::shim::ShimWrapConfig,
+) -> anyhow::Result<()> {
     if std::env::var("NSH_PTY_ACTIVE").is_ok() {
         let err = exec::execvp(shell, &[shell, "-l"]);
         anyhow::bail!("exec failed (already wrapped): {err}");
     }
 
     let pty = create_pty()?;
-
-    let config = crate::config::Config::load().unwrap_or_default();
 
     // Save original terminal state
     let real_stdin = rustix::stdio::stdin();
@@ -112,11 +113,11 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
     let capture = Arc::new(Mutex::new(CaptureEngine::new(
         rows,
         cols,
-        config.context.scrollback_rate_limit_bps,
-        config.context.scrollback_pause_seconds,
-        config.context.scrollback_lines.max(1000),
-        config.capture.mode.clone(),
-        config.capture.alt_screen.clone(),
+        wrap_config.scrollback_rate_limit_bps,
+        wrap_config.scrollback_pause_seconds,
+        wrap_config.scrollback_lines.max(1000),
+        wrap_config.capture_mode.clone(),
+        wrap_config.alt_screen_mode.clone(),
     )));
 
     let basename = shell.rsplit('/').next().unwrap_or(shell);
@@ -211,9 +212,11 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
 
             // Keep wrap startup snappy, but spawn after fork to avoid
             // multi-threaded-fork hazards in the child path.
-            std::thread::spawn(|| {
-                let _ = crate::daemon_client::ensure_global_daemon_running();
-            });
+            if wrap_config.daemon_autostart {
+                std::thread::spawn(|| {
+                    let _ = crate::daemon_client::ensure_global_daemon_running();
+                });
+            }
 
             let pid = rustix::process::Pid::from_raw(child_pid).expect("invalid child pid");
 
@@ -221,6 +224,7 @@ pub fn run_wrapped_shell(shell: &str) -> anyhow::Result<()> {
                 real_stdin,
                 real_stdout,
                 pty.master.as_fd(),
+                wrap_config,
                 Arc::clone(&capture),
                 pid,
             );

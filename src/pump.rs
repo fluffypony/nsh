@@ -384,6 +384,7 @@ pub fn pump_loop(
     real_stdin: BorrowedFd,
     real_stdout: BorrowedFd,
     pty_master: BorrowedFd,
+    wrap_config: &crate::shim::ShimWrapConfig,
     capture: Arc<Mutex<CaptureEngine>>,
     child_pid: rustix::process::Pid,
 ) {
@@ -396,8 +397,7 @@ pub fn pump_loop(
     let signal_thread =
         spawn_signal_thread(child_pid, stdin_raw, pty_master_raw, winch_pending.clone());
 
-    let config = crate::config::Config::load().unwrap_or_default();
-    let max_output_bytes = config.context.max_output_storage_bytes;
+    let max_output_bytes = wrap_config.max_output_storage_bytes;
     let active_conns = Arc::new(AtomicUsize::new(0));
 
     unsafe {
@@ -432,9 +432,6 @@ pub fn pump_loop(
         }
         Err(_) => None,
     };
-
-    // Ensure global daemon is running for DB operations
-    let _ = crate::daemon_client::ensure_global_daemon_running();
 
     let pid_path = crate::daemon::daemon_pid_path(&session_id);
     let tmp_pid = pid_path.with_extension("tmp");
@@ -986,6 +983,7 @@ pub fn pump_loop(
     _real_stdin: (),
     _real_stdout: (),
     _pty_master: (),
+    _wrap_config: &crate::shim::ShimWrapConfig,
     _capture: Arc<Mutex<CaptureEngine>>,
     _child_pid: (),
 ) {

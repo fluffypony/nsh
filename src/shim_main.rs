@@ -6,6 +6,7 @@ fn main() {
     // The shim handles `wrap` directly to freeze the PTY boundary for a session
     let is_wrap = args.get(1).map(|s| s == "wrap").unwrap_or(false);
     if is_wrap {
+        seed_wrap_contract_env();
         nsh::shim::run_wrap(args);
         return;
     }
@@ -46,6 +47,11 @@ fn main() {
         eprintln!("nsh: {e}");
         std::process::exit(1);
     }
+}
+
+fn seed_wrap_contract_env() {
+    let config = nsh::config::Config::load().unwrap_or_default();
+    nsh::shim::seed_wrap_contract_env_from_config(&config);
 }
 
 fn resolve_core() -> Option<std::path::PathBuf> {
