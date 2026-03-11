@@ -24,7 +24,6 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         });
     if let Some(repo_url) = repo_val.as_deref() {
         let skills_dir = crate::config::Config::nsh_dir().join("skills");
-        std::fs::create_dir_all(&skills_dir)?;
         let repo_name = repo_url
             .trim_end_matches('/')
             .rsplit('/')
@@ -33,11 +32,32 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         let folder = repo_name.trim_end_matches(".git");
         let dest = skills_dir.join(folder);
 
+        let bold_yellow = "\x1b[1;33m";
         let green = "\x1b[32m";
         let dim = "\x1b[2m";
         let reset = "\x1b[0m";
 
         let already_existed = dest.exists();
+        eprintln!("{bold_yellow}Install skill from repo:{reset} {repo_url}");
+        eprintln!("{dim}Destination: {}{reset}", dest.display());
+        if already_existed {
+            eprintln!(
+                "{bold_yellow}Warning: skill repo '{folder}' already exists and will be updated.{reset}"
+            );
+        }
+
+        eprintln!();
+        eprint!("{bold_yellow}Install? [y/N]{reset} ");
+        io::stderr().flush()?;
+
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            eprintln!("{dim}skill installation declined{reset}");
+            return Ok("Config change declined".to_string());
+        }
+
+        std::fs::create_dir_all(&skills_dir)?;
         if already_existed {
             // Pull updates
             eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
