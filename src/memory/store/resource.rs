@@ -2,6 +2,16 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{ResourceItem, generate_id};
 
+pub struct ResourceWrite<'a> {
+    pub resource_type: &'a str,
+    pub file_path: Option<&'a str>,
+    pub file_hash: Option<&'a str>,
+    pub title: &'a str,
+    pub summary: &'a str,
+    pub content: Option<&'a str>,
+    pub search_keywords: &'a str,
+}
+
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceItem> {
     Ok(ResourceItem {
         id: row.get(0)?,
@@ -17,37 +27,33 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceItem> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn insert(
-    conn: &Connection,
-    resource_type: &str,
-    file_path: Option<&str>,
-    file_hash: Option<&str>,
-    title: &str,
-    summary: &str,
-    content: Option<&str>,
-    search_keywords: &str,
-) -> anyhow::Result<String> {
+pub fn insert(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
     let id = generate_id("res");
     conn.execute(
         "INSERT INTO resource_memory (id, resource_type, file_path, file_hash, title, summary, content, search_keywords)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        params![id, resource_type, file_path, file_hash, title, summary, content, search_keywords],
+        params![
+            id,
+            resource.resource_type,
+            resource.file_path,
+            resource.file_hash,
+            resource.title,
+            resource.summary,
+            resource.content,
+            resource.search_keywords
+        ],
     )?;
     Ok(id)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn upsert_by_path(
-    conn: &Connection,
-    resource_type: &str,
-    file_path: &str,
-    file_hash: &str,
-    title: &str,
-    summary: &str,
-    content: Option<&str>,
-    search_keywords: &str,
-) -> anyhow::Result<String> {
+pub fn upsert_by_path(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
+    let file_path = resource
+        .file_path
+        .ok_or_else(|| anyhow::anyhow!("upsert_by_path requires file_path"))?;
+    let file_hash = resource
+        .file_hash
+        .ok_or_else(|| anyhow::anyhow!("upsert_by_path requires file_hash"))?;
+
     let existing: Option<String> = conn
         .query_row(
             "SELECT id FROM resource_memory WHERE file_path = ?",
@@ -60,20 +66,18 @@ pub fn upsert_by_path(
         conn.execute(
             "UPDATE resource_memory SET file_hash = ?, title = ?, summary = ?, content = ?, search_keywords = ?, updated_at = datetime('now')
              WHERE id = ?",
-            params![file_hash, title, summary, content, search_keywords, id],
+            params![
+                file_hash,
+                resource.title,
+                resource.summary,
+                resource.content,
+                resource.search_keywords,
+                id
+            ],
         )?;
         Ok(id)
     } else {
-        insert(
-            conn,
-            resource_type,
-            Some(file_path),
-            Some(file_hash),
-            title,
-            summary,
-            content,
-            search_keywords,
-        )
+        insert(conn, resource)
     }
 }
 
@@ -166,13 +170,15 @@ mod tests {
         let conn = setup();
         insert(
             &conn,
-            "config",
-            Some("/home/user/.gitconfig"),
-            Some("abc123"),
-            "Git config",
-            "Git configuration with aliases and settings",
-            Some("[alias]\nco = checkout"),
-            "git config alias checkout",
+            &ResourceWrite {
+                resource_type: "config",
+                file_path: Some("/home/user/.gitconfig"),
+                file_hash: Some("abc123"),
+                title: "Git config",
+                summary: "Git configuration with aliases and settings",
+                content: Some("[alias]\nco = checkout"),
+                search_keywords: "git config alias checkout",
+            },
         )
         .unwrap();
 
@@ -185,24 +191,28 @@ mod tests {
         let conn = setup();
         let id1 = upsert_by_path(
             &conn,
-            "file",
-            "/tmp/test",
-            "hash1",
-            "Test",
-            "Old",
-            None,
-            "test",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/tmp/test"),
+                file_hash: Some("hash1"),
+                title: "Test",
+                summary: "Old",
+                content: None,
+                search_keywords: "test",
+            },
         )
         .unwrap();
         let id2 = upsert_by_path(
             &conn,
-            "file",
-            "/tmp/test",
-            "hash2",
-            "Test",
-            "New",
-            None,
-            "test",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/tmp/test"),
+                file_hash: Some("hash2"),
+                title: "Test",
+                summary: "New",
+                content: None,
+                search_keywords: "test",
+            },
         )
         .unwrap();
         assert_eq!(id1, id2);
@@ -214,13 +224,15 @@ mod tests {
         let conn = setup();
         insert(
             &conn,
-            "file",
-            Some("/tmp/f"),
-            Some("h1"),
-            "t",
-            "s",
-            None,
-            "k",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/tmp/f"),
+                file_hash: Some("h1"),
+                title: "t",
+                summary: "s",
+                content: None,
+                search_keywords: "k",
+            },
         )
         .unwrap();
         assert!(exists_with_hash(&conn, "/tmp/f", "h1").unwrap());
@@ -232,24 +244,28 @@ mod tests {
         let conn = setup();
         insert(
             &conn,
-            "file",
-            Some("/home/user/project/Cargo.toml"),
-            None,
-            "Cargo",
-            "manifest",
-            None,
-            "cargo",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/home/user/project/Cargo.toml"),
+                file_hash: None,
+                title: "Cargo",
+                summary: "manifest",
+                content: None,
+                search_keywords: "cargo",
+            },
         )
         .unwrap();
         insert(
             &conn,
-            "file",
-            Some("/other/path/file"),
-            None,
-            "Other",
-            "other",
-            None,
-            "other",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/other/path/file"),
+                file_hash: None,
+                title: "Other",
+                summary: "other",
+                content: None,
+                search_keywords: "other",
+            },
         )
         .unwrap();
 
@@ -263,13 +279,15 @@ mod tests {
         let conn = setup();
         let id = insert(
             &conn,
-            "file",
-            Some("/tmp/f"),
-            None,
-            "test",
-            "test",
-            None,
-            "test",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/tmp/f"),
+                file_hash: None,
+                title: "test",
+                summary: "test",
+                content: None,
+                search_keywords: "test",
+            },
         )
         .unwrap();
         assert_eq!(count(&conn).unwrap(), 1);
@@ -282,13 +300,15 @@ mod tests {
         let conn = setup();
         insert(
             &conn,
-            "config",
-            Some("/etc/test"),
-            None,
-            "Test Config",
-            "test config",
-            None,
-            "test config",
+            &ResourceWrite {
+                resource_type: "config",
+                file_path: Some("/etc/test"),
+                file_hash: None,
+                title: "Test Config",
+                summary: "test config",
+                content: None,
+                search_keywords: "test config",
+            },
         )
         .unwrap();
         let results = search_bm25(&conn, "", 10).unwrap();
@@ -300,13 +320,15 @@ mod tests {
         let conn = setup();
         insert(
             &conn,
-            "config",
-            Some("/home/user/.gitconfig"),
-            None,
-            "Git config",
-            "Git configuration",
-            Some("[alias]\nco = checkout\nbr = branch"),
-            "git config alias",
+            &ResourceWrite {
+                resource_type: "config",
+                file_path: Some("/home/user/.gitconfig"),
+                file_hash: None,
+                title: "Git config",
+                summary: "Git configuration",
+                content: Some("[alias]\nco = checkout\nbr = branch"),
+                search_keywords: "git config alias",
+            },
         )
         .unwrap();
 
@@ -319,13 +341,15 @@ mod tests {
         let conn = setup();
         let id = insert(
             &conn,
-            "doc",
-            Some("/home/user/project/README.md"),
-            Some("hash123"),
-            "Project README",
-            "Main project documentation",
-            Some("# My Project\n\nThis is a cool project."),
-            "readme project documentation",
+            &ResourceWrite {
+                resource_type: "doc",
+                file_path: Some("/home/user/project/README.md"),
+                file_hash: Some("hash123"),
+                title: "Project README",
+                summary: "Main project documentation",
+                content: Some("# My Project\n\nThis is a cool project."),
+                search_keywords: "readme project documentation",
+            },
         )
         .unwrap();
         assert!(id.starts_with("res_"));
@@ -343,24 +367,28 @@ mod tests {
         let conn = setup();
         upsert_by_path(
             &conn,
-            "config",
-            "/etc/test",
-            "h1",
-            "Test",
-            "v1",
-            None,
-            "test",
+            &ResourceWrite {
+                resource_type: "config",
+                file_path: Some("/etc/test"),
+                file_hash: Some("h1"),
+                title: "Test",
+                summary: "v1",
+                content: None,
+                search_keywords: "test",
+            },
         )
         .unwrap();
         upsert_by_path(
             &conn,
-            "config",
-            "/etc/test",
-            "h2",
-            "Test Updated",
-            "v2",
-            None,
-            "test",
+            &ResourceWrite {
+                resource_type: "config",
+                file_path: Some("/etc/test"),
+                file_hash: Some("h2"),
+                title: "Test Updated",
+                summary: "v2",
+                content: None,
+                search_keywords: "test",
+            },
         )
         .unwrap();
 
@@ -374,13 +402,15 @@ mod tests {
         let conn = setup();
         insert(
             &conn,
-            "file",
-            Some("/home/other/file"),
-            None,
-            "File",
-            "test",
-            None,
-            "test",
+            &ResourceWrite {
+                resource_type: "file",
+                file_path: Some("/home/other/file"),
+                file_hash: None,
+                title: "File",
+                summary: "test",
+                content: None,
+                search_keywords: "test",
+            },
         )
         .unwrap();
 

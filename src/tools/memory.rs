@@ -7,7 +7,10 @@
 use crate::daemon_db::DbAccess;
 use crate::memory::types::{MemoryType, Sensitivity};
 
-pub(crate) fn validate_store_memory_input(memory_type: MemoryType, data: &serde_json::Value) -> Result<(), String> {
+pub(crate) fn validate_store_memory_input(
+    memory_type: MemoryType,
+    data: &serde_json::Value,
+) -> Result<(), String> {
     let obj = data
         .as_object()
         .ok_or_else(|| "store_memory 'data' must be a JSON object".to_string())?;
@@ -15,7 +18,8 @@ pub(crate) fn validate_store_memory_input(memory_type: MemoryType, data: &serde_
         MemoryType::Semantic => {
             for req in ["name", "category", "summary", "search_keywords"] {
                 if !obj.contains_key(req)
-                    || obj.get(req)
+                    || obj
+                        .get(req)
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
@@ -37,7 +41,8 @@ pub(crate) fn validate_store_memory_input(memory_type: MemoryType, data: &serde_
         MemoryType::Resource => {
             for req in ["resource_type", "title", "summary", "search_keywords"] {
                 if !obj.contains_key(req)
-                    || obj.get(req)
+                    || obj
+                        .get(req)
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
@@ -49,7 +54,8 @@ pub(crate) fn validate_store_memory_input(memory_type: MemoryType, data: &serde_
         MemoryType::Knowledge => {
             for req in ["entry_type", "caption", "secret_value", "search_keywords"] {
                 if !obj.contains_key(req)
-                    || obj.get(req)
+                    || obj
+                        .get(req)
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
@@ -57,12 +63,18 @@ pub(crate) fn validate_store_memory_input(memory_type: MemoryType, data: &serde_
                     return Err(format!("Knowledge memory missing required field '{req}'"));
                 }
             }
-            let sensitivity = obj.get("sensitivity").and_then(|v| v.as_str()).unwrap_or("medium");
+            let sensitivity = obj
+                .get("sensitivity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("medium");
             Sensitivity::parse(sensitivity)
                 .map_err(|e| format!("Knowledge memory has invalid sensitivity: {e}"))?;
         }
         MemoryType::Core => {
-            return Err("store_memory does not support 'core'; use core_memory_append/core_memory_rewrite".into());
+            return Err(
+                "store_memory does not support 'core'; use core_memory_append/core_memory_rewrite"
+                    .into(),
+            );
         }
         MemoryType::Episodic => {}
     }

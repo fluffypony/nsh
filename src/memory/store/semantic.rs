@@ -240,8 +240,7 @@ mod tests {
     fn list_top_accessed_returns_by_access_count() {
         let conn = setup();
         let id1 = insert_or_update(&conn, "low", "general", "low access", None, "low").unwrap();
-        let id2 =
-            insert_or_update(&conn, "high", "general", "high access", None, "high").unwrap();
+        let id2 = insert_or_update(&conn, "high", "general", "high access", None, "high").unwrap();
         // Give id2 more accesses
         increment_access(&conn, &id2).unwrap();
         increment_access(&conn, &id2).unwrap();
@@ -258,7 +257,11 @@ mod tests {
         let conn = setup();
         insert_or_update(&conn, "new_pref", "general", "new preference", None, "pref").unwrap();
         let items = list_top_accessed(&conn, 10).unwrap();
-        assert_eq!(items.len(), 1, "new items should be included for cold-start");
+        assert_eq!(
+            items.len(),
+            1,
+            "new items should be included for cold-start"
+        );
         assert_eq!(items[0].name, "new_pref");
     }
 

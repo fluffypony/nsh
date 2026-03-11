@@ -14,7 +14,7 @@ pub fn search_all(
 
     if include(MemoryType::Episodic)
         && let Ok(episodic) =
-        crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None, None)
+            crate::memory::store::episodic::search_bm25(conn, query, limit_per_type, None, None)
     {
         for e in episodic {
             results.push(SearchResult {
@@ -42,7 +42,7 @@ pub fn search_all(
 
     if include(MemoryType::Procedural)
         && let Ok(procedural) =
-        crate::memory::store::procedural::search_bm25(conn, query, limit_per_type)
+            crate::memory::store::procedural::search_bm25(conn, query, limit_per_type)
     {
         for p in procedural {
             results.push(SearchResult {
@@ -70,11 +70,11 @@ pub fn search_all(
 
     if include(MemoryType::Knowledge)
         && let Ok(knowledge) = crate::memory::store::knowledge::search_bm25(
-        conn,
-        query,
-        limit_per_type,
-        Sensitivity::Medium,
-    )
+            conn,
+            query,
+            limit_per_type,
+            Sensitivity::Medium,
+        )
     {
         for k in knowledge {
             results.push(SearchResult {
@@ -232,13 +232,15 @@ mod tests {
 
         crate::memory::store::resource::insert(
             &conn,
-            "config",
-            Some("/home/user/.gitconfig"),
-            Some("abc"),
-            "Git configuration",
-            "Git config with aliases",
-            None,
-            "git config alias",
+            &crate::memory::store::resource::ResourceWrite {
+                resource_type: "config",
+                file_path: Some("/home/user/.gitconfig"),
+                file_hash: Some("abc"),
+                title: "Git configuration",
+                summary: "Git config with aliases",
+                content: None,
+                search_keywords: "git config alias",
+            },
         )
         .unwrap();
 
@@ -280,6 +282,10 @@ mod tests {
 
         let results = search_all(&conn, "cargo test", Some(MemoryType::Semantic), 10).unwrap();
         assert!(!results.is_empty());
-        assert!(results.iter().all(|r| r.memory_type == MemoryType::Semantic));
+        assert!(
+            results
+                .iter()
+                .all(|r| r.memory_type == MemoryType::Semantic)
+        );
     }
 }

@@ -78,32 +78,29 @@ pub async fn retrieve_for_query(
         )?;
 
         // Merge BM25 semantic results with always-recalled top-accessed items
-        let bm25_semantic =
-            crate::memory::store::semantic::search_bm25(conn, &query_str, 10)?;
+        let bm25_semantic = crate::memory::store::semantic::search_bm25(conn, &query_str, 10)?;
         for item in bm25_semantic {
-            if !memories.semantic.iter().any(|existing| existing.id == item.id) {
+            if !memories
+                .semantic
+                .iter()
+                .any(|existing| existing.id == item.id)
+            {
                 memories.semantic.push(item);
             }
         }
 
-        memories.procedural =
-            crate::memory::store::procedural::search_bm25(conn, &query_str, 5)?;
+        memories.procedural = crate::memory::store::procedural::search_bm25(conn, &query_str, 5)?;
 
         // Merge BM25 resource results with always-recalled CWD resources
-        let bm25_resources =
-            crate::memory::store::resource::search_bm25(conn, &query_str, 5)?;
+        let bm25_resources = crate::memory::store::resource::search_bm25(conn, &query_str, 5)?;
         for r in bm25_resources {
             if !memories.resource.iter().any(|existing| existing.id == r.id) {
                 memories.resource.push(r);
             }
         }
 
-        memories.knowledge = crate::memory::store::knowledge::search_bm25(
-            conn,
-            &query_str,
-            5,
-            Sensitivity::Medium,
-        )?;
+        memories.knowledge =
+            crate::memory::store::knowledge::search_bm25(conn, &query_str, 5, Sensitivity::Medium)?;
     }
 
     // Enforce budget first, then increment access counts only for

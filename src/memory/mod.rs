@@ -243,7 +243,11 @@ impl MemorySystem {
             // Merge BM25 semantic results with always-recalled top-accessed items
             let bm25_semantic = store::semantic::search_bm25(&conn, &query_str, 10)?;
             for item in bm25_semantic {
-                if !memories.semantic.iter().any(|existing| existing.id == item.id) {
+                if !memories
+                    .semantic
+                    .iter()
+                    .any(|existing| existing.id == item.id)
+                {
                     memories.semantic.push(item);
                 }
             }
@@ -472,13 +476,15 @@ impl MemorySystem {
                 let conn = self.db.lock().unwrap();
                 crate::memory::store::resource::upsert_by_path(
                     &conn,
-                    "config",
-                    &path_str,
-                    &hash,
-                    description,
-                    &summary,
-                    None,
-                    &keywords,
+                    &crate::memory::store::resource::ResourceWrite {
+                        resource_type: "config",
+                        file_path: Some(&path_str),
+                        file_hash: Some(&hash),
+                        title: description,
+                        summary: &summary,
+                        content: None,
+                        search_keywords: &keywords,
+                    },
                 )?;
                 report.files_scanned += 1;
             }
@@ -668,13 +674,15 @@ impl MemorySystem {
             } => {
                 store::resource::insert(
                     conn,
-                    resource_type,
-                    file_path.as_deref(),
-                    file_hash.as_deref(),
-                    title,
-                    summary,
-                    content.as_deref(),
-                    search_keywords,
+                    &store::resource::ResourceWrite {
+                        resource_type,
+                        file_path: file_path.as_deref(),
+                        file_hash: file_hash.as_deref(),
+                        title,
+                        summary,
+                        content: content.as_deref(),
+                        search_keywords,
+                    },
                 )?;
             }
             MemoryOp::ResourceDelete { ids } => {
@@ -1077,13 +1085,15 @@ mod tests {
             let conn = mem.db.lock().unwrap();
             crate::memory::store::resource::insert(
                 &conn,
-                "file",
-                Some("/tmp/test"),
-                Some("hash123"),
-                "test",
-                "test",
-                None,
-                "test",
+                &crate::memory::store::resource::ResourceWrite {
+                    resource_type: "file",
+                    file_path: Some("/tmp/test"),
+                    file_hash: Some("hash123"),
+                    title: "test",
+                    summary: "test",
+                    content: None,
+                    search_keywords: "test",
+                },
             )
             .unwrap();
         }
