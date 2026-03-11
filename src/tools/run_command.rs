@@ -2,7 +2,45 @@ use crate::config::Config;
 use crate::redact;
 use std::process::{Command, Stdio};
 
+fn is_shell_operator_token(token: &str) -> bool {
+    matches!(token, "&&" | "||" | "|" | ";" | "&" | ">" | "<" | ">>" | "<<")
+}
+
+fn expand_tilde_token(token: &str) -> String {
+    if token == "~" {
+        return dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| token.to_string());
+    }
+
+    if let Some(rest) = token.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|p| p.join(rest).to_string_lossy().to_string())
+            .unwrap_or_else(|| token.to_string());
+    }
+
+    token.to_string()
+}
+
 pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
+    #[cfg(not(windows))]
+    let mut parsed_argv = {
+        let trimmed = cmd.trim();
+        if trimmed.is_empty() {
+            return Ok("DENIED: empty command".to_string());
+        }
+
+        let parsed =
+            shell_words::split(trimmed).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
+        if parsed.iter().any(|token| is_shell_operator_token(token)) {
+            return Ok(
+                "DENIED: run_command does not support shell operators (&&, ||, |, ;, redirects). Use the `command` tool with pending=true instead."
+                    .to_string(),
+            );
+        }
+        parsed
+    };
+
     if !config.tools.is_command_allowed(cmd) {
         // Assess risk and prompt the user for approval when not allowlisted
         let (risk, reason) = crate::security::assess_command(cmd);
@@ -78,12 +116,11 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
 
     #[cfg(not(windows))]
     let (stdout_str, stderr_str, exit_code) = {
-        if cmd.trim().is_empty() {
-            return Ok("DENIED: empty command".to_string());
+        for token in &mut parsed_argv {
+            *token = expand_tilde_token(token);
         }
-        let argv =
-            shell_words::split(cmd).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
-        let (exe, args) = argv
+
+        let (exe, args) = parsed_argv
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("empty command"))?;
 
@@ -218,5 +255,13 @@ mod tests {
         let config = test_config_with_allowlist(vec!["ls".into()]);
         let result = execute("ls /nonexistent_path_xyz_12345", &config).unwrap();
         assert!(result.contains("--- stderr ---"));
+    }
+
+    #[test]
+    fn test_run_command_shell_operators_denied() {
+        let config = test_config_with_allowlist(vec!["*".into()]);
+        let result = execute("mkdir -p ~/tmp/nsh-test && echo ok", &config).unwrap();
+        assert!(result.contains("DENIED"));
+        assert!(result.contains("does not support shell operators"));
     }
 }
