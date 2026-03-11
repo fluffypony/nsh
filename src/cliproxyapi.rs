@@ -26,9 +26,13 @@ pub fn bin_dir() -> PathBuf {
 
 pub fn exe_path() -> PathBuf {
     #[cfg(windows)]
-    { bin_dir().join("cliproxyapi.exe") }
+    {
+        bin_dir().join("cliproxyapi.exe")
+    }
     #[cfg(not(windows))]
-    { bin_dir().join("cliproxyapi") }
+    {
+        bin_dir().join("cliproxyapi")
+    }
 }
 
 pub fn port_file() -> PathBuf {
@@ -111,13 +115,17 @@ pub async fn check_for_update() -> Result<Option<(String, String)>> {
 
     let empty: Vec<serde_json::Value> = Vec::new();
     let assets = resp["assets"].as_array().unwrap_or(&empty);
-    let asset = match assets.iter().find(|a| {
-        a["name"].as_str().unwrap_or("").contains(&target)
-    }) {
+    let asset = match assets
+        .iter()
+        .find(|a| a["name"].as_str().unwrap_or("").contains(&target))
+    {
         Some(a) => a,
         None => return Ok(None),
     };
-    let url = asset["browser_download_url"].as_str().unwrap_or("").to_string();
+    let url = asset["browser_download_url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
     if url.is_empty() {
         return Ok(None);
     }
@@ -176,7 +184,9 @@ pub async fn download_and_install(url: &str, version: &str) -> Result<PathBuf> {
     Ok(dest)
 }
 
-pub fn is_installed() -> bool { exe_path().exists() }
+pub fn is_installed() -> bool {
+    exe_path().exists()
+}
 
 // ── Port helpers ────────────────────────────────────────────────────────────
 
@@ -194,7 +204,9 @@ pub fn get_port() -> Option<u16> {
 }
 
 /// Convenience base URL like `http://127.0.0.1:{port}/v1`.
-pub fn base_url() -> Option<String> { get_port().map(|p| format!("http://127.0.0.1:{p}/v1")) }
+pub fn base_url() -> Option<String> {
+    get_port().map(|p| format!("http://127.0.0.1:{p}/v1"))
+}
 
 // ── Config file ─────────────────────────────────────────────────────────────
 
@@ -245,10 +257,14 @@ pub fn stop_sidecar() -> Result<()> {
     if let Ok(pid_str) = std::fs::read_to_string(pid_file()) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             #[cfg(unix)]
-            unsafe { libc::kill(pid, libc::SIGTERM); }
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
             #[cfg(windows)]
             {
-                let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .output();
             }
         }
     }
@@ -261,9 +277,13 @@ pub fn is_sidecar_running() -> bool {
     if let Ok(pid_str) = std::fs::read_to_string(pid_file()) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             #[cfg(unix)]
-            unsafe { return libc::kill(pid, 0) == 0; }
+            unsafe {
+                return libc::kill(pid, 0) == 0;
+            }
             #[cfg(not(unix))]
-            { return port_file().exists(); }
+            {
+                return port_file().exists();
+            }
         }
     }
     false
@@ -271,7 +291,9 @@ pub fn is_sidecar_running() -> bool {
 
 pub fn ensure_running() -> Result<u16> {
     if is_sidecar_running() {
-        if let Some(p) = get_port() { return Ok(p); }
+        if let Some(p) = get_port() {
+            return Ok(p);
+        }
     }
     let port = pick_random_port()?;
     let _ = start_sidecar(port)?;
@@ -360,12 +382,18 @@ pub fn detect_existing_oauth_tokens() -> Vec<DetectedOAuthProvider> {
     let home = dirs::home_dir().unwrap_or_default();
 
     // Sidecar auth dirs
-    for dir in [auth_dir(), home.join(".cli-proxy-api"), home.join(".config/cliproxyapi")] {
+    for dir in [
+        auth_dir(),
+        home.join(".cli-proxy-api"),
+        home.join(".config/cliproxyapi"),
+    ] {
         if dir.is_dir() {
             if let Ok(rd) = std::fs::read_dir(&dir) {
                 for ent in rd.flatten() {
                     let name = ent.file_name().to_string_lossy().to_string();
-                    if !name.ends_with(".json") { continue; }
+                    if !name.ends_with(".json") {
+                        continue;
+                    }
                     let provider = if name.starts_with("codex-") || name.starts_with("copilot-") {
                         "copilot"
                     } else if name.starts_with("claude-") {
@@ -378,7 +406,9 @@ pub fn detect_existing_oauth_tokens() -> Vec<DetectedOAuthProvider> {
                         "iflow"
                     } else if name.starts_with("kiro-") {
                         "kiro"
-                    } else { continue };
+                    } else {
+                        continue;
+                    };
                     found.push(DetectedOAuthProvider {
                         provider: provider.to_string(),
                         source: format!("{}", dir.join(&name).display()),

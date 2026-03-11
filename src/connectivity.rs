@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, OnceLock};
-use std::time::Duration;
 use reqwest::Url;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{OnceLock, mpsc};
+use std::time::Duration;
 
 static ONLINE: AtomicBool = AtomicBool::new(true);
 static TRIGGER_TX: OnceLock<mpsc::Sender<()>> = OnceLock::new();
@@ -48,26 +48,29 @@ fn probe_once_inner(url: &str) -> bool {
 
             // Resolve with explicit timeout to avoid blocking this monitoring thread
             // on slow or wedged system DNS resolvers.
-            let resolved: Vec<std::net::SocketAddr> = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt.block_on(async move {
-                    use hickory_resolver::Resolver;
-                    let resolver = match Resolver::builder_tokio() {
-                        Ok(builder) => builder.build(),
-                        Err(_) => return Vec::new(),
-                    };
-                    match tokio::time::timeout(Duration::from_secs(3), resolver.lookup_ip(host)).await {
-                        Ok(Ok(lookup)) => lookup
-                            .iter()
-                            .map(|ip| std::net::SocketAddr::new(ip, port))
-                            .collect(),
-                        _ => Vec::new(),
-                    }
-                }),
-                Err(_) => Vec::new(),
-            };
+            let resolved: Vec<std::net::SocketAddr> =
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt.block_on(async move {
+                        use hickory_resolver::Resolver;
+                        let resolver = match Resolver::builder_tokio() {
+                            Ok(builder) => builder.build(),
+                            Err(_) => return Vec::new(),
+                        };
+                        match tokio::time::timeout(Duration::from_secs(3), resolver.lookup_ip(host))
+                            .await
+                        {
+                            Ok(Ok(lookup)) => lookup
+                                .iter()
+                                .map(|ip| std::net::SocketAddr::new(ip, port))
+                                .collect(),
+                            _ => Vec::new(),
+                        }
+                    }),
+                    Err(_) => Vec::new(),
+                };
 
             for addr in resolved {
                 if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
@@ -124,7 +127,10 @@ mod tests {
     #[test]
     fn test_schedule_progression() {
         let secs: Vec<u64> = (0..15).map(|i| schedule_for_attempt(i).as_secs()).collect();
-        assert_eq!(&secs[..12], &[10,10,10,20,20,20,30,30,30,60,60,60]);
+        assert_eq!(
+            &secs[..12],
+            &[10, 10, 10, 20, 20, 20, 30, 30, 30, 60, 60, 60]
+        );
         assert!(secs[12] >= 300);
         assert!(secs[13] >= 300);
     }

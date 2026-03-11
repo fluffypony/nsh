@@ -45,26 +45,45 @@ impl GitHubReleaseChecker {
             .user_agent("nsh-daemon")
             .timeout(Duration::from_secs(30))
             .build()?;
-        let resp = client.get(&url).send().await?.json::<serde_json::Value>().await?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
 
         let tag = resp["tag_name"].as_str().unwrap_or("").to_string();
-        if tag.is_empty() { return Ok(None); }
+        if tag.is_empty() {
+            return Ok(None);
+        }
         if let Some(cur) = &self.current_version {
-            if cur.trim() == tag.trim() { return Ok(None); }
+            if cur.trim() == tag.trim() {
+                return Ok(None);
+            }
         }
         let empty: Vec<serde_json::Value> = Vec::new();
         let assets = resp["assets"].as_array().unwrap_or(&empty);
         if let Some(fragment) = &self.platform_asset_fragment {
-            if let Some(asset) = assets.iter().find(|a| a["name"].as_str().unwrap_or("").contains(fragment)) {
+            if let Some(asset) = assets
+                .iter()
+                .find(|a| a["name"].as_str().unwrap_or("").contains(fragment))
+            {
                 return Ok(Some(ReleaseInfo {
                     version: tag,
-                    download_url: asset["browser_download_url"].as_str().unwrap_or("").to_string(),
+                    download_url: asset["browser_download_url"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
                     asset_name: asset["name"].as_str().unwrap_or("").to_string(),
                 }));
             }
             return Ok(None);
         }
-        Ok(Some(ReleaseInfo { version: tag, download_url: String::new(), asset_name: String::new() }))
+        Ok(Some(ReleaseInfo {
+            version: tag,
+            download_url: String::new(),
+            asset_name: String::new(),
+        }))
     }
 
     pub async fn download_to(&self, release: &ReleaseInfo, dest: &Path) -> Result<PathBuf> {
@@ -72,7 +91,12 @@ impl GitHubReleaseChecker {
             .user_agent("nsh-daemon")
             .timeout(Duration::from_secs(120))
             .build()?;
-        let bytes = client.get(&release.download_url).send().await?.bytes().await?;
+        let bytes = client
+            .get(&release.download_url)
+            .send()
+            .await?
+            .bytes()
+            .await?;
         let tmp = dest.with_extension("download-tmp");
         std::fs::write(&tmp, &bytes)?;
         #[cfg(unix)]

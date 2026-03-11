@@ -68,7 +68,8 @@ pub struct SessionInfo {
     shell: Option<String>,
     pid: Option<i64>,
 }
-type ActiveSessions = std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>;
+type ActiveSessions =
+    std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>;
 
 fn log_daemon(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
@@ -76,7 +77,9 @@ fn log_daemon(action: &str, payload: &str) {
 
 #[cfg(unix)]
 fn pid_alive(pid: i64) -> bool {
-    if pid <= 0 { return false; }
+    if pid <= 0 {
+        return false;
+    }
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
@@ -225,11 +228,9 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
 
     // Startup maintenance tasks (wire MemorySystem methods to avoid dead code and keep system tidy)
     if !memory.has_bootstrapped() {
-        if let Err(e) = enqueue_unique_memory_task(
-            &memory_tx,
-            &memory_queue_guards,
-            MemoryTask::BootstrapScan,
-        ) {
+        if let Err(e) =
+            enqueue_unique_memory_task(&memory_tx, &memory_queue_guards, MemoryTask::BootstrapScan)
+        {
             tracing::debug!("bootstrap task enqueue failed at startup: {e}");
         }
     }
@@ -238,17 +239,16 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         let _ = send_memory_decay_once(&memory);
     }
     if memory.should_run_reflection() {
-        if let Err(e) = enqueue_unique_memory_task(
-            &memory_tx,
-            &memory_queue_guards,
-            MemoryTask::RunReflection,
-        ) {
+        if let Err(e) =
+            enqueue_unique_memory_task(&memory_tx, &memory_queue_guards, MemoryTask::RunReflection)
+        {
             tracing::debug!("reflection task enqueue failed at startup: {e}");
         }
     }
 
     let active_conns = Arc::new(AtomicUsize::new(0));
-    let active_sessions: ActiveSessions = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+    let active_sessions: ActiveSessions =
+        std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     const MAX_GLOBAL_CONNS: usize = 32;
 
     let last_activity = Arc::new(Mutex::new(Instant::now()));
@@ -274,14 +274,22 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                 // Periodically update skills by pulling latest changes (hourly)
                 if last_skill_pull.elapsed() > std::time::Duration::from_secs(3600) {
                     last_skill_pull = std::time::Instant::now();
-                    if let Some(skills_dir) = dirs::home_dir().map(|h| h.join(".nsh").join("skills")) {
+                    if let Some(skills_dir) =
+                        dirs::home_dir().map(|h| h.join(".nsh").join("skills"))
+                    {
                         if skills_dir.is_dir() {
                             if let Ok(entries) = std::fs::read_dir(&skills_dir) {
                                 for entry in entries.flatten() {
                                     let path = entry.path();
                                     if path.join(".git").is_dir() {
                                         let _ = std::process::Command::new("git")
-                                            .args(["-C", path.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"])
+                                            .args([
+                                                "-C",
+                                                path.to_string_lossy().as_ref(),
+                                                "pull",
+                                                "--ff-only",
+                                                "-q",
+                                            ])
                                             .stdin(std::process::Stdio::null())
                                             .stdout(std::process::Stdio::null())
                                             .stderr(std::process::Stdio::null())
@@ -332,45 +340,53 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     {
         std::thread::Builder::new()
             .name("nshd-update-checker".into())
-            .spawn(|| loop {
-                std::thread::sleep(Duration::from_secs(3600));
-                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
-                let mut last_status = String::from("unknown");
-                let mut last_version: Option<String> = None;
-                if let Ok(rt) = rt {
-                    let (status, version_opt) = rt.block_on(async move {
-                        match crate::cliproxyapi::check_for_update().await {
-                            Ok(Some((url, version))) => {
-                                match crate::cliproxyapi::download_and_install(&url, &version).await {
-                                    Ok(_) => {
-                                        let _ = crate::cliproxyapi::stop_sidecar();
-                                        let _ = crate::cliproxyapi::ensure_running();
-                                        ("updated".to_string(), Some(version))
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(Duration::from_secs(3600));
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
+                    let mut last_status = String::from("unknown");
+                    let mut last_version: Option<String> = None;
+                    if let Ok(rt) = rt {
+                        let (status, version_opt) = rt.block_on(async move {
+                            match crate::cliproxyapi::check_for_update().await {
+                                Ok(Some((url, version))) => {
+                                    match crate::cliproxyapi::download_and_install(&url, &version)
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            let _ = crate::cliproxyapi::stop_sidecar();
+                                            let _ = crate::cliproxyapi::ensure_running();
+                                            ("updated".to_string(), Some(version))
+                                        }
+                                        Err(_) => ("failed".to_string(), Some(version)),
                                     }
-                                    Err(_) => ("failed".to_string(), Some(version)),
                                 }
+                                Ok(None) => (
+                                    "up_to_date".to_string(),
+                                    std::fs::read_to_string(crate::cliproxyapi::version_file())
+                                        .ok(),
+                                ),
+                                Err(_) => (
+                                    "error".to_string(),
+                                    std::fs::read_to_string(crate::cliproxyapi::version_file())
+                                        .ok(),
+                                ),
                             }
-                            Ok(None) => (
-                                "up_to_date".to_string(),
-                                std::fs::read_to_string(crate::cliproxyapi::version_file()).ok(),
-                            ),
-                            Err(_) => (
-                                "error".to_string(),
-                                std::fs::read_to_string(crate::cliproxyapi::version_file()).ok(),
-                            ),
-                        }
-                    });
-                    last_status = status;
-                    last_version = version_opt;
-                }
+                        });
+                        last_status = status;
+                        last_version = version_opt;
+                    }
 
-                // Record results in DB meta if possible, avoiding any migrations
-                if let Ok(db) = crate::db::Db::open() {
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let _ = db.set_meta("cliproxyapi_last_update_check", &now);
-                    let _ = db.set_meta("cliproxyapi_last_update_status", &last_status);
-                    if let Some(v) = last_version {
-                        let _ = db.set_meta("cliproxyapi_installed_version", v.trim());
+                    // Record results in DB meta if possible, avoiding any migrations
+                    if let Ok(db) = crate::db::Db::open() {
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = db.set_meta("cliproxyapi_last_update_check", &now);
+                        let _ = db.set_meta("cliproxyapi_last_update_status", &last_status);
+                        if let Some(v) = last_version {
+                            let _ = db.set_meta("cliproxyapi_installed_version", v.trim());
+                        }
                     }
                 }
             })?;
@@ -480,16 +496,26 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                                 // Skip dead PIDs where available
                                 #[cfg(unix)]
                                 {
-                                    if let Some(pid) = info.pid { if !pid_alive(pid) { continue; } }
+                                    if let Some(pid) = info.pid {
+                                        if !pid_alive(pid) {
+                                            continue;
+                                        }
+                                    }
                                 }
                                 // Skip messages for missing TTYs
                                 if let Some(tty) = &info.tty {
-                                    if !std::path::Path::new(tty).exists() { continue; }
+                                    if !std::path::Path::new(tty).exists() {
+                                        continue;
+                                    }
                                 }
                                 // Tailor message by shell (minor copy variation)
                                 let msg = match info.shell.as_deref() {
-                                    Some("zsh") => "hooks_updated: zsh will auto-reload when idle\n",
-                                    Some("bash") => "hooks_updated: bash will refresh hooks on next prompt\n",
+                                    Some("zsh") => {
+                                        "hooks_updated: zsh will auto-reload when idle\n"
+                                    }
+                                    Some("bash") => {
+                                        "hooks_updated: bash will refresh hooks on next prompt\n"
+                                    }
                                     Some("fish") => "hooks_updated: fish auto-reloads hooks\n",
                                     _ => "hooks_updated\n",
                                 };
@@ -538,9 +564,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
             // Fallback: try cargo bin location
             let cargo_home = std::env::var("CARGO_HOME")
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    dirs::home_dir().unwrap_or_default().join(".cargo")
-                });
+                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".cargo"));
             let cargo_nsh = cargo_home.join("bin").join("nsh");
             if cargo_nsh.exists() {
                 cargo_nsh
@@ -684,64 +708,82 @@ fn run_memory_thread(
             MemoryTask::RunReflection => "run_reflection",
             MemoryTask::BootstrapScan => "bootstrap_scan",
         };
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            match task {
-                MemoryTask::FlushIngestion => {
-                    rt.block_on(async {
-                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.flush_ingestion(&llm)).await {
-                            Ok(Err(e)) => {
-                                tracing::debug!("memory flush_ingestion error: {e}");
-                                log_daemon("memory.flush.error", &e.to_string());
-                            }
-                            Err(_) => {
-                                tracing::warn!("memory flush_ingestion timed out after 120s");
-                            }
-                            _ => {}
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match task {
+            MemoryTask::FlushIngestion => {
+                rt.block_on(async {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        memory.flush_ingestion(&llm),
+                    )
+                    .await
+                    {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory flush_ingestion error: {e}");
+                            log_daemon("memory.flush.error", &e.to_string());
                         }
-                    });
-                }
-                MemoryTask::IngestBatch { events } => {
-                    rt.block_on(async {
-                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.ingest_batch(&events, &llm)).await {
-                            Ok(Err(e)) => {
-                                tracing::debug!("memory ingest_batch error: {e}");
-                                log_daemon("memory.ingest.error", &e.to_string());
-                            }
-                            Err(_) => {
-                                tracing::warn!("memory ingest_batch timed out after 120s");
-                            }
-                            _ => {}
+                        Err(_) => {
+                            tracing::warn!("memory flush_ingestion timed out after 120s");
                         }
-                    });
-                }
-                MemoryTask::RunReflection => {
-                    rt.block_on(async {
-                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.run_reflection(&llm)).await {
-                            Ok(Err(e)) => {
-                                tracing::debug!("memory run_reflection error: {e}");
-                                log_daemon("memory.reflection.error", &e.to_string());
-                            }
-                            Err(_) => {
-                                tracing::warn!("memory run_reflection timed out after 120s");
-                            }
-                            _ => {}
+                        _ => {}
+                    }
+                });
+            }
+            MemoryTask::IngestBatch { events } => {
+                rt.block_on(async {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        memory.ingest_batch(&events, &llm),
+                    )
+                    .await
+                    {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory ingest_batch error: {e}");
+                            log_daemon("memory.ingest.error", &e.to_string());
                         }
-                    });
-                }
-                MemoryTask::BootstrapScan => {
-                    rt.block_on(async {
-                        match tokio::time::timeout(std::time::Duration::from_secs(120), memory.bootstrap_scan(&llm)).await {
-                            Ok(Err(e)) => {
-                                tracing::debug!("memory bootstrap_scan error: {e}");
-                                log_daemon("memory.bootstrap.error", &e.to_string());
-                            }
-                            Err(_) => {
-                                tracing::warn!("memory bootstrap_scan timed out after 120s");
-                            }
-                            _ => {}
+                        Err(_) => {
+                            tracing::warn!("memory ingest_batch timed out after 120s");
                         }
-                    });
-                }
+                        _ => {}
+                    }
+                });
+            }
+            MemoryTask::RunReflection => {
+                rt.block_on(async {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        memory.run_reflection(&llm),
+                    )
+                    .await
+                    {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory run_reflection error: {e}");
+                            log_daemon("memory.reflection.error", &e.to_string());
+                        }
+                        Err(_) => {
+                            tracing::warn!("memory run_reflection timed out after 120s");
+                        }
+                        _ => {}
+                    }
+                });
+            }
+            MemoryTask::BootstrapScan => {
+                rt.block_on(async {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        memory.bootstrap_scan(&llm),
+                    )
+                    .await
+                    {
+                        Ok(Err(e)) => {
+                            tracing::debug!("memory bootstrap_scan error: {e}");
+                            log_daemon("memory.bootstrap.error", &e.to_string());
+                        }
+                        Err(_) => {
+                            tracing::warn!("memory bootstrap_scan timed out after 120s");
+                        }
+                        _ => {}
+                    }
+                });
             }
         }));
 
@@ -760,7 +802,10 @@ fn run_memory_thread(
             _ => {}
         }
         if let Err(e) = result {
-            log_daemon("memory.thread.panic", &format!("panic in {task_name}: {e:?}"));
+            log_daemon(
+                "memory.thread.panic",
+                &format!("panic in {task_name}: {e:?}"),
+            );
         }
     }
 
@@ -1190,7 +1235,9 @@ fn execute_write(
         DaemonRequest::MemoryRunReflection => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::RunReflection) {
                 Ok(status) => {
-                    return DaemonResponse::ok_with_data(serde_json::json!({"status": status.as_status()}));
+                    return DaemonResponse::ok_with_data(
+                        serde_json::json!({"status": status.as_status()}),
+                    );
                 }
                 Err(e) => {
                     tracing::debug!("memory thread disconnected, reflection skipped: {e}");
@@ -1201,7 +1248,9 @@ fn execute_write(
         DaemonRequest::MemoryBootstrapScan => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::BootstrapScan) {
                 Ok(status) => {
-                    return DaemonResponse::ok_with_data(serde_json::json!({"status": status.as_status()}));
+                    return DaemonResponse::ok_with_data(
+                        serde_json::json!({"status": status.as_status()}),
+                    );
                 }
                 Err(e) => {
                     tracing::debug!("memory thread disconnected, bootstrap skipped: {e}");
@@ -1736,7 +1785,9 @@ fn handle_global_connection(
     stream: std::os::unix::net::UnixStream,
     write_tx: mpsc::Sender<WriteCommand>,
     read_tx: mpsc::Sender<ReadCommand>,
-    active_sessions: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>,
+    active_sessions: std::sync::Arc<
+        std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>,
+    >,
 ) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
@@ -1763,14 +1814,35 @@ fn handle_global_connection(
     log_daemon("server.connection.request", line.trim());
     // Track active session IDs for per-session notifications (in-memory)
     match &request {
-        DaemonRequest::CreateSession { session, tty, shell, pid } => {
+        DaemonRequest::CreateSession {
+            session,
+            tty,
+            shell,
+            pid,
+        } => {
             if let Ok(mut guard) = active_sessions.write() {
-                guard.insert(session.clone(), SessionInfo { last_seen: Instant::now(), tty: Some(tty.clone()), shell: Some(shell.clone()), pid: Some(*pid) });
+                guard.insert(
+                    session.clone(),
+                    SessionInfo {
+                        last_seen: Instant::now(),
+                        tty: Some(tty.clone()),
+                        shell: Some(shell.clone()),
+                        pid: Some(*pid),
+                    },
+                );
             }
         }
         DaemonRequest::Heartbeat { session } => {
             if let Ok(mut guard) = active_sessions.write() {
-                guard.entry(session.clone()).and_modify(|info| info.last_seen = Instant::now()).or_insert(SessionInfo { last_seen: Instant::now(), tty: None, shell: None, pid: None });
+                guard
+                    .entry(session.clone())
+                    .and_modify(|info| info.last_seen = Instant::now())
+                    .or_insert(SessionInfo {
+                        last_seen: Instant::now(),
+                        tty: None,
+                        shell: None,
+                        pid: None,
+                    });
             }
         }
         DaemonRequest::EndSession { session } => {
@@ -1848,7 +1920,8 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
                 .ok()
                 .and_then(|s| s.trim().parse::<u32>().ok());
             // Read last update info from DB meta if present
-            let (last_check, last_status, installed_version) = match crate::db::Db::open_readonly() {
+            let (last_check, last_status, installed_version) = match crate::db::Db::open_readonly()
+            {
                 Ok(db) => {
                     let lc = db.get_meta("cliproxyapi_last_update_check").ok().flatten();
                     let ls = db.get_meta("cliproxyapi_last_update_status").ok().flatten();
@@ -1879,16 +1952,23 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
             Err(e) => DaemonResponse::error(e.to_string()),
         }),
         DaemonRequest::CheckForUpdates => {
-            let _ = std::thread::Builder::new().name("nshd-update-check".into()).spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
-                if let Ok(rt) = rt {
-                    rt.block_on(async move {
-                        if let Ok(Some((url, version))) = crate::cliproxyapi::check_for_update().await {
-                            let _ = crate::cliproxyapi::download_and_install(&url, &version).await;
-                        }
-                    });
-                }
-            });
+            let _ = std::thread::Builder::new()
+                .name("nshd-update-check".into())
+                .spawn(|| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
+                    if let Ok(rt) = rt {
+                        rt.block_on(async move {
+                            if let Ok(Some((url, version))) =
+                                crate::cliproxyapi::check_for_update().await
+                            {
+                                let _ =
+                                    crate::cliproxyapi::download_and_install(&url, &version).await;
+                            }
+                        });
+                    }
+                });
             Some(DaemonResponse::ok())
         }
         _ => None,
@@ -2075,7 +2155,8 @@ mod tests {
             .expect("set read timeout");
 
         let handler = std::thread::spawn(move || {
-            let sessions = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+            let sessions =
+                std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
             handle_global_connection(server, write_tx, read_tx, sessions);
         });
 

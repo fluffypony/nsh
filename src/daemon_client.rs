@@ -2,8 +2,8 @@ use std::io::BufRead;
 #[cfg(test)]
 use std::io::BufReader;
 use std::io::{Read, Write};
-use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -355,7 +355,11 @@ pub fn signal_daemon_restart() -> bool {
         let lockfile = crate::config::Config::nsh_dir().join("restart.lock");
         if let Ok(meta) = std::fs::metadata(&lockfile) {
             if let Ok(modified) = meta.modified() {
-                if modified.elapsed().map(|d| d.as_secs() < 10).unwrap_or(false) {
+                if modified
+                    .elapsed()
+                    .map(|d| d.as_secs() < 10)
+                    .unwrap_or(false)
+                {
                     tracing::debug!("restart.lock fresh; skipping SIGHUP");
                     return false;
                 }

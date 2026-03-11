@@ -42,7 +42,13 @@ struct ProviderOption {
 }
 
 const CLIPROXY_BACKED: &[&str] = &[
-    "copilot", "kiro", "qwen", "iflow", "claude_sub", "codex_sub", "gemini_sub",
+    "copilot",
+    "kiro",
+    "qwen",
+    "iflow",
+    "claude_sub",
+    "codex_sub",
+    "gemini_sub",
 ];
 
 fn mask_key(key: &str) -> String {
@@ -409,38 +415,123 @@ fn detect_api_keys() -> Vec<DetectedKey> {
 fn build_provider_options(detected_keys: &[DetectedKey]) -> Vec<ProviderOption> {
     // Minimal fallback: treat existing BYOK providers and a manual option
     let mut by_provider: BTreeMap<String, Vec<&DetectedKey>> = BTreeMap::new();
-    for k in detected_keys { by_provider.entry(k.provider.clone()).or_default().push(k); }
+    for k in detected_keys {
+        by_provider.entry(k.provider.clone()).or_default().push(k);
+    }
     let mut options = vec![
-        ProviderOption { id: "openrouter".into(), display_name: "OpenRouter (BYOK)".into(), kind: ProviderKind::Byok, detected_key: by_provider.get("openrouter").and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: false, native_base_url: Some("https://openrouter.ai/api/v1".into()) },
-        ProviderOption { id: "anthropic".into(), display_name: "Anthropic (BYOK)".into(), kind: ProviderKind::Byok, detected_key: by_provider.get("anthropic").and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: false, native_base_url: Some("https://api.anthropic.com".into()) },
-        ProviderOption { id: "openai".into(), display_name: "OpenAI (BYOK)".into(), kind: ProviderKind::Byok, detected_key: by_provider.get("openai").and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: false, native_base_url: Some("https://api.openai.com/v1".into()) },
-        ProviderOption { id: "gemini".into(), display_name: "Gemini (BYOK)".into(), kind: ProviderKind::Byok, detected_key: by_provider.get("gemini").and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: false, native_base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()) },
-        ProviderOption { id: "manual".into(), display_name: "I'll configure my own".into(), kind: ProviderKind::Manual, detected_key: None, requires_cliproxyapi: false, native_base_url: None },
+        ProviderOption {
+            id: "openrouter".into(),
+            display_name: "OpenRouter (BYOK)".into(),
+            kind: ProviderKind::Byok,
+            detected_key: by_provider
+                .get("openrouter")
+                .and_then(|v| v.first())
+                .cloned()
+                .cloned(),
+            requires_cliproxyapi: false,
+            native_base_url: Some("https://openrouter.ai/api/v1".into()),
+        },
+        ProviderOption {
+            id: "anthropic".into(),
+            display_name: "Anthropic (BYOK)".into(),
+            kind: ProviderKind::Byok,
+            detected_key: by_provider
+                .get("anthropic")
+                .and_then(|v| v.first())
+                .cloned()
+                .cloned(),
+            requires_cliproxyapi: false,
+            native_base_url: Some("https://api.anthropic.com".into()),
+        },
+        ProviderOption {
+            id: "openai".into(),
+            display_name: "OpenAI (BYOK)".into(),
+            kind: ProviderKind::Byok,
+            detected_key: by_provider
+                .get("openai")
+                .and_then(|v| v.first())
+                .cloned()
+                .cloned(),
+            requires_cliproxyapi: false,
+            native_base_url: Some("https://api.openai.com/v1".into()),
+        },
+        ProviderOption {
+            id: "gemini".into(),
+            display_name: "Gemini (BYOK)".into(),
+            kind: ProviderKind::Byok,
+            detected_key: by_provider
+                .get("gemini")
+                .and_then(|v| v.first())
+                .cloned()
+                .cloned(),
+            requires_cliproxyapi: false,
+            native_base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()),
+        },
+        ProviderOption {
+            id: "manual".into(),
+            display_name: "I'll configure my own".into(),
+            kind: ProviderKind::Manual,
+            detected_key: None,
+            requires_cliproxyapi: false,
+            native_base_url: None,
+        },
     ];
     // Include sidecar-backed subscriptions if keys or OAuth tokens are detected
-    for id in ["copilot", "claude_sub", "codex_sub", "gemini_sub", "kiro", "qwen", "iflow"] {
+    for id in [
+        "copilot",
+        "claude_sub",
+        "codex_sub",
+        "gemini_sub",
+        "kiro",
+        "qwen",
+        "iflow",
+    ] {
         if by_provider.contains_key(id) {
-            options.insert(0, ProviderOption { id: id.into(), display_name: format!("{id} (subscription)"), kind: ProviderKind::Subscription, detected_key: by_provider.get(id).and_then(|v| v.first()).cloned().cloned(), requires_cliproxyapi: true, native_base_url: None });
+            options.insert(
+                0,
+                ProviderOption {
+                    id: id.into(),
+                    display_name: format!("{id} (subscription)"),
+                    kind: ProviderKind::Subscription,
+                    detected_key: by_provider
+                        .get(id)
+                        .and_then(|v| v.first())
+                        .cloned()
+                        .cloned(),
+                    requires_cliproxyapi: true,
+                    native_base_url: None,
+                },
+            );
         }
     }
     // Merge OAuth detections from cliproxyapi
     let oauth = crate::cliproxyapi::detect_existing_oauth_tokens();
     for o in oauth {
         if !options.iter().any(|opt| opt.id == o.provider) {
-            options.insert(0, ProviderOption {
-                id: o.provider.clone(),
-                display_name: format!("{} (subscription)", o.provider),
-                kind: ProviderKind::Subscription,
-                detected_key: Some(DetectedKey { provider: o.provider, key: "oauth:token".into(), source: o.source }),
-                requires_cliproxyapi: true,
-                native_base_url: None,
-            });
+            options.insert(
+                0,
+                ProviderOption {
+                    id: o.provider.clone(),
+                    display_name: format!("{} (subscription)", o.provider),
+                    kind: ProviderKind::Subscription,
+                    detected_key: Some(DetectedKey {
+                        provider: o.provider,
+                        key: "oauth:token".into(),
+                        source: o.source,
+                    }),
+                    requires_cliproxyapi: true,
+                    native_base_url: None,
+                },
+            );
         }
     }
     options
 }
 
-fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Result<(ProviderOption, String)> {
+fn run_interactive_flow(
+    options: &[ProviderOption],
+    keys: &[DetectedKey],
+) -> Result<(ProviderOption, String)> {
     loop {
         eprintln!("Choose your LLM provider:\n");
         for (i, opt) in options.iter().enumerate() {
@@ -449,7 +540,12 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
                 .as_ref()
                 .map(|k| format!(" \u{2714} {}", mask_key(&k.key)))
                 .unwrap_or_default();
-            eprintln!("  \x1b[1m{:>2}\x1b[0m) {}{}", i + 1, opt.display_name, status);
+            eprintln!(
+                "  \x1b[1m{:>2}\x1b[0m) {}{}",
+                i + 1,
+                opt.display_name,
+                status
+            );
         }
         let idx = prompt_choice("Select", options.len(), Some(0))?;
         let chosen = options[idx].clone();
@@ -460,7 +556,9 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
         if chosen.kind == ProviderKind::Subscription && pkeys.is_empty() {
             // Start OAuth via sidecar binary
             if !crate::cliproxyapi::is_installed() {
-                eprintln!("\x1b[33mCLIProxyAPI binary not found. Try again shortly or choose another option.\x1b[0m\n");
+                eprintln!(
+                    "\x1b[33mCLIProxyAPI binary not found. Try again shortly or choose another option.\x1b[0m\n"
+                );
                 continue;
             }
             eprintln!("Starting OAuth login for {}...", chosen.display_name);
@@ -471,11 +569,19 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
                     // Test provider with fast model via a temporary runtime
                     let models = models_for_provider(&chosen.id);
                     let test_model = models.fast.first().unwrap_or(&models.default_model).clone();
-                    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
                     if let Ok(rt) = rt {
-                        let ok = rt.block_on(async move { crate::cliproxyapi::test_provider(port, &test_model).await.unwrap_or(false) });
+                        let ok = rt.block_on(async move {
+                            crate::cliproxyapi::test_provider(port, &test_model)
+                                .await
+                                .unwrap_or(false)
+                        });
                         if !ok {
-                            eprintln!("\x1b[33mProvider test failed after login. Choose another option.\x1b[0m\n");
+                            eprintln!(
+                                "\x1b[33mProvider test failed after login. Choose another option.\x1b[0m\n"
+                            );
                             continue;
                         }
                     }
@@ -491,7 +597,7 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
             if chosen.kind == ProviderKind::Byok {
                 eprint!("Enter your {} API key: ", chosen.display_name);
                 io::stderr().flush()?;
-                read_line_from_tty()? 
+                read_line_from_tty()?
             } else {
                 "nsh-internal".to_string()
             }
@@ -499,8 +605,16 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
             pkeys[0].key.clone()
         } else {
             eprintln!("Multiple keys found. Choose one:");
-            for (i, k) in pkeys.iter().enumerate() { eprintln!("  \x1b[1m{}\x1b[0m) {} (from {})", i + 1, mask_key(&k.key), k.source); }
-            let kc = prompt_choice("Select key", pkeys.len(), Some(0))?; pkeys[kc].key.clone()
+            for (i, k) in pkeys.iter().enumerate() {
+                eprintln!(
+                    "  \x1b[1m{}\x1b[0m) {} (from {})",
+                    i + 1,
+                    mask_key(&k.key),
+                    k.source
+                );
+            }
+            let kc = prompt_choice("Select key", pkeys.len(), Some(0))?;
+            pkeys[kc].key.clone()
         };
         return Ok((chosen, key));
     }
@@ -508,8 +622,12 @@ fn run_interactive_flow(options: &[ProviderOption], keys: &[DetectedKey]) -> Res
 
 fn run_noninteractive_pick(options: &[ProviderOption]) -> Option<(ProviderOption, String)> {
     for opt in options {
-        if let Some(k) = &opt.detected_key { return Some((opt.clone(), k.key.clone())); }
-        if opt.requires_cliproxyapi { return Some((opt.clone(), "nsh-internal".into())); }
+        if let Some(k) = &opt.detected_key {
+            return Some((opt.clone(), k.key.clone()));
+        }
+        if opt.requires_cliproxyapi {
+            return Some((opt.clone(), "nsh-internal".into()));
+        }
     }
     None
 }
@@ -523,8 +641,16 @@ fn save_config_routing(
     all_options: &[ProviderOption],
 ) -> Result<()> {
     let config_path = crate::config::Config::path();
-    let content = if config_path.exists() { std::fs::read_to_string(&config_path)? } else { String::new() };
-    let mut doc: toml_edit::DocumentMut = if content.is_empty() { toml_edit::DocumentMut::new() } else { content.parse::<toml_edit::DocumentMut>()? };
+    let content = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+    let mut doc: toml_edit::DocumentMut = if content.is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        content.parse::<toml_edit::DocumentMut>()?
+    };
 
     ensure_table(&mut doc, "provider");
     doc["provider"]["default"] = toml_edit::value(chosen_provider);
@@ -563,15 +689,21 @@ fn save_config_routing(
     } else if !chosen_key.is_empty() {
         doc["provider"][chosen_provider]["api_key"] = toml_edit::value(chosen_key);
         if let Some(opt) = all_options.iter().find(|o| o.id == chosen_provider) {
-            if let Some(url) = &opt.native_base_url { doc["provider"][chosen_provider]["base_url"] = toml_edit::value(url.as_str()); }
+            if let Some(url) = &opt.native_base_url {
+                doc["provider"][chosen_provider]["base_url"] = toml_edit::value(url.as_str());
+            }
         }
     }
 
     // Preconfigure other detected providers
     let mut configured = vec![chosen_provider.to_string()];
     for opt in all_options {
-        if opt.id == chosen_provider || opt.kind == ProviderKind::Manual { continue; }
-        if opt.detected_key.is_none() && !opt.requires_cliproxyapi { continue; }
+        if opt.id == chosen_provider || opt.kind == ProviderKind::Manual {
+            continue;
+        }
+        if opt.detected_key.is_none() && !opt.requires_cliproxyapi {
+            continue;
+        }
         configured.push(opt.id.clone());
         if doc["provider"].get(&opt.id).is_none() {
             doc["provider"][&opt.id] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -582,15 +714,22 @@ fn save_config_routing(
             doc["provider"][&opt.id]["api_key"] = toml_edit::value("nsh-internal");
         } else if let Some(k) = &opt.detected_key {
             doc["provider"][&opt.id]["api_key"] = toml_edit::value(&k.key);
-            if let Some(url) = &opt.native_base_url { doc["provider"][&opt.id]["base_url"] = toml_edit::value(url.as_str()); }
+            if let Some(url) = &opt.native_base_url {
+                doc["provider"][&opt.id]["base_url"] = toml_edit::value(url.as_str());
+            }
         }
         let m = models_for_provider(&opt.id);
         doc["provider"][&opt.id]["model"] = toml_edit::value(&m.default_model);
     }
-    let mut arr = toml_edit::Array::new(); for s in configured { arr.push(s.as_str()); }
+    let mut arr = toml_edit::Array::new();
+    for s in configured {
+        arr.push(s.as_str());
+    }
     doc["provider_routing"]["configured_providers"] = toml_edit::value(arr);
 
-    if let Some(parent) = config_path.parent() { std::fs::create_dir_all(parent)?; }
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let tmp_path = config_path.with_extension("tmp");
     std::fs::write(&tmp_path, doc.to_string())?;
     #[cfg(unix)]
@@ -605,24 +744,42 @@ fn save_config_routing(
 fn legacy_noninteractive_flow(keys: Vec<DetectedKey>) -> Result<()> {
     if keys.is_empty() {
         eprintln!("\x1b[33mNo API keys found.\x1b[0m\n");
-        eprintln!("You can set one of these environment variables:\n  export OPENROUTER_API_KEY=...\n  export ANTHROPIC_API_KEY=...\n  export OPENAI_API_KEY=...\n");
+        eprintln!(
+            "You can set one of these environment variables:\n  export OPENROUTER_API_KEY=...\n  export ANTHROPIC_API_KEY=...\n  export OPENAI_API_KEY=...\n"
+        );
         eprintln!("Or edit the config manually: \x1b[1mnsh config edit\x1b[0m");
         return Ok(());
     }
     let mut by_provider: BTreeMap<String, Vec<&DetectedKey>> = BTreeMap::new();
-    for k in &keys { by_provider.entry(k.provider.clone()).or_default().push(k); }
-    let (provider, pkeys) = if by_provider.len() == 1 { by_provider.into_iter().next().unwrap() } else {
+    for k in &keys {
+        by_provider.entry(k.provider.clone()).or_default().push(k);
+    }
+    let (provider, pkeys) = if by_provider.len() == 1 {
+        by_provider.into_iter().next().unwrap()
+    } else {
         let providers: Vec<String> = by_provider.keys().cloned().collect();
         eprintln!("Choose a provider:");
-        for (i, p) in providers.iter().enumerate() { eprintln!("  \x1b[1m{}\x1b[0m) {}", i + 1, p); }
+        for (i, p) in providers.iter().enumerate() {
+            eprintln!("  \x1b[1m{}\x1b[0m) {}", i + 1, p);
+        }
         let choice = prompt_choice("Select", providers.len(), Some(0))?;
         let p = providers[choice].clone();
         (p, by_provider[providers[choice].as_str()].clone())
     };
-    let chosen_key = if pkeys.len() == 1 { pkeys[0].key.clone() } else {
+    let chosen_key = if pkeys.len() == 1 {
+        pkeys[0].key.clone()
+    } else {
         eprintln!("Multiple keys found for {provider}. Choose one:");
-        for (i, k) in pkeys.iter().enumerate() { eprintln!("  \x1b[1m{}\x1b[0m) {} (from {})", i + 1, mask_key(&k.key), k.source); }
-        let c = prompt_choice("Select key", pkeys.len(), Some(0))?; pkeys[c].key.clone()
+        for (i, k) in pkeys.iter().enumerate() {
+            eprintln!(
+                "  \x1b[1m{}\x1b[0m) {} (from {})",
+                i + 1,
+                mask_key(&k.key),
+                k.source
+            );
+        }
+        let c = prompt_choice("Select key", pkeys.len(), Some(0))?;
+        pkeys[c].key.clone()
     };
     let models = models_for_provider(&provider);
     save_config(&provider, &chosen_key, &models, "prefill")
@@ -683,9 +840,16 @@ pub fn run_autoconfigure(interactive: bool) -> Result<()> {
     let options = build_provider_options(&keys);
     if interactive {
         let (opt, key) = run_interactive_flow(&options, &keys)?;
-        eprintln!("How should nsh handle suggested commands?\n  \x1b[1m1\x1b[0m) prefill\n  \x1b[1m2\x1b[0m) confirm\n  \x1b[1m3\x1b[0m) autorun");
+        eprintln!(
+            "How should nsh handle suggested commands?\n  \x1b[1m1\x1b[0m) prefill\n  \x1b[1m2\x1b[0m) confirm\n  \x1b[1m3\x1b[0m) autorun"
+        );
         let mode_choice = prompt_choice("Select", 3, Some(0))?;
-        let execution_mode = match mode_choice { 0 => "prefill", 1 => "confirm", 2 => "autorun", _ => "prefill" };
+        let execution_mode = match mode_choice {
+            0 => "prefill",
+            1 => "confirm",
+            2 => "autorun",
+            _ => "prefill",
+        };
         let models = models_for_provider(&opt.id);
         save_config_routing(&opt.id, &key, &models, execution_mode, &keys, &options)?;
         eprintln!("\x1b[32m\u{2714} nsh configured successfully!\x1b[0m");
