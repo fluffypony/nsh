@@ -553,6 +553,10 @@ pub fn assess_memory_tool_call(
             if caption.is_empty() {
                 return Err("retrieve_secret requires a non-empty caption_query".into());
             }
+            if _conversation.is_empty() {
+                // Daemon-side calls do not have conversation context; enforce field-level validation only.
+                return Ok(());
+            }
             // Require evidence that the user explicitly asked for a secret/credential
             let user_requested = _conversation.iter().any(|msg| {
                 if !matches!(msg.role, crate::provider::Role::User) {

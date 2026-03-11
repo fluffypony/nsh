@@ -1,3 +1,4 @@
+use crate::memory::types::MemoryType;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::Mutex;
@@ -211,7 +212,7 @@ pub enum DaemonRequest {
     },
     MemorySearch {
         query: String,
-        memory_type: Option<String>,
+        memory_type: Option<MemoryType>,
         #[serde(default = "default_limit")]
         limit: usize,
     },
@@ -225,11 +226,11 @@ pub enum DaemonRequest {
         content: String,
     },
     MemoryStore {
-        memory_type: String,
+        memory_type: MemoryType,
         data_json: String,
     },
     MemoryDelete {
-        memory_type: String,
+        memory_type: MemoryType,
         id: String,
     },
     MemoryRetrieveSecret {
@@ -242,7 +243,7 @@ pub enum DaemonRequest {
     MemoryExportAll,
     MemoryClearAll,
     MemoryClearByType {
-        memory_type: String,
+        memory_type: MemoryType,
     },
     // Sidecar management
     EnsureCLIProxyApi,

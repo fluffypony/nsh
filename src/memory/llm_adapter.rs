@@ -1,8 +1,6 @@
 #[async_trait::async_trait]
 pub trait MemoryLlmClient: Send + Sync {
-    async fn complete_json(&self, prompt: &str) -> anyhow::Result<String>;
-    #[allow(unused)]
-    async fn complete(&self, system: &str, user: &str) -> anyhow::Result<String>;
+    async fn complete_json(&self, prompt: &str) -> anyhow::Result<serde_json::Value>;
 }
 
 pub struct ProviderLlmClient {
@@ -28,7 +26,7 @@ impl ProviderLlmClient {
 
 #[async_trait::async_trait]
 impl MemoryLlmClient for ProviderLlmClient {
-    async fn complete_json(&self, prompt: &str) -> anyhow::Result<String> {
+    async fn complete_json(&self, prompt: &str) -> anyhow::Result<serde_json::Value> {
         let provider =
             crate::provider::create_provider(&self.config.provider.default, &self.config)?;
         let model = self.fast_model();
@@ -55,36 +53,7 @@ impl MemoryLlmClient for ProviderLlmClient {
                 text.push_str(t);
             }
         }
-        Ok(text)
-    }
-
-    async fn complete(&self, system: &str, user: &str) -> anyhow::Result<String> {
-        let provider =
-            crate::provider::create_provider(&self.config.provider.default, &self.config)?;
-        let model = self.fast_model();
-        let request = crate::provider::ChatRequest {
-            model,
-            system: system.to_string(),
-            messages: vec![crate::provider::Message {
-                role: crate::provider::Role::User,
-                content: vec![crate::provider::ContentBlock::Text {
-                    text: user.to_string(),
-                }],
-            }],
-            tools: vec![],
-            tool_choice: crate::provider::ToolChoice::None,
-            max_tokens: 4096,
-            stream: false,
-            extra_body: None,
-        };
-
-        let response = provider.complete(request).await?;
-        let mut text = String::new();
-        for block in &response.content {
-            if let crate::provider::ContentBlock::Text { text: t } = block {
-                text.push_str(t);
-            }
-        }
-        Ok(text)
+        crate::json_extract::extract_json(&text)
+            .ok_or_else(|| anyhow::anyhow!("memory llm returned invalid JSON"))
     }
 }

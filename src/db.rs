@@ -883,6 +883,96 @@ impl Db {
         Ok(())
     }
 
+    pub fn store_semantic_memory(
+        &self,
+        name: &str,
+        category: &str,
+        summary: &str,
+        details: Option<&str>,
+        search_keywords: &str,
+    ) -> anyhow::Result<String> {
+        crate::memory::store::semantic::insert_or_update(
+            &self.conn,
+            name,
+            category,
+            summary,
+            details,
+            search_keywords,
+        )
+    }
+
+    pub fn store_procedural_memory(
+        &self,
+        entry_type: &str,
+        trigger_pattern: &str,
+        summary: &str,
+        steps: &str,
+        search_keywords: &str,
+    ) -> anyhow::Result<String> {
+        crate::memory::store::procedural::insert(
+            &self.conn,
+            entry_type,
+            trigger_pattern,
+            summary,
+            steps,
+            search_keywords,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_resource_memory(
+        &self,
+        resource_type: &str,
+        file_path: Option<&str>,
+        file_hash: Option<&str>,
+        title: &str,
+        summary: &str,
+        content: Option<&str>,
+        search_keywords: &str,
+    ) -> anyhow::Result<String> {
+        if let Some(path) = file_path {
+            crate::memory::store::resource::upsert_by_path(
+                &self.conn,
+                resource_type,
+                path,
+                file_hash.unwrap_or(""),
+                title,
+                summary,
+                content,
+                search_keywords,
+            )
+        } else {
+            crate::memory::store::resource::insert(
+                &self.conn,
+                resource_type,
+                None,
+                file_hash,
+                title,
+                summary,
+                content,
+                search_keywords,
+            )
+        }
+    }
+
+    pub fn store_knowledge_memory(
+        &self,
+        entry_type: &str,
+        caption: &str,
+        secret_value: &str,
+        sensitivity: crate::memory::types::Sensitivity,
+        search_keywords: &str,
+    ) -> anyhow::Result<String> {
+        crate::memory::store::knowledge::insert(
+            &self.conn,
+            entry_type,
+            caption,
+            secret_value,
+            sensitivity,
+            search_keywords,
+        )
+    }
+
     pub fn search_episodic_fts(
         &self,
         query: &str,
@@ -1185,12 +1275,14 @@ impl Db {
             all_params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             let sensitivity_str: String = row.get(4)?;
+            let sensitivity = crate::memory::types::Sensitivity::parse(&sensitivity_str)
+                .map_err(|_| rusqlite::Error::InvalidColumnType(4, "sensitivity".into(), rusqlite::types::Type::Text))?;
             Ok(crate::memory::types::KnowledgeEntry {
                 id: row.get(0)?,
                 entry_type: row.get(1)?,
                 caption: row.get(2)?,
                 secret_value: row.get(3)?,
-                sensitivity: crate::memory::types::Sensitivity::from_str(&sensitivity_str),
+                sensitivity,
                 search_keywords: row.get(5)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
@@ -1272,21 +1364,29 @@ impl Db {
         Ok(())
     }
 
-    pub fn clear_memories_by_type(&self, memory_type: &str) -> rusqlite::Result<()> {
+    pub fn clear_memories_by_type(
+        &self,
+        memory_type: crate::memory::types::MemoryType,
+    ) -> rusqlite::Result<()> {
         match memory_type {
-            "episodic" => self.conn.execute_batch("DELETE FROM episodic_memory;")?,
-            "semantic" => self.conn.execute_batch("DELETE FROM semantic_memory;")?,
-            "procedural" => self.conn.execute_batch("DELETE FROM procedural_memory;")?,
-            "resource" => self.conn.execute_batch("DELETE FROM resource_memory;")?,
-            "knowledge" => self.conn.execute_batch("DELETE FROM knowledge_vault;")?,
-            "core" => self.conn.execute_batch(
+            crate::memory::types::MemoryType::Episodic => {
+                self.conn.execute_batch("DELETE FROM episodic_memory;")?
+            }
+            crate::memory::types::MemoryType::Semantic => {
+                self.conn.execute_batch("DELETE FROM semantic_memory;")?
+            }
+            crate::memory::types::MemoryType::Procedural => {
+                self.conn.execute_batch("DELETE FROM procedural_memory;")?
+            }
+            crate::memory::types::MemoryType::Resource => {
+                self.conn.execute_batch("DELETE FROM resource_memory;")?
+            }
+            crate::memory::types::MemoryType::Knowledge => {
+                self.conn.execute_batch("DELETE FROM knowledge_vault;")?
+            }
+            crate::memory::types::MemoryType::Core => self.conn.execute_batch(
                 "UPDATE core_memory SET value = '', updated_at = datetime('now');",
             )?,
-            _ => {
-                return Err(rusqlite::Error::InvalidParameterName(format!(
-                    "unknown memory type: {memory_type}"
-                )));
-            }
         }
         Ok(())
     }

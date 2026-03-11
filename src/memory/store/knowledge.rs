@@ -12,7 +12,7 @@ pub fn insert(
     sensitivity: Sensitivity,
     search_keywords: &str,
 ) -> anyhow::Result<String> {
-    let encrypted = encrypt_secret(secret_value)?;
+    let encrypted = super::knowledge_crypto::encrypt_secret(secret_value)?;
     let id = generate_id("kv");
     conn.execute(
         "INSERT INTO knowledge_vault (id, entry_type, caption, secret_value, sensitivity, search_keywords)
@@ -70,7 +70,7 @@ pub fn search_bm25(
             entry_type: row.get(1)?,
             caption: row.get(2)?,
             secret_value: String::new(), // never return encrypted value in search
-            sensitivity: Sensitivity::from_str(&row.get::<_, String>(4)?),
+            sensitivity: Sensitivity::parse(&row.get::<_, String>(4)?)?,
             search_keywords: row.get(5)?,
             created_at: row.get(6)?,
             updated_at: row.get(7)?,
@@ -93,7 +93,7 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<KnowledgeEntry>> {
             entry_type: row.get(1)?,
             caption: row.get(2)?,
             secret_value: String::new(),
-            sensitivity: Sensitivity::from_str(&row.get::<_, String>(4)?),
+            sensitivity: Sensitivity::parse(&row.get::<_, String>(4)?)?,
             search_keywords: row.get(5)?,
             created_at: row.get(6)?,
             updated_at: row.get(7)?,
@@ -109,7 +109,7 @@ pub fn retrieve_secret(conn: &Connection, id: &str) -> anyhow::Result<String> {
         params![id],
         |r| r.get(0),
     )?;
-    decrypt_secret(&encrypted)
+    super::knowledge_crypto::decrypt_secret(&encrypted)
 }
 
 pub fn delete(conn: &Connection, ids: &[String]) -> anyhow::Result<usize> {
@@ -123,95 +123,6 @@ pub fn delete(conn: &Connection, ids: &[String]) -> anyhow::Result<usize> {
 pub fn count(conn: &Connection) -> anyhow::Result<usize> {
     let n: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge_vault", [], |r| r.get(0))?;
     Ok(n as usize)
-}
-
-// ── Encryption helpers ──
-
-fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
-    let key_path = crate::config::Config::nsh_dir().join("vault.key");
-    if key_path.exists() {
-        let bytes = std::fs::read(&key_path)?;
-        if bytes.len() < 32 {
-            anyhow::bail!("vault.key is too short (expected 32 bytes)");
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes[..32]);
-        Ok(key)
-    } else {
-        use rand::{prelude::*, rng};
-        let mut key = [0u8; 32];
-        let mut r = rng();
-        r.fill(&mut key);
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&key_path)?;
-            file.write_all(&key)?;
-        }
-        #[cfg(not(unix))]
-        {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&key_path)?;
-            file.write_all(&key)?;
-            // Mark as read-only to prevent accidental modification
-            let mut perms = std::fs::metadata(&key_path)?.permissions();
-            perms.set_readonly(true);
-            std::fs::set_permissions(&key_path, perms)?;
-            // On Windows, hide the key file
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::OpenOptionsExt;
-                // Set FILE_ATTRIBUTE_HIDDEN via attrib command (available on all Windows)
-                let _ = std::process::Command::new("attrib")
-                    .args(["+H", &key_path.to_string_lossy()])
-                    .output();
-            }
-        }
-        Ok(key)
-    }
-}
-
-fn encrypt_secret(plaintext: &str) -> anyhow::Result<String> {
-    use aes_gcm::{
-        Aes256Gcm, KeyInit,
-        aead::{Aead, AeadCore, OsRng},
-    };
-    let key = get_or_create_key()?;
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext.as_bytes())
-        .map_err(|e| anyhow::anyhow!("encrypt: {e}"))?;
-    let mut combined = nonce.to_vec();
-    combined.extend_from_slice(&ciphertext);
-    Ok(hex::encode(&combined))
-}
-
-#[cfg(test)]
-fn decrypt_secret(hex_data: &str) -> anyhow::Result<String> {
-    use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
-    let key = get_or_create_key()?;
-    let data = hex::decode(hex_data)?;
-    if data.len() < 12 {
-        anyhow::bail!("encrypted data too short");
-    }
-    let (nonce_bytes, ciphertext) = data.split_at(12);
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow::anyhow!("cipher init: {e}"))?;
-    let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| anyhow::anyhow!("decrypt: {e}"))?;
-    Ok(String::from_utf8(plaintext)?)
 }
 
 #[cfg(test)]
@@ -230,9 +141,9 @@ mod tests {
     #[serial]
     fn encrypt_decrypt_roundtrip() {
         let original = "my-secret-api-key-12345";
-        let encrypted = encrypt_secret(original).unwrap();
+        let encrypted = super::super::knowledge_crypto::encrypt_secret(original).unwrap();
         assert_ne!(encrypted, original);
-        let decrypted = decrypt_secret(&encrypted).unwrap();
+        let decrypted = super::super::knowledge_crypto::decrypt_secret(&encrypted).unwrap();
         assert_eq!(decrypted, original);
     }
 
@@ -359,13 +270,13 @@ mod tests {
     #[serial]
     fn encrypt_different_each_time() {
         // Same plaintext should produce different ciphertext due to random nonce
-        let enc1 = encrypt_secret("test-value").unwrap();
-        let enc2 = encrypt_secret("test-value").unwrap();
+        let enc1 = super::super::knowledge_crypto::encrypt_secret("test-value").unwrap();
+        let enc2 = super::super::knowledge_crypto::encrypt_secret("test-value").unwrap();
         assert_ne!(enc1, enc2, "encryption should use random nonce");
 
         // But both should decrypt to the same value
-        let dec1 = decrypt_secret(&enc1).unwrap();
-        let dec2 = decrypt_secret(&enc2).unwrap();
+        let dec1 = super::super::knowledge_crypto::decrypt_secret(&enc1).unwrap();
+        let dec2 = super::super::knowledge_crypto::decrypt_secret(&enc2).unwrap();
         assert_eq!(dec1, dec2);
         assert_eq!(dec1, "test-value");
     }
@@ -373,8 +284,8 @@ mod tests {
     #[test]
     #[serial]
     fn encrypt_empty_string() {
-        let encrypted = encrypt_secret("").unwrap();
-        let decrypted = decrypt_secret(&encrypted).unwrap();
+        let encrypted = super::super::knowledge_crypto::encrypt_secret("").unwrap();
+        let decrypted = super::super::knowledge_crypto::decrypt_secret(&encrypted).unwrap();
         assert_eq!(decrypted, "");
     }
 
@@ -382,8 +293,8 @@ mod tests {
     #[serial]
     fn encrypt_long_secret() {
         let long_secret = "a".repeat(10000);
-        let encrypted = encrypt_secret(&long_secret).unwrap();
-        let decrypted = decrypt_secret(&encrypted).unwrap();
+        let encrypted = super::super::knowledge_crypto::encrypt_secret(&long_secret).unwrap();
+        let decrypted = super::super::knowledge_crypto::decrypt_secret(&encrypted).unwrap();
         assert_eq!(decrypted, long_secret);
     }
 
@@ -391,8 +302,8 @@ mod tests {
     #[serial]
     fn encrypt_special_characters() {
         let special = "p@$$w0rd!#%^&*()_+-=[]{}|;':\",./<>?";
-        let encrypted = encrypt_secret(special).unwrap();
-        let decrypted = decrypt_secret(&encrypted).unwrap();
+        let encrypted = super::super::knowledge_crypto::encrypt_secret(special).unwrap();
+        let decrypted = super::super::knowledge_crypto::decrypt_secret(&encrypted).unwrap();
         assert_eq!(decrypted, special);
     }
 
@@ -400,22 +311,22 @@ mod tests {
     #[serial]
     fn encrypt_unicode() {
         let unicode = "密码 пароль パスワード 🔑🔐";
-        let encrypted = encrypt_secret(unicode).unwrap();
-        let decrypted = decrypt_secret(&encrypted).unwrap();
+        let encrypted = super::super::knowledge_crypto::encrypt_secret(unicode).unwrap();
+        let decrypted = super::super::knowledge_crypto::decrypt_secret(&encrypted).unwrap();
         assert_eq!(decrypted, unicode);
     }
 
     #[test]
     #[serial]
     fn decrypt_invalid_hex_fails() {
-        let result = decrypt_secret("not_valid_hex!");
+        let result = super::super::knowledge_crypto::decrypt_secret("not_valid_hex!");
         assert!(result.is_err());
     }
 
     #[test]
     #[serial]
     fn decrypt_too_short_fails() {
-        let result = decrypt_secret("aabbccdd");
+        let result = super::super::knowledge_crypto::decrypt_secret("aabbccdd");
         assert!(result.is_err());
     }
 

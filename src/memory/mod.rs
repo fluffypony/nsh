@@ -298,11 +298,11 @@ impl MemorySystem {
     pub fn search(
         &self,
         query: &str,
-        _memory_type: Option<MemoryType>,
+        memory_type: Option<MemoryType>,
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let conn = self.db.lock().unwrap();
-        search::search_all(&conn, query, limit)
+        search::search_all(&conn, query, memory_type, limit)
     }
 
     pub fn delete_memory(&self, memory_type: MemoryType, id: &str) -> anyhow::Result<()> {
@@ -687,12 +687,13 @@ impl MemorySystem {
                 sensitivity,
                 search_keywords,
             } => {
+                let parsed_sensitivity = Sensitivity::parse(sensitivity)?;
                 store::knowledge::insert(
                     conn,
                     entry_type,
                     caption,
                     secret_value,
-                    Sensitivity::from_str(sensitivity),
+                    parsed_sensitivity,
                     search_keywords,
                 )?;
             }
@@ -1125,11 +1126,17 @@ mod tests {
 
     #[async_trait]
     impl crate::memory::llm_adapter::MemoryLlmClient for MockLlm {
-        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<String> {
-            Ok(r#"[{"op":"SemanticInsert","name":"Project uses cargo","category":"project","summary":"User builds with cargo","details":null,"search_keywords":"cargo build project"} ]"#.to_string())
-        }
-        async fn complete(&self, _system: &str, _user: &str) -> anyhow::Result<String> {
-            Ok(String::new())
+        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
+            Ok(serde_json::json!([
+                {
+                    "op": "SemanticInsert",
+                    "name": "Project uses cargo",
+                    "category": "project",
+                    "summary": "User builds with cargo",
+                    "details": null,
+                    "search_keywords": "cargo build project"
+                }
+            ]))
         }
     }
 

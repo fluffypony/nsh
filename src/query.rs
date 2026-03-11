@@ -729,7 +729,12 @@ pub async fn handle_query(
                     let mt = input["memory_type"].as_str().unwrap_or("");
                     if mt == "semantic" {
                         if let Some(data) = input.get("data") {
-                            if let Err(msg) = crate::tools::memory::validate_store_memory_input(mt, data) {
+                            let parsed_type = crate::memory::types::MemoryType::parse(mt)
+                                .map_err(|e| e.to_string());
+                            let validation = parsed_type.and_then(|pt| {
+                                crate::tools::memory::validate_store_memory_input(pt, data)
+                            });
+                            if let Err(msg) = validation {
                                 let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),

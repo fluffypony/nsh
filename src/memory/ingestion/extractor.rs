@@ -120,19 +120,8 @@ Respond ONLY with the JSON array, no other text.
     prompt
 }
 
-fn parse_extraction_response(response: &str) -> anyhow::Result<Vec<MemoryOp>> {
-    let trimmed = response.trim();
-    let json_str = if let Some(start) = trimmed.find('[') {
-        if let Some(end) = trimmed.rfind(']') {
-            &trimmed[start..=end]
-        } else {
-            trimmed
-        }
-    } else {
-        trimmed
-    };
-
-    match serde_json::from_str::<Vec<MemoryOp>>(json_str) {
+fn parse_extraction_response(response: &serde_json::Value) -> anyhow::Result<Vec<MemoryOp>> {
+    match serde_json::from_value::<Vec<MemoryOp>>(response.clone()) {
         Ok(ops) => Ok(ops),
         Err(e) => {
             tracing::warn!("Failed to parse extraction response: {e}");
@@ -264,15 +253,17 @@ mod tests {
 
     #[test]
     fn parse_extraction_response_valid() {
-        let response = r#"[{"op": "NoOp", "reason": "low signal"}]"#;
-        let ops = parse_extraction_response(response).unwrap();
+        let response = serde_json::json!([
+            {"op": "NoOp", "reason": "low signal"}
+        ]);
+        let ops = parse_extraction_response(&response).unwrap();
         assert_eq!(ops.len(), 1);
     }
 
     #[test]
     fn parse_extraction_response_invalid_falls_back() {
-        let response = "not valid json at all";
-        let ops = parse_extraction_response(response).unwrap();
+        let response = serde_json::json!("not valid json at all");
+        let ops = parse_extraction_response(&response).unwrap();
         assert_eq!(ops.len(), 1);
         assert!(matches!(ops[0], MemoryOp::NoOp { .. }));
     }
@@ -485,25 +476,30 @@ mod tests {
 
     #[test]
     fn parse_extraction_response_with_surrounding_text() {
-        let response = "Here is the output:\n[{\"op\": \"NoOp\", \"reason\": \"test\"}]\nDone!";
-        let ops = parse_extraction_response(response).unwrap();
+        let response = serde_json::json!([
+            {
+                "op": "NoOp",
+                "reason": "test"
+            }
+        ]);
+        let ops = parse_extraction_response(&response).unwrap();
         assert_eq!(ops.len(), 1);
     }
 
     #[test]
     fn parse_extraction_response_multiple_ops() {
-        let response = r#"[
+        let response = serde_json::json!([
             {"op": "EpisodicInsert", "event": {"event_type": "command_execution", "actor": "user", "summary": "test", "search_keywords": "test"}},
             {"op": "NoOp", "reason": "low signal"}
-        ]"#;
-        let ops = parse_extraction_response(response).unwrap();
+        ]);
+        let ops = parse_extraction_response(&response).unwrap();
         assert_eq!(ops.len(), 2);
     }
 
     #[test]
     fn parse_extraction_response_empty_array() {
-        let response = "[]";
-        let ops = parse_extraction_response(response).unwrap();
+        let response = serde_json::json!([]);
+        let ops = parse_extraction_response(&response).unwrap();
         assert!(ops.is_empty());
     }
 }
