@@ -19,7 +19,11 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     eprintln!("{bold_yellow}Uninstall skill:{reset} {name}");
     if remove_dir {
         let dir_disp = dir_path.display();
-        eprintln!("{dim}Paths:{reset} {} and {}", toml_path.display(), dir_disp);
+        eprintln!(
+            "{dim}Paths:{reset} {} and {}",
+            toml_path.display(),
+            dir_disp
+        );
     } else {
         eprintln!("{dim}Path:{reset} {}", toml_path.display());
     }

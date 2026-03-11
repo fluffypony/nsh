@@ -21,7 +21,8 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             status.push_str(&format!("\nDocs: {}", md.display()));
         }
         if s.docs.is_some() {
-            status.push_str("\nType: doc-based skill (instructions loaded from SKILL.md/README.md)");
+            status
+                .push_str("\nType: doc-based skill (instructions loaded from SKILL.md/README.md)");
         }
         Ok(status)
     } else {

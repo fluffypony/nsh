@@ -3,7 +3,10 @@ use crate::redact;
 use std::process::{Command, Stdio};
 
 fn is_shell_operator_token(token: &str) -> bool {
-    matches!(token, "&&" | "||" | "|" | ";" | "&" | ">" | "<" | ">>" | "<<")
+    matches!(
+        token,
+        "&&" | "||" | "|" | ";" | "&" | ">" | "<" | ">>" | "<<"
+    )
 }
 
 fn expand_tilde_token(token: &str) -> String {
@@ -30,8 +33,8 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             return Ok("DENIED: empty command".to_string());
         }
 
-        let parsed =
-            shell_words::split(trimmed).map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
+        let parsed = shell_words::split(trimmed)
+            .map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
         if parsed.iter().any(|token| is_shell_operator_token(token)) {
             return Ok(
                 "DENIED: run_command does not support shell operators (&&, ||, |, ;, redirects). Use the `command` tool with pending=true instead."
@@ -47,7 +50,12 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
         match risk {
             crate::security::RiskLevel::Dangerous => {
                 let th = crate::tui::theme::current_theme();
-                eprintln!("\n  {}⚠ DANGEROUS background command requested:{} {}", th.error, th.reset, reason.unwrap_or(""));
+                eprintln!(
+                    "\n  {}⚠ DANGEROUS background command requested:{} {}",
+                    th.error,
+                    th.reset,
+                    reason.unwrap_or("")
+                );
                 eprintln!("  $ {cmd}");
                 eprint!("  {}Type 'yes' to proceed: {}", th.error, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -57,7 +65,10 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             }
             crate::security::RiskLevel::Elevated => {
                 let th = crate::tui::theme::current_theme();
-                eprintln!("\n  {}⚡ Agent wants to run a background command:{}", th.warning, th.reset);
+                eprintln!(
+                    "\n  {}⚡ Agent wants to run a background command:{}",
+                    th.warning, th.reset
+                );
                 eprintln!("  $ {cmd}");
                 eprint!("  {}Allow? [y/N]{} ", th.warning, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -92,12 +103,28 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
 
     // Guard: reject known-interactive commands that should use the `command` tool
     let interactive_prefixes = [
-        "sudo ", "doas ", "su ", "brew install", "brew upgrade", "brew reinstall",
-        "apt install", "apt-get install", "dnf install", "yum install", "pacman -S",
-        "pip install", "pip3 install", "cargo install", "npm install", "pnpm install",
+        "sudo ",
+        "doas ",
+        "su ",
+        "brew install",
+        "brew upgrade",
+        "brew reinstall",
+        "apt install",
+        "apt-get install",
+        "dnf install",
+        "yum install",
+        "pacman -S",
+        "pip install",
+        "pip3 install",
+        "cargo install",
+        "npm install",
+        "pnpm install",
         "yarn add",
     ];
-    if interactive_prefixes.iter().any(|p| lower_cmd.starts_with(p) || lower_cmd.contains(&format!(" {}", p.trim()))) {
+    if interactive_prefixes
+        .iter()
+        .any(|p| lower_cmd.starts_with(p) || lower_cmd.contains(&format!(" {}", p.trim())))
+    {
         return Ok(format!(
             "DENIED: '{}' may require interactive input or shell state. Use the `command` tool with pending=true instead.",
             cmd.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
@@ -144,7 +171,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             let mut buf = [0u8; 1024];
             let mut full = Vec::new();
             while let Ok(n) = stdout_reader.read(&mut buf) {
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 let chunk = String::from_utf8_lossy(&buf[..n]);
                 let redacted = redact::redact_secrets(&chunk, &redaction_cfg_out);
                 eprint!("{redacted}");
@@ -158,7 +187,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             let mut buf = [0u8; 1024];
             let mut full = Vec::new();
             while let Ok(n) = stderr_reader.read(&mut buf) {
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 let chunk = String::from_utf8_lossy(&buf[..n]);
                 let redacted = redact::redact_secrets(&chunk, &redaction_cfg_err);
                 eprint!("{redacted}");
@@ -174,8 +205,10 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 Some(status) => break status,
                 None => {
                     if start.elapsed().as_secs() >= timeout_secs {
-                        eprint!("\x1b[1;33mCommand running > {}s. Continue waiting? [Y/n]\x1b[0m ",
-                            timeout_secs);
+                        eprint!(
+                            "\x1b[1;33mCommand running > {}s. Continue waiting? [Y/n]\x1b[0m ",
+                            timeout_secs
+                        );
                         let _ = std::io::Write::flush(&mut std::io::stderr());
                         if !crate::tools::read_tty_confirmation_default_yes() {
                             let _ = child.kill();

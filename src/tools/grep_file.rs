@@ -2,6 +2,14 @@ use regex::Regex;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 
+fn ok(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::success(msg)
+}
+
+fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::failure(msg)
+}
+
 #[cfg(unix)]
 fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -26,18 +34,41 @@ pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
+    Ok(execute_outcome_with_access(input, sensitive_file_access)?.into_content())
+}
+
+pub fn execute_outcome_with_access(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
     let path = match crate::tools::validate_read_path_with_access(raw_path, sensitive_file_access) {
         Ok(p) => p,
-        Err(msg) => return Ok(msg),
+        Err(msg) => return Ok(fail(msg)),
     };
 
     let pattern = input["pattern"].as_str();
     let context_lines = input["context_lines"].as_u64().unwrap_or(3) as usize;
     let max_lines = input["max_lines"].as_u64().unwrap_or(100) as usize;
+
+    if pattern.is_none() {
+        let mut delegated = input.clone();
+        delegated["start_line"] = serde_json::Value::from(1_u64);
+        delegated["end_line"] = serde_json::Value::from(max_lines as u64);
+        let read_result = crate::tools::read_file::execute_outcome_with_access(
+            &delegated,
+            sensitive_file_access,
+        )?;
+        return Ok(match read_result {
+            crate::tools::ToolInvocationOutcome::Success(content) => ok(format!(
+                "Note: grep_file without 'pattern' is deprecated and will be removed. Use read_file instead.\n\n{content}"
+            )),
+            crate::tools::ToolInvocationOutcome::Failure(content) => fail(content),
+        });
+    }
 
     let path_display = path.display().to_string();
     #[cfg(unix)]
@@ -46,16 +77,16 @@ pub fn execute_with_access(
         if let Ok(meta) = std::fs::symlink_metadata(&path) {
             let ft = meta.file_type();
             if ft.is_block_device() || ft.is_char_device() || ft.is_fifo() || ft.is_socket() {
-                return Ok(format!(
+                return Ok(fail(format!(
                     "Cannot grep '{}': not a regular file. Use run_command with 'grep' instead.",
                     path.display()
-                ));
+                )));
             }
         }
     }
     let file = match open_for_read(&path) {
         Ok(f) => f,
-        Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
+        Err(e) => return Ok(fail(format!("Error reading '{path_display}': {e}"))),
     };
     let mut reader = BufReader::new(file);
 
@@ -63,7 +94,7 @@ pub fn execute_with_access(
         Some(pat) => {
             let re = match Regex::new(pat) {
                 Ok(r) => r,
-                Err(e) => return Ok(format!("Invalid regex '{pat}': {e}")),
+                Err(e) => return Ok(fail(format!("Invalid regex '{pat}': {e}"))),
             };
 
             let mut result = String::new();
@@ -78,7 +109,7 @@ pub fn execute_with_access(
                 line.clear();
                 let bytes = match reader.read_line(&mut line) {
                     Ok(n) => n,
-                    Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
+                    Err(e) => return Ok(fail(format!("Error reading '{path_display}': {e}"))),
                 };
                 if bytes == 0 {
                     break;
@@ -95,7 +126,7 @@ pub fn execute_with_access(
                         }
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
-                            return Ok(result);
+                            return Ok(ok(result));
                         }
                         result.push_str(&format!("    {ctx_no:>4}: {ctx_line}\n"));
                         output_lines += 1;
@@ -105,7 +136,7 @@ pub fn execute_with_access(
                     if last_emitted_line != Some(line_no) {
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
-                            return Ok(result);
+                            return Ok(ok(result));
                         }
                         result.push_str(&format!(">>> {line_no:>4}: {line_str}\n"));
                         output_lines += 1;
@@ -118,7 +149,7 @@ pub fn execute_with_access(
                     if last_emitted_line != Some(line_no) {
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
-                            return Ok(result);
+                            return Ok(ok(result));
                         }
                         result.push_str(&format!("    {line_no:>4}: {line_str}\n"));
                         output_lines += 1;
@@ -136,44 +167,12 @@ pub fn execute_with_access(
             }
 
             if result.is_empty() {
-                Ok(format!("No matches for '{pat}' in {path_display}"))
+                Ok(ok(format!("No matches for '{pat}' in {path_display}")))
             } else {
-                Ok(result)
+                Ok(ok(result))
             }
         }
-        None => {
-            // No pattern — read the file (up to max_lines)
-            let mut result = String::new();
-            let mut line = String::new();
-            let mut line_no = 0usize;
-            let mut total_lines = 0usize;
-            loop {
-                line.clear();
-                let bytes = match reader.read_line(&mut line) {
-                    Ok(n) => n,
-                    Err(e) => return Ok(format!("Error reading '{path_display}': {e}")),
-                };
-                if bytes == 0 {
-                    break;
-                }
-
-                total_lines += 1;
-                if line_no < max_lines {
-                    line_no += 1;
-                    result.push_str(&format!(
-                        "{:>4}: {}\n",
-                        line_no,
-                        line.trim_end_matches(['\n', '\r'])
-                    ));
-                }
-            }
-
-            if total_lines > max_lines {
-                result.push_str(&format!("\n[... {} more lines]\n", total_lines - max_lines));
-            }
-
-            Ok(result)
-        }
+        None => unreachable!("handled above"),
     }
 }
 
@@ -245,6 +244,7 @@ mod tests {
         let path = f.path().to_str().unwrap();
         let input = json!({"path": path});
         let result = execute(&input).unwrap();
+        assert!(result.contains("deprecated"));
         assert!(result.contains("line one"));
         assert!(result.contains("line two"));
         assert!(result.contains("line three"));
@@ -259,7 +259,9 @@ mod tests {
         let path = f.path().to_str().unwrap();
         let input = json!({"path": path, "max_lines": 3});
         let result = execute(&input).unwrap();
-        assert!(result.contains("more lines"));
+        assert!(result.contains("deprecated"));
+        assert!(result.contains("line 1"));
+        assert!(!result.contains("line 10"));
     }
 
     #[test]

@@ -1,6 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn ok(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::success(msg)
+}
+
+fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::failure(msg)
+}
+
 #[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     execute_with_access(input, "block")
@@ -10,6 +18,13 @@ pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
+    Ok(execute_outcome_with_access(input, sensitive_file_access)?.into_content())
+}
+
+pub fn execute_outcome_with_access(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
     let path_str = input["path"].as_str().unwrap_or(".");
     let show_hidden = input["show_hidden"].as_bool().unwrap_or(false);
     let recursive = input["recursive"].as_bool().unwrap_or(false);
@@ -20,25 +35,25 @@ pub fn execute_with_access(
 
     let path = match crate::tools::validate_read_path_with_access(path_str, sensitive_file_access) {
         Ok(p) => p,
-        Err(msg) => return Ok(msg),
+        Err(msg) => return Ok(fail(msg)),
     };
 
     if !path.exists() {
-        return Ok(format!("Path does not exist: {path_str}"));
+        return Ok(fail(format!("Path does not exist: {path_str}")));
     }
     if !path.is_dir() {
-        return Ok(format!("Not a directory: {path_str}"));
+        return Ok(fail(format!("Not a directory: {path_str}")));
     }
 
     let entries = match collect_entries(path.as_path(), show_hidden, recursive, max_entries) {
         Ok(entries) => entries,
-        Err(e) => return Ok(format!("Error reading directory: {e}")),
+        Err(e) => return Ok(fail(format!("Error reading directory: {e}"))),
     };
 
     if entries.is_empty() {
-        Ok(format!("Empty directory: {path_str}"))
+        Ok(ok(format!("Empty directory: {path_str}")))
     } else {
-        Ok(entries.join("\n"))
+        Ok(ok(entries.join("\n")))
     }
 }
 

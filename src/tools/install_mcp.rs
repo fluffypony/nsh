@@ -1,6 +1,9 @@
 use std::io::{self, Write};
 
-pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> anyhow::Result<String> {
+pub fn execute(
+    input: &serde_json::Value,
+    _config: &crate::config::Config,
+) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
     let transport = input["transport"].as_str().unwrap_or("stdio");
     let command = input["command"].as_str();
@@ -96,8 +99,7 @@ pub fn execute(input: &serde_json::Value, _config: &crate::config::Config) -> an
     let new_content = doc.to_string();
 
     if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
-        eprintln!("Error: resulting config would be invalid: {e}");
-        return Ok(format!("Error: resulting config would be invalid: {e}"));
+        anyhow::bail!("resulting config would be invalid: {e}");
     }
 
     let bold_yellow = "\x1b[1;33m";

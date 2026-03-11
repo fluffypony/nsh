@@ -61,7 +61,9 @@ impl RequiredKeyPath {
         }
         true
     }
-    pub fn arrow(&self) -> String { self.0.join("->") }
+    pub fn arrow(&self) -> String {
+        self.0.join("->")
+    }
 }
 
 /// Extract JSON and validate required keys exist; return Err(list_of_missing) on failure.
@@ -69,13 +71,18 @@ pub fn extract_and_validate(
     input: &str,
     required: &[RequiredKeyPath],
 ) -> Result<serde_json::Value, Vec<String>> {
-    let value = extract_json(input).ok_or_else(|| vec!["(no valid JSON found in response)".to_string()])?;
+    let value =
+        extract_json(input).ok_or_else(|| vec!["(no valid JSON found in response)".to_string()])?;
     let missing: Vec<String> = required
         .iter()
         .filter(|k| !k.exists_in(&value))
         .map(|k| k.arrow())
         .collect();
-    if missing.is_empty() { Ok(value) } else { Err(missing) }
+    if missing.is_empty() {
+        Ok(value)
+    } else {
+        Err(missing)
+    }
 }
 
 /// Build a terse feedback prompt for missing keys.
@@ -102,18 +109,25 @@ pub async fn extract_with_retry<P: crate::provider::LlmProvider + ?Sized>(
         let text = resp
             .content
             .iter()
-            .filter_map(|b| match b { crate::provider::ContentBlock::Text { text } => Some(text.as_str()), _ => None })
+            .filter_map(|b| match b {
+                crate::provider::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
             .collect::<Vec<_>>()
             .join("");
         match extract_and_validate(&text, required) {
             Ok(v) => return Ok(v),
             Err(missing) => {
-                if attempts >= max_retries { anyhow::bail!("missing keys after retries: {}", missing.join(", ")); }
+                if attempts >= max_retries {
+                    anyhow::bail!("missing keys after retries: {}", missing.join(", "));
+                }
                 attempts += 1;
                 // Push feedback as a user message and retry
                 request.messages.push(crate::provider::Message {
                     role: crate::provider::Role::User,
-                    content: vec![crate::provider::ContentBlock::Text { text: missing_keys_prompt(&missing) }],
+                    content: vec![crate::provider::ContentBlock::Text {
+                        text: missing_keys_prompt(&missing),
+                    }],
                 });
             }
         }
@@ -273,11 +287,7 @@ mod tests {
     impl provider::LlmProvider for StubProvider {
         async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
             self.captured_requests.lock().unwrap().push(request);
-            let msg = self
-                .responses
-                .lock()
-                .unwrap()
-                .remove(0);
+            let msg = self.responses.lock().unwrap().remove(0);
             Ok(msg)
         }
 
@@ -290,49 +300,81 @@ mod tests {
     }
 
     fn mk_text_message(text: &str) -> Message {
-        Message { role: Role::Assistant, content: vec![ContentBlock::Text { text: text.to_string() }] }
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        }
     }
 
     #[tokio::test]
     async fn extract_with_retry_succeeds_on_second_attempt() {
-        let required = [RequiredKeyPath::new(&["tool"]), RequiredKeyPath::new(&["input"])];
+        let required = [
+            RequiredKeyPath::new(&["tool"]),
+            RequiredKeyPath::new(&["input"]),
+        ];
         // First response missing keys, second response correct JSON
         let responses = vec![
             mk_text_message("{}"),
             mk_text_message("{\"tool\":\"command\",\"input\":{\"command\":\"echo hi\"}}"),
         ];
-        let provider = StubProvider { responses: Arc::new(Mutex::new(responses)), captured_requests: Arc::new(Mutex::new(Vec::new())) };
+        let provider = StubProvider {
+            responses: Arc::new(Mutex::new(responses)),
+            captured_requests: Arc::new(Mutex::new(Vec::new())),
+        };
         let req = ChatRequest {
             model: "test-model".into(),
             system: "json only".into(),
-            messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text { text: "make json".into() }] }],
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "make json".into(),
+                }],
+            }],
             tools: vec![],
             tool_choice: ToolChoice::None,
             max_tokens: 256,
             stream: false,
             extra_body: None,
         };
-        let out = extract_with_retry(&provider, req, &required, 2).await.expect("should succeed");
+        let out = extract_with_retry(&provider, req, &required, 2)
+            .await
+            .expect("should succeed");
         assert_eq!(out["tool"].as_str(), Some("command"));
         assert!(provider.captured_requests.lock().unwrap().len() >= 2);
     }
 
     #[tokio::test]
     async fn extract_with_retry_fails_after_max_attempts() {
-        let required = [RequiredKeyPath::new(&["tool"]), RequiredKeyPath::new(&["input"])];
+        let required = [
+            RequiredKeyPath::new(&["tool"]),
+            RequiredKeyPath::new(&["input"]),
+        ];
         let responses = vec![mk_text_message("{}"), mk_text_message("{}")];
-        let provider = StubProvider { responses: Arc::new(Mutex::new(responses)), captured_requests: Arc::new(Mutex::new(Vec::new())) };
+        let provider = StubProvider {
+            responses: Arc::new(Mutex::new(responses)),
+            captured_requests: Arc::new(Mutex::new(Vec::new())),
+        };
         let req = ChatRequest {
             model: "test-model".into(),
             system: "json only".into(),
-            messages: vec![Message { role: Role::User, content: vec![ContentBlock::Text { text: "make json".into() }] }],
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "make json".into(),
+                }],
+            }],
             tools: vec![],
             tool_choice: ToolChoice::None,
             max_tokens: 128,
             stream: false,
             extra_body: None,
         };
-        let err = extract_with_retry(&provider, req, &required, 1).await.err().expect("should fail");
+        let err = extract_with_retry(&provider, req, &required, 1)
+            .await
+            .err()
+            .expect("should fail");
         assert!(err.to_string().contains("missing keys"));
     }
 }

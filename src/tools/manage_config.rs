@@ -112,7 +112,6 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             anyhow::bail!("manage_config: unknown action '{action}'. Use 'set' or 'remove'.");
         }
     }
-
 }
 
 fn backup_config(path: &std::path::Path) -> anyhow::Result<()> {

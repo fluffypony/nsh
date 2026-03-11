@@ -7,7 +7,9 @@ pub struct ToolHealthTracker {
 
 impl ToolHealthTracker {
     pub fn new() -> Self {
-        Self { outcomes: HashMap::new() }
+        Self {
+            outcomes: HashMap::new(),
+        }
     }
 
     pub fn record(&mut self, tool: &str, success: bool) {
@@ -25,12 +27,7 @@ impl ToolHealthTracker {
             .unwrap_or(0)
     }
 
-    pub fn enrich_error(
-        &self,
-        tool_name: &str,
-        input: &serde_json::Value,
-        error: &str,
-    ) -> String {
+    pub fn enrich_error(&self, tool_name: &str, input: &serde_json::Value, error: &str) -> String {
         let mut parts = vec![format!("ERROR in tool '{}': {}", tool_name, error)];
 
         match tool_name {
@@ -39,7 +36,9 @@ impl ToolHealthTracker {
                     let p = std::path::Path::new(path);
                     if !p.exists() {
                         parts.push(format!("DIAGNOSTIC: '{}' does not exist.", path));
-                        parts.push("SUGGESTION: Check the path with list_directory or glob first.".into());
+                        parts.push(
+                            "SUGGESTION: Check the path with list_directory or glob first.".into(),
+                        );
                     } else if let Ok(meta) = std::fs::symlink_metadata(p) {
                         let ft = meta.file_type();
                         if !ft.is_file() && !ft.is_dir() {
@@ -48,7 +47,11 @@ impl ToolHealthTracker {
                                 path
                             ));
                         } else {
-                            parts.push(format!("DIAGNOSTIC: exists, type={:?}, size={}", ft, meta.len()));
+                            parts.push(format!(
+                                "DIAGNOSTIC: exists, type={:?}, size={}",
+                                ft,
+                                meta.len()
+                            ));
                         }
                         #[cfg(unix)]
                         {
@@ -64,7 +67,9 @@ impl ToolHealthTracker {
                     if !first.is_empty() {
                         if which::which(first).is_err() {
                             parts.push(format!("DIAGNOSTIC: '{}' not found in PATH.", first));
-                            parts.push("SUGGESTION: Install it first, or use a different tool.".into());
+                            parts.push(
+                                "SUGGESTION: Install it first, or use a different tool.".into(),
+                            );
                         }
                     }
                 }
@@ -72,7 +77,10 @@ impl ToolHealthTracker {
             "web_search" | "github" => {
                 if error.contains("timed out") || error.contains("timeout") {
                     parts.push("DIAGNOSTIC: Network request timed out.".into());
-                    parts.push("SUGGESTION: Try local alternatives — search_history, read_file, man_page.".into());
+                    parts.push(
+                        "SUGGESTION: Try local alternatives — search_history, read_file, man_page."
+                            .into(),
+                    );
                 }
             }
             _ => {}
@@ -100,9 +108,13 @@ impl ToolHealthTracker {
         }
 
         parts.push(String::new());
-        parts.push("IMPORTANT: Do NOT tell the user you have reported this error — you have NOT.".into());
+        parts.push(
+            "IMPORTANT: Do NOT tell the user you have reported this error — you have NOT.".into(),
+        );
         parts.push("If this seems like a bug in nsh, ask the user to report at: https://github.com/fluffypony/nsh/issues/new".into());
-        parts.push("Try an alternative approach (different tool, CLI command, MCP tool, or skill).".into());
+        parts.push(
+            "Try an alternative approach (different tool, CLI command, MCP tool, or skill).".into(),
+        );
 
         parts.join("\n")
     }

@@ -10,15 +10,27 @@ pub fn execute(
 
     // Build content lines for the TUI box
     let mut content = Vec::new();
-    content.push(ContentLine { text: question.to_string(), dim: false });
+    content.push(ContentLine {
+        text: question.to_string(),
+        dim: false,
+    });
     if let Some(opts) = options {
-        content.push(ContentLine { text: String::new(), dim: true });
+        content.push(ContentLine {
+            text: String::new(),
+            dim: true,
+        });
         for (i, opt) in opts.iter().enumerate() {
-            content.push(ContentLine { text: format!("{}) {}", i + 1, opt), dim: true });
+            content.push(ContentLine {
+                text: format!("{}) {}", i + 1, opt),
+                dim: true,
+            });
         }
     }
     if let (Some(timeout), Some(default)) = (autorun_timeout, default_response) {
-        content.push(ContentLine { text: String::new(), dim: true });
+        content.push(ContentLine {
+            text: String::new(),
+            dim: true,
+        });
         content.push(ContentLine {
             text: format!("(auto-answer in {}s: {})", timeout, default),
             dim: true,
@@ -72,7 +84,9 @@ where
             reader.read_line(&mut input)?;
             Ok(input.trim().to_string())
         }
-        Err(_) => anyhow::bail!("Cannot read user input: stdin is piped and /dev/tty is unavailable. Provide a default_response in autorun mode."),
+        Err(_) => anyhow::bail!(
+            "Cannot read user input: stdin is piped and /dev/tty is unavailable. Provide a default_response in autorun mode."
+        ),
     }
 }
 
@@ -118,7 +132,10 @@ mod tests {
             Err(io::Error::new(io::ErrorKind::NotFound, "no tty"))
         })
         .unwrap_err();
-        assert!(err.to_string().contains("Cannot read user input: stdin is piped"));
+        assert!(
+            err.to_string()
+                .contains("Cannot read user input: stdin is piped")
+        );
     }
 
     #[test]

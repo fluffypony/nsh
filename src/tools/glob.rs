@@ -1,7 +1,38 @@
 use glob::Pattern;
 use std::fs::Metadata;
 
+fn ok(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::success(msg)
+}
+
+fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::failure(msg)
+}
+
+pub fn execute_with_access(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<String> {
+    match execute_outcome_with_access(input, sensitive_file_access)? {
+        crate::tools::ToolInvocationOutcome::Success(content) => Ok(content),
+        crate::tools::ToolInvocationOutcome::Failure(content) => Err(anyhow::anyhow!(content)),
+    }
+}
+
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
+    execute_with_access(input, "block")
+}
+
+pub fn execute_outcome(
+    input: &serde_json::Value,
+) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
+    execute_outcome_with_access(input, "block")
+}
+
+pub fn execute_outcome_with_access(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
     let pattern_str = input["pattern"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("pattern is required"))?;
@@ -11,17 +42,21 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         .map(|n| n.clamp(1, 5000) as usize)
         .unwrap_or(200);
 
-    let root = crate::tools::validate_read_path_with_access(root_raw, "block")
+    let root = crate::tools::validate_read_path_with_access(root_raw, sensitive_file_access)
         .map_err(|e| anyhow::anyhow!(e))?;
     if !root.exists() {
-        anyhow::bail!("path does not exist: {root_raw}");
+        return Ok(fail(format!("path does not exist: {root_raw}")));
     }
     if !root.is_dir() {
-        anyhow::bail!("path is not a directory: {root_raw}");
+        return Ok(fail(format!("path is not a directory: {root_raw}")));
     }
 
-    let pattern = Pattern::new(pattern_str)
-        .map_err(|e| anyhow::anyhow!("invalid glob pattern '{pattern_str}': {e}"))?;
+    let pattern = match Pattern::new(pattern_str) {
+        Ok(p) => p,
+        Err(e) => {
+            return Ok(fail(format!("invalid glob pattern '{pattern_str}': {e}")));
+        }
+    };
 
     let walker = ignore::WalkBuilder::new(&root)
         .hidden(false)
@@ -72,9 +107,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         out.push_str("\n[glob search timed out after 15s — try a narrower pattern]");
     }
     if out.trim().is_empty() {
-        return Ok("No matches found".into());
+        return Ok(ok("No matches found"));
     }
-    Ok(out.trim_end().to_string())
+    Ok(ok(out.trim_end().to_string()))
 }
 
 fn human_size(bytes: u64) -> String {

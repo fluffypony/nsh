@@ -11,7 +11,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         .or_else(|| {
             // Fallback: if name looks like a URL, treat it as a repo
             let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            if name.contains("github.com") || name.contains("gitlab.com") || name.starts_with("https://") || name.starts_with("http://") || name.starts_with("git@") {
+            if name.contains("github.com")
+                || name.contains("gitlab.com")
+                || name.starts_with("https://")
+                || name.starts_with("http://")
+                || name.starts_with("git@")
+            {
                 Some(name.to_string())
             } else {
                 None
@@ -37,7 +42,13 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             // Pull updates
             eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
             let status = std::process::Command::new("git")
-                .args(["-C", dest.to_string_lossy().as_ref(), "pull", "--ff-only", "-q"])
+                .args([
+                    "-C",
+                    dest.to_string_lossy().as_ref(),
+                    "pull",
+                    "--ff-only",
+                    "-q",
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .stdin(std::process::Stdio::null())
@@ -48,7 +59,13 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         } else {
             eprintln!("{dim}Cloning {repo_url} into {}...{reset}", dest.display());
             let status = std::process::Command::new("git")
-                .args(["clone", "--depth", "1", repo_url, dest.to_string_lossy().as_ref()])
+                .args([
+                    "clone",
+                    "--depth",
+                    "1",
+                    repo_url,
+                    dest.to_string_lossy().as_ref(),
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()?;
@@ -59,13 +76,24 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 
         // Scan for detected skill files and report
         let mut detected = Vec::new();
-        for fname in ["SKILL.md", "skill.md", "skill.toml", "nsh.toml", "README.md", "readme.md"] {
+        for fname in [
+            "SKILL.md",
+            "skill.md",
+            "skill.toml",
+            "nsh.toml",
+            "README.md",
+            "readme.md",
+        ] {
             if dest.join(fname).exists() {
                 detected.push(fname);
             }
         }
 
-        let action = if already_existed { "updated" } else { "installed" };
+        let action = if already_existed {
+            "updated"
+        } else {
+            "installed"
+        };
 
         let detected_str = if detected.is_empty() {
             "No skill documents detected".to_string()
@@ -143,7 +171,8 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     toml_content.push_str(&format!(
         "timeout_seconds = {timeout}
 terminal = {terminal}
-") );
+"
+    ));
 
     if let Some(serde_json::Value::Object(params)) = parameters {
         for (param_name, param_def) in params {
