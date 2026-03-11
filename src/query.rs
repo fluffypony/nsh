@@ -268,7 +268,7 @@ pub async fn handle_query(
         if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
             let memory_ctx = crate::memory::types::MemoryQueryContext {
                 query: query.to_string(),
-                cwd: Some(ctx.cwd.clone()),
+                cwd: Some(ctx.terminal.cwd.clone()),
                 session_id: Some(session_id.to_string()),
                 interaction_mode: if query.starts_with("The previous command failed") {
                     crate::memory::types::InteractionMode::ErrorFix
@@ -307,7 +307,7 @@ pub async fn handle_query(
         std::time::Duration::from_secs(config.execution.max_query_duration_seconds);
 
     // Conversation history from this session
-    for exchange in &ctx.conversation_history {
+    for exchange in &ctx.history.conversation_history {
         let tool_id = uuid::Uuid::new_v4().to_string();
         messages.push(exchange.to_user_message());
         messages.push(exchange.to_assistant_message(&tool_id));
@@ -1684,7 +1684,7 @@ pub fn build_system_prompt(
     relevant_history: &str,
     memory_prompt: &str,
 ) -> String {
-    let os_lower = ctx.os_info.to_lowercase();
+    let os_lower = ctx.environment.os_info.to_lowercase();
     let package_guidance = if os_lower.contains("windows") || os_lower.contains("msys") {
         "Check which package manager is available (winget, choco, scoop) and use it. Prefer winget when available."
     } else if os_lower.contains("macos") || os_lower.contains("darwin") {

@@ -302,16 +302,13 @@ pub(crate) fn sample_volatile_info() -> (String, MemoryUsage, String) {
     (cpu_str, vol.memory_usage.clone(), vol.load_average.clone())
 }
 
-pub struct QueryContext {
+pub struct EnvironmentContext {
     pub os_info: String,
-    pub shell: String,
-    pub cwd: String,
-    pub username: String,
-    pub conversation_history: Vec<ConversationExchange>,
     pub hostname: String,
     pub datetime_info: String,
     pub timezone_info: String,
     pub locale_info: String,
+    pub locale_detail: String,
     pub machine_details: MachineDetails,
     pub cpu_model: String,
     pub gpu_info: String,
@@ -320,12 +317,27 @@ pub struct QueryContext {
     pub load_average: String,
     pub cpu_samples: String,
     pub network_info: Vec<NetworkInterface>,
-    pub locale_detail: String,
     pub uptime: String,
+}
+
+pub struct TerminalContext {
+    pub shell: String,
+    pub cwd: String,
+    pub username: String,
     pub cwd_listing: Vec<CwdListingEntry>,
+    pub scrollback_text: String,
+}
+
+pub struct HistoryContext {
+    pub conversation_history: Vec<ConversationExchange>,
     pub session_history: Vec<CommandWithSummary>,
     pub other_sessions: Vec<OtherSessionSummary>,
-    pub scrollback_text: String,
+}
+
+pub struct QueryContext {
+    pub environment: EnvironmentContext,
+    pub terminal: TerminalContext,
+    pub history: HistoryContext,
     pub custom_instructions: Option<String>,
     pub project_info: ProjectInfo,
     pub ssh_context: Option<String>,
@@ -432,31 +444,37 @@ pub fn build_context(
     let custom_instructions = gather_custom_instructions(config, &cwd);
 
     Ok(QueryContext {
-        os_info: static_info.os_info,
-        shell,
-        cwd,
-        username,
-        conversation_history,
-        hostname: static_info.hostname,
-        datetime_info: chrono::Local::now()
-            .format("%Y-%m-%d %H:%M:%S %Z")
-            .to_string(),
-        timezone_info: static_info.timezone_info,
-        locale_info: static_info.locale_info,
-        locale_detail: static_info.locale_detail,
-        machine_details: static_info.machine_details,
-        cpu_model: static_info.cpu_model,
-        gpu_info: static_info.gpu_info,
-        disk_info: semi_dynamic.disk_info,
-        memory_usage,
-        load_average,
-        cpu_samples,
-        network_info: semi_dynamic.network_info,
-        uptime: semi_dynamic.uptime,
-        cwd_listing,
-        session_history,
-        other_sessions,
-        scrollback_text,
+        environment: EnvironmentContext {
+            os_info: static_info.os_info,
+            hostname: static_info.hostname,
+            datetime_info: chrono::Local::now()
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string(),
+            timezone_info: static_info.timezone_info,
+            locale_info: static_info.locale_info,
+            locale_detail: static_info.locale_detail,
+            machine_details: static_info.machine_details,
+            cpu_model: static_info.cpu_model,
+            gpu_info: static_info.gpu_info,
+            disk_info: semi_dynamic.disk_info,
+            memory_usage,
+            load_average,
+            cpu_samples,
+            network_info: semi_dynamic.network_info,
+            uptime: semi_dynamic.uptime,
+        },
+        terminal: TerminalContext {
+            shell,
+            cwd,
+            username,
+            cwd_listing,
+            scrollback_text,
+        },
+        history: HistoryContext {
+            conversation_history,
+            session_history,
+            other_sessions,
+        },
         custom_instructions,
         project_info,
         ssh_context,
@@ -465,60 +483,63 @@ pub fn build_context(
 }
 
 pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
+    let env = &ctx.environment;
+    let terminal = &ctx.terminal;
+    let history = &ctx.history;
     let mut xml = String::from("<context>\n");
 
     // Environment
     xml.push_str("  <environment>\n");
     xml.push_str(&format!(
         "    <system os=\"{}\" shell=\"{}\" cwd=\"{}\" user=\"{}\" hostname=\"{}\" />\n",
-        xml_escape(&ctx.os_info),
-        xml_escape(&ctx.shell),
-        xml_escape(&ctx.cwd),
-        xml_escape(&ctx.username),
-        xml_escape(&ctx.hostname),
+        xml_escape(&env.os_info),
+        xml_escape(&terminal.shell),
+        xml_escape(&terminal.cwd),
+        xml_escape(&terminal.username),
+        xml_escape(&env.hostname),
     ));
     xml.push_str(&format!(
         "    <temporal datetime=\"{}\" timezone=\"{}\" uptime=\"{}\" />\n",
-        xml_escape(&ctx.datetime_info),
-        xml_escape(&ctx.timezone_info),
-        xml_escape(&ctx.uptime),
+        xml_escape(&env.datetime_info),
+        xml_escape(&env.timezone_info),
+        xml_escape(&env.uptime),
     ));
     xml.push_str(&format!(
         "    <locale lang=\"{}\"",
-        xml_escape(&ctx.locale_info),
+        xml_escape(&env.locale_info),
     ));
-    if !ctx.locale_detail.is_empty() {
-        xml.push_str(&format!(" detail=\"{}\"", xml_escape(&ctx.locale_detail)));
+    if !env.locale_detail.is_empty() {
+        xml.push_str(&format!(" detail=\"{}\"", xml_escape(&env.locale_detail)));
     }
     xml.push_str(" />\n");
     xml.push_str(&format!(
         "    <hardware cpu=\"{}\" arch=\"{}\" cores=\"{}\" ram_total=\"{}\"",
-        xml_escape(&ctx.cpu_model),
-        xml_escape(&ctx.machine_details.arch),
-        ctx.machine_details.cores,
-        xml_escape(&ctx.machine_details.total_ram),
+        xml_escape(&env.cpu_model),
+        xml_escape(&env.machine_details.arch),
+        env.machine_details.cores,
+        xml_escape(&env.machine_details.total_ram),
     ));
-    if !ctx.gpu_info.is_empty() {
-        xml.push_str(&format!(" gpu=\"{}\"", xml_escape(&ctx.gpu_info)));
+    if !env.gpu_info.is_empty() {
+        xml.push_str(&format!(" gpu=\"{}\"", xml_escape(&env.gpu_info)));
     }
     xml.push_str(" />\n");
     xml.push_str(&format!(
         "    <utilization load_avg=\"{}\" memory_used=\"{}\" memory_available=\"{}\"",
-        xml_escape(&ctx.load_average),
-        xml_escape(&ctx.memory_usage.used),
-        xml_escape(&ctx.memory_usage.available),
+        xml_escape(&env.load_average),
+        xml_escape(&env.memory_usage.used),
+        xml_escape(&env.memory_usage.available),
     ));
-    if !ctx.cpu_samples.is_empty() {
+    if !env.cpu_samples.is_empty() {
         xml.push_str(&format!(
             " cpu_samples=\"{}\"",
-            xml_escape(&ctx.cpu_samples)
+            xml_escape(&env.cpu_samples)
         ));
     }
     xml.push_str(" />\n");
 
-    if !ctx.disk_info.is_empty() {
+    if !env.disk_info.is_empty() {
         xml.push_str("    <disks>\n");
-        for disk in &ctx.disk_info {
+        for disk in &env.disk_info {
             xml.push_str(&format!(
                 "      <disk mount=\"{}\" fs=\"{}\" total=\"{}\" available=\"{}\" use_pct=\"{}\" />\n",
                 xml_escape(&disk.mount),
@@ -531,9 +552,9 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
         xml.push_str("    </disks>\n");
     }
 
-    if !ctx.network_info.is_empty() {
+    if !env.network_info.is_empty() {
         xml.push_str("    <network>\n");
-        for iface in &ctx.network_info {
+        for iface in &env.network_info {
             xml.push_str(&format!(
                 "      <iface name=\"{}\" ip=\"{}\" type=\"{}\" />\n",
                 xml_escape(&iface.name),
@@ -546,9 +567,9 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
 
     xml.push_str(&format!(
         "    <tools pkg=\"{}\" lang_pkg=\"{}\" dev=\"{}\" />\n",
-        xml_escape(&ctx.machine_details.pkg_managers),
-        xml_escape(&ctx.machine_details.lang_pkg_managers),
-        xml_escape(&ctx.machine_details.dev_tools),
+        xml_escape(&env.machine_details.pkg_managers),
+        xml_escape(&env.machine_details.lang_pkg_managers),
+        xml_escape(&env.machine_details.dev_tools),
     ));
     xml.push_str("  </environment>\n");
 
@@ -626,15 +647,15 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
 
     // CWD listing (hidden + recursive, capped)
     let cwd_limit = 100;
-    let cwd_truncated = ctx.cwd_listing.len() >= cwd_limit;
+    let cwd_truncated = terminal.cwd_listing.len() >= cwd_limit;
     xml.push_str(&format!(
         "\n  <cwd_listing path=\"{}\" count=\"{}\" recursive=\"true\" max_entries=\"{}\" truncated=\"{}\">\n",
-        xml_escape(&ctx.cwd),
-        ctx.cwd_listing.len(),
+        xml_escape(&terminal.cwd),
+        terminal.cwd_listing.len(),
         cwd_limit,
         cwd_truncated,
     ));
-    for entry in &ctx.cwd_listing {
+    for entry in &terminal.cwd_listing {
         xml.push_str(&format!(
             "    <entry path=\"{}\" type=\"{}\" />\n",
             xml_escape(&entry.path),
@@ -644,8 +665,8 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
     xml.push_str("  </cwd_listing>\n");
 
     // Scrollback
-    if !ctx.scrollback_text.is_empty() {
-        let redacted = crate::redact::redact_secrets(&ctx.scrollback_text, &config.redaction);
+    if !terminal.scrollback_text.is_empty() {
+        let redacted = crate::redact::redact_secrets(&terminal.scrollback_text, &config.redaction);
         xml.push_str(&format!(
             "\n  <recent_terminal session=\"current\">\n{}\n  </recent_terminal>\n",
             xml_escape(&redacted),
@@ -653,14 +674,14 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
     }
 
     // Session history with summaries
-    if !ctx.session_history.is_empty() {
+    if !history.session_history.is_empty() {
         let tty = std::env::var("NSH_TTY").unwrap_or_default();
         xml.push_str(&format!(
             "\n  <session_history tty=\"{}\" count=\"{}\">\n",
             xml_escape(&tty),
-            ctx.session_history.len(),
+            history.session_history.len(),
         ));
-        for cmd in &ctx.session_history {
+        for cmd in &history.session_history {
             let duration_attr = cmd
                 .duration_ms
                 .map(|d| format!(" duration=\"{d}ms\""))
@@ -703,13 +724,13 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
     }
 
     // Recent nsh queries (conversation exchanges in this session)
-    if !ctx.conversation_history.is_empty() {
+    if !history.conversation_history.is_empty() {
         xml.push_str(&format!(
             "\n  <recent_nsh_queries session=\"current\" count=\"{}\" note=\"These are recent AI assistant interactions in this session. Use for conversational continuity and self-correction.\">\n",
-            ctx.conversation_history.len(),
+            history.conversation_history.len(),
         ));
         // conversation_history is already in chronological order (oldest first)
-        for exchange in ctx.conversation_history.iter() {
+        for exchange in history.conversation_history.iter() {
             let ts_attr = exchange
                 .created_at
                 .as_ref()
@@ -734,11 +755,11 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
     }
 
     // Other sessions
-    if !ctx.other_sessions.is_empty() {
+    if !history.other_sessions.is_empty() {
         xml.push_str("\n  <other_sessions>\n");
         let mut current_tty = String::new();
         let mut session_open = false;
-        for cmd in &ctx.other_sessions {
+        for cmd in &history.other_sessions {
             if cmd.tty != current_tty {
                 if session_open {
                     xml.push_str("    </session>\n");
@@ -2538,40 +2559,46 @@ mod tests {
 
     fn make_minimal_ctx() -> QueryContext {
         QueryContext {
-            os_info: "macOS 15.0".into(),
-            shell: "zsh".into(),
-            cwd: "/tmp".into(),
-            username: "testuser".into(),
-            conversation_history: vec![],
-            hostname: "testhost".into(),
-            datetime_info: "2025-01-01 00:00:00 UTC".into(),
-            timezone_info: "UTC".into(),
-            locale_info: "en_US.UTF-8".into(),
-            machine_details: MachineDetails {
-                arch: String::new(),
-                cores: 1,
-                total_ram: String::new(),
-                pkg_managers: String::new(),
-                lang_pkg_managers: String::new(),
-                dev_tools: String::new(),
+            environment: EnvironmentContext {
+                os_info: "macOS 15.0".into(),
+                hostname: "testhost".into(),
+                datetime_info: "2025-01-01 00:00:00 UTC".into(),
+                timezone_info: "UTC".into(),
+                locale_info: "en_US.UTF-8".into(),
+                locale_detail: String::new(),
+                machine_details: MachineDetails {
+                    arch: String::new(),
+                    cores: 1,
+                    total_ram: String::new(),
+                    pkg_managers: String::new(),
+                    lang_pkg_managers: String::new(),
+                    dev_tools: String::new(),
+                },
+                cpu_model: String::new(),
+                gpu_info: String::new(),
+                disk_info: vec![],
+                memory_usage: MemoryUsage {
+                    total: String::new(),
+                    used: String::new(),
+                    available: String::new(),
+                },
+                load_average: String::new(),
+                cpu_samples: String::new(),
+                network_info: vec![],
+                uptime: String::new(),
             },
-            cpu_model: String::new(),
-            gpu_info: String::new(),
-            disk_info: vec![],
-            memory_usage: MemoryUsage {
-                total: String::new(),
-                used: String::new(),
-                available: String::new(),
+            terminal: TerminalContext {
+                shell: "zsh".into(),
+                cwd: "/tmp".into(),
+                username: "testuser".into(),
+                cwd_listing: vec![],
+                scrollback_text: String::new(),
             },
-            load_average: String::new(),
-            cpu_samples: String::new(),
-            network_info: vec![],
-            locale_detail: String::new(),
-            uptime: String::new(),
-            cwd_listing: vec![],
-            session_history: vec![],
-            other_sessions: vec![],
-            scrollback_text: String::new(),
+            history: HistoryContext {
+                conversation_history: vec![],
+                session_history: vec![],
+                other_sessions: vec![],
+            },
             custom_instructions: None,
             project_info: ProjectInfo {
                 root: None,
@@ -2625,7 +2652,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_omits_empty_gpu() {
         let mut ctx = make_minimal_ctx();
-        ctx.gpu_info.clear();
+        ctx.environment.gpu_info.clear();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(!xml.contains(" gpu=\""));
     }
@@ -2633,7 +2660,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_omits_empty_disks() {
         let mut ctx = make_minimal_ctx();
-        ctx.disk_info.clear();
+        ctx.environment.disk_info.clear();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(!xml.contains("<disks>"));
     }
@@ -2641,7 +2668,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_omits_empty_network() {
         let mut ctx = make_minimal_ctx();
-        ctx.network_info.clear();
+        ctx.environment.network_info.clear();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(!xml.contains("<network>"));
     }
@@ -2678,7 +2705,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_with_scrollback() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "$ ls\nfile1.txt  file2.txt".into();
+        ctx.terminal.scrollback_text = "$ ls\nfile1.txt  file2.txt".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<recent_terminal session=\"current\">"));
         assert!(xml.contains("file1.txt"));
@@ -2687,7 +2714,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_with_session_history() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "ls -la".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -2731,7 +2758,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_with_other_sessions() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![OtherSessionSummary {
+        ctx.history.other_sessions = vec![OtherSessionSummary {
             command: "cargo build".into(),
             cwd: Some("/projects/foo".into()),
             exit_code: Some(0),
@@ -2897,7 +2924,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_with_conversation_history() {
         let mut ctx = make_minimal_ctx();
-        ctx.conversation_history = vec![ConversationExchange {
+        ctx.history.conversation_history = vec![ConversationExchange {
             query: "how do I list files".into(),
             response_type: "command".into(),
             response: "ls -la".into(),
@@ -2909,9 +2936,9 @@ mod tests {
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.starts_with("<context>"));
         assert!(xml.ends_with("</context>"));
-        assert_eq!(ctx.conversation_history.len(), 1);
-        assert_eq!(ctx.conversation_history[0].query, "how do I list files");
-        assert_eq!(ctx.conversation_history[0].response, "ls -la");
+        assert_eq!(ctx.history.conversation_history.len(), 1);
+        assert_eq!(ctx.history.conversation_history[0].query, "how do I list files");
+        assert_eq!(ctx.history.conversation_history[0].response, "ls -la");
     }
 
     #[test]
@@ -3005,60 +3032,26 @@ mod tests {
     #[test]
     fn test_build_xml_context_with_git_commits_and_files() {
         let config = crate::config::Config::default();
-        let ctx = QueryContext {
-            os_info: "macOS".into(),
-            shell: "zsh".into(),
-            cwd: "/tmp".into(),
-            username: "test".into(),
-            conversation_history: vec![],
-            hostname: "test".into(),
-            datetime_info: "2025-01-01".into(),
-            timezone_info: "UTC".into(),
-            locale_info: "en_US.UTF-8".into(),
-            machine_details: MachineDetails {
-                arch: "arm64".into(),
-                cores: 1,
-                total_ram: String::new(),
-                pkg_managers: String::new(),
-                lang_pkg_managers: String::new(),
-                dev_tools: String::new(),
-            },
-            cpu_model: String::new(),
-            gpu_info: String::new(),
-            disk_info: vec![],
-            memory_usage: MemoryUsage {
-                total: String::new(),
-                used: String::new(),
-                available: String::new(),
-            },
-            load_average: String::new(),
-            cpu_samples: String::new(),
-            network_info: vec![],
-            locale_detail: String::new(),
-            uptime: String::new(),
-            cwd_listing: vec![],
-            session_history: vec![],
-            other_sessions: vec![],
-            scrollback_text: String::new(),
-            custom_instructions: None,
-            project_info: ProjectInfo {
-                root: Some("/project".into()),
-                project_type: "Rust".into(),
-                git_branch: Some("main".into()),
-                git_status: Some("3 files changed".into()),
-                git_commits: vec![GitCommit {
-                    hash: "abc123".into(),
-                    message: "Initial commit".into(),
-                    relative_time: "2 hours ago".into(),
-                }],
-                files: vec![FileEntry {
-                    path: "src/main.rs".into(),
-                    kind: "file".into(),
-                    size: "1.5KB".into(),
-                }],
-            },
-            ssh_context: None,
-            container_context: None,
+        let mut ctx = make_minimal_ctx();
+        ctx.environment.os_info = "macOS".into();
+        ctx.environment.hostname = "test".into();
+        ctx.environment.datetime_info = "2025-01-01".into();
+        ctx.terminal.username = "test".into();
+        ctx.project_info = ProjectInfo {
+            root: Some("/project".into()),
+            project_type: "Rust".into(),
+            git_branch: Some("main".into()),
+            git_status: Some("3 files changed".into()),
+            git_commits: vec![GitCommit {
+                hash: "abc123".into(),
+                message: "Initial commit".into(),
+                relative_time: "2 hours ago".into(),
+            }],
+            files: vec![FileEntry {
+                path: "src/main.rs".into(),
+                kind: "file".into(),
+                size: "1.5KB".into(),
+            }],
         };
         let xml = build_xml_context(&ctx, &config);
         assert!(xml.contains("branch=\"main\""));
@@ -3146,7 +3139,7 @@ mod tests {
     #[test]
     fn test_build_xml_scrollback_closing_tag() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "$ ls\nfoo.rs  bar.rs\n".into();
+        ctx.terminal.scrollback_text = "$ ls\nfoo.rs  bar.rs\n".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("</recent_terminal>"));
     }
@@ -3181,7 +3174,7 @@ mod tests {
     #[test]
     fn test_build_xml_session_history_edge_cases() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![
+        ctx.history.session_history = vec![
             CommandWithSummary {
                 command: "cargo build".into(),
                 cwd: Some("/project".into()),
@@ -3221,7 +3214,7 @@ mod tests {
     #[test]
     fn test_build_xml_other_sessions_multi_tty_grouping() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![
+        ctx.history.other_sessions = vec![
             OtherSessionSummary {
                 command: "vim foo.rs".into(),
                 cwd: Some("/home/user".into()),
@@ -3585,7 +3578,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_escapes_env_fields() {
         let mut ctx = make_minimal_ctx();
-        ctx.cwd = "/tmp/dir with <special> & \"chars\"".into();
+        ctx.terminal.cwd = "/tmp/dir with <special> & \"chars\"".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("&lt;special&gt;"));
         assert!(xml.contains("&amp;"));
@@ -3597,7 +3590,7 @@ mod tests {
     #[test]
     fn test_build_xml_session_history_no_summary() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "echo hello".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -3619,7 +3612,7 @@ mod tests {
     #[test]
     fn test_build_xml_session_history_missing_exit_code() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "sleep 10".into(),
             cwd: None,
             exit_code: None,
@@ -3640,7 +3633,7 @@ mod tests {
     #[test]
     fn test_build_xml_other_sessions_no_summary() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![OtherSessionSummary {
+        ctx.history.other_sessions = vec![OtherSessionSummary {
             command: "top".into(),
             cwd: None,
             exit_code: None,
@@ -3664,11 +3657,11 @@ mod tests {
     #[test]
     fn test_build_xml_context_all_fields_populated() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "$ whoami\ntestuser".into();
+        ctx.terminal.scrollback_text = "$ whoami\ntestuser".into();
         ctx.ssh_context = Some("<ssh remote_ip=\"10.0.0.1\" />".into());
         ctx.container_context = Some("<container type=\"docker\" />".into());
         ctx.custom_instructions = Some("Be concise.".into());
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "make".into(),
             cwd: Some("/project".into()),
             exit_code: Some(0),
@@ -3677,7 +3670,7 @@ mod tests {
             summary: Some("Build ok".into()),
             output: None,
         }];
-        ctx.other_sessions = vec![OtherSessionSummary {
+        ctx.history.other_sessions = vec![OtherSessionSummary {
             command: "htop".into(),
             cwd: None,
             exit_code: Some(0),
@@ -3940,7 +3933,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_scrollback_multiline() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "$ cargo build\n   Compiling nsh v0.1.0\n    Finished".into();
+        ctx.terminal.scrollback_text = "$ cargo build\n   Compiling nsh v0.1.0\n    Finished".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("Compiling nsh"));
         assert!(xml.contains("Finished"));
@@ -3973,7 +3966,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_session_history_multiple_cmds() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![
+        ctx.history.session_history = vec![
             CommandWithSummary {
                 command: "cargo test".into(),
                 cwd: Some("/home/user/proj".into()),
@@ -4010,7 +4003,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_other_sessions_multiple_ttys() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![
+        ctx.history.other_sessions = vec![
             OtherSessionSummary {
                 command: "npm start".into(),
                 cwd: Some("/home/user/web".into()),
@@ -4046,7 +4039,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_conversation_history_multiple_exchanges() {
         let mut ctx = make_minimal_ctx();
-        ctx.conversation_history = vec![
+        ctx.history.conversation_history = vec![
             ConversationExchange {
                 query: "how do I list files?".into(),
                 response_type: "command".into(),
@@ -4236,7 +4229,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_empty_scrollback() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "".into();
+        ctx.terminal.scrollback_text = "".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(!xml.contains("<recent_terminal"));
     }
@@ -4966,9 +4959,9 @@ mod tests {
     #[test]
     fn test_build_xml_context_unicode_env_fields() {
         let mut ctx = make_minimal_ctx();
-        ctx.username = "用户".into();
-        ctx.hostname = "サーバー".into();
-        ctx.cwd = "/home/données".into();
+        ctx.terminal.username = "用户".into();
+        ctx.environment.hostname = "サーバー".into();
+        ctx.terminal.cwd = "/home/données".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("user=\"用户\""));
         assert!(xml.contains("hostname=\"サーバー\""));
@@ -4991,8 +4984,8 @@ mod tests {
             git_commits: vec![],
             files: vec![],
         };
-        ctx.scrollback_text = "$ ls".into();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.terminal.scrollback_text = "$ ls".into();
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "ls".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -5099,7 +5092,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_session_history_special_chars_in_command() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "echo '<hello>' & \"world\"".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -5118,7 +5111,7 @@ mod tests {
     #[test]
     fn test_build_xml_other_sessions_single_entry_structure() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![OtherSessionSummary {
+        ctx.history.other_sessions = vec![OtherSessionSummary {
             command: "pwd".into(),
             cwd: Some("/home".into()),
             exit_code: Some(0),
@@ -5351,7 +5344,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_scrollback_with_special_chars() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "$ echo '<script>alert(1)</script>'".into();
+        ctx.terminal.scrollback_text = "$ echo '<script>alert(1)</script>'".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("&lt;script&gt;"));
         assert!(!xml.contains("<script>"));
@@ -5443,7 +5436,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_other_sessions_single_tty_multiple_cmds() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![
+        ctx.history.other_sessions = vec![
             OtherSessionSummary {
                 command: "cmd1".into(),
                 cwd: None,
@@ -5742,7 +5735,7 @@ mod tests {
     #[test]
     fn test_build_xml_session_history_summary_special_chars() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "make".into(),
             cwd: Some("/proj".into()),
             exit_code: Some(1),
@@ -5762,7 +5755,7 @@ mod tests {
     #[test]
     fn test_build_xml_other_sessions_special_chars_in_command() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![OtherSessionSummary {
+        ctx.history.other_sessions = vec![OtherSessionSummary {
             command: "echo \"hello <world>\"".into(),
             cwd: None,
             exit_code: Some(0),
@@ -5782,7 +5775,7 @@ mod tests {
     #[test]
     fn test_build_xml_session_history_various_exit_codes() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![
+        ctx.history.session_history = vec![
             CommandWithSummary {
                 command: "true".into(),
                 cwd: Some("/tmp".into()),
@@ -5844,7 +5837,7 @@ mod tests {
     #[test]
     fn test_build_xml_session_history_large_duration() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "long-running".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -5862,7 +5855,7 @@ mod tests {
     #[test]
     fn test_build_xml_other_sessions_three_ttys() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![
+        ctx.history.other_sessions = vec![
             OtherSessionSummary {
                 command: "a".into(),
                 cwd: None,
@@ -6046,7 +6039,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_session_history_duration_zero() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "true".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -6062,7 +6055,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_session_history_negative_exit() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "crash".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(-11),
@@ -6078,7 +6071,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_other_sessions_switching_back_to_same_tty() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![
+        ctx.history.other_sessions = vec![
             OtherSessionSummary {
                 command: "a".into(),
                 cwd: None,
@@ -6123,7 +6116,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_other_sessions_summary_with_special_chars() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = vec![OtherSessionSummary {
+        ctx.history.other_sessions = vec![OtherSessionSummary {
             command: "make".into(),
             cwd: None,
             exit_code: Some(2),
@@ -6142,7 +6135,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_scrollback_empty_after_strip() {
         let mut ctx = make_minimal_ctx();
-        ctx.scrollback_text = "   \n  \n  ".into();
+        ctx.terminal.scrollback_text = "   \n  \n  ".into();
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.contains("<recent_terminal"));
     }
@@ -6150,7 +6143,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_session_history_cwd_with_special_chars() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "ls".into(),
             cwd: Some("/path/<with>&\"chars\"".into()),
             exit_code: Some(0),
@@ -6166,7 +6159,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_session_history_empty_command() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -6197,7 +6190,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_large_session_history() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = (0..50)
+        ctx.history.session_history = (0..50)
             .map(|i| CommandWithSummary {
                 command: format!("cmd_{i}"),
                 cwd: Some("/tmp".into()),
@@ -6221,7 +6214,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_large_other_sessions() {
         let mut ctx = make_minimal_ctx();
-        ctx.other_sessions = (0..20)
+        ctx.history.other_sessions = (0..20)
             .map(|i| OtherSessionSummary {
                 command: format!("other_cmd_{i}"),
                 cwd: Some("/tmp".into()),
@@ -6285,52 +6278,22 @@ mod tests {
 
     #[test]
     fn test_build_xml_context_all_optional_none() {
-        let ctx = QueryContext {
-            os_info: "Linux".into(),
-            shell: "sh".into(),
-            cwd: "/".into(),
-            username: "root".into(),
-            conversation_history: vec![],
-            hostname: "localhost".into(),
-            datetime_info: "2025-01-01".into(),
-            timezone_info: "UTC".into(),
-            locale_info: "C".into(),
-            machine_details: MachineDetails {
-                arch: "x86_64".into(),
-                cores: 1,
-                total_ram: String::new(),
-                pkg_managers: String::new(),
-                lang_pkg_managers: String::new(),
-                dev_tools: String::new(),
-            },
-            cpu_model: String::new(),
-            gpu_info: String::new(),
-            disk_info: vec![],
-            memory_usage: MemoryUsage {
-                total: String::new(),
-                used: String::new(),
-                available: String::new(),
-            },
-            load_average: String::new(),
-            cpu_samples: String::new(),
-            network_info: vec![],
-            locale_detail: String::new(),
-            uptime: String::new(),
-            cwd_listing: vec![],
-            session_history: vec![],
-            other_sessions: vec![],
-            scrollback_text: String::new(),
-            custom_instructions: None,
-            project_info: ProjectInfo {
-                root: None,
-                project_type: "unknown".into(),
-                git_branch: None,
-                git_status: None,
-                git_commits: vec![],
-                files: vec![],
-            },
-            ssh_context: None,
-            container_context: None,
+        let mut ctx = make_minimal_ctx();
+        ctx.environment.os_info = "Linux".into();
+        ctx.environment.hostname = "localhost".into();
+        ctx.environment.datetime_info = "2025-01-01".into();
+        ctx.environment.locale_info = "C".into();
+        ctx.environment.machine_details.arch = "x86_64".into();
+        ctx.terminal.shell = "sh".into();
+        ctx.terminal.cwd = "/".into();
+        ctx.terminal.username = "root".into();
+        ctx.project_info = ProjectInfo {
+            root: None,
+            project_type: "unknown".into(),
+            git_branch: None,
+            git_status: None,
+            git_commits: vec![],
+            files: vec![],
         };
         let xml = build_xml_context(&ctx, &Config::default());
         assert!(xml.starts_with("<context>\n  <environment"));
@@ -6342,7 +6305,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_conversation_history_not_rendered_in_xml() {
         let mut ctx = make_minimal_ctx();
-        ctx.conversation_history = vec![ConversationExchange {
+        ctx.history.conversation_history = vec![ConversationExchange {
             query: "unique_query_marker_12345".into(),
             response_type: "command".into(),
             response: "unique_response_marker_67890".into(),
@@ -6361,7 +6324,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_tty_env_in_session_history() {
         let mut ctx = make_minimal_ctx();
-        ctx.session_history = vec![CommandWithSummary {
+        ctx.history.session_history = vec![CommandWithSummary {
             command: "whoami".into(),
             cwd: Some("/tmp".into()),
             exit_code: Some(0),
@@ -6480,7 +6443,7 @@ mod tests {
     #[test]
     fn test_build_xml_context_conversation_history_not_in_xml() {
         let mut ctx = make_minimal_ctx();
-        ctx.conversation_history = vec![ConversationExchange {
+        ctx.history.conversation_history = vec![ConversationExchange {
             query: "list files".into(),
             response_type: "command".into(),
             response: "ls -la".into(),
@@ -6494,14 +6457,14 @@ mod tests {
             xml.contains("list files"),
             "conversation history should be rendered in recent_nsh_queries XML"
         );
-        assert_eq!(ctx.conversation_history.len(), 1);
-        assert_eq!(ctx.conversation_history[0].query, "list files");
-        assert_eq!(ctx.conversation_history[0].response, "ls -la");
+        assert_eq!(ctx.history.conversation_history.len(), 1);
+        assert_eq!(ctx.history.conversation_history[0].query, "list files");
+        assert_eq!(ctx.history.conversation_history[0].response, "ls -la");
         assert_eq!(
-            ctx.conversation_history[0].explanation.as_deref(),
+            ctx.history.conversation_history[0].explanation.as_deref(),
             Some("list all files")
         );
-        assert_eq!(ctx.conversation_history[0].result_exit_code, Some(0));
+        assert_eq!(ctx.history.conversation_history[0].result_exit_code, Some(0));
     }
 
     #[test]
