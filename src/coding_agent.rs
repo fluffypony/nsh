@@ -296,6 +296,10 @@ pub async fn run_coding_agent(
                 continue;
             };
 
+            let read_access_mode = crate::tools::normalize_sensitive_file_access_mode(
+                config.tools.sensitive_file_access.as_str(),
+            );
+
             eprintln!(
                 "  \x1b[2m↳ {}\x1b[0m",
                 describe_coding_tool_action(name, input)
@@ -307,8 +311,12 @@ pub async fn run_coding_agent(
                     std::time::Duration::from_secs(30),
                     tokio::task::spawn_blocking({
                         let input = input.clone();
+                        let access_mode = read_access_mode.to_string();
                         move || {
-                            crate::tools::read_file::execute_outcome_with_access(&input, "allow")
+                            crate::tools::read_file::execute_outcome_with_access(
+                                &input,
+                                &access_mode,
+                            )
                         }
                     }),
                 )
@@ -318,8 +326,12 @@ pub async fn run_coding_agent(
                     std::time::Duration::from_secs(30),
                     tokio::task::spawn_blocking({
                         let input = input.clone();
+                        let access_mode = read_access_mode.to_string();
                         move || {
-                            crate::tools::grep_file::execute_outcome_with_access(&input, "allow")
+                            crate::tools::grep_file::execute_outcome_with_access(
+                                &input,
+                                &access_mode,
+                            )
                         }
                     }),
                 )
@@ -329,9 +341,11 @@ pub async fn run_coding_agent(
                     std::time::Duration::from_secs(20),
                     tokio::task::spawn_blocking({
                         let input = input.clone();
+                        let access_mode = read_access_mode.to_string();
                         move || {
                             crate::tools::list_directory::execute_outcome_with_access(
-                                &input, "allow",
+                                &input,
+                                &access_mode,
                             )
                         }
                     }),
@@ -342,7 +356,10 @@ pub async fn run_coding_agent(
                     std::time::Duration::from_secs(20),
                     tokio::task::spawn_blocking({
                         let input = input.clone();
-                        move || crate::tools::glob::execute_outcome_with_access(&input, "allow")
+                        let access_mode = read_access_mode.to_string();
+                        move || {
+                            crate::tools::glob::execute_outcome_with_access(&input, &access_mode)
+                        }
                     }),
                 )
                 .await

@@ -1,6 +1,14 @@
 use std::io::{BufRead, BufReader, Read};
 use std::sync::OnceLock;
 
+fn ok(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::success(msg)
+}
+
+fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
+    crate::tools::ToolInvocationOutcome::failure(msg)
+}
+
 static BPE: OnceLock<tiktoken_rs::CoreBPE> = OnceLock::new();
 
 fn get_bpe() -> &'static tiktoken_rs::CoreBPE {
@@ -43,13 +51,20 @@ pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
+    Ok(execute_outcome_with_access(input, sensitive_file_access)?.into_content())
+}
+
+pub fn execute_outcome_with_access(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
     let path = match crate::tools::validate_read_path_with_access(raw_path, sensitive_file_access) {
         Ok(p) => p,
-        Err(msg) => return Ok(msg),
+        Err(msg) => return Ok(fail(msg)),
     };
 
     let full_requested = input["full"].as_bool().unwrap_or(false);
@@ -60,13 +75,13 @@ pub fn execute_with_access(
     // --- Check file size before reading into memory ---
     let file_size = match std::fs::metadata(&path) {
         Ok(m) => m.len(),
-        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+        Err(e) => return Ok(fail(format!("Error reading '{}': {e}", path.display()))),
     };
 
     if file_size > MAX_READ_BYTES {
         let estimated_lines = estimate_line_count(&path);
         let estimated_tokens = file_size as usize / 4; // rough cl100k_base estimate
-        return Ok(format!(
+        return Ok(ok(format!(
             "File: {path}\n\
              Size: {size_mb:.1} MB\n\
              Estimated lines: ~{estimated_lines}\n\
@@ -77,7 +92,7 @@ pub fn execute_with_access(
             path = path.display(),
             size_mb = file_size as f64 / (1024.0 * 1024.0),
             max_mb = MAX_READ_BYTES / (1024 * 1024),
-        ));
+        )));
     }
 
     // Guard against non-regular files that can block
@@ -87,11 +102,11 @@ pub fn execute_with_access(
         if let Ok(meta) = std::fs::symlink_metadata(&path) {
             let ft = meta.file_type();
             if ft.is_block_device() || ft.is_char_device() || ft.is_fifo() || ft.is_socket() {
-                return Ok(format!(
+                return Ok(fail(format!(
                     "Cannot read '{}': not a regular file (special device/pipe/socket). \
                      Use run_command with 'cat' or 'head' instead.",
                     path.display()
-                ));
+                )));
             }
         }
     }
@@ -104,32 +119,32 @@ pub fn execute_with_access(
         let n = std::io::Read::read(&mut file, &mut buf)
             .map_err(|e| anyhow::anyhow!("Error reading {}: {e}", path.display()))?;
         let content = String::from_utf8_lossy(&buf[..n]);
-        return Ok(format!(
+        return Ok(ok(format!(
             "{}\n\n[pseudo-filesystem file, read {} bytes]",
             content.trim(),
             n
-        ));
+        )));
     }
 
     // --- Binary check on first bytes ---
     let mut probe_file = match open_for_read(&path) {
         Ok(f) => f,
-        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+        Err(e) => return Ok(fail(format!("Error reading '{}': {e}", path.display()))),
     };
     let mut prefix = [0_u8; 8192];
     let bytes_read = match probe_file.read(&mut prefix) {
         Ok(n) => n,
-        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+        Err(e) => return Ok(fail(format!("Error reading '{}': {e}", path.display()))),
     };
     if prefix[..bytes_read].contains(&0) {
-        return Ok("Binary file, cannot display".into());
+        return Ok(fail("Binary file, cannot display"));
     }
     drop(probe_file);
 
     // --- Read the entire file into memory ---
     let file = match open_for_read(&path) {
         Ok(f) => f,
-        Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+        Err(e) => return Ok(fail(format!("Error reading '{}': {e}", path.display()))),
     };
     let mut reader = BufReader::new(file);
     let mut lines: Vec<String> = Vec::new();
@@ -138,17 +153,17 @@ pub fn execute_with_access(
         line_buf.clear();
         let n = match reader.read_until(b'\n', &mut line_buf) {
             Ok(n) => n,
-            Err(e) => return Ok(format!("Error reading '{}': {e}", path.display())),
+            Err(e) => return Ok(fail(format!("Error reading '{}': {e}", path.display()))),
         };
         if n == 0 {
             break;
         }
         if line_buf.contains(&0) {
-            return Ok("Binary file, cannot display".into());
+            return Ok(fail("Binary file, cannot display"));
         }
         let line = match String::from_utf8(line_buf.clone()) {
             Ok(s) => s,
-            Err(_) => return Ok("Binary file, cannot display".into()),
+            Err(_) => return Ok(fail("Binary file, cannot display")),
         };
         let trimmed = line.trim_end_matches(['\n', '\r']).to_string();
         lines.push(trimmed);
@@ -160,7 +175,12 @@ pub fn execute_with_access(
 
     // --- Full mode takes priority: explicitly requested via full=true ---
     if full_requested {
-        return Ok(format_full_file(&path, &lines, total_lines, token_count));
+        return Ok(ok(format_full_file(
+            &path,
+            &lines,
+            total_lines,
+            token_count,
+        )));
     }
 
     // --- Range mode: start_line / end_line explicitly specified ---
@@ -170,10 +190,10 @@ pub fn execute_with_access(
         let end_line = end_line.min(total_lines);
 
         if start_line > total_lines {
-            return Ok(format!(
+            return Ok(ok(format!(
                 "\n[{}: {total_lines} total lines, ~{token_count} tokens (cl100k_base)]\n",
                 path.display()
-            ));
+            )));
         }
 
         let mut result = String::new();
@@ -192,16 +212,21 @@ pub fn execute_with_access(
             "\n[{}: {total_lines} total lines, ~{token_count} tokens (cl100k_base)]\n",
             path.display()
         ));
-        return Ok(result);
+        return Ok(ok(result));
     }
 
     // --- Default mode: auto-return small files, metadata for large ones ---
     if total_lines <= AUTO_FULL_LINE_THRESHOLD {
-        return Ok(format_full_file(&path, &lines, total_lines, token_count));
+        return Ok(ok(format_full_file(
+            &path,
+            &lines,
+            total_lines,
+            token_count,
+        )));
     }
 
     // Large file: return metadata and let the model decide
-    Ok(format!(
+    Ok(ok(format!(
         "File: {path}\n\
          Lines: {total_lines}\n\
          Estimated tokens: ~{token_count} (cl100k_base)\n\
@@ -214,7 +239,7 @@ pub fn execute_with_access(
          Call read_file with full=true to read the entire file, \
          or specify start_line/end_line for a specific range.",
         path = path.display(),
-    ))
+    )))
 }
 
 /// Fast line count via streaming without loading entire file into memory.
@@ -234,7 +259,9 @@ fn estimate_line_count(path: &std::path::Path) -> usize {
             Ok(n) => {
                 total_read += n as u64;
                 count += buf[..n].iter().filter(|&&b| b == b'\n').count();
-                if total_read > max_bytes { break; }
+                if total_read > max_bytes {
+                    break;
+                }
             }
             Err(_) => break,
         }

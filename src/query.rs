@@ -2763,10 +2763,9 @@ fn execute_sync_tool_outcome(
     input: &serde_json::Value,
     config: &Config,
 ) -> anyhow::Result<tools::ToolInvocationOutcome> {
-    // let sfa = &config.tools.sensitive_file_access; // not used for read-only tools below
-    // For read-only file tools, prefer interactive confirmation on sensitive paths
-    // regardless of global config, so the user can grant access and proceed.
-    let sfa_read = "ask";
+    let sfa_read = tools::normalize_sensitive_file_access_mode(
+        config.tools.sensitive_file_access.as_str(),
+    );
     match name {
         "grep_file" => tools::grep_file::execute_outcome_with_access(input, sfa_read),
         "read_file" => tools::read_file::execute_outcome_with_access(input, sfa_read),

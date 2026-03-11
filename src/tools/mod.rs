@@ -101,6 +101,13 @@ pub fn default_timeout_for_tool(name: &str) -> u64 {
     }
 }
 
+pub fn normalize_sensitive_file_access_mode(mode: &str) -> &str {
+    match mode {
+        "allow" | "ask" | "block" => mode,
+        _ => "ask",
+    }
+}
+
 pub fn validate_read_path_with_access(
     raw_path: &str,
     sensitive_file_access: &str,
@@ -1846,5 +1853,19 @@ mod tests {
         let result = validate_read_path_with_access("/tmp", "block");
         assert!(result.is_ok());
         assert!(result.unwrap().is_absolute());
+    }
+
+    #[test]
+    fn test_normalize_sensitive_file_access_mode_accepts_known_values() {
+        assert_eq!(normalize_sensitive_file_access_mode("allow"), "allow");
+        assert_eq!(normalize_sensitive_file_access_mode("ask"), "ask");
+        assert_eq!(normalize_sensitive_file_access_mode("block"), "block");
+    }
+
+    #[test]
+    fn test_normalize_sensitive_file_access_mode_falls_back_to_ask() {
+        assert_eq!(normalize_sensitive_file_access_mode(""), "ask");
+        assert_eq!(normalize_sensitive_file_access_mode("invalid"), "ask");
+        assert_eq!(normalize_sensitive_file_access_mode("ALLOW"), "ask");
     }
 }
