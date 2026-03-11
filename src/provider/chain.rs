@@ -27,7 +27,7 @@ pub async fn call_with_chain(
 ) -> anyhow::Result<(mpsc::Receiver<StreamEvent>, String)> {
     for (i, model) in chain.iter().enumerate() {
         let mut req = request.clone();
-        req.model = effective_model_name(model);
+        req.model = effective_model_name_for_request(model, &request);
         for attempt in 0..2 {
             match provider.stream(req.clone()).await {
                 Ok(rx) => return Ok((rx, model.clone())),
@@ -103,10 +103,10 @@ pub async fn call_chain_with_fallback_think(
 ) -> anyhow::Result<(mpsc::Receiver<StreamEvent>, String)> {
     for (i, model) in chain.iter().enumerate() {
         let mut req = request.clone();
-        let base = effective_model_name(model);
-        req.model = super::openai_compat::thinking_model_name(&base, think);
+        let base = effective_model_name_for_request(model, &request);
+        req.model = super::policy::thinking_model_name(&base, think);
         let mut extra = req.extra_body.take().unwrap_or(serde_json::json!({}));
-        super::openai_compat::apply_thinking_mode(&mut extra, &req.model, think);
+        super::policy::apply_thinking_mode(&mut extra, &req.model, think);
         if extra.as_object().is_some_and(|m| !m.is_empty()) {
             req.extra_body = Some(extra);
         }
@@ -132,16 +132,14 @@ pub async fn call_chain_with_fallback_think(
     anyhow::bail!("All models in chain exhausted")
 }
 
-fn effective_model_name(model: &str) -> String {
-    // If routing via sidecar, use upstream native model names without OpenRouter prefixes
-    // Heuristic: if a local sidecar port is present, prefer plain names for known prefixes
-    let routed_via_sidecar = crate::cliproxyapi::get_port().is_some();
-    if routed_via_sidecar {
-        if let Some((_, plain)) = model.split_once('/') {
-            return plain.to_string();
-        }
-    }
-    model.to_string()
+fn effective_model_name_for_request(model: &str, request: &ChatRequest) -> String {
+    let Some(serde_json::Value::Object(extra)) = &request.extra_body else {
+        return model.to_string();
+    };
+    let Some(base_url) = extra.get("_transport_base_url").and_then(|v| v.as_str()) else {
+        return model.to_string();
+    };
+    super::routing::model_name_for_transport(model, base_url)
 }
 
 #[cfg(test)]
@@ -151,6 +149,7 @@ mod tests {
     use crate::provider::{
         ChatRequest, ContentBlock, LlmProvider, Message, Role, StreamEvent, ToolChoice,
     };
+    use serde_json::json;
     use std::sync::Arc;
 
     struct MockProvider {
@@ -920,6 +919,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(model, model_defaults::GEMINI_25_PRO_OPENROUTER);
+    }
+
+    #[test]
+    fn effective_model_name_for_request_strips_prefix_when_transport_is_sidecar() {
+        let request = ChatRequest {
+            model: "unused".into(),
+            system: "unused".into(),
+            messages: vec![],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+            max_tokens: 1,
+            stream: false,
+            extra_body: Some(json!({
+                "_transport_base_url": crate::provider::openai_compat::cliproxyapi_base_url()
+            })),
+        };
+
+        let effective = effective_model_name_for_request("anthropic/claude-sonnet-4.6", &request);
+        assert_eq!(effective, "claude-sonnet-4.6");
+    }
+
+    #[test]
+    fn effective_model_name_for_request_keeps_model_without_transport_marker() {
+        let request = ChatRequest {
+            model: "unused".into(),
+            system: "unused".into(),
+            messages: vec![],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+            max_tokens: 1,
+            stream: false,
+            extra_body: None,
+        };
+
+        let effective = effective_model_name_for_request("anthropic/claude-sonnet-4.6", &request);
+        assert_eq!(effective, "anthropic/claude-sonnet-4.6");
     }
 
     #[tokio::test]

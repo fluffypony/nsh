@@ -146,6 +146,11 @@ pub async fn run_coding_agent(
 ) -> anyhow::Result<String> {
     let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
     let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
+    let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
+        &provider_cfg.default,
+        &provider_cfg,
+    )?
+    .map(|cfg| cfg.base_url);
     let model_chain = if config.models.coding.is_empty() {
         if config.models.main.is_empty() {
             vec![config.provider.model.clone()]
@@ -218,6 +223,11 @@ pub async fn run_coding_agent(
             max_tokens: 32768,
             stream: true,
             extra_body: None,
+        };
+        let request = if let Some(base_url) = transport_base_url.as_deref() {
+            crate::provider::with_transport_base_url(&request, base_url)
+        } else {
+            request
         };
 
         let debug_path = crate::debug_io::begin_named(

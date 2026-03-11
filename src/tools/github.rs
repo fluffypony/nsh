@@ -191,6 +191,11 @@ async fn process_readme_content(
     // Feed through fast LLM to extract only goal-relevant information
     let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
     let provider = provider::create_provider(&provider_cfg.default, &provider_cfg)?;
+    let transport_base_url = provider::routing::resolve_openai_compat_config(
+        &provider_cfg.default,
+        &provider_cfg,
+    )?
+    .map(|cfg| cfg.base_url);
     let model = config
         .models
         .fast
@@ -221,6 +226,11 @@ async fn process_readme_content(
         max_tokens: 2000,
         stream: false,
         extra_body: None,
+    };
+    let request = if let Some(base_url) = transport_base_url.as_deref() {
+        provider::with_transport_base_url(&request, base_url)
+    } else {
+        request
     };
 
     let response = provider.complete(request).await?;

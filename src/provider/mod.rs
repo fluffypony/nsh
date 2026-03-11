@@ -3,6 +3,8 @@ pub mod chain;
 pub mod openai;
 pub mod openai_compat;
 pub mod openrouter;
+pub mod policy;
+pub mod routing;
 
 use serde::{Deserialize, Serialize};
 
@@ -116,111 +118,27 @@ pub fn create_provider(
     provider_name: &str,
     config: &ProviderFactoryConfig,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
+    if let Some(openai_cfg) = routing::resolve_openai_compat_config(provider_name, config)? {
+        return Ok(Box::new(openai_compat::OpenAICompatProvider::new(openai_cfg)?));
+    }
+
     match provider_name {
-        "openrouter" => Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-            openrouter::build_openrouter_compat_config(&config.provider)?,
-        )?)),
         "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(&config.provider)?)),
-        "openai" => Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-            openai::build_openai_compat_config(&config.provider)?,
-        )?)),
-        "gemini" => {
-            let auth = config
-                .provider
-                .gemini
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Gemini not configured"))?;
-            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                openai_compat::OpenAICompatProviderConfig {
-                    api_key: auth.resolve_api_key("gemini")?,
-                    base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
-                    fallback_model: None,
-                    extra_headers: vec![],
-                    timeout_seconds: config.provider.timeout_seconds,
-                    debug_provider_name: "gemini".to_string(),
-                },
-            )?))
-        }
-        "ollama" => {
-            let auth = config.provider.ollama.as_ref();
-            let base_url = auth
-                .and_then(|a| a.base_url.clone())
-                .unwrap_or_else(|| "http://localhost:11434/v1".into());
-            let api_key = auth
-                .and_then(|a| a.resolve_api_key("ollama").ok())
-                .unwrap_or_else(|| zeroize::Zeroizing::new("ollama".into()));
-            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                openai_compat::OpenAICompatProviderConfig {
-                    api_key,
-                    base_url,
-                    fallback_model: config.provider.fallback_model.clone(),
-                    extra_headers: vec![],
-                    timeout_seconds: config.provider.timeout_seconds,
-                    debug_provider_name: "ollama".to_string(),
-                },
-            )?))
-        }
-        // CLIProxyAPI-backed subscriptions and sidecar-routed providers
-        "copilot" | "kiro" | "qwen" | "iflow" | "claude_sub" | "codex_sub" | "gemini_sub" => {
-            let port = crate::cliproxyapi::get_port().unwrap_or(8317);
-            let base_url = format!("http://127.0.0.1:{port}/v1");
-            let api_key = zeroize::Zeroizing::new("nsh-internal".into());
-            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                openai_compat::OpenAICompatProviderConfig {
-                    api_key,
-                    base_url,
-                    fallback_model: config.provider.fallback_model.clone(),
-                    extra_headers: vec![],
-                    timeout_seconds: config.provider.timeout_seconds,
-                    debug_provider_name: provider_name.to_string(),
-                },
-            )?))
-        }
-        // BYOK third-party providers (to be completed with config entries)
-        "z_ai" | "minimax" | "kimi" | "deepseek" => {
-            // If configured with a direct API key, use it; otherwise fall back to local sidecar
-            let auth = match provider_name {
-                "z_ai" => config.provider.z_ai.as_ref(),
-                "minimax" => config.provider.minimax.as_ref(),
-                "kimi" => config.provider.kimi.as_ref(),
-                "deepseek" => config.provider.deepseek.as_ref(),
-                _ => None,
-            };
-            let (base_url, api_key) = if let Some(a) = auth {
-                if let Ok(k) = a.resolve_api_key(provider_name) {
-                    let url = a.base_url.clone().unwrap_or_else(|| match provider_name {
-                        "z_ai" => "https://api.x.ai/v1".into(),
-                        "minimax" => "https://api.minimaxi.chat/v1".into(),
-                        "kimi" => "https://api.moonshot.cn/v1".into(),
-                        "deepseek" => "https://api.deepseek.com/v1".into(),
-                        _ => "https://api.openai.com/v1".into(),
-                    });
-                    (url, k)
-                } else {
-                    (
-                        crate::provider::openai_compat::cliproxyapi_base_url(),
-                        zeroize::Zeroizing::new("nsh-internal".into()),
-                    )
-                }
-            } else {
-                (
-                    crate::provider::openai_compat::cliproxyapi_base_url(),
-                    zeroize::Zeroizing::new("nsh-internal".into()),
-                )
-            };
-            Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-                openai_compat::OpenAICompatProviderConfig {
-                    api_key,
-                    base_url,
-                    fallback_model: config.provider.fallback_model.clone(),
-                    extra_headers: vec![],
-                    timeout_seconds: config.provider.timeout_seconds,
-                    debug_provider_name: provider_name.to_string(),
-                },
-            )?))
-        }
         _ => anyhow::bail!("Unknown provider: {provider_name}"),
     }
+}
+
+pub fn with_transport_base_url(request: &ChatRequest, base_url: &str) -> ChatRequest {
+    let mut out = request.clone();
+    let mut extra = out.extra_body.take().unwrap_or_else(|| serde_json::json!({}));
+    if let serde_json::Value::Object(map) = &mut extra {
+        map.insert(
+            "_transport_base_url".to_string(),
+            serde_json::Value::String(base_url.to_string()),
+        );
+        out.extra_body = Some(extra);
+    }
+    out
 }
 
 /// Parse an OpenAI-format JSON response into our Message type.
@@ -500,6 +418,35 @@ mod tests {
         let provider_config = ProviderFactoryConfig::from_config(&config);
         let result = create_provider("gemini", &provider_config);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn create_provider_sidecar_provider_uses_openai_compat_path() {
+        let config = crate::config::Config::default();
+        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let result = create_provider("copilot", &provider_config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn with_transport_base_url_adds_marker_without_removing_existing_extra_body() {
+        let request = ChatRequest {
+            model: "m".into(),
+            system: "s".into(),
+            messages: vec![],
+            tools: vec![],
+            tool_choice: ToolChoice::Auto,
+            max_tokens: 1,
+            stream: false,
+            extra_body: Some(json!({"existing": true})),
+        };
+
+        let out = with_transport_base_url(&request, "http://127.0.0.1:8317/v1");
+        assert_eq!(out.extra_body.as_ref().unwrap()["existing"], json!(true));
+        assert_eq!(
+            out.extra_body.as_ref().unwrap()["_transport_base_url"],
+            json!("http://127.0.0.1:8317/v1")
+        );
     }
 
     #[test]

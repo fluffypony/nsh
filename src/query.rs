@@ -149,6 +149,11 @@ pub async fn handle_query(
 
     let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
     let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
+    let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
+        &provider_cfg.default,
+        &provider_cfg,
+    )?
+    .map(|cfg| cfg.base_url);
     let chain: Vec<String> = if config.models.main.is_empty() {
         vec![config.provider.model.clone()]
     } else {
@@ -417,6 +422,11 @@ pub async fn handle_query(
             stream: true,
             extra_body,
         };
+        let request = if let Some(base_url) = transport_base_url.as_deref() {
+            crate::provider::with_transport_base_url(&request, base_url)
+        } else {
+            request
+        };
 
         let _spinner = if opts.json_output {
             None
@@ -602,6 +612,11 @@ pub async fn handle_query(
                     .first()
                     .cloned()
                     .unwrap_or_else(|| config.provider.model.clone());
+                let model_name = if let Some(base_url) = transport_base_url.as_deref() {
+                    crate::provider::routing::model_name_for_transport(&model_name, base_url)
+                } else {
+                    model_name
+                };
                 let retry_request = crate::provider::ChatRequest {
                     model: model_name,
                     system: system.clone(),
@@ -615,6 +630,11 @@ pub async fn handle_query(
                     } else {
                         None
                     },
+                };
+                let retry_request = if let Some(base_url) = transport_base_url.as_deref() {
+                    crate::provider::with_transport_base_url(&retry_request, base_url)
+                } else {
+                    retry_request
                 };
                 if let Ok(json) = crate::json_extract::extract_with_retry(
                     provider.as_ref(),

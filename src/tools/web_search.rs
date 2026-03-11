@@ -27,6 +27,11 @@ where
     let ws_model = &config.web_search.model;
     let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
     let model_caps = crate::config::model_capabilities(ws_provider_name, ws_model);
+    let transport_base_url = provider::routing::resolve_openai_compat_config(
+        ws_provider_name,
+        &provider_cfg,
+    )?
+    .map(|cfg| cfg.base_url);
 
     let provider = match provider_factory(ws_provider_name, &provider_cfg) {
         Ok(p) => p,
@@ -63,6 +68,11 @@ where
         } else {
             None
         },
+    };
+    let request = if let Some(base_url) = transport_base_url.as_deref() {
+        provider::with_transport_base_url(&request, base_url)
+    } else {
+        request
     };
 
     let response = provider.complete(request).await?;

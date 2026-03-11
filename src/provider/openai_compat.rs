@@ -37,8 +37,11 @@ impl OpenAICompatProvider {
     }
 
     fn build_request_body(&self, request: &ChatRequest) -> serde_json::Value {
-        let model = request.model.as_str();
-        let anthropic = is_anthropic_model(model);
+        let model = crate::provider::routing::model_name_for_transport(
+            request.model.as_str(),
+            &self.base_url,
+        );
+        let anthropic = is_anthropic_model(&model);
 
         let messages = if anthropic {
             build_openai_messages(&request.messages, "")
@@ -55,7 +58,7 @@ impl OpenAICompatProvider {
         });
 
         // Some models (e.g., codex-only) may not support tool/function calling — strip tools
-        let caps = crate::config::model_capabilities(&self.debug_provider_name, model);
+        let caps = crate::config::model_capabilities(&self.debug_provider_name, &model);
         let model_is_codex_like = model.contains("codex");
         if model_is_codex_like || !caps.supports_tool_calling {
             tools.clear();
@@ -104,6 +107,9 @@ impl OpenAICompatProvider {
 
         if let Some(serde_json::Value::Object(map)) = &request.extra_body {
             for (k, v) in map {
+                if k.starts_with("_transport_") {
+                    continue;
+                }
                 body[k] = v.clone();
             }
         }
@@ -141,30 +147,8 @@ fn is_retryable(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
 
-fn is_anthropic_model(model: &str) -> bool {
+pub(crate) fn is_anthropic_model(model: &str) -> bool {
     model.contains("claude") || model.starts_with("anthropic/")
-}
-
-pub fn apply_thinking_mode(body: &mut serde_json::Value, model: &str, think: bool) {
-    if !think {
-        if model.starts_with("google/gemini-3") {
-            body["reasoning"] = json!({"effort": "low"});
-        }
-        return;
-    }
-    if model.starts_with("google/gemini-3") {
-        body["reasoning"] = json!({"effort": "high"});
-    } else if model.contains("claude") && model.contains("sonnet") {
-        body["reasoning"] = json!({"enabled": true, "budget_tokens": 32768});
-    }
-}
-
-pub fn thinking_model_name(model: &str, think: bool) -> String {
-    if think && model.starts_with("google/gemini-2.5") && !model.ends_with(":thinking") {
-        format!("{model}:thinking")
-    } else {
-        model.to_string()
-    }
 }
 
 #[async_trait::async_trait]
@@ -182,8 +166,10 @@ impl LlmProvider for OpenAICompatProvider {
                 if let Some(fallback) = &self.fallback_model {
                     tracing::warn!("Primary model failed ({status}), trying fallback: {fallback}");
                     let mut fb = body.clone();
-                    fb["model"] = json!(fallback);
-                    let resp2 = self.build_http_request(&fb, fallback).send().await?;
+                    let fallback_model =
+                        crate::provider::routing::model_name_for_transport(fallback, &self.base_url);
+                    fb["model"] = json!(&fallback_model);
+                    let resp2 = self.build_http_request(&fb, &fallback_model).send().await?;
                     let status2 = resp2.status();
                     if !status2.is_success() {
                         let text = resp2.text().await.unwrap_or_default();
@@ -247,8 +233,10 @@ impl LlmProvider for OpenAICompatProvider {
                 if let Some(fallback) = &self.fallback_model {
                     tracing::warn!("Primary failed ({status}), stream fallback: {fallback}");
                     let mut fb = body.clone();
-                    fb["model"] = json!(fallback);
-                    let resp2 = self.build_http_request(&fb, fallback).send().await?;
+                    let fallback_model =
+                        crate::provider::routing::model_name_for_transport(fallback, &self.base_url);
+                    fb["model"] = json!(&fallback_model);
+                    let resp2 = self.build_http_request(&fb, &fallback_model).send().await?;
                     let status2 = resp2.status();
                     if !status2.is_success() {
                         let text = resp2.text().await.unwrap_or_default();
@@ -356,6 +344,7 @@ pub fn build_openai_tools(tools: &[crate::tools::ToolDefinition]) -> Vec<serde_j
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use crate::provider::policy::{apply_thinking_mode, thinking_model_name};
     use crate::provider::{ContentBlock, Message, Role};
     use crate::tools::ToolDefinition;
     use serde_json::json;
@@ -939,6 +928,48 @@ mod tests {
         let req = make_chat_request("gpt-4", "", vec![], vec![], ToolChoice::Auto, None);
         let body = provider.build_request_body(&req);
         assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn build_request_body_strips_internal_transport_metadata() {
+        let provider = make_provider();
+        let req = make_chat_request(
+            "gpt-4",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            Some(json!({
+                "_transport_base_url": "http://127.0.0.1:8317/v1",
+                "temperature": 0.2
+            })),
+        );
+        let body = provider.build_request_body(&req);
+        assert!(body.get("_transport_base_url").is_none());
+        assert_eq!(body["temperature"], 0.2);
+    }
+
+    #[test]
+    fn build_request_body_normalizes_model_for_sidecar_transport() {
+        let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("test-key".into()),
+            base_url: crate::provider::openai_compat::cliproxyapi_base_url(),
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 30,
+            debug_provider_name: "test".into(),
+        })
+        .unwrap();
+        let req = make_chat_request(
+            "anthropic/claude-sonnet-4.6",
+            "",
+            vec![],
+            vec![],
+            ToolChoice::Auto,
+            None,
+        );
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["model"], "claude-sonnet-4.6");
     }
 
     #[test]
