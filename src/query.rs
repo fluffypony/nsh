@@ -331,13 +331,19 @@ pub async fn handle_query(
     let max_iterations = config.execution.effective_max_tool_iterations();
     let mut force_json_next = false;
     let mut json_retry_count: u32 = 0;
-    let mut streamed_text_shown = false;
+    let mut deferred_chat_renders: Vec<String> = Vec::new();
 
     // Track repeated failing tool calls to prevent infinite loops
     let mut repeat_guard = RepeatGuard::default();
     let mut abort_tool_loop: bool = false;
     let mut no_tool_call_streak: u32 = 0;
     for iteration in 0..max_iterations {
+        if !deferred_chat_renders.is_empty() {
+            for response in deferred_chat_renders.drain(..) {
+                tools::chat::render_response(&response)?;
+            }
+        }
+
         // Time budget notices/extension
         let elapsed = query_start.elapsed();
         if max_query_duration.as_secs() > 0 {
@@ -492,8 +498,7 @@ pub async fn handle_query(
                 anyhow::bail!("LLM response timed out");
             }
         };
-        let streamed_text_present = streaming::last_stream_had_text();
-        streamed_text_shown |= streamed_text_present;
+        let _streamed_text_present = streaming::last_stream_had_text();
 
         // ── JSON fallback for models that don't use tool calling ──
         let has_tool_calls = response
@@ -799,10 +804,18 @@ pub async fn handle_query(
                         }
                     }
                     "chat" => {
+                        let response_text = input["response"].as_str().unwrap_or("").to_string();
                         match tools::chat::execute(
-                            input, query, db, session_id, opts.private, config, !streamed_text_shown,
+                            input,
+                            query,
+                            db,
+                            session_id,
+                            opts.private,
+                            config,
+                            false,
                         ) {
                             Ok(()) => {
+                                deferred_chat_renders.push(response_text);
                                 let wrapped = crate::security::wrap_tool_result(name, "Message displayed.", &boundary);
                                 tool_results.push(ContentBlock::ToolResult { tool_use_id: id.clone(), content: wrapped, is_error: false });
                             }
@@ -1488,6 +1501,12 @@ pub async fn handle_query(
             role: Role::Tool,
             content: tool_results,
         });
+    }
+
+    if !deferred_chat_renders.is_empty() {
+        for response in deferred_chat_renders.drain(..) {
+            tools::chat::render_response(&response)?;
+        }
     }
 
     // ── Cleanup ────────────────────────────────────────

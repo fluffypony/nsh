@@ -1,5 +1,22 @@
 use crate::daemon_db::DbAccess;
 
+pub fn render_response(response: &str) -> anyhow::Result<()> {
+    if crate::streaming::json_output_enabled() {
+        let event = serde_json::json!({
+            "type": "chat",
+            "response": response,
+        });
+        eprintln!("{}", serde_json::to_string(&event)?);
+    } else {
+        eprintln!();
+        let skin = termimad::MadSkin::default();
+        skin.write_text_on(&mut std::io::stderr(), response)?;
+        eprintln!();
+    }
+
+    Ok(())
+}
+
 /// Handle the `chat` tool: display the response text.
 pub fn execute(
     input: &serde_json::Value,
@@ -13,18 +30,7 @@ pub fn execute(
     let response = input["response"].as_str().unwrap_or("");
 
     if render_output {
-        if crate::streaming::json_output_enabled() {
-            let event = serde_json::json!({
-                "type": "chat",
-                "response": response,
-            });
-            eprintln!("{}", serde_json::to_string(&event)?);
-        } else {
-            eprintln!();
-            let skin = termimad::MadSkin::default();
-            skin.write_text_on(&mut std::io::stderr(), response)?;
-            eprintln!();
-        }
+        render_response(response)?;
     }
 
     if !private {
