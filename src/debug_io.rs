@@ -1,15 +1,46 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-pub fn set_enabled(enabled: bool) {
-    ENABLED.store(enabled, Ordering::Relaxed);
+fn debug_enabled() -> bool {
+    if let Ok(raw) = std::env::var("NSH_DEBUG_LLM_IO") {
+        let v = raw.trim().to_ascii_lowercase();
+        return matches!(v.as_str(), "1" | "true" | "yes" | "on");
+    }
+
+    load_debug_flag_from_global_config().unwrap_or(false)
+}
+
+fn load_debug_flag_from_global_config() -> Option<bool> {
+    let config_path = global_config_path()?;
+    let raw = std::fs::read_to_string(config_path).ok()?;
+    let parsed: toml::Value = toml::from_str(&raw).ok()?;
+    parsed
+        .get("debug")
+        .and_then(|debug| debug.get("llm_io"))
+        .and_then(toml::Value::as_bool)
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        return dirs::data_local_dir()
+            .or_else(dirs::home_dir)
+            .map(|dir| dir.join("nsh").join("config.toml"));
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .or_else(dirs::home_dir)
+            .map(|home| home.join(".nsh").join("config.toml"))
+    }
 }
 
 pub fn begin(provider: &str, request: &serde_json::Value) -> Option<PathBuf> {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !debug_enabled() {
         return None;
     }
 
@@ -41,7 +72,7 @@ pub fn begin(provider: &str, request: &serde_json::Value) -> Option<PathBuf> {
 }
 
 pub fn begin_named(name: &str, request: &serde_json::Value) -> Option<PathBuf> {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !debug_enabled() {
         return None;
     }
 
@@ -94,7 +125,7 @@ pub fn append(path: &Path, section: &str, content: &str) {
 }
 
 pub fn daemon_log(path: &str, section: &str, content: &str) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !debug_enabled() {
         return;
     }
     let dir = crate::config::Config::nsh_dir().join("debug");
@@ -166,28 +197,59 @@ mod tests {
         }
     }
 
-    fn setup_test_home() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+    fn setup_test_home() -> (
+        tempfile::TempDir,
+        EnvVarGuard,
+        EnvVarGuard,
+        EnvVarGuard,
+        EnvVarGuard,
+    ) {
         let home = tempfile::tempdir().expect("temp home");
         let home_guard = EnvVarGuard::set("HOME", home.path().to_string_lossy());
         let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
         let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
-        (home, home_guard, xdg_config_guard, xdg_data_guard)
+        let debug_guard = EnvVarGuard::remove("NSH_DEBUG_LLM_IO");
+        (
+            home,
+            home_guard,
+            xdg_config_guard,
+            xdg_data_guard,
+            debug_guard,
+        )
     }
 
     #[test]
     #[serial]
     fn begin_returns_none_when_disabled() {
-        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_test_home();
-        set_enabled(false);
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard, _debug_clear_guard) =
+            setup_test_home();
+        let _debug_guard = EnvVarGuard::set("NSH_DEBUG_LLM_IO", "0");
         let path = begin("openrouter", &serde_json::json!({"hello": "world"}));
         assert!(path.is_none());
     }
 
     #[test]
     #[serial]
+    fn begin_reads_debug_flag_from_global_config_when_env_unset() {
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard, _debug_clear_guard) =
+            setup_test_home();
+        let config_path = super::global_config_path().expect("resolve global config path");
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).expect("create config dir");
+        }
+        std::fs::write(config_path, "[debug]\nllm_io = true\n").expect("write config");
+        assert_eq!(super::load_debug_flag_from_global_config(), Some(true));
+
+        let path = begin("openrouter", &serde_json::json!({"hello": "world"}));
+        assert!(path.is_some(), "expected debug logging enabled via config");
+    }
+
+    #[test]
+    #[serial]
     fn begin_named_sanitizes_filename_and_writes_content() {
-        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_test_home();
-        set_enabled(true);
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard, _debug_clear_guard) =
+            setup_test_home();
+        let _debug_guard = EnvVarGuard::set("NSH_DEBUG_LLM_IO", "1");
 
         let path = begin_named("ask/user:step#1", &serde_json::json!({"a": 1}))
             .expect("debug log path should be created");
@@ -206,15 +268,14 @@ mod tests {
         assert!(body.contains("name: ask/user:step#1"));
         assert!(body.contains("=== raw_llm_call ==="));
         assert!(body.contains("\"a\": 1"));
-
-        set_enabled(false);
     }
 
     #[test]
     #[serial]
     fn append_and_daemon_log_write_expected_sections() {
-        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_test_home();
-        set_enabled(true);
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard, _debug_clear_guard) =
+            setup_test_home();
+        let _debug_guard = EnvVarGuard::set("NSH_DEBUG_LLM_IO", "1");
 
         let path = begin("openrouter", &serde_json::json!({"q": "test"}))
             .expect("begin should create file");
@@ -232,8 +293,6 @@ mod tests {
         let daemon_body = std::fs::read_to_string(&daemon_path).expect("read daemon log");
         assert!(daemon_body.contains("daemon.section"));
         assert!(daemon_body.contains("payload"));
-
-        set_enabled(false);
     }
 
     #[cfg(unix)]
@@ -242,8 +301,9 @@ mod tests {
     fn begin_sets_permissions_to_owner_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_test_home();
-        set_enabled(true);
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard, _debug_clear_guard) =
+            setup_test_home();
+        let _debug_guard = EnvVarGuard::set("NSH_DEBUG_LLM_IO", "1");
 
         let path = begin("openrouter", &serde_json::json!({"perm": true}))
             .expect("begin should create file");
@@ -253,7 +313,5 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600, "expected mode 600, got {mode:o}");
-
-        set_enabled(false);
     }
 }

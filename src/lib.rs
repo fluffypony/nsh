@@ -187,8 +187,6 @@ pub fn main_inner() -> anyhow::Result<()> {
 }
 
 async fn async_main(cli: Cli) -> anyhow::Result<()> {
-    debug_io::set_enabled(config::Config::load().unwrap_or_default().debug.llm_io);
-
     match cli.command {
         Commands::Wrap { .. } => unreachable!(),
         Commands::Nshd => unreachable!(),
