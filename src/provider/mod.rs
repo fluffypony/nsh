@@ -246,17 +246,17 @@ pub fn parse_openai_response(json: &serde_json::Value) -> anyhow::Result<Message
         for tc in tool_calls {
             let id = tc["id"].as_str().unwrap_or("").to_string();
             let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
-            let args_str = tc["function"]["arguments"].as_str().unwrap_or("{}");
-            let input: serde_json::Value = match serde_json::from_str(args_str) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse tool call arguments: {e}, raw: {}",
-                        &args_str[..args_str.len().min(200)]
-                    );
-                    serde_json::Value::Null
-                }
-            };
+            let args_str = tc["function"]["arguments"].as_str().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Tool call arguments for tool '{name}' (id '{id}') must be a JSON string"
+                )
+            })?;
+            let input: serde_json::Value = serde_json::from_str(args_str).map_err(|e| {
+                let preview: String = args_str.chars().take(200).collect();
+                anyhow::anyhow!(
+                    "Failed to parse tool call arguments for tool '{name}' (id '{id}'): {e}; raw: {preview}"
+                )
+            })?;
             content.push(ContentBlock::ToolUse { id, name, input });
         }
     }
@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_openai_response_invalid_arguments_defaults() {
+    fn parse_openai_response_invalid_arguments_is_error() {
         let resp = json!({
             "choices": [{"message": {
                 "content": null,
@@ -347,11 +347,53 @@ mod tests {
                 }]
             }}]
         });
-        let msg = parse_openai_response(&resp).unwrap();
-        match &msg.content[0] {
-            ContentBlock::ToolUse { input, .. } => assert_eq!(input, &json!(null)),
-            _ => panic!("expected ToolUse block"),
-        }
+        let err = parse_openai_response(&resp)
+            .expect_err("invalid tool-call arguments should fail parser");
+        assert!(
+            err.to_string()
+                .contains("Failed to parse tool call arguments for tool 'test'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_openai_response_non_string_arguments_is_error() {
+        let resp = json!({
+            "choices": [{"message": {
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_4",
+                    "function": {"name": "test", "arguments": {"cmd": "ls"}}
+                }]
+            }}]
+        });
+        let err = parse_openai_response(&resp)
+            .expect_err("non-string tool-call arguments should fail parser");
+        assert!(
+            err.to_string()
+                .contains("Tool call arguments for tool 'test' (id 'call_4') must be a JSON string"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_openai_response_missing_arguments_is_error() {
+        let resp = json!({
+            "choices": [{"message": {
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_5",
+                    "function": {"name": "test"}
+                }]
+            }}]
+        });
+        let err = parse_openai_response(&resp)
+            .expect_err("missing tool-call arguments should fail parser");
+        assert!(
+            err.to_string()
+                .contains("Tool call arguments for tool 'test' (id 'call_5') must be a JSON string"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
