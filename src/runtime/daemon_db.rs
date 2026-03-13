@@ -8,112 +8,41 @@ use crate::db::{
 };
 use crate::memory::types::{MemoryOp, MemoryType, Sensitivity};
 
-pub trait DbAccess {
-    fn get_conversations(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<ConversationExchange>>;
-    fn recent_commands_with_summaries(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<CommandWithSummary>>;
-    fn other_sessions_with_summaries(
-        &self,
-        session_id: &str,
-        max_ttys: usize,
-        summaries_per_tty: usize,
-    ) -> anyhow::Result<Vec<OtherSessionSummary>>;
-    fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>>;
-    #[allow(clippy::too_many_arguments)]
-    fn search_history_advanced(
-        &self,
-        fts_query: Option<&str>,
-        regex_pattern: Option<&str>,
-        since: Option<&str>,
-        until: Option<&str>,
-        exit_code: Option<i32>,
-        failed_only: bool,
-        session_filter: Option<&str>,
-        current_session: Option<&str>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<HistoryMatch>>;
-    #[allow(clippy::too_many_arguments)]
-    fn search_command_entities(
-        &self,
-        executable: Option<&str>,
-        entity: Option<&str>,
-        entity_type: Option<&str>,
-        since: Option<&str>,
-        until: Option<&str>,
-        session_filter: Option<&str>,
-        current_session: Option<&str>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<CommandEntityMatch>>;
-    #[allow(clippy::too_many_arguments)]
-    fn insert_conversation(
-        &self,
-        session_id: &str,
-        query: &str,
-        response_type: &str,
-        response: &str,
-        explanation: Option<&str>,
-        executed: bool,
-        pending: bool,
-    ) -> anyhow::Result<i64>;
-    fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()>;
-
-    fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>>;
-    fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
-    fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
-
-    // ── Memory system ──────────────────────────────────
-    fn memory_retrieve_prompt(
-        &self,
-        ctx: &crate::memory::types::MemoryQueryContext,
-    ) -> anyhow::Result<String>;
-    fn memory_search(
-        &self,
-        query: &str,
-        memory_type: Option<MemoryType>,
-        limit: usize,
-    ) -> anyhow::Result<String>;
-    fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
-    fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()>;
-    fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String>;
-    fn memory_retrieve_secret(
-        &self,
-        caption_query: &str,
-        explicit_user_request: Option<&str>,
-    ) -> anyhow::Result<String>;
-    // Note: event recording is routed via daemon requests from query flow; no direct trait use required.
-}
-
-macro_rules! forward_dbaccess_method {
-    (fn $name:ident (&self $(, $arg:ident : $ty:ty )* $(,)? ) -> $return:ty;) => {
+macro_rules! direct_dbaccess_method {
+    ($(#[$meta:meta])* fn $name:ident (&self $(, $arg:ident : $ty:ty )* $(,)? ) -> $return:ty;) => {
+        $(#[$meta])*
         fn $name(&self, $( $arg : $ty ),*) -> $return {
-            crate::db::Db::$name(self, $( $arg ),*).map_err(Into::into)
+            let db = self.require_direct_db(stringify!($name))?;
+            Db::$name(db, $( $arg ),*).map_err(Into::into)
         }
     };
 }
 
-impl DbAccess for Db {
-    forward_dbaccess_method!(
+pub trait DbAccess {
+    fn direct_db(&self) -> Option<&Db> {
+        None
+    }
+
+    fn require_direct_db(&self, operation: &'static str) -> anyhow::Result<&Db> {
+        self.direct_db()
+            .ok_or_else(|| anyhow!("{operation} requires direct Db access"))
+    }
+
+    direct_dbaccess_method!(
         fn get_conversations(
             &self,
             session_id: &str,
             limit: usize,
         ) -> anyhow::Result<Vec<ConversationExchange>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
         fn recent_commands_with_summaries(
             &self,
             session_id: &str,
             limit: usize,
         ) -> anyhow::Result<Vec<CommandWithSummary>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
         fn other_sessions_with_summaries(
             &self,
             session_id: &str,
@@ -121,10 +50,11 @@ impl DbAccess for Db {
             summaries_per_tty: usize,
         ) -> anyhow::Result<Vec<OtherSessionSummary>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
         fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
+        #[allow(clippy::too_many_arguments)]
         fn search_history_advanced(
             &self,
             fts_query: Option<&str>,
@@ -138,7 +68,8 @@ impl DbAccess for Db {
             limit: usize,
         ) -> anyhow::Result<Vec<HistoryMatch>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
+        #[allow(clippy::too_many_arguments)]
         fn search_command_entities(
             &self,
             executable: Option<&str>,
@@ -151,7 +82,8 @@ impl DbAccess for Db {
             limit: usize,
         ) -> anyhow::Result<Vec<CommandEntityMatch>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
+        #[allow(clippy::too_many_arguments)]
         fn insert_conversation(
             &self,
             session_id: &str,
@@ -163,34 +95,34 @@ impl DbAccess for Db {
             pending: bool,
         ) -> anyhow::Result<i64>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
         fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()>;
     );
-    forward_dbaccess_method!(
+
+    direct_dbaccess_method!(
         fn commands_needing_llm_summary(
             &self,
             limit: usize,
         ) -> anyhow::Result<Vec<CommandForSummary>>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
         fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
     );
-    forward_dbaccess_method!(
+    direct_dbaccess_method!(
         fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
     );
 
+    // ── Memory system ──────────────────────────────────
     fn memory_retrieve_prompt(
         &self,
         _ctx: &crate::memory::types::MemoryQueryContext,
     ) -> anyhow::Result<String> {
-        // Direct path: build a minimal prompt with core memory + top semantic.
-        // Full retrieval is only available via the daemon, but MIRIX requires
-        // that core memory and high-access user preferences are always present.
+        let db = self.require_direct_db("memory_retrieve_prompt")?;
         let mut memories = crate::memory::types::RetrievedMemories::default();
-        if let Ok(core) = self.get_core_memory() {
+        if let Ok(core) = db.get_core_memory() {
             memories.core = core;
         }
-        if let Ok(top_sem) = self.list_top_accessed_semantic(5) {
+        if let Ok(top_sem) = db.list_top_accessed_semantic(5) {
             memories.semantic = top_sem;
         }
         let prompt = crate::memory::retrieval::prompt_builder::build_memory_prompt(&memories);
@@ -203,64 +135,63 @@ impl DbAccess for Db {
         memory_type: Option<MemoryType>,
         limit: usize,
     ) -> anyhow::Result<String> {
+        let db = self.require_direct_db("memory_search")?;
         let mut results = serde_json::Map::new();
         let should_search = |mt: MemoryType| memory_type.is_none() || memory_type == Some(mt);
 
-        // Parse temporal expressions to constrain episodic search by time range
         let temporal_range =
             crate::memory::temporal::parse_temporal_expression(query, chrono::Utc::now());
-        // Use space separator to match SQLite's datetime() format: "YYYY-MM-DD HH:MM:SS"
         let since_str =
             temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
         let since_ref = since_str.as_deref();
 
         if should_search(MemoryType::Episodic) {
-            match self.search_episodic_fts_since(query, limit, None, since_ref) {
+            match db.search_episodic_fts_since(query, limit, None, since_ref) {
                 Ok(items) => {
                     results.insert("episodic".into(), serde_json::to_value(&items)?);
                 }
-                Err(e) => {
-                    tracing::debug!("memory_search episodic failed: {e}");
+                Err(error) => {
+                    tracing::debug!("memory_search episodic failed: {error}");
                 }
             }
         }
         if should_search(MemoryType::Semantic) {
-            match self.search_semantic_fts(query, limit) {
+            match db.search_semantic_fts(query, limit) {
                 Ok(items) => {
                     results.insert("semantic".into(), serde_json::to_value(&items)?);
                 }
-                Err(e) => {
-                    tracing::debug!("memory_search semantic failed: {e}");
+                Err(error) => {
+                    tracing::debug!("memory_search semantic failed: {error}");
                 }
             }
         }
         if should_search(MemoryType::Procedural) {
-            match self.search_procedural_fts(query, limit) {
+            match db.search_procedural_fts(query, limit) {
                 Ok(items) => {
                     results.insert("procedural".into(), serde_json::to_value(&items)?);
                 }
-                Err(e) => {
-                    tracing::debug!("memory_search procedural failed: {e}");
+                Err(error) => {
+                    tracing::debug!("memory_search procedural failed: {error}");
                 }
             }
         }
         if should_search(MemoryType::Resource) {
-            match self.search_resource_fts(query, limit) {
+            match db.search_resource_fts(query, limit) {
                 Ok(items) => {
                     results.insert("resource".into(), serde_json::to_value(&items)?);
                 }
-                Err(e) => {
-                    tracing::debug!("memory_search resource failed: {e}");
+                Err(error) => {
+                    tracing::debug!("memory_search resource failed: {error}");
                 }
             }
         }
         if should_search(MemoryType::Knowledge) {
-            match self.search_knowledge_fts(query, limit, &["low", "medium"]) {
+            match db.search_knowledge_fts(query, limit, &["low", "medium"]) {
                 Ok(items) => {
                     results.insert("knowledge".into(), serde_json::to_value(&items)?);
                 }
-                Err(e) => {
-                    tracing::debug!("memory_search knowledge failed: {e}");
+                Err(error) => {
+                    tracing::debug!("memory_search knowledge failed: {error}");
                 }
             }
         }
@@ -268,14 +199,17 @@ impl DbAccess for Db {
     }
 
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
-        self.append_core_block(label, content).map_err(Into::into)
+        let db = self.require_direct_db("memory_core_append")?;
+        db.append_core_block(label, content).map_err(Into::into)
     }
 
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()> {
-        self.update_core_block(label, content).map_err(Into::into)
+        let db = self.require_direct_db("memory_core_rewrite")?;
+        db.update_core_block(label, content).map_err(Into::into)
     }
 
     fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String> {
+        let db = self.require_direct_db("memory_store")?;
         let data: serde_json::Value = serde_json::from_str(data_json)?;
         let op = memory_store_op(memory_type, data)?;
         let id_out = match op {
@@ -285,7 +219,7 @@ impl DbAccess for Db {
                 summary,
                 details,
                 search_keywords,
-            } => self.store_semantic_memory(
+            } => db.store_semantic_memory(
                 &name,
                 &category,
                 &summary,
@@ -298,7 +232,7 @@ impl DbAccess for Db {
                 summary,
                 steps,
                 search_keywords,
-            } => self.store_procedural_memory(
+            } => db.store_procedural_memory(
                 &entry_type,
                 &trigger_pattern,
                 &summary,
@@ -313,7 +247,7 @@ impl DbAccess for Db {
                 summary,
                 content,
                 search_keywords,
-            } => self.store_resource_memory(&ResourceMemoryWrite {
+            } => db.store_resource_memory(&ResourceMemoryWrite {
                 resource_type: &resource_type,
                 file_path: file_path.as_deref(),
                 file_hash: file_hash.as_deref(),
@@ -328,7 +262,7 @@ impl DbAccess for Db {
                 secret_value,
                 sensitivity,
                 search_keywords,
-            } => self.store_knowledge_memory(
+            } => db.store_knowledge_memory(
                 &entry_type,
                 &caption,
                 &secret_value,
@@ -344,13 +278,20 @@ impl DbAccess for Db {
     fn memory_retrieve_secret(
         &self,
         caption_query: &str,
-        _explicit_user_request: Option<&str>,
+        explicit_user_request: Option<&str>,
     ) -> anyhow::Result<String> {
-        let results = self.search_knowledge_fts(caption_query, 3, &["low", "medium", "high"])?;
+        let _ = explicit_user_request;
+        let db = self.require_direct_db("memory_retrieve_secret")?;
+        let results = db.search_knowledge_fts(caption_query, 3, &["low", "medium", "high"])?;
         Ok(serde_json::to_string(&results)?)
     }
+    // Note: event recording is routed via daemon requests from query flow; no direct trait use required.
+}
 
-    // memory_record_event removed from trait
+impl DbAccess for Db {
+    fn direct_db(&self) -> Option<&Db> {
+        Some(self)
+    }
 }
 
 fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::Result<MemoryOp> {
