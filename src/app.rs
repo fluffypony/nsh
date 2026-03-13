@@ -1,71 +1,30 @@
 use clap::Parser;
-use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::cli::{
-    Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, HistoryAction,
-    MemoryAction, ProviderAction, SessionAction,
+    Cli, Commands, ConfigAction, DaemonReadAction, DaemonSendAction, DoctorAction, MemoryAction,
+    ProviderAction,
 };
 use crate::daemon_db::DbAccess;
 
-fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
-    if crate::daemon_client::is_global_daemon_running() {
-        let _ = crate::daemon_client::ensure_daemon_version_matches();
-        return Ok(true);
-    }
-    let _ = crate::daemon_client::ensure_global_daemon_running();
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    if crate::daemon_client::is_global_daemon_running() {
-        return Ok(true);
-    }
-    if json {
-        eprintln!(
-            "{}",
-            serde_json::json!({"type": "error", "message": "nsh is still starting up"})
-        );
-    } else {
-        eprintln!("\x1b[2mnsh is still starting up, try again in a moment.\x1b[0m");
-    }
-    Ok(false)
-}
+mod daemon_runtime;
+mod history;
+mod session;
+mod status;
 
-fn send_to_global_or_fallback(
-    request: &crate::daemon::DaemonRequest,
-) -> anyhow::Result<crate::daemon::DaemonResponse> {
-    #[cfg(unix)]
-    {
-        crate::daemon_client::send_to_global_with_retry(request.clone())
-    }
-    #[cfg(not(unix))]
-    {
-        crate::daemon_client::send_to_global(request)
-    }
-}
-
-fn global_daemon_payload<T: DeserializeOwned>(
-    request: &crate::daemon::DaemonRequest,
-) -> anyhow::Result<T> {
-    send_to_global_or_fallback(request)?.into_payload()
-}
-
-fn optional_global_daemon_payload<T: DeserializeOwned>(
-    request: &crate::daemon::DaemonRequest,
-) -> anyhow::Result<Option<T>> {
-    send_to_global_or_fallback(request)?.into_optional_payload()
-}
-
-/// Send SIGHUP to the running daemon for immediate graceful restart.
-/// Falls back to writing a marker file (for non-Unix).
-fn signal_daemon_restart() {
-    #[cfg(unix)]
-    {
-        if crate::daemon_client::signal_daemon_restart() {
-            return;
-        }
-    }
-    let marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
-    let _ = std::fs::write(&marker, "");
-}
+use self::daemon_runtime::{
+    check_daemon_versions, ensure_daemon_ready, global_daemon_payload,
+    maybe_stage_hook_reload_notice, send_to_global_or_fallback, signal_daemon_restart,
+};
+use self::history::{
+    handle_cost_command, handle_export_command, handle_history_command,
+    handle_history_import_run_command,
+};
+use self::session::{
+    handle_heartbeat_command, handle_redact_next_command, handle_reset_command,
+    handle_session_command,
+};
+use self::status::handle_status_command;
 
 fn handle_cli_proxy_action(action: &str) -> anyhow::Result<()> {
     let request = match action {
@@ -214,16 +173,17 @@ fn handle_init_command(shell: String, hash: bool) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(nsh_dir.join("update_notice"));
     let mut script = crate::init::generate_init_script(&shell);
     if let Ok(config) = crate::config::Config::load()
-        && !config.shell_hooks.iterm2_cwd_reporting {
-            let inject = match shell.as_str() {
-                "zsh" | "bash" => "export NSH_NO_ITERM2_CWD=1\n",
-                "fish" => "set -gx NSH_NO_ITERM2_CWD 1\n",
-                _ => "",
-            };
-            if !inject.is_empty() {
-                script = format!("{inject}{script}");
-            }
+        && !config.shell_hooks.iterm2_cwd_reporting
+    {
+        let inject = match shell.as_str() {
+            "zsh" | "bash" => "export NSH_NO_ITERM2_CWD=1\n",
+            "fish" => "set -gx NSH_NO_ITERM2_CWD 1\n",
+            _ => "",
+        };
+        if !inject.is_empty() {
+            script = format!("{inject}{script}");
         }
+    }
     print!("{script}");
     Ok(())
 }
@@ -301,11 +261,12 @@ async fn handle_query_command(
     )
     .await;
     if let Err(ref error) = result
-        && error.to_string().contains("interrupted") {
-            eprint!("\x1b[?25h\x1b[0m");
-            std::io::Write::flush(&mut std::io::stderr()).ok();
-            std::process::exit(130);
-        }
+        && error.to_string().contains("interrupted")
+    {
+        eprint!("\x1b[?25h\x1b[0m");
+        std::io::Write::flush(&mut std::io::stderr()).ok();
+        std::process::exit(130);
+    }
     result?;
     Ok(())
 }
@@ -364,133 +325,6 @@ fn handle_record_command(input: RecordCommandInput) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_session_command(action: SessionAction) -> anyhow::Result<()> {
-    match action {
-        SessionAction::Start {
-            session,
-            tty,
-            shell,
-            pid,
-        } => {
-            let start_json =
-                serde_json::json!({"session_id": session, "tty": tty, "shell": shell, "pid": pid})
-                    .to_string();
-            crate::debug_io::daemon_log("daemon.log", "session_start", &start_json);
-            let request = crate::daemon::DaemonRequest::CreateSession {
-                session,
-                tty,
-                shell,
-                pid: pid as i64,
-            };
-            if let Err(error) = send_to_global_or_fallback(&request) {
-                tracing::debug!("daemon unavailable for session start: {error}");
-            }
-        }
-        SessionAction::End { session } => {
-            let end_json = serde_json::json!({"session_id": session}).to_string();
-            crate::debug_io::daemon_log("daemon.log", "session_end", &end_json);
-            let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::EndSession {
-                session: session.clone(),
-            });
-            crate::shell_hooks::cleanup_pending_files(&session);
-        }
-        SessionAction::Label { label, session } => {
-            let session_id = session.unwrap_or_else(|| {
-                std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into())
-            });
-            let request = crate::daemon::DaemonRequest::SetSessionLabel {
-                session: session_id,
-                label: label.clone(),
-            };
-            match global_daemon_payload::<crate::daemon::SessionLabelUpdatePayload>(&request) {
-                Ok(response) if response.updated => eprintln!("nsh: session labeled \"{label}\""),
-                _ => eprintln!("nsh: session not found"),
-            }
-        }
-        SessionAction::LastCwd { tty } => {
-            let config = crate::config::Config::load().unwrap_or_default();
-            if !config.context.restore_last_cwd_per_tty {
-                return Ok(());
-            }
-            if let Some(cwd) = crate::fast_cwd::get_tty_cwd(&tty) {
-                println!("{cwd}");
-                return Ok(());
-            }
-            let request = crate::daemon::DaemonRequest::LatestCwdForTty { tty };
-            if let Ok(Some(response)) =
-                optional_global_daemon_payload::<crate::daemon::LatestCwdPayload>(&request)
-                && let Some(cwd) = response.cwd
-            {
-                println!("{cwd}");
-            }
-        }
-        SessionAction::SuppressedExitCodes => {
-            let config = crate::config::Config::load().unwrap_or_default();
-            let codes = config.hints.normalized_suppressed_exit_codes();
-            if !codes.is_empty() {
-                println!(
-                    "{}",
-                    codes
-                        .iter()
-                        .map(std::string::ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-            }
-        }
-        SessionAction::IgnoreExitCode { code } => {
-            let updated = crate::config::add_suppressed_exit_code(code)?;
-            let codes = updated
-                .codes
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            if updated.added {
-                eprintln!("nsh: suppressed exit code {code} for failure hints [{codes}]");
-            } else {
-                eprintln!("nsh: exit code {code} is already suppressed [{codes}]");
-            }
-        }
-    }
-    Ok(())
-}
-
-fn handle_history_command(action: HistoryAction) -> anyhow::Result<()> {
-    match action {
-        HistoryAction::Search { query, limit } => {
-            let request = crate::daemon::DaemonRequest::SearchHistory { query, limit };
-            match global_daemon_payload::<crate::daemon::HistorySearchPayload>(&request) {
-                Ok(response) if response.results.is_empty() => eprintln!("No results found."),
-                Ok(response) => {
-                    for result in response.results {
-                        let code = result
-                            .exit_code
-                            .map(|exit| format!(" (exit {exit})"))
-                            .unwrap_or_default();
-                        println!("[{}]{code} {}", result.started_at, result.cmd_highlight);
-                        if let Some(highlight) = result.output_highlight {
-                            let preview: String = highlight.chars().take(200).collect();
-                            println!("  {preview}");
-                        }
-                    }
-                }
-                Err(error) => eprintln!("nsh: {error}"),
-            }
-        }
-    }
-    Ok(())
-}
-
-fn handle_reset_command() -> anyhow::Result<()> {
-    let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
-    let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::ClearConversations {
-        session: session_id,
-    });
-    eprintln!("nsh: conversation context cleared");
-    Ok(())
-}
-
 fn handle_config_command(action: Option<ConfigAction>) -> anyhow::Result<()> {
     match action {
         Some(ConfigAction::Path) | None => {
@@ -524,35 +358,6 @@ fn handle_config_command(action: Option<ConfigAction>) -> anyhow::Result<()> {
             std::process::Command::new(&editor).arg(&path).status()?;
         }
     }
-    Ok(())
-}
-
-fn handle_cost_command(period: String) -> anyhow::Result<()> {
-    let request = crate::daemon::DaemonRequest::GetUsageStats { period };
-    let stats = match global_daemon_payload::<crate::daemon::UsageStatsPayload>(&request) {
-        Ok(response) if !response.stats.is_empty() => response.stats,
-        _ => {
-            eprintln!("No usage data recorded yet.");
-            return Ok(());
-        }
-    };
-    eprintln!("Model                               Calls  Input Tok  Output Tok  Cost (USD)");
-    eprintln!("─────────────────────────────────────────────────────────────────────────────");
-    let mut total_cost = 0.0_f64;
-    let mut total_calls = 0_i64;
-    for entry in &stats {
-        eprintln!(
-            "{:<35} {:>5}  {:>9}  {:>10}  ${:.4}",
-            entry.model, entry.calls, entry.input_tokens, entry.output_tokens, entry.cost_usd
-        );
-        total_cost += entry.cost_usd;
-        total_calls += entry.calls;
-    }
-    eprintln!("─────────────────────────────────────────────────────────────────────────────");
-    eprintln!(
-        "{:<35} {:>5}                        ${:.4}",
-        "TOTAL", total_calls, total_cost
-    );
     Ok(())
 }
 
@@ -678,18 +483,6 @@ fn handle_doctor_command(
         }
     }
     cleanup_staged_updates();
-    Ok(())
-}
-
-fn handle_heartbeat_command(session: String) {
-    let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::Heartbeat { session });
-}
-
-fn handle_redact_next_command() -> anyhow::Result<()> {
-    let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
-    let flag_path = crate::config::Config::nsh_dir().join(format!("redact_next_{session_id}"));
-    std::fs::write(&flag_path, "")?;
-    eprintln!("nsh: next command output will not be captured");
     Ok(())
 }
 
@@ -1159,11 +952,12 @@ async fn handle_chat_command() -> anyhow::Result<()> {
         }
         if let Ok(metadata) = std::fs::metadata(crate::config::Config::path())
             && let Ok(mtime) = metadata.modified()
-                && last_config_mtime.as_ref() != Some(&mtime)
-                    && let Ok(new_config) = crate::config::Config::load() {
-                        config = new_config;
-                        last_config_mtime = Some(mtime);
-                    }
+            && last_config_mtime.as_ref() != Some(&mtime)
+            && let Ok(new_config) = crate::config::Config::load()
+        {
+            config = new_config;
+            last_config_mtime = Some(mtime);
+        }
         if let Err(error) = crate::query::handle_query(
             line,
             &config,
@@ -1179,175 +973,12 @@ async fn handle_chat_command() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_export_command(format: Option<String>, session: Option<String>) -> anyhow::Result<()> {
-    let session_id = session.unwrap_or_else(|| std::env::var("NSH_SESSION_ID").unwrap_or_default());
-    let request = crate::daemon::DaemonRequest::GetConversations {
-        session: session_id.clone(),
-        limit: 1000,
-        caller: crate::daemon::current_caller_context(),
-    };
-    let conversations = global_daemon_payload::<crate::daemon::ConversationsPayload>(&request)?
-        .conversations;
-    if conversations.is_empty() {
-        eprintln!("No conversations found for session {session_id}");
-    } else {
-        match format.as_deref().unwrap_or("markdown") {
-            "json" => println!("{}", serde_json::to_string_pretty(&conversations)?),
-            _ => {
-                for conversation in &conversations {
-                    let query = conversation.query.as_str();
-                    let response_type = conversation.response_type.as_str();
-                    let response = conversation.response.as_str();
-                    let explanation = conversation.explanation.as_deref().unwrap_or("");
-                    println!("**Q:** {query}\n");
-                    match response_type {
-                        "command" => println!("```bash\n{response}\n```\n{explanation}\n"),
-                        _ => println!("{response}\n"),
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn handle_status_command() -> anyhow::Result<()> {
-    let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(not set)".into());
-    let config = crate::config::Config::load().unwrap_or_default();
-    let build_version = env!("NSH_BUILD_VERSION");
-    let pty_active = std::env::var("NSH_TTY").is_ok();
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
-    let db_path = crate::config::Config::nsh_dir().join("nsh.db");
-    let db_size = std::fs::metadata(&db_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    let db_size_str = if db_size > 1_048_576 {
-        format!("{:.1} MB", db_size as f64 / 1_048_576.0)
-    } else {
-        format!("{:.1} KB", db_size as f64 / 1024.0)
-    };
-
-    let session_label = if session_id != "(not set)" {
-        optional_global_daemon_payload::<crate::daemon::SessionLabelPayload>(
-            &crate::daemon::DaemonRequest::GetSessionLabel {
-                session: session_id.clone(),
-                caller: crate::daemon::current_caller_context(),
-            },
-        )
-        .ok()
-        .flatten()
-        .and_then(|response| response.label)
-    } else {
-        None
-    };
-
-    let global_daemon_status = if crate::daemon_client::is_global_daemon_running() {
-        "running"
-    } else {
-        "not running"
-    };
-
-    eprintln!("nsh status:");
-    eprintln!("  Core:       {build_version}");
-    if let Ok(data) = crate::daemon_client::send_to_global(&crate::daemon::DaemonRequest::Status)
-        .and_then(|response| response.into_payload::<crate::daemon::DaemonStatusPayload>())
-    {
-        if data.build_version.is_empty() {
-            eprintln!("  Daemon:     v{}", data.version);
-        } else {
-            eprintln!("  Daemon:     v{} (build: {})", data.version, data.build_version);
-        }
-    }
-    eprintln!("  Session:    {session_id}");
-    if let Some(label) = session_label {
-        eprintln!("  Label:      {label}");
-    }
-    eprintln!("  Shell:      {shell}");
-    eprintln!("  PTY active: {}", if pty_active { "yes" } else { "no" });
-    eprintln!("  Global daemon: {global_daemon_status}");
-    if crate::daemon_client::is_global_daemon_running()
-        && let Ok(data) = global_daemon_payload::<crate::daemon::CLIProxyApiStatusPayload>(
-            &crate::daemon::DaemonRequest::CLIProxyApiStatus,
-        )
-    {
-            let version = data.version.as_deref().unwrap_or("");
-            let last_check = data.last_update_check.as_deref().unwrap_or("");
-            let last_status = data.last_update_status.as_deref().unwrap_or("");
-            let last_check_pretty = if last_check.is_empty() {
-                String::new()
-            } else if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(last_check) {
-                let now = chrono::Utc::now();
-                let ago = now.signed_duration_since(timestamp.with_timezone(&chrono::Utc));
-                if ago.num_seconds() < 60 {
-                    format!("{}s ago", ago.num_seconds())
-                } else if ago.num_minutes() < 60 {
-                    format!("{}m ago", ago.num_minutes())
-                } else if ago.num_hours() < 48 {
-                    format!("{}h ago", ago.num_hours())
-                } else {
-                    format!("{}d ago", ago.num_days())
-                }
-            } else {
-                last_check.to_string()
-            };
-            if data.running {
-                if let Some(port) = data.port {
-                    eprintln!("  Sidecar:    running on :{port} ({version})");
-                } else {
-                    eprintln!("  Sidecar:    running ({version})");
-                }
-            } else {
-                eprintln!("  Sidecar:    not running");
-            }
-            if !last_check.is_empty() || !last_status.is_empty() {
-                if last_check_pretty.is_empty() {
-                    eprintln!("  Updates:    last_check={last_check} status={last_status}");
-                } else {
-                    eprintln!(
-                        "  Updates:    last_check={last_check} ({last_check_pretty}) status={last_status}"
-                    );
-                }
-            }
-        }
-    eprintln!("  Provider:   {}", config.provider.default);
-    eprintln!("  Model:      {}", config.provider.model);
-    eprintln!("  DB path:    {}", db_path.display());
-    eprintln!("  DB size:    {db_size_str}");
-    let hooks_outdated = std::env::var("NSH_HOOK_HASH")
-        .map(|hash| hash != env!("NSH_HOOK_HASH"))
-        .unwrap_or(false);
-    if hooks_outdated {
-        let notice = crate::config::Config::nsh_dir().join("update_notice");
-        if !notice.exists() {
-            let _ = std::fs::write(&notice, "hooks_updated");
-        }
-    }
-    eprintln!(
-        "  Hooks:      {}",
-        if hooks_outdated {
-            "outdated (auto-refresh pending \u{2014} will reload on next prompt)"
-        } else {
-            "current"
-        }
-    );
-    maybe_stage_hook_reload_notice(std::env::var("NSH_SESSION_ID").ok().as_deref());
-    Ok(())
-}
-
 fn handle_completions_command(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     use clap_complete::generate;
 
     let mut command = crate::cli::Cli::command();
     generate(shell, &mut command, "nsh", &mut std::io::stdout());
-}
-
-fn handle_history_import_run_command() {
-    let result = crate::daemon_client::ensure_global_daemon_running();
-    crate::history_import::clear_import_lock();
-    if let Err(error) = result {
-        tracing::debug!("background history import failed: {error}");
-    }
 }
 
 fn parse_dns_txt_records(raw: &str) -> Vec<(String, String, String)> {
@@ -1610,37 +1241,6 @@ fn redact_config_keys(value: &mut toml::Value) {
             }
         }
         _ => {}
-    }
-}
-
-fn maybe_stage_hook_reload_notice(session: Option<&str>) {
-    if let Ok(env_hash) = std::env::var("NSH_HOOK_HASH")
-        && !env_hash.is_empty() && env_hash != env!("NSH_HOOK_HASH") {
-            let dir = crate::config::Config::nsh_dir();
-            let notice = dir.join("update_notice");
-            let tmp = dir.join("update_notice.tmp");
-            let _ = std::fs::write(&tmp, "hooks_updated");
-            let _ = std::fs::rename(&tmp, &notice);
-            if let Some(session) = session {
-                let message_path = dir.join(format!("nsh_msg_{session}"));
-                let _ = std::fs::write(&message_path, "hooks_updated\n");
-            }
-        }
-}
-
-fn check_daemon_versions(session_id: &str) {
-    let _ = session_id;
-    static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if CHECKED
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-        )
-        .is_ok()
-    {
-        let _ = crate::daemon_client::ensure_daemon_version_matches();
     }
 }
 
