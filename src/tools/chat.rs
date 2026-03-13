@@ -1,4 +1,5 @@
 use crate::daemon_db::DbAccess;
+use crate::tools::{ToolInvocationContext, ToolInvocationResult};
 
 pub fn render_response(response: &str) -> anyhow::Result<()> {
     if crate::streaming::json_output_enabled() {
@@ -18,7 +19,24 @@ pub fn render_response(response: &str) -> anyhow::Result<()> {
 }
 
 /// Handle the `chat` tool: display the response text.
-pub fn execute(
+pub fn invoke(
+    input: &serde_json::Value,
+    ctx: &ToolInvocationContext<'_>,
+) -> anyhow::Result<ToolInvocationResult> {
+    let (db, session_id) = ctx.conversation_state()?;
+    execute(
+        input,
+        ctx.original_query,
+        db,
+        session_id,
+        ctx.private,
+        ctx.config,
+        ctx.render_output,
+    )?;
+    Ok(ToolInvocationResult::success("Message displayed."))
+}
+
+fn execute(
     input: &serde_json::Value,
     original_query: &str,
     db: &dyn DbAccess,

@@ -1,8 +1,19 @@
 use crate::config::Config;
 use crate::provider::{self, ChatRequest, ContentBlock, Message, Role, ToolChoice};
+use crate::tools::{ToolInvocationContext, ToolInvocationResult};
 use serde_json::json;
 
-pub async fn execute(query: &str, config: &Config) -> anyhow::Result<String> {
+pub async fn invoke(
+    input: &serde_json::Value,
+    ctx: &ToolInvocationContext<'_>,
+) -> anyhow::Result<ToolInvocationResult> {
+    let query = input["query"].as_str().unwrap_or("");
+    Ok(ToolInvocationResult::from_result(
+        execute(query, ctx.config).await,
+    ))
+}
+
+async fn execute(query: &str, config: &Config) -> anyhow::Result<String> {
     execute_with_provider_factory(query, config, provider::create_provider).await
 }
 
@@ -283,5 +294,18 @@ mod tests {
                 .contains("Web search requires a search-capable provider/model"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn invoke_wraps_unsupported_config_as_failure_outcome() {
+        let config = Config::default();
+        let ctx = ToolInvocationContext::standalone(&config, false);
+        let outcome = invoke(&serde_json::json!({"query": "find docs"}), &ctx)
+            .await
+            .expect("invoke should succeed");
+
+        let (content, is_error) = outcome.into_outcome_or_failure("web_search").into_parts();
+        assert!(is_error);
+        assert!(content.contains("search-capable provider/model"));
     }
 }

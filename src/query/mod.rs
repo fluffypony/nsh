@@ -32,6 +32,22 @@ fn display_tool_error(error: &str, json_output: bool) {
     }
 }
 
+fn push_wrapped_tool_result(
+    tool_results: &mut Vec<ContentBlock>,
+    tool_use_id: String,
+    tool_name: &str,
+    content: &str,
+    is_error: bool,
+    boundary: &str,
+) {
+    let wrapped = crate::security::wrap_tool_result(tool_name, content, boundary);
+    tool_results.push(ContentBlock::ToolResult {
+        tool_use_id,
+        content: wrapped,
+        is_error,
+    });
+}
+
 /// Wraps a tool future with timeout handling.
 /// In autorun mode: auto-extends once, then returns timeout error.
 /// In interactive mode: prompts user to continue waiting.
@@ -419,6 +435,14 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
     let query = session.prompt.query.as_str();
     let original_query = session.prompt.original_query.as_str();
     let boundary = session.prompt.boundary.as_str();
+    let public_tool_ctx = tools::ToolInvocationContext::query(
+        original_query,
+        db,
+        session_id,
+        opts.private,
+        config,
+        opts.force_autorun,
+    );
     let cancelled = Arc::clone(&session.llm.cancelled);
     let llm = &session.llm.provider;
     let provider = llm.provider();
@@ -721,13 +745,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     },
                 };
                 let retry_request = llm.prepare_request(retry_request);
-                if let Ok(json) = crate::json_extract::extract_with_retry(
-                    provider,
-                    retry_request,
-                    &required,
-                    2,
-                )
-                .await
+                if let Ok(json) =
+                    crate::json_extract::extract_with_retry(provider, retry_request, &required, 2)
+                        .await
                 {
                     if let Some(name) = json
                         .get("tool")
@@ -847,11 +867,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         );
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: crate::security::wrap_tool_result(
-                                name,
-                                &correction,
-                                boundary,
-                            ),
+                            content: crate::security::wrap_tool_result(name, &correction, boundary),
                             is_error: true,
                         });
                         // Only truly abort after 5 repeats
@@ -870,122 +886,94 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                 if name == "store_memory" {
                     let mt = input["memory_type"].as_str().unwrap_or("");
                     if mt == "semantic"
-                        && let Some(data) = input.get("data") {
-                            let parsed_type = crate::memory::types::MemoryType::parse(mt)
-                                .map_err(|e| e.to_string());
-                            let validation = parsed_type.and_then(|pt| {
-                                crate::tools::memory::validate_store_memory_input(pt, data)
-                            });
-                            if let Err(msg) = validation {
-                                let wrapped =
-                                    crate::security::wrap_tool_result(name, &msg, boundary);
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: wrapped,
-                                    is_error: true,
-                                });
-                                if repeat_guard.note_invalid(name, input) {
-                                    eprintln!(
-                                        "\x1b[33mnsh: repeated invalid semantic store_memory; aborting tool loop\x1b[0m"
-                                    );
-                                    abort_tool_loop = true;
-                                    break;
-                                }
-                                continue;
-                            }
-                        }
-                }
-
-                match name.as_str() {
-                    "command" => {
-                        if let Some(reason) = tools::command::reject_reason_for_generated_command(
-                            input["command"].as_str().unwrap_or(""),
-                            query,
-                        ) {
-                            let msg = format!(
-                                "Rejected command tool call: {reason}. Use a concrete shell command or use search_history/chat for non-command questions."
-                            );
+                        && let Some(data) = input.get("data")
+                    {
+                        let parsed_type =
+                            crate::memory::types::MemoryType::parse(mt).map_err(|e| e.to_string());
+                        let validation = parsed_type.and_then(|pt| {
+                            crate::tools::memory::validate_store_memory_input(pt, data)
+                        });
+                        if let Err(msg) = validation {
                             let wrapped = crate::security::wrap_tool_result(name, &msg, boundary);
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: wrapped,
                                 is_error: true,
                             });
+                            if repeat_guard.note_invalid(name, input) {
+                                eprintln!(
+                                    "\x1b[33mnsh: repeated invalid semantic store_memory; aborting tool loop\x1b[0m"
+                                );
+                                abort_tool_loop = true;
+                                break;
+                            }
                             continue;
                         }
-                        match tools::command::execute(
-                            input,
-                            query,
-                            db,
-                            session_id,
-                            opts.private,
-                            config,
-                            opts.force_autorun,
-                        ) {
-                            Err(e) => {
-                                let err_msg = format!("Command tool error: {e}");
-                                display_tool_error(&err_msg, opts.json_output);
-                                let wrapped =
-                                    crate::security::wrap_tool_result(name, &err_msg, boundary);
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: wrapped,
-                                    is_error: true,
-                                });
-                            }
-                            Ok(tools::command::CommandExecutionOutcome::Terminal) => {
-                                has_terminal_tool = true;
-                            }
-                            Ok(tools::command::CommandExecutionOutcome::ContinueWithResult {
-                                content,
-                                is_error,
-                            }) => {
-                                let redacted =
-                                    crate::redact::redact_secrets(&content, &config.redaction);
-                                let sanitized = crate::security::sanitize_tool_output(&redacted);
-                                let wrapped =
-                                    crate::security::wrap_tool_result(name, &sanitized, boundary);
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: wrapped,
-                                    is_error,
-                                });
-                            }
-                        }
                     }
+                }
+
+                match name.as_str() {
+                    "command" => match tools::command::invoke(input, &public_tool_ctx) {
+                        Err(e) => {
+                            let err_msg = format!("Command tool error: {e}");
+                            display_tool_error(&err_msg, opts.json_output);
+                            push_wrapped_tool_result(
+                                &mut tool_results,
+                                id.clone(),
+                                name,
+                                &err_msg,
+                                true,
+                                boundary,
+                            );
+                        }
+                        Ok(tools::ToolInvocationResult::Terminal) => {
+                            has_terminal_tool = true;
+                        }
+                        Ok(result) => {
+                            let (content, is_error) =
+                                result.into_outcome_or_failure(name).into_parts();
+                            let redacted =
+                                crate::redact::redact_secrets(&content, &config.redaction);
+                            let sanitized = crate::security::sanitize_tool_output(&redacted);
+                            push_wrapped_tool_result(
+                                &mut tool_results,
+                                id.clone(),
+                                name,
+                                &sanitized,
+                                is_error,
+                                boundary,
+                            );
+                        }
+                    },
                     "chat" => {
                         let response_text = input["response"].as_str().unwrap_or("").to_string();
-                        match tools::chat::execute(
-                            input,
-                            query,
-                            db,
-                            session_id,
-                            opts.private,
-                            config,
-                            false,
-                        ) {
-                            Ok(()) => {
-                                deferred_chat_renders.push(response_text);
-                                let wrapped = crate::security::wrap_tool_result(
+                        let chat_ctx = public_tool_ctx.with_render_output(false);
+                        match tools::chat::invoke(input, &chat_ctx) {
+                            Ok(result) => {
+                                let (content, is_error) =
+                                    result.into_outcome_or_failure(name).into_parts();
+                                if !is_error {
+                                    deferred_chat_renders.push(response_text);
+                                }
+                                push_wrapped_tool_result(
+                                    &mut tool_results,
+                                    id.clone(),
                                     name,
-                                    "Message displayed.",
+                                    &content,
+                                    is_error,
                                     boundary,
                                 );
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: wrapped,
-                                    is_error: false,
-                                });
                             }
                             Err(e) => {
                                 let err_msg = format!("Error: {e}");
-                                let wrapped =
-                                    crate::security::wrap_tool_result(name, &err_msg, boundary);
-                                tool_results.push(ContentBlock::ToolResult {
-                                    tool_use_id: id.clone(),
-                                    content: wrapped,
-                                    is_error: true,
-                                });
+                                push_wrapped_tool_result(
+                                    &mut tool_results,
+                                    id.clone(),
+                                    name,
+                                    &err_msg,
+                                    true,
+                                    boundary,
+                                );
                             }
                         }
                     }
@@ -1181,8 +1169,13 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         // If limited/no suggestions, perform a quick web discovery to enrich results
                         if suggestions.len() < 2 {
                             let query = format!("{} tool OR MCP server OR skill", goal);
-                            match crate::tools::web_search::execute(&query, config).await {
-                                Ok(text) if !text.trim().is_empty() => {
+                            let search_input = serde_json::json!({ "query": query });
+                            match crate::tools::web_search::invoke(&search_input, &public_tool_ctx)
+                                .await
+                            {
+                                Ok(tools::ToolInvocationResult::Continue(
+                                    tools::ToolInvocationOutcome::Success(text),
+                                )) if !text.trim().is_empty() => {
                                     body.push_str("\n\nWeb discovery hints:\n");
                                     body.push_str(&text);
                                 }
@@ -1320,28 +1313,30 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                 crate::tui::tool_status(&describe_tool_action(&name, &input));
                 match name.as_str() {
                     "search_history" => {
-                        let (content, is_error) =
-                            match tools::search_history::execute(db, &input, config, session_id) {
-                                Ok(c) => (c, false),
-                                Err(e) => {
-                                    let err_msg = format!("{e}");
-                                    display_tool_error(&err_msg, opts.json_output);
-                                    (err_msg, true)
-                                }
-                            };
+                        let outcome = match tools::search_history::invoke(&input, &public_tool_ctx)
+                        {
+                            Ok(result) => result.into_outcome_or_failure(&name),
+                            Err(e) => {
+                                let err_msg = format!("{e}");
+                                display_tool_error(&err_msg, opts.json_output);
+                                tools::ToolInvocationOutcome::failure(err_msg)
+                            }
+                        };
+                        let (content, is_error) = outcome.into_parts();
                         let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                         let sanitized = crate::security::sanitize_tool_output(&redacted);
-                        let wrapped =
-                            crate::security::wrap_tool_result(&name, &sanitized, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id,
-                            content: wrapped,
+                        push_wrapped_tool_result(
+                            &mut tool_results,
+                            id,
+                            &name,
+                            &sanitized,
                             is_error,
-                        });
+                            boundary,
+                        );
                     }
                     "web_search" => {
-                        let q = input["query"].as_str().unwrap_or("").to_string();
                         let ws_config = config.clone();
+                        let ws_input = input.clone();
                         let timeout = input
                             .get("expected_timeout_seconds")
                             .and_then(|v| v.as_u64())
@@ -1349,12 +1344,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
+                            let ctx =
+                                tools::ToolInvocationContext::standalone(&ws_config, force_autorun);
                             let fut = async {
-                                Ok::<crate::tools::ToolInvocationOutcome, anyhow::Error>(
-                                    crate::tools::ToolInvocationOutcome::from_result(
-                                    tools::web_search::execute(&q, &ws_config).await,
-                                    ),
-                                )
+                                tools::web_search::invoke(&ws_input, &ctx)
+                                    .await
+                                    .map(|result| result.into_outcome_or_failure("web_search"))
                             };
                             let result = match execute_with_timeout(
                                 fut,
@@ -1385,8 +1380,8 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             let fut = async {
                                 Ok::<crate::tools::ToolInvocationOutcome, anyhow::Error>(
                                     crate::tools::ToolInvocationOutcome::from_result(
-                                    crate::tools::github::execute(&input_clone, &github_config)
-                                        .await,
+                                        crate::tools::github::execute(&input_clone, &github_config)
+                                            .await,
                                     ),
                                 )
                             };
@@ -1622,9 +1617,10 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         }
                                     }
                                     if let Some((s, d)) = best
-                                        && d <= 2 {
-                                            matched_skill = Some((*s).clone());
-                                        }
+                                        && d <= 2
+                                    {
+                                        matched_skill = Some((*s).clone());
+                                    }
                                 }
                             }
                             if let Some(skill) = matched_skill {
@@ -1727,36 +1723,14 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
 
         // Execute ask_user sequentially
         for (id, name, input) in ask_user_calls {
-            let question = input["question"].as_str().unwrap_or("");
-            let options = input["options"].as_array().map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            });
-            let autorun_timeout = if opts.force_autorun {
-                Some(config.execution.autorun_response_timeout_seconds)
-            } else {
-                None
-            };
-            let default_resp = input["default_response"].as_str();
             eprintln!("  \x1b[2m↳ asking for input...\x1b[0m");
-            let (content, is_error) = match tools::ask_user::execute(
-                question,
-                options.as_deref(),
-                autorun_timeout,
-                default_resp,
-            ) {
-                Ok(c) => (c, false),
+            let (content, is_error) = match tools::ask_user::invoke(&input, &public_tool_ctx) {
+                Ok(result) => result.into_outcome_or_failure(&name).into_parts(),
                 Err(e) => (format!("Error: {e}"), true),
             };
             let redacted = crate::redact::redact_secrets(&content, &config.redaction);
             let sanitized = crate::security::sanitize_tool_output(&redacted);
-            let wrapped = crate::security::wrap_tool_result(&name, &sanitized, boundary);
-            tool_results.push(ContentBlock::ToolResult {
-                tool_use_id: id,
-                content: wrapped,
-                is_error,
-            });
+            push_wrapped_tool_result(&mut tool_results, id, &name, &sanitized, is_error, boundary);
         }
 
         if tool_results.is_empty() {
@@ -2896,9 +2870,10 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
     match name {
         "search_history" => {
             if let Some(q) = input["query"].as_str()
-                && !q.trim().is_empty() {
-                    return format!("searching history for \"{q}\"");
-                }
+                && !q.trim().is_empty()
+            {
+                return format!("searching history for \"{q}\"");
+            }
             if let Some(cmd) = input["command"].as_str() {
                 if let Some(entity) = input["entity"].as_str() {
                     return format!("searching history for `{cmd}` targets matching \"{entity}\"");

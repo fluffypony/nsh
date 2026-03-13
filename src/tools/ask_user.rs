@@ -1,6 +1,47 @@
+use crate::tools::{ToolInvocationContext, ToolInvocationResult};
 use std::io::{self, Write};
 
-pub fn execute(
+struct AskUserRequest {
+    question: String,
+    options: Option<Vec<String>>,
+    default_response: Option<String>,
+}
+
+pub fn invoke(
+    input: &serde_json::Value,
+    ctx: &ToolInvocationContext<'_>,
+) -> anyhow::Result<ToolInvocationResult> {
+    let request = build_request(input);
+    let autorun_timeout = if ctx.force_autorun {
+        Some(ctx.config.execution.autorun_response_timeout_seconds)
+    } else {
+        None
+    };
+
+    Ok(ToolInvocationResult::from_result(execute(
+        &request.question,
+        request.options.as_deref(),
+        autorun_timeout,
+        request.default_response.as_deref(),
+    )))
+}
+
+fn build_request(input: &serde_json::Value) -> AskUserRequest {
+    AskUserRequest {
+        question: input["question"].as_str().unwrap_or("").to_string(),
+        options: input.get("options").and_then(|value| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+        }),
+        default_response: input["default_response"].as_str().map(ToOwned::to_owned),
+    }
+}
+
+fn execute(
     question: &str,
     options: Option<&[String]>,
     autorun_timeout: Option<u64>,
@@ -86,9 +127,11 @@ where
 fn resolve_option_selection(input: String, options: Option<&[String]>) -> String {
     if let Some(opts) = options
         && let Ok(num) = input.parse::<usize>()
-            && num >= 1 && num <= opts.len() {
-                return opts[num - 1].clone();
-            }
+        && num >= 1
+        && num <= opts.len()
+    {
+        return opts[num - 1].clone();
+    }
     input
 }
 
@@ -138,5 +181,21 @@ mod tests {
         let out = read_user_input_inner(false, move || std::fs::File::open(path))
             .expect("read from fake tty");
         assert_eq!(out, "picked option");
+    }
+
+    #[test]
+    fn build_request_collects_strings_and_ignores_other_option_values() {
+        let request = build_request(&serde_json::json!({
+            "question": "Continue?",
+            "options": ["yes", 7, "no"],
+            "default_response": "yes",
+        }));
+
+        assert_eq!(request.question, "Continue?");
+        assert_eq!(
+            request.options,
+            Some(vec!["yes".to_string(), "no".to_string()])
+        );
+        assert_eq!(request.default_response.as_deref(), Some("yes"));
     }
 }

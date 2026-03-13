@@ -1,10 +1,26 @@
 use crate::daemon_db::DbAccess;
 use crate::security::RiskLevel;
+use crate::tools::{ToolInvocationContext, ToolInvocationOutcome, ToolInvocationResult};
 use std::path::Path;
 
-pub enum CommandExecutionOutcome {
+enum CommandExecutionOutcome {
     Terminal,
     ContinueWithResult { content: String, is_error: bool },
+}
+
+impl From<CommandExecutionOutcome> for ToolInvocationResult {
+    fn from(value: CommandExecutionOutcome) -> Self {
+        match value {
+            CommandExecutionOutcome::Terminal => Self::terminal(),
+            CommandExecutionOutcome::ContinueWithResult { content, is_error } => {
+                Self::Continue(if is_error {
+                    ToolInvocationOutcome::failure(content)
+                } else {
+                    ToolInvocationOutcome::success(content)
+                })
+            }
+        }
+    }
 }
 
 struct CommandRequest {
@@ -29,7 +45,24 @@ struct ImmediateCommandResult {
 
 /// Handle the `command` tool: display explanation, write command to
 /// pending file for shell hook to prefill.
-pub fn execute(
+pub fn invoke(
+    input: &serde_json::Value,
+    ctx: &ToolInvocationContext<'_>,
+) -> anyhow::Result<ToolInvocationResult> {
+    let (db, session_id) = ctx.conversation_state()?;
+    execute(
+        input,
+        ctx.original_query,
+        db,
+        session_id,
+        ctx.private,
+        ctx.config,
+        ctx.force_autorun,
+    )
+    .map(ToolInvocationResult::from)
+}
+
+fn execute(
     input: &serde_json::Value,
     original_query: &str,
     db: &dyn DbAccess,
@@ -173,22 +206,21 @@ fn confirm_command_request(
             eprintln!("\x1b[1;31mCommand: {}\x1b[0m", request.command);
             eprint!("\x1b[1;31mType 'yes' to proceed: \x1b[0m");
             let stdin_is_terminal = std::io::stdin().is_terminal();
-            let input_line =
-                match crate::tools::read_terminal_line_with(stdin_is_terminal, || {
-                    std::fs::File::open("/dev/tty")
-                }) {
-                    Ok(line) => line,
-                    Err(err) => {
-                        if stdin_is_terminal {
-                            return Err(err.into());
-                        }
-                        eprintln!("Cannot confirm — stdin is piped. Aborting dangerous command.");
-                        return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
+            let input_line = match crate::tools::read_terminal_line_with(stdin_is_terminal, || {
+                std::fs::File::open("/dev/tty")
+            }) {
+                Ok(line) => line,
+                Err(err) => {
+                    if stdin_is_terminal {
+                        return Err(err.into());
+                    }
+                    eprintln!("Cannot confirm — stdin is piped. Aborting dangerous command.");
+                    return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
                             content: "DENIED: dangerous command not approved by user. Try a different approach.".into(),
                             is_error: true,
                         }));
-                    }
-                };
+                }
+            };
             if input_line.trim() != "yes" {
                 eprintln!("Aborted.");
                 return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
@@ -878,9 +910,11 @@ fn choose_candidate_from_cd_history(
 
 fn extract_cd_target_from_command(command: &str) -> Option<String> {
     if let Ok(parts) = shell_words::split(command)
-        && parts.first().map(|p| p.as_str()) == Some("cd") && parts.len() >= 2 {
-            return Some(parts[1].clone());
-        }
+        && parts.first().map(|p| p.as_str()) == Some("cd")
+        && parts.len() >= 2
+    {
+        return Some(parts[1].clone());
+    }
     None
 }
 

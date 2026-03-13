@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::daemon_db::DbAccess;
+use crate::tools::{ToolInvocationContext, ToolInvocationResult};
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -13,7 +14,17 @@ struct EntitySearchIntent {
     latest_only: bool,
 }
 
-pub fn execute(
+pub fn invoke(
+    input: &serde_json::Value,
+    ctx: &ToolInvocationContext<'_>,
+) -> anyhow::Result<ToolInvocationResult> {
+    let (db, session_id) = ctx.conversation_state()?;
+    Ok(ToolInvocationResult::from_result(execute(
+        db, input, ctx.config, session_id,
+    )))
+}
+
+fn execute(
     db: &dyn DbAccess,
     input: &serde_json::Value,
     config: &Config,
@@ -331,28 +342,32 @@ fn infer_command_from_query(query: &str) -> Option<String> {
         Regex::new(r"\bthat\s+([a-z0-9_./-]+)\s+has\s+been\s+used\s+with\b").unwrap();
     if let Some(caps) = used_with_re.captures(&lower)
         && let Some(m) = caps.get(1)
-            && let Some(cmd) = normalize_query_command_word(m.as_str()) {
-                return Some(cmd);
-            }
+        && let Some(cmd) = normalize_query_command_word(m.as_str())
+    {
+        return Some(cmd);
+    }
 
     let words = tokenize_query_words(&lower);
     for (idx, word) in words.iter().enumerate() {
         if matches!(word.as_str(), "into" | "from" | "to" | "with")
-            && let Some(cmd) = find_previous_command_candidate(&words, idx) {
-                return Some(cmd);
-            }
+            && let Some(cmd) = find_previous_command_candidate(&words, idx)
+        {
+            return Some(cmd);
+        }
     }
 
     if let Some(i_idx) = words.iter().position(|w| w == "i")
-        && let Some(cmd) = find_next_command_candidate(&words, i_idx + 1) {
-            return Some(cmd);
-        }
+        && let Some(cmd) = find_next_command_candidate(&words, i_idx + 1)
+    {
+        return Some(cmd);
+    }
 
     for word in &words {
         if let Some(cmd) = normalize_query_command_word(word)
-            && !is_query_stopword(&cmd) {
-                return Some(cmd);
-            }
+            && !is_query_stopword(&cmd)
+        {
+            return Some(cmd);
+        }
     }
     None
 }
@@ -360,9 +375,10 @@ fn infer_command_from_query(query: &str) -> Option<String> {
 fn find_previous_command_candidate(words: &[String], idx: usize) -> Option<String> {
     for word in words[..idx].iter().rev() {
         if let Some(cmd) = normalize_query_command_word(word)
-            && !is_query_stopword(&cmd) {
-                return Some(cmd);
-            }
+            && !is_query_stopword(&cmd)
+        {
+            return Some(cmd);
+        }
     }
     None
 }
@@ -370,9 +386,10 @@ fn find_previous_command_candidate(words: &[String], idx: usize) -> Option<Strin
 fn find_next_command_candidate(words: &[String], start: usize) -> Option<String> {
     for word in words.iter().skip(start) {
         if let Some(cmd) = normalize_query_command_word(word)
-            && !is_query_stopword(&cmd) {
-                return Some(cmd);
-            }
+            && !is_query_stopword(&cmd)
+        {
+            return Some(cmd);
+        }
     }
     None
 }
@@ -423,21 +440,24 @@ fn extract_query_entity(query: &str) -> Option<String> {
     let user_host_re = Regex::new(r"\b[a-zA-Z0-9._-]+@([a-zA-Z0-9._:-]+)\b").unwrap();
     if let Some(caps) = user_host_re.captures(query)
         && let Some(m) = caps.get(1)
-            && let Some(v) = normalize_query_entity(m.as_str()) {
-                return Some(v);
-            }
+        && let Some(v) = normalize_query_entity(m.as_str())
+    {
+        return Some(v);
+    }
 
     let ipv4_re = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
     if let Some(m) = ipv4_re.find(query)
-        && let Some(v) = normalize_query_entity(m.as_str()) {
-            return Some(v);
-        }
+        && let Some(v) = normalize_query_entity(m.as_str())
+    {
+        return Some(v);
+    }
 
     let host_re = Regex::new(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\.[a-zA-Z]{2,}\b").unwrap();
     if let Some(m) = host_re.find(query)
-        && let Some(v) = normalize_query_entity(m.as_str()) {
-            return Some(v);
-        }
+        && let Some(v) = normalize_query_entity(m.as_str())
+    {
+        return Some(v);
+    }
     None
 }
 
@@ -454,9 +474,11 @@ fn normalize_query_entity(entity: &str) -> Option<String> {
         host = &host[1..host.len() - 1];
     }
     if let Some((h, port)) = host.rsplit_once(':')
-        && !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
-            host = h;
-        }
+        && !h.contains(':')
+        && port.chars().all(|c| c.is_ascii_digit())
+    {
+        host = h;
+    }
     let host = host.trim_matches('.');
     if host.is_empty() {
         return None;
@@ -739,6 +761,24 @@ mod tests {
         let input = serde_json::json!({});
         let result = execute(&db, &input, &config, "sess1").unwrap();
         assert!(result.contains("No search criteria provided"));
+    }
+
+    #[test]
+    fn test_invoke_wraps_search_result_as_success_outcome() {
+        let db = test_db();
+        insert_test_commands(&db);
+        let config = Config::default();
+        let input = serde_json::json!({"query": "cargo"});
+        let ctx =
+            ToolInvocationContext::query("find cargo", &db, "test_sess", false, &config, false);
+
+        let outcome = invoke(&input, &ctx)
+            .expect("invoke should succeed")
+            .into_outcome_or_failure("search_history");
+
+        let (content, is_error) = outcome.into_parts();
+        assert!(!is_error);
+        assert!(content.contains("cargo"));
     }
 
     #[test]

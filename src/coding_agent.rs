@@ -382,26 +382,10 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
                     execute_bash(input, config, cancelled, &working_dir).await,
                 )),
                 "ask_user" => {
-                    let q = input["question"].as_str().unwrap_or("");
-                    let options = input["options"].as_array().map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect::<Vec<_>>()
-                    });
-                    let default_resp = input["default_response"].as_str();
-                    let autorun_timeout = if force_autorun {
-                        Some(config.execution.autorun_response_timeout_seconds)
-                    } else {
-                        None
-                    };
-                    Ok(crate::tools::ToolInvocationOutcome::from_result(
-                        crate::tools::ask_user::execute(
-                            q,
-                            options.as_deref(),
-                            autorun_timeout,
-                            default_resp,
-                        ),
-                    ))
+                    let ctx =
+                        crate::tools::ToolInvocationContext::standalone(config, force_autorun);
+                    Ok(crate::tools::ask_user::invoke(input, &ctx)?
+                        .into_outcome_or_failure("ask_user"))
                 }
                 "done" => {
                     if let Some(paths) = input["files_changed"].as_array() {
