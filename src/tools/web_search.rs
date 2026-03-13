@@ -18,6 +18,20 @@ where
     let ws_model = &config.web_search.model;
     let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
     let model_caps = crate::config::model_capabilities(ws_provider_name, ws_model);
+    if !model_caps.supports_web_search {
+        if ws_provider_name == "ollama" {
+            anyhow::bail!(
+                "Web search not available with provider ollama. \
+                 Configure [web_search] provider to use openrouter or another search-capable provider."
+            );
+        }
+        anyhow::bail!(
+            "Web search requires a search-capable provider/model. \
+             Configure [web_search] to use a supported combination instead of {}/{}.",
+            ws_provider_name,
+            ws_model
+        );
+    }
     // Transport metadata is only a routing hint for compat providers.
     // If auth/config for that provider is incomplete, let the provider factory
     // surface the real error instead of failing test and stub call paths early.
@@ -26,18 +40,7 @@ where
             .ok()
             .flatten()
             .map(|cfg| cfg.base_url);
-    let provider = match provider_factory(ws_provider_name, &provider_cfg) {
-        Ok(p) => p,
-        Err(e) => {
-            if ws_provider_name == "ollama" {
-                anyhow::bail!(
-                    "Web search not available with provider ollama. \
-                     Configure [web_search] provider to use openrouter or another search-capable provider."
-                );
-            }
-            return Err(e);
-        }
-    };
+    let provider = provider_factory(ws_provider_name, &provider_cfg)?;
     let provider = provider::ActiveProvider::new(provider, transport_base_url);
 
     let request = ChatRequest {
@@ -133,12 +136,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_joins_text_blocks_and_sets_request_fields() {
-        let config = Config::default();
+        let mut config = Config::default();
+        config.web_search.provider = "openai".into();
+        config.web_search.model = "gpt-5.2".into();
         let captured_request: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
         let captured_request_for_provider = Arc::clone(&captured_request);
 
         let output = execute_with_provider_factory("find docs", &config, |provider_name, _cfg| {
-            assert_eq!(provider_name, "openrouter");
+            assert_eq!(provider_name, "openai");
             Ok(Box::new(StubProvider {
                 captured_request: Some(Arc::clone(&captured_request_for_provider)),
                 message: Message {
@@ -177,7 +182,7 @@ mod tests {
                 .extra_body
                 .as_ref()
                 .and_then(|extra| extra.get("web_search_options"))
-                .is_none()
+                .is_some()
         );
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, Role::User));
@@ -226,7 +231,9 @@ mod tests {
 
     #[tokio::test]
     async fn execute_returns_default_when_provider_returns_no_text() {
-        let config = Config::default();
+        let mut config = Config::default();
+        config.web_search.provider = "openai".into();
+        config.web_search.model = "gpt-5.2".into();
         let output = execute_with_provider_factory("find docs", &config, |_name, _cfg| {
             Ok(Box::new(StubProvider {
                 captured_request: None,
@@ -249,7 +256,8 @@ mod tests {
     #[tokio::test]
     async fn execute_propagates_non_ollama_factory_errors() {
         let mut config = Config::default();
-        config.web_search.provider = "openrouter".into();
+        config.web_search.provider = "openai".into();
+        config.web_search.model = "gpt-5.2".into();
 
         let err = execute_with_provider_factory("find docs", &config, |_name, _cfg| {
             anyhow::bail!("provider init failed")
@@ -258,5 +266,22 @@ mod tests {
         .expect_err("expected error");
 
         assert!(err.to_string().contains("provider init failed"));
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_non_search_capable_provider_model() {
+        let config = Config::default();
+
+        let err = execute_with_provider_factory("find docs", &config, |_name, _cfg| {
+            anyhow::bail!("provider factory should not be called")
+        })
+        .await
+        .expect_err("expected unsupported capability error");
+
+        assert!(
+            err.to_string()
+                .contains("Web search requires a search-capable provider/model"),
+            "unexpected error: {err}"
+        );
     }
 }

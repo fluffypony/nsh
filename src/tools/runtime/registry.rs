@@ -263,7 +263,9 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             name: "web_search".into(),
             description: "Search the web. Use this PROACTIVELY to resolve ambiguous \
                           package names, find installation methods, debug errors, or \
-                          verify the canonical approach before acting."
+                          verify the canonical approach before acting. Requires a \
+                          search-capable [web_search] provider/model configuration; \
+                          otherwise the tool will fail instead of guessing from model memory."
                 .into(),
             parameters: json!({
                 "type": "object",
