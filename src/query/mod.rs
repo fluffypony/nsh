@@ -1041,9 +1041,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         });
                     }
                     "manage_config" => {
-                        let result = tools::manage_config::execute(input);
+                        let result = tools::manage_config::execute_outcome(input);
                         let (content, is_error) = match result {
-                            Ok(msg) => (msg, false),
+                            Ok(outcome) => outcome.into_parts(),
                             Err(e) => (format!("Error: {e}"), true),
                         };
                         let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
@@ -1054,9 +1054,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         });
                     }
                     "install_skill" => {
-                        let result = tools::install_skill::execute(input);
+                        let result = tools::install_skill::execute_outcome(input);
                         let (content, is_error) = match result {
-                            Ok(msg) => (msg, false),
+                            Ok(outcome) => outcome.into_parts(),
                             Err(e) => (format!("Error: {e}"), true),
                         };
                         let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
@@ -1067,9 +1067,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         });
                     }
                     "install_mcp_server" => {
-                        let result = tools::install_mcp::execute(input, config);
+                        let result = tools::install_mcp::execute_outcome(input, config);
                         let (content, is_error) = match result {
-                            Ok(msg) => (msg, false),
+                            Ok(outcome) => outcome.into_parts(),
                             Err(e) => (format!("Error: {e}"), true),
                         };
                         let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
@@ -2877,9 +2877,7 @@ fn execute_sync_tool_outcome(
         "glob" => tools::glob::execute_outcome_with_access(input, sfa_read),
         "run_command" => {
             let cmd = input["command"].as_str().unwrap_or("");
-            Ok(tools::ToolInvocationOutcome::from_result(
-                tools::run_command::execute(cmd, config),
-            ))
+            tools::run_command::execute_outcome(cmd, config)
         }
         "man_page" => {
             let cmd = input["command"].as_str().unwrap_or("");

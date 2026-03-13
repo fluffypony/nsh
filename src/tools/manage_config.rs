@@ -1,3 +1,4 @@
+use crate::tools::ToolInvocationOutcome;
 use std::io::{self, Write};
 
 enum ManageConfigRequest {
@@ -113,6 +114,18 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             eprintln!("{green}✓ config key removed: {key}{reset}");
             Ok(format!("Successfully removed config key: {key}"))
         }
+    }
+}
+
+pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
+    match execute(input)? {
+        message
+            if message == "Config change declined"
+                || message == "User declined or protected setting" =>
+        {
+            Ok(ToolInvocationOutcome::failure(message))
+        }
+        message => Ok(ToolInvocationOutcome::success(message)),
     }
 }
 

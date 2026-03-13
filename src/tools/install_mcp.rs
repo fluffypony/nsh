@@ -1,3 +1,4 @@
+use crate::tools::ToolInvocationOutcome;
 use std::io::{self, Write};
 
 pub fn execute(
@@ -147,6 +148,18 @@ pub fn execute(
     eprintln!("{green}✓ MCP server '{name}' added to config{reset}");
     eprintln!("{dim}Restart your shell or run a new query for it to become active.{reset}");
     Ok("MCP server configuration applied".to_string())
+}
+
+pub fn execute_outcome(
+    input: &serde_json::Value,
+    config: &crate::config::Config,
+) -> anyhow::Result<ToolInvocationOutcome> {
+    match execute(input, config)? {
+        message if message == "Config change declined" => {
+            Ok(ToolInvocationOutcome::failure(message))
+        }
+        message => Ok(ToolInvocationOutcome::success(message)),
+    }
 }
 
 #[cfg(test)]

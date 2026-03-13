@@ -1,3 +1,4 @@
+use crate::tools::ToolInvocationOutcome;
 use std::io::{self, Write};
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
@@ -49,6 +50,13 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 
     eprintln!("{green}✓ skill '{name}' removed{reset}");
     Ok(format!("Successfully uninstalled skill '{name}'"))
+}
+
+pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
+    match execute(input)? {
+        message if message == "Uninstall declined" => Ok(ToolInvocationOutcome::failure(message)),
+        message => Ok(ToolInvocationOutcome::success(message)),
+    }
 }
 
 #[cfg(test)]

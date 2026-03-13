@@ -1,3 +1,4 @@
+use crate::tools::ToolInvocationOutcome;
 use std::io::{self, Write};
 
 #[derive(Debug, PartialEq)]
@@ -39,6 +40,15 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     match parse_request(input)? {
         InstallSkillRequest::Repo(request) => install_repo_skill(&request),
         InstallSkillRequest::Manual(request) => install_manual_skill(&request),
+    }
+}
+
+pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
+    match execute(input)? {
+        message if message == "Config change declined" => {
+            Ok(ToolInvocationOutcome::failure(message))
+        }
+        message => Ok(ToolInvocationOutcome::success(message)),
     }
 }
 

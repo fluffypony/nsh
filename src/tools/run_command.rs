@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::redact;
+use crate::tools::ToolInvocationOutcome;
 use std::process::{Command, Stdio};
 
 fn is_shell_operator_token(token: &str) -> bool {
@@ -26,20 +27,23 @@ fn expand_tilde_token(token: &str) -> String {
 }
 
 pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
+    crate::tools::outcome_to_content(execute_outcome(cmd, config))
+}
+
+pub fn execute_outcome(cmd: &str, config: &Config) -> anyhow::Result<ToolInvocationOutcome> {
     #[cfg(not(windows))]
     let mut parsed_argv = {
         let trimmed = cmd.trim();
         if trimmed.is_empty() {
-            return Ok("DENIED: empty command".to_string());
+            return Ok(ToolInvocationOutcome::failure("DENIED: empty command"));
         }
 
         let parsed = shell_words::split(trimmed)
             .map_err(|e| anyhow::anyhow!("failed to parse command: {e}"))?;
         if parsed.iter().any(|token| is_shell_operator_token(token)) {
-            return Ok(
-                "DENIED: run_command does not support shell operators (&&, ||, |, ;, redirects). Use the `command` tool with pending=true instead."
-                    .to_string(),
-            );
+            return Ok(ToolInvocationOutcome::failure(
+                "DENIED: run_command does not support shell operators (&&, ||, |, ;, redirects). Use the `command` tool with pending=true instead.",
+            ));
         }
         parsed
     };
@@ -60,7 +64,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 eprint!("  {}Type 'yes' to proceed: {}", th.error, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_yes_confirmation() {
-                    return Ok("DENIED: dangerous command not approved".to_string());
+                    return Ok(ToolInvocationOutcome::failure(
+                        "DENIED: dangerous command not approved",
+                    ));
                 }
             }
             crate::security::RiskLevel::Elevated => {
@@ -73,7 +79,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 eprint!("  {}Allow? [y/N]{} ", th.warning, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_confirmation() {
-                    return Ok("DENIED: command not approved".to_string());
+                    return Ok(ToolInvocationOutcome::failure(
+                        "DENIED: command not approved",
+                    ));
                 }
             }
             crate::security::RiskLevel::Safe => {
@@ -82,7 +90,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                 eprint!("  {}Allow? [Y/n]{} ", th.warning, th.reset);
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 if !crate::tools::read_tty_confirmation_default_yes() {
-                    return Ok("DENIED: command not approved".to_string());
+                    return Ok(ToolInvocationOutcome::failure(
+                        "DENIED: command not approved",
+                    ));
                 }
             }
         }
@@ -98,7 +108,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
     ];
     let lower_cmd = cmd.to_lowercase();
     if sensitive_paths.iter().any(|p| lower_cmd.contains(p)) {
-        return Ok("DENIED: command references a sensitive path".to_string());
+        return Ok(ToolInvocationOutcome::failure(
+            "DENIED: command references a sensitive path",
+        ));
     }
 
     // Guard: reject known-interactive commands that should use the `command` tool
@@ -125,10 +137,10 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
         .iter()
         .any(|p| lower_cmd.starts_with(p) || lower_cmd.contains(&format!(" {}", p.trim())))
     {
-        return Ok(format!(
+        return Ok(ToolInvocationOutcome::failure(format!(
             "DENIED: '{}' may require interactive input or shell state. Use the `command` tool with pending=true instead.",
             cmd.split_whitespace().take(3).collect::<Vec<_>>().join(" ")
-        ));
+        )));
     }
 
     #[cfg(windows)]
@@ -175,10 +187,10 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                         if !crate::tools::read_tty_confirmation_default_yes() {
                             let _ = pumped.child.kill();
                             let _ = pumped.child.wait();
-                            return Ok(format!(
+                            return Ok(ToolInvocationOutcome::failure(format!(
                                 "Command timed out after {}s. User cancelled.",
                                 timeout_secs
-                            ));
+                            )));
                         } else {
                             start = std::time::Instant::now();
                         }
@@ -204,7 +216,10 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
     }
     result.push_str(&format!("\n[exit code: {}]", exit_code));
 
-    Ok(redact::redact_secrets(&result, &config.redaction))
+    Ok(ToolInvocationOutcome::success(redact::redact_secrets(
+        &result,
+        &config.redaction,
+    )))
 }
 
 #[cfg(test)]
