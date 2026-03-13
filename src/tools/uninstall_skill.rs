@@ -1,5 +1,4 @@
 use crate::tools::ToolInvocationOutcome;
-use std::io::{self, Write};
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
@@ -33,11 +32,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         return Ok(format!("No skill files found for '{name}'"));
     }
 
-    eprint!("{bold_yellow}Proceed? [y/N]{reset} ");
-    io::stderr().flush()?;
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+    if !crate::tools::prompt_tty_confirmation(&format!(
+        "{bold_yellow}Proceed? [y/N]{reset} "
+    ))? {
         return Ok("Uninstall declined".into());
     }
 

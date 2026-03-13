@@ -30,6 +30,8 @@ pub(crate) use runtime::process_pump;
 pub use runtime::registry::{ToolDefinition, all_tool_definitions};
 pub use runtime::timeout_policy::default_timeout_for_tool;
 pub use runtime::tty_prompts::{
+    prompt_tty_confirmation, prompt_tty_confirmation_default_yes, prompt_tty_confirmation_safe,
+    prompt_tty_yes_confirmation,
     read_tty_confirmation, read_tty_confirmation_default_yes, read_tty_confirmation_safe,
     read_tty_yes_confirmation, read_user_input_with_timeout,
 };

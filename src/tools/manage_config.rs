@@ -1,5 +1,4 @@
 use crate::tools::ToolInvocationOutcome;
-use std::io::{self, Write};
 
 enum ManageConfigRequest {
     Set {
@@ -67,12 +66,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             }
             eprintln!("  {green}New: {toml_value}{reset}");
             eprintln!();
-            eprint!("{bold_yellow}Apply? [y/N]{reset} ");
-            io::stderr().flush()?;
-
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            if !crate::tools::prompt_tty_confirmation(&format!(
+                "{bold_yellow}Apply? [y/N]{reset} "
+            ))? {
                 eprintln!("{dim}config change declined{reset}");
                 return Ok("Config change declined".to_string());
             }
@@ -99,12 +95,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             eprintln!("{bold_yellow}nsh config removal:{reset}");
             eprintln!("  {red}Remove key: {key}{reset}");
             eprintln!();
-            eprint!("{bold_yellow}Apply? [y/N]{reset} ");
-            io::stderr().flush()?;
-
-            let mut answer = String::new();
-            io::stdin().read_line(&mut answer)?;
-            if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            if !crate::tools::prompt_tty_confirmation(&format!(
+                "{bold_yellow}Apply? [y/N]{reset} "
+            ))? {
                 eprintln!("{dim}config change declined{reset}");
                 return Ok("Config change declined".to_string());
             }

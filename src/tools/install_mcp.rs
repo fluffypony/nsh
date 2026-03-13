@@ -1,5 +1,4 @@
 use crate::tools::ToolInvocationOutcome;
-use std::io::{self, Write};
 
 pub fn execute(
     input: &serde_json::Value,
@@ -121,12 +120,9 @@ pub fn execute(
     }
     eprintln!("  Timeout:   {timeout}s");
     eprintln!();
-    eprint!("{bold_yellow}Add to config? [y/N]{reset} ");
-    io::stderr().flush()?;
-
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+    if !crate::tools::prompt_tty_confirmation(&format!(
+        "{bold_yellow}Add to config? [y/N]{reset} "
+    ))? {
         eprintln!("{dim}MCP server installation declined{reset}");
         return Ok("Config change declined".to_string());
     }

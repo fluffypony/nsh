@@ -10,6 +10,13 @@ fn is_default_yes_confirmation_accepted(line: &str) -> bool {
     !matches!(line.trim().to_ascii_lowercase().as_str(), "n" | "no")
 }
 
+fn print_confirmation_prompt(prompt: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    eprint!("{prompt}");
+    std::io::stderr().flush()
+}
+
 pub fn read_tty_confirmation() -> bool {
     use std::io::{BufRead, IsTerminal};
 
@@ -35,6 +42,11 @@ pub fn read_tty_confirmation() -> bool {
         }
     };
     is_confirmation_accepted(&line)
+}
+
+pub fn prompt_tty_confirmation(prompt: &str) -> std::io::Result<bool> {
+    print_confirmation_prompt(prompt)?;
+    Ok(read_tty_confirmation())
 }
 
 /// Strict confirmation that only accepts "yes".
@@ -66,6 +78,11 @@ pub fn read_tty_yes_confirmation() -> bool {
     is_yes_confirmation_accepted(&line)
 }
 
+pub fn prompt_tty_yes_confirmation(prompt: &str) -> std::io::Result<bool> {
+    print_confirmation_prompt(prompt)?;
+    Ok(read_tty_yes_confirmation())
+}
+
 /// Like read_tty_confirmation but defaults to "No" when a read error occurs.
 /// Useful for potentially dangerous defaults where we should not auto-approve.
 pub fn read_tty_confirmation_default_yes() -> bool {
@@ -95,6 +112,11 @@ pub fn read_tty_confirmation_default_yes() -> bool {
     is_default_yes_confirmation_accepted(&line)
 }
 
+pub fn prompt_tty_confirmation_default_yes(prompt: &str) -> std::io::Result<bool> {
+    print_confirmation_prompt(prompt)?;
+    Ok(read_tty_confirmation_default_yes())
+}
+
 /// Read confirmation from /dev/tty directly, avoiding stdin conflicts
 /// with child processes that inherit stdin. Returns true if user presses
 /// Enter or 'y'; false on 'n'/'no' or read failure.
@@ -113,6 +135,11 @@ pub fn read_tty_confirmation_safe() -> bool {
         }
         Err(_) => false,
     }
+}
+
+pub fn prompt_tty_confirmation_safe(prompt: &str) -> std::io::Result<bool> {
+    print_confirmation_prompt(prompt)?;
+    Ok(read_tty_confirmation_safe())
 }
 
 /// Read a single line of user input with a timeout (in seconds).

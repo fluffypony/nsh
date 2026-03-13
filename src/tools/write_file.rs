@@ -1,6 +1,7 @@
 use crate::daemon_db::DbAccess;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::io::Write;
 
 pub(crate) fn trash_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -91,9 +92,11 @@ pub(crate) fn validate_path_with_access(
                         "\x1b[1;33m⚠ '{}' is in a sensitive directory\x1b[0m",
                         path.display()
                     );
-                    eprint!("\x1b[1;33mAllow write? [y/N]\x1b[0m ");
-                    let _ = std::io::Write::flush(&mut std::io::stderr());
-                    if crate::tools::read_tty_confirmation() {
+                    if crate::tools::prompt_tty_confirmation(
+                        "\x1b[1;33mAllow write? [y/N]\x1b[0m ",
+                    )
+                    .unwrap_or(false)
+                    {
                         break;
                     }
                 }
@@ -281,12 +284,7 @@ pub fn execute(
     if auto_approve {
         eprintln!("\x1b[2m(auto-approved in autorun mode)\x1b[0m");
     } else {
-        eprint!("Write this file? [y/N] ");
-        io::stderr().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        let answer = answer.trim().to_lowercase();
-        if answer != "y" && answer != "yes" {
+        if !crate::tools::prompt_tty_confirmation("Write this file? [y/N] ")? {
             eprintln!("Aborted.");
             return Ok(());
         }

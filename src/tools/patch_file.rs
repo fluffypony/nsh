@@ -2,9 +2,10 @@ use crate::daemon_db::DbAccess;
 use crate::tools::write_file::{
     backup_to_trash, expand_tilde, validate_path_with_access, write_nofollow,
 };
-use std::io::{self, Write};
 #[cfg(test)]
 use crate::tools::write_file::trash_dir;
+#[cfg(test)]
+use std::io::Write;
 #[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
@@ -139,12 +140,9 @@ pub fn execute(
     if auto_approve {
         eprintln!("\x1b[2m(auto-approved in autorun mode)\x1b[0m");
     } else {
-        eprint!("{bold_yellow}Apply this patch? [y/N]{reset} ");
-        io::stderr().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        let answer = answer.trim().to_lowercase();
-        if answer != "y" && answer != "yes" {
+        if !crate::tools::prompt_tty_confirmation(&format!(
+            "{bold_yellow}Apply this patch? [y/N]{reset} "
+        ))? {
             eprintln!("{dim}patch declined{reset}");
             if !private {
                 db.insert_conversation(

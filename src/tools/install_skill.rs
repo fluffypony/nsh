@@ -1,5 +1,4 @@
 use crate::tools::ToolInvocationOutcome;
-use std::io::{self, Write};
 
 #[derive(Debug, PartialEq)]
 enum InstallSkillRequest {
@@ -190,12 +189,9 @@ fn install_repo_skill(request: &RepoInstallRequest) -> anyhow::Result<String> {
     }
 
     eprintln!();
-    eprint!("{bold_yellow}Install? [y/N]{reset} ");
-    io::stderr().flush()?;
-
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+    if !crate::tools::prompt_tty_confirmation(&format!(
+        "{bold_yellow}Install? [y/N]{reset} "
+    ))? {
         eprintln!("{dim}skill installation declined{reset}");
         return Ok("Config change declined".to_string());
     }
@@ -331,12 +327,9 @@ fn install_manual_skill(request: &ManualSkillRequest) -> anyhow::Result<String> 
     }
 
     eprintln!();
-    eprint!("{bold_yellow}Install? [y/N]{reset} ");
-    io::stderr().flush()?;
-
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+    if !crate::tools::prompt_tty_confirmation(&format!(
+        "{bold_yellow}Install? [y/N]{reset} "
+    ))? {
         eprintln!("{dim}skill installation declined{reset}");
         return Ok("Config change declined".to_string());
     }
