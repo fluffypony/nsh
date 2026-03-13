@@ -26,10 +26,6 @@ fn expand_tilde_token(token: &str) -> String {
     token.to_string()
 }
 
-pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
-    crate::tools::outcome_to_content(execute_outcome(cmd, config))
-}
-
 pub fn execute_outcome(cmd: &str, config: &Config) -> anyhow::Result<ToolInvocationOutcome> {
     #[cfg(not(windows))]
     let mut parsed_argv = {
@@ -232,17 +228,21 @@ mod tests {
         config
     }
 
+    fn execute_content(cmd: &str, config: &Config) -> String {
+        execute_outcome(cmd, config).unwrap().into_content()
+    }
+
     #[test]
     fn test_run_command_denied() {
         let config = test_config_with_allowlist(vec!["echo".into()]);
-        let result = execute("rm -rf /", &config).unwrap();
+        let result = execute_content("rm -rf /", &config);
         assert!(result.contains("DENIED"));
     }
 
     #[test]
     fn test_run_command_allowed() {
         let config = test_config_with_allowlist(vec!["echo".into()]);
-        let result = execute("echo hello", &config).unwrap();
+        let result = execute_content("echo hello", &config);
         assert!(result.contains("hello"));
         assert!(result.contains("[exit code: 0]"));
     }
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn test_run_command_sensitive_path_denied() {
         let config = test_config_with_allowlist(vec!["cat".into()]);
-        let result = execute("cat ~/.ssh/id_rsa", &config).unwrap();
+        let result = execute_content("cat ~/.ssh/id_rsa", &config);
         assert!(result.contains("DENIED"));
         assert!(result.contains("sensitive path"));
     }
@@ -258,14 +258,14 @@ mod tests {
     #[test]
     fn test_run_command_with_stderr() {
         let config = test_config_with_allowlist(vec!["ls".into()]);
-        let result = execute("ls /nonexistent_path_xyz_12345", &config).unwrap();
+        let result = execute_content("ls /nonexistent_path_xyz_12345", &config);
         assert!(result.contains("--- stderr ---"));
     }
 
     #[test]
     fn test_run_command_shell_operators_denied() {
         let config = test_config_with_allowlist(vec!["*".into()]);
-        let result = execute("mkdir -p ~/tmp/nsh-test && echo ok", &config).unwrap();
+        let result = execute_content("mkdir -p ~/tmp/nsh-test && echo ok", &config);
         assert!(result.contains("DENIED"));
         assert!(result.contains("does not support shell operators"));
     }
