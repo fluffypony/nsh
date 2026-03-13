@@ -1,13 +1,19 @@
 use serde::de::DeserializeOwned;
 
-pub(super) fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
-    if crate::daemon_client::is_global_daemon_running() {
-        let _ = crate::daemon_client::ensure_daemon_version_matches();
-        return Ok(true);
+pub(super) fn bootstrap_global_daemon() -> anyhow::Result<()> {
+    if !crate::daemon_client::is_global_daemon_running() {
+        crate::daemon_client::ensure_global_daemon_running()?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    let _ = crate::daemon_client::ensure_global_daemon_running();
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    if crate::daemon_client::is_global_daemon_running() {
+    if !crate::daemon_client::is_global_daemon_running() {
+        anyhow::bail!("nsh is still starting up");
+    }
+    crate::daemon_client::ensure_daemon_version_matches()?;
+    Ok(())
+}
+
+pub(super) fn ensure_daemon_ready(json: bool) -> anyhow::Result<bool> {
+    if bootstrap_global_daemon().is_ok() {
         return Ok(true);
     }
     if json {
@@ -37,12 +43,14 @@ pub(super) fn send_to_global_or_fallback(
 pub(super) fn global_daemon_payload<T: DeserializeOwned>(
     request: &crate::daemon::DaemonRequest,
 ) -> anyhow::Result<T> {
+    bootstrap_global_daemon()?;
     send_to_global_or_fallback(request)?.into_payload()
 }
 
 pub(super) fn optional_global_daemon_payload<T: DeserializeOwned>(
     request: &crate::daemon::DaemonRequest,
 ) -> anyhow::Result<Option<T>> {
+    bootstrap_global_daemon()?;
     send_to_global_or_fallback(request)?.into_optional_payload()
 }
 
@@ -71,21 +79,5 @@ pub(super) fn maybe_stage_hook_reload_notice(session: Option<&str>) {
             let message_path = dir.join(format!("nsh_msg_{session}"));
             let _ = std::fs::write(&message_path, "hooks_updated\n");
         }
-    }
-}
-
-pub(super) fn check_daemon_versions(session_id: &str) {
-    let _ = session_id;
-    static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if CHECKED
-        .compare_exchange(
-            false,
-            true,
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-        )
-        .is_ok()
-    {
-        let _ = crate::daemon_client::ensure_daemon_version_matches();
     }
 }

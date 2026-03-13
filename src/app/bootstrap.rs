@@ -9,6 +9,7 @@ pub(super) fn handle_cli_proxy_action(action: &str) -> anyhow::Result<()> {
             return Ok(());
         }
     };
+    super::daemon_runtime::bootstrap_global_daemon()?;
     let response = super::daemon_runtime::send_to_global_or_fallback(&request)?;
     match response {
         crate::daemon::DaemonResponse::Ok { data: Some(data) } => println!("{data}"),

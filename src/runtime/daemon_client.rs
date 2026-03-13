@@ -9,8 +9,6 @@ use std::time::Duration;
 use std::os::unix::net::UnixStream;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
-#[cfg(not(test))]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_DAEMON_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -180,7 +178,6 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
             Err(e) => {
                 if attempt < 2 {
                     tracing::debug!("send_to_global attempt {attempt} failed: {e}, retrying...");
-                    let _ = ensure_global_daemon_running();
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 last_err = Some(e);
@@ -192,26 +189,6 @@ pub fn send_to_global(request: &DaemonRequest) -> anyhow::Result<DaemonResponse>
 
 #[cfg(unix)]
 fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
-    // Before issuing the real request, check daemon version and attempt graceful restart once if mismatched.
-    // Skip during tests to avoid extra connections breaking single-accept mocks.
-    #[cfg(not(test))]
-    {
-        // Protect against re-entrancy because ensure_daemon_version_matches internally sends a request as well.
-        static ENSURE_VERSION_GUARD: AtomicBool = AtomicBool::new(false);
-        let entered = ENSURE_VERSION_GUARD
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        if entered {
-            // Also allow disabling via env for custom harnesses
-            let skip = std::env::var("NSH_SKIP_DAEMON_VERSION").is_ok()
-                || std::env::var("NSH_TEST_MODE").ok().as_deref() == Some("1");
-            if !skip {
-                let _ = ensure_daemon_version_matches();
-            }
-            ENSURE_VERSION_GUARD.store(false, Ordering::SeqCst);
-        }
-    }
-
     let socket_path = crate::daemon::global_daemon_socket_path();
     let mut stream = UnixStream::connect(&socket_path)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -375,7 +352,7 @@ pub fn signal_daemon_restart() -> bool {
 }
 
 /// Send a request to the global daemon with retry logic for transient failures
-/// (e.g., during daemon restarts). Auto-starts daemon on later retries.
+/// (e.g., during daemon restarts). Transport retries stay side-effect free.
 #[cfg(unix)]
 pub fn send_to_global_with_retry(request: DaemonRequest) -> anyhow::Result<DaemonResponse> {
     let overall_start = std::time::Instant::now();
@@ -397,9 +374,6 @@ pub fn send_to_global_with_retry(request: DaemonRequest) -> anyhow::Result<Daemo
                 }
                 let delay = std::time::Duration::from_millis(200 * (attempt as u64 + 1));
                 std::thread::sleep(delay);
-                if attempt >= 1 {
-                    let _ = ensure_global_daemon_running();
-                }
                 tracing::debug!(
                     "daemon connection retry {}/{}: {}",
                     attempt + 1,

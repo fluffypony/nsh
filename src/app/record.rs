@@ -22,7 +22,6 @@ pub(super) fn handle_record_command(input: RecordCommandInput) -> anyhow::Result
         pid,
         shell,
     } = input;
-    let session_for_checks = session.clone();
     super::daemon_runtime::maybe_stage_hook_reload_notice(Some(&session));
     let request = crate::daemon::DaemonRequest::Record {
         session: session.clone(),
@@ -48,6 +47,5 @@ pub(super) fn handle_record_command(input: RecordCommandInput) -> anyhow::Result
         }
         _ => {}
     }
-    super::daemon_runtime::check_daemon_versions(&session_for_checks);
     Ok(())
 }

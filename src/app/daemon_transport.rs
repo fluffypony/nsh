@@ -115,7 +115,6 @@ pub(super) fn handle_daemon_send_command(action: DaemonSendAction) -> anyhow::Re
             }
         },
     }
-    super::daemon_runtime::check_daemon_versions(&session_id);
     Ok(())
 }
 
