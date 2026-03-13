@@ -370,6 +370,94 @@ impl DaemonResponse {
 }
 
 #[cfg(test)]
+fn db_round_trip<T>(
+    db_tx: &std::sync::mpsc::Sender<DbCommand>,
+    build: impl FnOnce(
+        std::sync::mpsc::Sender<anyhow::Result<T>>,
+    ) -> (DbCommand, Option<DbCommand>),
+    on_success: impl FnOnce(T) -> DaemonResponse,
+) -> DaemonResponse {
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let (command, follow_up) = build(reply_tx);
+    if db_tx.send(command).is_err() {
+        return DaemonResponse::error("DB thread unavailable");
+    }
+    if let Some(command) = follow_up {
+        let _ = db_tx.send(command);
+    }
+
+    match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(Ok(value)) => on_success(value),
+        Ok(Err(error)) => DaemonResponse::error(format!("{error}")),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => DaemonResponse::error("DB timeout"),
+        Err(_) => DaemonResponse::error("DB thread hung up"),
+    }
+}
+
+#[cfg(test)]
+fn must_route_through_global_daemon(request: &DaemonRequest) -> bool {
+    matches!(
+        request,
+        DaemonRequest::CreateSession { .. }
+            | DaemonRequest::EndSession { .. }
+            | DaemonRequest::SetSessionLabel { .. }
+            | DaemonRequest::LatestCwdForTty { .. }
+            | DaemonRequest::ClearConversations { .. }
+            | DaemonRequest::GetConversations { .. }
+            | DaemonRequest::SearchHistory { .. }
+            | DaemonRequest::GetUsageStats { .. }
+            | DaemonRequest::InsertConversation { .. }
+            | DaemonRequest::InsertUsage { .. }
+            | DaemonRequest::UpdateConversationResult { .. }
+            | DaemonRequest::FindPendingConversation { .. }
+            | DaemonRequest::GetMeta { .. }
+            | DaemonRequest::SetMeta { .. }
+            | DaemonRequest::GetSessionLabel { .. }
+            | DaemonRequest::RecentCommandsWithSummaries { .. }
+            | DaemonRequest::OtherSessionsWithSummaries { .. }
+            | DaemonRequest::SearchHistoryAdvanced { .. }
+            | DaemonRequest::SearchCommandEntities { .. }
+            | DaemonRequest::CommandCount
+            | DaemonRequest::GetSystemInfo
+            | DaemonRequest::CleanupOrphanedSessions
+            | DaemonRequest::Prune { .. }
+            | DaemonRequest::RebuildFts
+            | DaemonRequest::RunDoctor { .. }
+            | DaemonRequest::UpdateSummary { .. }
+            | DaemonRequest::MarkSummaryError { .. }
+            | DaemonRequest::UpdateUsageCost { .. }
+            | DaemonRequest::CommandsNeedingSummary { .. }
+            | DaemonRequest::CommandsNeedingLlmSummary { .. }
+            | DaemonRequest::MarkUnsummarizedForLlm
+            | DaemonRequest::BackfillEntities
+            | DaemonRequest::GenerateSummaries
+            | DaemonRequest::EnsureCLIProxyApi
+            | DaemonRequest::CLIProxyApiStatus
+            | DaemonRequest::CLIProxyApiRestart
+            | DaemonRequest::StopCLIProxyApi
+            | DaemonRequest::CheckForUpdates
+            | DaemonRequest::MemoryRecordEvent { .. }
+            | DaemonRequest::MemoryFlushIngestion
+            | DaemonRequest::MemoryIngestBatch { .. }
+            | DaemonRequest::MemoryRetrieve { .. }
+            | DaemonRequest::MemorySearch { .. }
+            | DaemonRequest::MemoryGetCore
+            | DaemonRequest::MemoryCoreAppend { .. }
+            | DaemonRequest::MemoryCoreRewrite { .. }
+            | DaemonRequest::MemoryStore { .. }
+            | DaemonRequest::MemoryDelete { .. }
+            | DaemonRequest::MemoryRetrieveSecret { .. }
+            | DaemonRequest::MemoryRunDecay
+            | DaemonRequest::MemoryRunReflection
+            | DaemonRequest::MemoryBootstrapScan
+            | DaemonRequest::MemoryStats
+            | DaemonRequest::MemoryExportAll
+            | DaemonRequest::MemoryClearAll { .. }
+            | DaemonRequest::MemoryClearByType { .. }
+    )
+}
+
+#[cfg(test)]
 pub fn handle_daemon_request(
     request: DaemonRequest,
     capture: &Mutex<crate::pump::CaptureEngine>,
@@ -401,51 +489,41 @@ pub fn handle_daemon_request(
                 .ok()
                 .and_then(|mut eng| eng.capture_since_mark(max_output_bytes));
             let final_output = output.or(captured);
-            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-            let cmd = DbCommand::Record {
-                session,
-                command,
-                cwd,
-                exit_code,
-                started_at,
-                tty,
-                pid,
-                shell,
-                duration_ms,
-                output: final_output,
-                reply: reply_tx,
-            };
-            if db_tx.send(cmd).is_err() {
-                return DaemonResponse::error("DB thread unavailable");
-            }
-            match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Ok(id)) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
-                Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    DaemonResponse::error("DB timeout")
-                }
-                Err(_) => DaemonResponse::error("DB thread hung up"),
-            }
+            db_round_trip(
+                db_tx,
+                |reply| {
+                    (
+                        DbCommand::Record {
+                            session,
+                            command,
+                            cwd,
+                            exit_code,
+                            started_at,
+                            tty,
+                            pid,
+                            shell,
+                            duration_ms,
+                            output: final_output,
+                            reply,
+                        },
+                        None,
+                    )
+                },
+                |id| DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
+            )
         }
 
         DaemonRequest::Heartbeat { session } => {
-            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-            let cmd = DbCommand::Heartbeat {
-                session,
-                reply: reply_tx,
-            };
-            if db_tx.send(cmd).is_err() {
-                return DaemonResponse::error("DB thread unavailable");
-            }
-            let _ = db_tx.send(DbCommand::GenerateSummaries);
-            match reply_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Ok(())) => DaemonResponse::ok(),
-                Ok(Err(e)) => DaemonResponse::error(format!("{e}")),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    DaemonResponse::error("DB timeout")
-                }
-                Err(_) => DaemonResponse::error("DB thread hung up"),
-            }
+            db_round_trip(
+                db_tx,
+                |reply| {
+                    (
+                        DbCommand::Heartbeat { session, reply },
+                        Some(DbCommand::GenerateSummaries),
+                    )
+                },
+                |_| DaemonResponse::ok(),
+            )
         }
 
         DaemonRequest::Scrollback { max_lines } => match capture.lock() {
@@ -494,64 +572,8 @@ pub fn handle_daemon_request(
             DaemonResponse::error("not yet implemented")
         }
 
-        // New DB operations - forwarded to global daemon, not handled per-session
-        DaemonRequest::CreateSession { .. }
-        | DaemonRequest::EndSession { .. }
-        | DaemonRequest::SetSessionLabel { .. }
-        | DaemonRequest::LatestCwdForTty { .. }
-        | DaemonRequest::ClearConversations { .. }
-        | DaemonRequest::GetConversations { .. }
-        | DaemonRequest::SearchHistory { .. }
-        | DaemonRequest::GetUsageStats { .. }
-        | DaemonRequest::InsertConversation { .. }
-        | DaemonRequest::InsertUsage { .. }
-        | DaemonRequest::UpdateConversationResult { .. }
-        | DaemonRequest::FindPendingConversation { .. }
-        | DaemonRequest::GetMeta { .. }
-        | DaemonRequest::SetMeta { .. }
-        | DaemonRequest::GetSessionLabel { .. }
-        | DaemonRequest::RecentCommandsWithSummaries { .. }
-        | DaemonRequest::OtherSessionsWithSummaries { .. }
-        | DaemonRequest::SearchHistoryAdvanced { .. }
-        | DaemonRequest::SearchCommandEntities { .. }
-        | DaemonRequest::CommandCount
-        | DaemonRequest::GetSystemInfo
-        | DaemonRequest::CleanupOrphanedSessions
-        | DaemonRequest::Prune { .. }
-        | DaemonRequest::RebuildFts
-        | DaemonRequest::RunDoctor { .. }
-        | DaemonRequest::UpdateSummary { .. }
-        | DaemonRequest::MarkSummaryError { .. }
-        | DaemonRequest::UpdateUsageCost { .. }
-        | DaemonRequest::CommandsNeedingSummary { .. }
-        | DaemonRequest::CommandsNeedingLlmSummary { .. }
-        | DaemonRequest::MarkUnsummarizedForLlm
-        | DaemonRequest::BackfillEntities
-        | DaemonRequest::GenerateSummaries
-        // Sidecar/updates are not handled in per-session daemon
-        | DaemonRequest::EnsureCLIProxyApi
-        | DaemonRequest::CLIProxyApiStatus
-        | DaemonRequest::CLIProxyApiRestart
-        | DaemonRequest::StopCLIProxyApi
-        | DaemonRequest::CheckForUpdates
-        | DaemonRequest::MemoryRecordEvent { .. }
-        | DaemonRequest::MemoryFlushIngestion
-        | DaemonRequest::MemoryIngestBatch { .. }
-        | DaemonRequest::MemoryRetrieve { .. }
-        | DaemonRequest::MemorySearch { .. }
-        | DaemonRequest::MemoryGetCore
-        | DaemonRequest::MemoryCoreAppend { .. }
-        | DaemonRequest::MemoryCoreRewrite { .. }
-        | DaemonRequest::MemoryStore { .. }
-        | DaemonRequest::MemoryDelete { .. }
-        | DaemonRequest::MemoryRetrieveSecret { .. }
-        | DaemonRequest::MemoryRunDecay
-        | DaemonRequest::MemoryRunReflection
-        | DaemonRequest::MemoryBootstrapScan
-        | DaemonRequest::MemoryStats
-        | DaemonRequest::MemoryExportAll
-        | DaemonRequest::MemoryClearAll { .. }
-        | DaemonRequest::MemoryClearByType { .. } => {
+        other => {
+            debug_assert!(must_route_through_global_daemon(&other));
             DaemonResponse::error("operation must be routed through global daemon")
         }
     }
@@ -785,6 +807,16 @@ pub fn global_daemon_lock_path() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EnvVarGuard;
+    use serial_test::serial;
+
+    fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().expect("temp home");
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        (home, home_guard, xdg_config_guard, xdg_data_guard)
+    }
 
     #[test]
     fn test_default_max_lines() {
@@ -2004,7 +2036,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_daemon_socket_and_pid_paths_share_parent() {
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
         let sock = daemon_socket_path("s1");
         let pid = daemon_pid_path("s1");
         assert_eq!(sock.parent(), pid.parent());
