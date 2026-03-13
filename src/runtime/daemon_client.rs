@@ -435,7 +435,59 @@ mod tests {
     mod unix_tests {
         use super::super::*;
         use crate::daemon::{DAEMON_PROTOCOL_VERSION, DaemonRequest, DaemonResponse};
+        use crate::test_support::EnvVarGuard;
+        use serial_test::serial;
         use std::os::unix::net::UnixListener;
+        use std::path::{Path, PathBuf};
+
+        fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+            let home = tempfile::Builder::new()
+                .prefix("nsh-")
+                .tempdir_in("/tmp")
+                .expect("temp home");
+            let home_guard = EnvVarGuard::set("HOME", home.path());
+            let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+            let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+            (home, home_guard, xdg_config_guard, xdg_data_guard)
+        }
+
+        fn daemon_socket_fixture(session_id: &str) -> (PathBuf, UnixListener) {
+            let sock_path = crate::daemon::daemon_socket_path(session_id);
+            if let Some(parent) = sock_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            let _ = std::fs::remove_file(&sock_path);
+            let listener = UnixListener::bind(&sock_path).unwrap();
+            (sock_path, listener)
+        }
+
+        fn write_mock_response(stream: &mut UnixStream, response: DaemonResponse) {
+            let mut response_json = serde_json::to_string(&response).unwrap();
+            response_json.push('\n');
+            stream.write_all(response_json.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        }
+
+        fn spawn_session_daemon(
+            session_id: &str,
+            handle_request: impl FnOnce(serde_json::Value, &mut UnixStream) + Send + 'static,
+        ) -> (PathBuf, std::thread::JoinHandle<()>) {
+            let (sock_path, listener) = daemon_socket_fixture(session_id);
+            let handler = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let mut stream = stream;
+                handle_request(request, &mut stream);
+            });
+            (sock_path, handler)
+        }
+
+        fn cleanup_socket(sock_path: &Path) {
+            let _ = std::fs::remove_file(sock_path);
+        }
 
         #[test]
         fn send_request_fails_when_no_socket() {
@@ -455,169 +507,68 @@ mod tests {
         }
 
         #[test]
+        #[serial]
         fn send_request_includes_protocol_version() {
-            let dir = tempfile::tempdir().unwrap();
-            let sock_path = dir.path().join("test.sock");
-            let listener = UnixListener::bind(&sock_path).unwrap();
-
-            let sock = sock_path.clone();
-            let handler = std::thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(&stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
-                assert_eq!(parsed["v"], DAEMON_PROTOCOL_VERSION);
-
-                let resp = DaemonResponse::ok();
-                let mut resp_json = serde_json::to_string(&resp).unwrap();
-                resp_json.push('\n');
-                use std::io::Write;
-                let mut w = &stream;
-                w.write_all(resp_json.as_bytes()).unwrap();
-                w.flush().unwrap();
+            let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+            let session_id = format!("pv-{}", std::process::id());
+            let (sock_path, handler) = spawn_session_daemon(&session_id, |request, stream| {
+                assert_eq!(request["type"], "status");
+                assert_eq!(request["v"], DAEMON_PROTOCOL_VERSION);
+                write_mock_response(stream, DaemonResponse::ok());
             });
 
-            let mut stream = UnixStream::connect(&sock).unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-
-            let request = DaemonRequest::Status;
-            let mut json_val = serde_json::to_value(&request).unwrap();
-            if let serde_json::Value::Object(ref mut map) = json_val {
-                map.insert("v".into(), serde_json::json!(DAEMON_PROTOCOL_VERSION));
-            }
-            let mut json = serde_json::to_string(&json_val).unwrap();
-            json.push('\n');
-            stream.write_all(json.as_bytes()).unwrap();
-            stream.flush().unwrap();
-
-            let mut reader = BufReader::new(&stream);
-            let mut response_line = String::new();
-            reader.read_line(&mut response_line).unwrap();
-            let resp: DaemonResponse = serde_json::from_str(&response_line).unwrap();
-            assert!(matches!(resp, DaemonResponse::Ok { .. }));
-
+            let resp = send_request(&session_id, &DaemonRequest::Status).unwrap();
+            cleanup_socket(&sock_path);
             handler.join().unwrap();
+            assert!(matches!(resp, DaemonResponse::Ok { .. }));
         }
 
         #[test]
+        #[serial]
         fn send_request_roundtrip_with_mock_server() {
-            let dir = tempfile::tempdir().unwrap();
-            let sock_path = dir.path().join("roundtrip.sock");
-            let listener = UnixListener::bind(&sock_path).unwrap();
-
-            let sock = sock_path.clone();
-            let handler = std::thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(&stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-
-                let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
-                assert_eq!(parsed["type"], "heartbeat");
-                assert_eq!(parsed["session_id"], "sess-42");
-
-                let resp =
-                    DaemonResponse::ok_with_data(serde_json::json!({"received": parsed["type"]}));
-                let mut resp_json = serde_json::to_string(&resp).unwrap();
-                resp_json.push('\n');
-                use std::io::Write;
-                let mut w = &stream;
-                w.write_all(resp_json.as_bytes()).unwrap();
-                w.flush().unwrap();
-            });
-
-            let mut stream = UnixStream::connect(&sock).unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-
+            let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+            let session_id = format!("rt-{}", std::process::id());
             let request = DaemonRequest::Heartbeat {
                 session: "sess-42".into(),
             };
-            let mut json_val = serde_json::to_value(&request).unwrap();
-            if let serde_json::Value::Object(ref mut map) = json_val {
-                map.insert("v".into(), serde_json::json!(DAEMON_PROTOCOL_VERSION));
-            }
-            let mut json = serde_json::to_string(&json_val).unwrap();
-            json.push('\n');
-            stream.write_all(json.as_bytes()).unwrap();
-            stream.flush().unwrap();
+            let (sock_path, handler) = spawn_session_daemon(&session_id, |parsed, stream| {
+                assert_eq!(parsed["type"], "heartbeat");
+                assert_eq!(parsed["session_id"], "sess-42");
+                write_mock_response(
+                    stream,
+                    DaemonResponse::ok_with_data(serde_json::json!({"received": parsed["type"]})),
+                );
+            });
 
-            let mut reader = BufReader::new(&stream);
-            let mut response_line = String::new();
-            reader.read_line(&mut response_line).unwrap();
-            let resp: DaemonResponse = serde_json::from_str(&response_line).unwrap();
+            let resp = send_request(&session_id, &request).unwrap();
+            cleanup_socket(&sock_path);
+            handler.join().unwrap();
             match resp {
                 DaemonResponse::Ok { data: Some(d) } => {
                     assert_eq!(d["received"], "heartbeat");
                 }
                 _ => panic!("expected Ok with data"),
             }
-
-            handler.join().unwrap();
         }
 
         #[test]
+        #[serial]
         fn send_request_error_response_from_server() {
-            let dir = tempfile::tempdir().unwrap();
-            let sock_path = dir.path().join("error.sock");
-            let listener = UnixListener::bind(&sock_path).unwrap();
-
-            let sock = sock_path.clone();
-            let handler = std::thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(&stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-
-                let resp = DaemonResponse::error("test error message");
-                let mut resp_json = serde_json::to_string(&resp).unwrap();
-                resp_json.push('\n');
-                use std::io::Write;
-                let mut w = &stream;
-                w.write_all(resp_json.as_bytes()).unwrap();
-                w.flush().unwrap();
+            let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+            let session_id = format!("er-{}", std::process::id());
+            let (sock_path, handler) = spawn_session_daemon(&session_id, |_request, stream| {
+                write_mock_response(stream, DaemonResponse::error("test error message"));
             });
 
-            let mut stream = UnixStream::connect(&sock).unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-
-            let request = DaemonRequest::Status;
-            let mut json_val = serde_json::to_value(&request).unwrap();
-            if let serde_json::Value::Object(ref mut map) = json_val {
-                map.insert("v".into(), serde_json::json!(DAEMON_PROTOCOL_VERSION));
-            }
-            let mut json = serde_json::to_string(&json_val).unwrap();
-            json.push('\n');
-            stream.write_all(json.as_bytes()).unwrap();
-            stream.flush().unwrap();
-
-            let mut reader = BufReader::new(&stream);
-            let mut response_line = String::new();
-            reader.read_line(&mut response_line).unwrap();
-            let resp: DaemonResponse = serde_json::from_str(&response_line).unwrap();
+            let resp = send_request(&session_id, &DaemonRequest::Status).unwrap();
+            cleanup_socket(&sock_path);
+            handler.join().unwrap();
             match resp {
                 DaemonResponse::Error { message } => {
                     assert_eq!(message, "test error message");
                 }
                 _ => panic!("expected Error response"),
             }
-
-            handler.join().unwrap();
         }
 
         #[test]
