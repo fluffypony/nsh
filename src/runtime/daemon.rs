@@ -1,4 +1,5 @@
 use crate::memory::types::MemoryType;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::Mutex;
@@ -341,6 +342,89 @@ fn default_summaries_per_tty() -> usize {
     10
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CaptureOutputPayload {
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScrollbackPayload {
+    pub scrollback: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionLabelUpdatePayload {
+    pub updated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LatestCwdPayload {
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionLabelPayload {
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistorySearchPayload {
+    pub results: Vec<crate::db::HistoryMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageStatsEntry {
+    pub model: String,
+    pub calls: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageStatsPayload {
+    pub stats: Vec<UsageStatsEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationsPayload {
+    pub conversations: Vec<crate::db::ConversationExchange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonStatusPayload {
+    pub version: String,
+    pub build_version: String,
+    pub build_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapper_protocol_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CLIProxyApiStatusPayload {
+    pub running: bool,
+    pub port: Option<u16>,
+    pub version: Option<String>,
+    pub pid: Option<u32>,
+    pub last_update_check: Option<String>,
+    pub last_update_status: Option<String>,
+    pub installed_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryTelemetryPayload {
+    pub decay_runs: i64,
+    pub last_decay_at: String,
+    pub reflection_runs: i64,
+    pub last_reflection_at: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DaemonResponse {
@@ -362,10 +446,43 @@ impl DaemonResponse {
         Self::Ok { data: Some(data) }
     }
 
+    pub fn ok_with_payload(payload: impl Serialize) -> Self {
+        match serde_json::to_value(payload) {
+            Ok(data) => Self::Ok { data: Some(data) },
+            Err(error) => Self::Error {
+                message: format!("failed to serialize daemon payload: {error}"),
+            },
+        }
+    }
+
     pub fn error(msg: impl Into<String>) -> Self {
         Self::Error {
             message: msg.into(),
         }
+    }
+
+    pub fn into_optional_payload<T: DeserializeOwned>(self) -> anyhow::Result<Option<T>> {
+        match self {
+            Self::Ok { data: Some(data) } => serde_json::from_value(data)
+                .map(Some)
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "daemon returned invalid {} payload: {error}",
+                        std::any::type_name::<T>()
+                    )
+                }),
+            Self::Ok { data: None } => Ok(None),
+            Self::Error { message } => Err(anyhow::anyhow!(message)),
+        }
+    }
+
+    pub fn into_payload<T: DeserializeOwned>(self) -> anyhow::Result<T> {
+        self.into_optional_payload()?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "daemon returned no payload for {}",
+                std::any::type_name::<T>()
+            )
+        })
     }
 }
 
@@ -466,12 +583,15 @@ pub fn handle_daemon_request(
 ) -> DaemonResponse {
     match request {
         DaemonRequest::Restart => DaemonResponse::ok(),
-        DaemonRequest::GetVersion => DaemonResponse::ok_with_data(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "build_version": env!("NSH_BUILD_VERSION"),
-            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
-            "protocol_version": DAEMON_PROTOCOL_VERSION,
-        })),
+        DaemonRequest::GetVersion => DaemonResponse::ok_with_payload(DaemonStatusPayload {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            build_version: env!("NSH_BUILD_VERSION").to_string(),
+            build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
+            pid: None,
+            daemon_type: None,
+            protocol_version: Some(DAEMON_PROTOCOL_VERSION),
+            wrapper_protocol_version: None,
+        }),
         DaemonRequest::Record {
             session,
             command,
@@ -529,7 +649,7 @@ pub fn handle_daemon_request(
         DaemonRequest::Scrollback { max_lines } => match capture.lock() {
             Ok(eng) => {
                 let text = eng.get_lines(max_lines);
-                DaemonResponse::ok_with_data(serde_json::json!({"scrollback": text}))
+                DaemonResponse::ok_with_payload(ScrollbackPayload { scrollback: text })
             }
             Err(_) => DaemonResponse::error("capture lock poisoned"),
         },
@@ -548,20 +668,20 @@ pub fn handle_daemon_request(
                 let lines: Vec<&str> = text.lines().collect();
                 let start = lines.len().saturating_sub(max_lines);
                 let result = lines[start..].join("\n");
-                DaemonResponse::ok_with_data(serde_json::json!({"output": result}))
+                DaemonResponse::ok_with_payload(CaptureOutputPayload { output: result })
             }
             Err(_) => DaemonResponse::error("capture lock poisoned"),
         },
 
-        DaemonRequest::Status => DaemonResponse::ok_with_data(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "build_version": env!("NSH_BUILD_VERSION"),
-            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
-            "protocol_version": DAEMON_PROTOCOL_VERSION,
-            "wrapper_protocol_version": env!("NSH_WRAPPER_PROTOCOL_VERSION"),
-            "pid": std::process::id(),
-            "daemon_type": "per_session",
-        })),
+        DaemonRequest::Status => DaemonResponse::ok_with_payload(DaemonStatusPayload {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            build_version: env!("NSH_BUILD_VERSION").to_string(),
+            build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
+            pid: Some(std::process::id()),
+            daemon_type: Some("per_session".to_string()),
+            protocol_version: Some(DAEMON_PROTOCOL_VERSION),
+            wrapper_protocol_version: Some(env!("NSH_WRAPPER_PROTOCOL_VERSION").to_string()),
+        }),
 
         DaemonRequest::SummarizeCheck { .. } => {
             let _ = db_tx.send(DbCommand::GenerateSummaries);

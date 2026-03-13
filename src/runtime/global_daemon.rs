@@ -1304,8 +1304,8 @@ fn try_execute_write(
             let updated = db
                 .set_session_label(&session, &label)
                 .with_context(|| format!("failed to set label for session `{session}`"))?;
-            Ok(DaemonResponse::ok_with_data(
-                serde_json::json!({"updated": updated}),
+            Ok(DaemonResponse::ok_with_payload(
+                crate::daemon::SessionLabelUpdatePayload { updated },
             ))
         }
         DaemonRequest::ClearConversations { session } => {
@@ -1722,27 +1722,18 @@ fn execute_read(
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_read.request", &req_dbg);
     match request {
-        DaemonRequest::GetVersion => DaemonResponse::ok_with_data(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "build_version": env!("NSH_BUILD_VERSION"),
-            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
-            "protocol_version": crate::daemon::DAEMON_PROTOCOL_VERSION,
-        })),
+        DaemonRequest::GetVersion => DaemonResponse::ok_with_payload(crate::daemon::DaemonStatusPayload {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            build_version: env!("NSH_BUILD_VERSION").to_string(),
+            build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
+            pid: None,
+            daemon_type: None,
+            protocol_version: Some(crate::daemon::DAEMON_PROTOCOL_VERSION),
+            wrapper_protocol_version: None,
+        }),
         DaemonRequest::SearchHistory { query, limit } => match db.search_history(&query, limit) {
             Ok(results) => {
-                let json: Vec<serde_json::Value> = results
-                    .iter()
-                    .map(|r| {
-                        serde_json::json!({
-                            "id": r.id, "session_id": r.session_id, "command": r.command,
-                            "cwd": r.cwd, "exit_code": r.exit_code, "started_at": r.started_at,
-                            "output": r.output, "summary": r.summary,
-                            "cmd_highlight": r.cmd_highlight,
-                            "output_highlight": r.output_highlight,
-                        })
-                    })
-                    .collect();
-                DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
+                DaemonResponse::ok_with_payload(crate::daemon::HistorySearchPayload { results })
             }
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
@@ -1755,21 +1746,9 @@ fn execute_read(
                 return DaemonResponse::error(format!("Security check failed: {error}"));
             }
             match db.get_conversations(&session, limit) {
-                Ok(convos) => {
-                    let json: Vec<serde_json::Value> = convos
-                        .iter()
-                        .map(|c| {
-                            serde_json::json!({
-                                "query": c.query, "response_type": c.response_type,
-                                "response": c.response, "explanation": c.explanation,
-                                "result_exit_code": c.result_exit_code,
-                                "result_output_snippet": c.result_output_snippet,
-                                "created_at": c.created_at,
-                            })
-                        })
-                        .collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"conversations": json}))
-                }
+                Ok(conversations) => DaemonResponse::ok_with_payload(
+                    crate::daemon::ConversationsPayload { conversations },
+                ),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -1786,7 +1765,9 @@ fn execute_read(
             }
         }
         DaemonRequest::LatestCwdForTty { tty } => match db.latest_cwd_for_tty(&tty) {
-            Ok(cwd) => DaemonResponse::ok_with_data(serde_json::json!({"cwd": cwd})),
+            Ok(cwd) => {
+                DaemonResponse::ok_with_payload(crate::daemon::LatestCwdPayload { cwd })
+            }
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::GetUsageStats { period } => {
@@ -1799,10 +1780,23 @@ fn execute_read(
             };
             match db.get_usage_stats(usage_period) {
                 Ok(stats) => {
-                    let json: Vec<serde_json::Value> = stats.iter().map(|(model, calls, input, output, cost)| {
-                        serde_json::json!({"model": model, "calls": calls, "input_tokens": input, "output_tokens": output, "cost_usd": cost})
-                    }).collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"stats": json}))
+                    let payload = crate::daemon::UsageStatsPayload {
+                        stats: stats
+                            .into_iter()
+                            .map(
+                                |(model, calls, input_tokens, output_tokens, cost_usd)| {
+                                    crate::daemon::UsageStatsEntry {
+                                        model,
+                                        calls,
+                                        input_tokens,
+                                        output_tokens,
+                                        cost_usd,
+                                    }
+                                },
+                            )
+                            .collect(),
+                    };
+                    DaemonResponse::ok_with_payload(payload)
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -1817,7 +1811,9 @@ fn execute_read(
                 return DaemonResponse::error(format!("Security check failed: {error}"));
             }
             match db.get_session_label(&session) {
-                Ok(label) => DaemonResponse::ok_with_data(serde_json::json!({"label": label})),
+                Ok(label) => {
+                    DaemonResponse::ok_with_payload(crate::daemon::SessionLabelPayload { label })
+                }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -1968,13 +1964,15 @@ fn execute_read(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::Status => DaemonResponse::ok_with_data(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "build_version": env!("NSH_BUILD_VERSION"),
-            "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),
-            "pid": std::process::id(),
-            "daemon_type": "global",
-        })),
+        DaemonRequest::Status => DaemonResponse::ok_with_payload(crate::daemon::DaemonStatusPayload {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            build_version: env!("NSH_BUILD_VERSION").to_string(),
+            build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
+            pid: Some(std::process::id()),
+            daemon_type: Some("global".to_string()),
+            protocol_version: None,
+            wrapper_protocol_version: None,
+        }),
         DaemonRequest::GetSystemInfo => {
             let static_info = crate::context::get_static_info();
             let semi_dynamic = crate::context::get_semi_dynamic_info();
@@ -2341,15 +2339,17 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
                 }
                 Err(_) => (None, None, None),
             };
-            Some(DaemonResponse::ok_with_data(serde_json::json!({
-                "running": running,
-                "port": port,
-                "version": version,
-                "pid": pid,
-                "last_update_check": last_check,
-                "last_update_status": last_status,
-                "installed_version": installed_version,
-            })))
+            Some(DaemonResponse::ok_with_payload(
+                crate::daemon::CLIProxyApiStatusPayload {
+                    running,
+                    port,
+                    version,
+                    pid,
+                    last_update_check: last_check,
+                    last_update_status: last_status,
+                    installed_version,
+                },
+            ))
         }
         DaemonRequest::CLIProxyApiRestart => {
             let _ = crate::cliproxyapi::stop_sidecar();

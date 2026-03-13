@@ -1,4 +1,5 @@
 use clap::Parser;
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
 use crate::cli::{
@@ -39,6 +40,18 @@ fn send_to_global_or_fallback(
     {
         crate::daemon_client::send_to_global(request)
     }
+}
+
+fn global_daemon_payload<T: DeserializeOwned>(
+    request: &crate::daemon::DaemonRequest,
+) -> anyhow::Result<T> {
+    send_to_global_or_fallback(request)?.into_payload()
+}
+
+fn optional_global_daemon_payload<T: DeserializeOwned>(
+    request: &crate::daemon::DaemonRequest,
+) -> anyhow::Result<Option<T>> {
+    send_to_global_or_fallback(request)?.into_optional_payload()
 }
 
 /// Send SIGHUP to the running daemon for immediate graceful restart.
@@ -389,18 +402,8 @@ fn handle_session_command(action: SessionAction) -> anyhow::Result<()> {
                 session: session_id,
                 label: label.clone(),
             };
-            match send_to_global_or_fallback(&request) {
-                Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) => {
-                    if data
-                        .get("updated")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false)
-                    {
-                        eprintln!("nsh: session labeled \"{label}\"");
-                    } else {
-                        eprintln!("nsh: session not found");
-                    }
-                }
+            match global_daemon_payload::<crate::daemon::SessionLabelUpdatePayload>(&request) {
+                Ok(response) if response.updated => eprintln!("nsh: session labeled \"{label}\""),
                 _ => eprintln!("nsh: session not found"),
             }
         }
@@ -414,11 +417,12 @@ fn handle_session_command(action: SessionAction) -> anyhow::Result<()> {
                 return Ok(());
             }
             let request = crate::daemon::DaemonRequest::LatestCwdForTty { tty };
-            if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) =
-                send_to_global_or_fallback(&request)
-                && let Some(cwd) = data.get("cwd").and_then(|value| value.as_str()) {
-                    println!("{cwd}");
-                }
+            if let Ok(Some(response)) =
+                optional_global_daemon_payload::<crate::daemon::LatestCwdPayload>(&request)
+                && let Some(cwd) = response.cwd
+            {
+                println!("{cwd}");
+            }
         }
         SessionAction::SuppressedExitCodes => {
             let config = crate::config::Config::load().unwrap_or_default();
@@ -456,43 +460,22 @@ fn handle_history_command(action: HistoryAction) -> anyhow::Result<()> {
     match action {
         HistoryAction::Search { query, limit } => {
             let request = crate::daemon::DaemonRequest::SearchHistory { query, limit };
-            match send_to_global_or_fallback(&request) {
-                Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) => {
-                    let results = data.get("results").and_then(|value| value.as_array());
-                    if let Some(results) = results {
-                        if results.is_empty() {
-                            eprintln!("No results found.");
-                        } else {
-                            for result in results {
-                                let started = result
-                                    .get("started_at")
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or("");
-                                let exit_code =
-                                    result.get("exit_code").and_then(|value| value.as_i64());
-                                let code = exit_code
-                                    .map(|exit| format!(" (exit {exit})"))
-                                    .unwrap_or_default();
-                                let command_highlight = result
-                                    .get("cmd_highlight")
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or("");
-                                println!("[{started}]{code} {command_highlight}");
-                                if let Some(highlight) = result
-                                    .get("output_highlight")
-                                    .and_then(|value| value.as_str())
-                                {
-                                    let preview: String = highlight.chars().take(200).collect();
-                                    println!("  {preview}");
-                                }
-                            }
+            match global_daemon_payload::<crate::daemon::HistorySearchPayload>(&request) {
+                Ok(response) if response.results.is_empty() => eprintln!("No results found."),
+                Ok(response) => {
+                    for result in response.results {
+                        let code = result
+                            .exit_code
+                            .map(|exit| format!(" (exit {exit})"))
+                            .unwrap_or_default();
+                        println!("[{}]{code} {}", result.started_at, result.cmd_highlight);
+                        if let Some(highlight) = result.output_highlight {
+                            let preview: String = highlight.chars().take(200).collect();
+                            println!("  {preview}");
                         }
-                    } else {
-                        eprintln!("No results found.");
                     }
                 }
-                Ok(crate::daemon::DaemonResponse::Error { message }) => eprintln!("nsh: {message}"),
-                _ => eprintln!("No results found."),
+                Err(error) => eprintln!("nsh: {error}"),
             }
         }
     }
@@ -546,56 +529,30 @@ fn handle_config_command(action: Option<ConfigAction>) -> anyhow::Result<()> {
 
 fn handle_cost_command(period: String) -> anyhow::Result<()> {
     let request = crate::daemon::DaemonRequest::GetUsageStats { period };
-    let stats_result = match send_to_global_or_fallback(&request) {
-        Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) => data,
+    let stats = match global_daemon_payload::<crate::daemon::UsageStatsPayload>(&request) {
+        Ok(response) if !response.stats.is_empty() => response.stats,
         _ => {
             eprintln!("No usage data recorded yet.");
             return Ok(());
         }
     };
-    let stats = stats_result
-        .get("stats")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    if stats.is_empty() {
-        eprintln!("No usage data recorded yet.");
-    } else {
-        eprintln!("Model                               Calls  Input Tok  Output Tok  Cost (USD)");
-        eprintln!("─────────────────────────────────────────────────────────────────────────────");
-        let mut total_cost = 0.0_f64;
-        let mut total_calls = 0_i64;
-        for entry in &stats {
-            let model = entry
-                .get("model")
-                .and_then(|value| value.as_str())
-                .unwrap_or("?");
-            let calls = entry
-                .get("calls")
-                .and_then(|value| value.as_i64())
-                .unwrap_or(0);
-            let input_tokens = entry
-                .get("input_tokens")
-                .and_then(|value| value.as_i64())
-                .unwrap_or(0);
-            let output_tokens = entry
-                .get("output_tokens")
-                .and_then(|value| value.as_i64())
-                .unwrap_or(0);
-            let cost = entry
-                .get("cost_usd")
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0);
-            eprintln!("{model:<35} {calls:>5}  {input_tokens:>9}  {output_tokens:>10}  ${cost:.4}");
-            total_cost += cost;
-            total_calls += calls;
-        }
-        eprintln!("─────────────────────────────────────────────────────────────────────────────");
+    eprintln!("Model                               Calls  Input Tok  Output Tok  Cost (USD)");
+    eprintln!("─────────────────────────────────────────────────────────────────────────────");
+    let mut total_cost = 0.0_f64;
+    let mut total_calls = 0_i64;
+    for entry in &stats {
         eprintln!(
-            "{:<35} {:>5}                        ${:.4}",
-            "TOTAL", total_calls, total_cost
+            "{:<35} {:>5}  {:>9}  {:>10}  ${:.4}",
+            entry.model, entry.calls, entry.input_tokens, entry.output_tokens, entry.cost_usd
         );
+        total_cost += entry.cost_usd;
+        total_calls += entry.calls;
     }
+    eprintln!("─────────────────────────────────────────────────────────────────────────────");
+    eprintln!(
+        "{:<35} {:>5}                        ${:.4}",
+        "TOTAL", total_calls, total_cost
+    );
     Ok(())
 }
 
@@ -980,17 +937,9 @@ fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> {
         }
         MemoryAction::Telemetry => {
             let request = crate::daemon::DaemonRequest::MemoryStats;
-            match send_to_global_or_fallback(&request)? {
-                crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
-                    let telemetry = serde_json::json!({
-                        "decay_runs": data.get("decay_runs").cloned().unwrap_or(serde_json::json!(0)),
-                        "last_decay_at": data.get("last_decay_at").cloned().unwrap_or(serde_json::json!("")),
-                        "reflection_runs": data.get("reflection_runs").cloned().unwrap_or(serde_json::json!(0)),
-                        "last_reflection_at": data.get("last_reflection_at").cloned().unwrap_or(serde_json::json!("")),
-                    });
-                    println!("{}", serde_json::to_string_pretty(&telemetry)?);
-                }
-                response => eprintln!("{response:?}"),
+            match global_daemon_payload::<crate::daemon::MemoryTelemetryPayload>(&request) {
+                Ok(telemetry) => println!("{}", serde_json::to_string_pretty(&telemetry)?),
+                Err(error) => eprintln!("error: {error}"),
             }
         }
     }
@@ -1143,19 +1092,23 @@ fn handle_daemon_read_command(action: DaemonReadAction) -> anyhow::Result<()> {
         },
     };
 
-    match crate::daemon_client::try_send_request(&session_id, &request) {
-        Some(crate::daemon::DaemonResponse::Ok { data: Some(data) }) => {
-            let text = data
-                .get("output")
-                .or_else(|| data.get("scrollback"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            print!("{text}");
+    match &action {
+        DaemonReadAction::CaptureRead { .. } => {
+            if let Some(response) = crate::daemon_client::try_send_request(&session_id, &request) {
+                match response.into_payload::<crate::daemon::CaptureOutputPayload>() {
+                    Ok(payload) => print!("{}", payload.output),
+                    Err(error) => eprintln!("nsh: daemon error: {error}"),
+                }
+            }
         }
-        Some(crate::daemon::DaemonResponse::Error { message }) => {
-            eprintln!("nsh: daemon error: {message}");
+        DaemonReadAction::Scrollback { .. } => {
+            if let Some(response) = crate::daemon_client::try_send_request(&session_id, &request) {
+                match response.into_payload::<crate::daemon::ScrollbackPayload>() {
+                    Ok(payload) => print!("{}", payload.scrollback),
+                    Err(error) => eprintln!("nsh: daemon error: {error}"),
+                }
+            }
         }
-        _ => {}
     }
     Ok(())
 }
@@ -1233,15 +1186,8 @@ fn handle_export_command(format: Option<String>, session: Option<String>) -> any
         limit: 1000,
         caller: crate::daemon::current_caller_context(),
     };
-    let conversations = match send_to_global_or_fallback(&request)? {
-        crate::daemon::DaemonResponse::Ok { data: Some(data) } => data
-            .get("conversations")
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default(),
-        crate::daemon::DaemonResponse::Error { message } => anyhow::bail!(message),
-        _ => Vec::new(),
-    };
+    let conversations = global_daemon_payload::<crate::daemon::ConversationsPayload>(&request)?
+        .conversations;
     if conversations.is_empty() {
         eprintln!("No conversations found for session {session_id}");
     } else {
@@ -1249,22 +1195,10 @@ fn handle_export_command(format: Option<String>, session: Option<String>) -> any
             "json" => println!("{}", serde_json::to_string_pretty(&conversations)?),
             _ => {
                 for conversation in &conversations {
-                    let query = conversation
-                        .get("query")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("");
-                    let response_type = conversation
-                        .get("response_type")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("");
-                    let response = conversation
-                        .get("response")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("");
-                    let explanation = conversation
-                        .get("explanation")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("");
+                    let query = conversation.query.as_str();
+                    let response_type = conversation.response_type.as_str();
+                    let response = conversation.response.as_str();
+                    let explanation = conversation.explanation.as_deref().unwrap_or("");
                     println!("**Q:** {query}\n");
                     match response_type {
                         "command" => println!("```bash\n{response}\n```\n{explanation}\n"),
@@ -1294,18 +1228,15 @@ fn handle_status_command() -> anyhow::Result<()> {
     };
 
     let session_label = if session_id != "(not set)" {
-        if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) =
-            send_to_global_or_fallback(&crate::daemon::DaemonRequest::GetSessionLabel {
+        optional_global_daemon_payload::<crate::daemon::SessionLabelPayload>(
+            &crate::daemon::DaemonRequest::GetSessionLabel {
                 session: session_id.clone(),
                 caller: crate::daemon::current_caller_context(),
-            })
-        {
-            data.get("label")
-                .and_then(|value| value.as_str())
-                .map(String::from)
-        } else {
-            None
-        }
+            },
+        )
+        .ok()
+        .flatten()
+        .and_then(|response| response.label)
     } else {
         None
     };
@@ -1318,21 +1249,13 @@ fn handle_status_command() -> anyhow::Result<()> {
 
     eprintln!("nsh status:");
     eprintln!("  Core:       {build_version}");
-    if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) =
-        crate::daemon_client::send_to_global(&crate::daemon::DaemonRequest::Status)
+    if let Ok(data) = crate::daemon_client::send_to_global(&crate::daemon::DaemonRequest::Status)
+        .and_then(|response| response.into_payload::<crate::daemon::DaemonStatusPayload>())
     {
-        let daemon_version = data
-            .get("version")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let build_version = data
-            .get("build_version")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        if build_version.is_empty() {
-            eprintln!("  Daemon:     v{daemon_version}");
+        if data.build_version.is_empty() {
+            eprintln!("  Daemon:     v{}", data.version);
         } else {
-            eprintln!("  Daemon:     v{daemon_version} (build: {build_version})");
+            eprintln!("  Daemon:     v{} (build: {})", data.version, data.build_version);
         }
     }
     eprintln!("  Session:    {session_id}");
@@ -1343,29 +1266,13 @@ fn handle_status_command() -> anyhow::Result<()> {
     eprintln!("  PTY active: {}", if pty_active { "yes" } else { "no" });
     eprintln!("  Global daemon: {global_daemon_status}");
     if crate::daemon_client::is_global_daemon_running()
-        && let Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) =
-            send_to_global_or_fallback(&crate::daemon::DaemonRequest::CLIProxyApiStatus)
-        {
-            let running = data
-                .get("running")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            let port = data
-                .get("port")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            let version = data
-                .get("version")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let last_check = data
-                .get("last_update_check")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            let last_status = data
-                .get("last_update_status")
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
+        && let Ok(data) = global_daemon_payload::<crate::daemon::CLIProxyApiStatusPayload>(
+            &crate::daemon::DaemonRequest::CLIProxyApiStatus,
+        )
+    {
+            let version = data.version.as_deref().unwrap_or("");
+            let last_check = data.last_update_check.as_deref().unwrap_or("");
+            let last_status = data.last_update_status.as_deref().unwrap_or("");
             let last_check_pretty = if last_check.is_empty() {
                 String::new()
             } else if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(last_check) {
@@ -1383,8 +1290,12 @@ fn handle_status_command() -> anyhow::Result<()> {
             } else {
                 last_check.to_string()
             };
-            if running {
-                eprintln!("  Sidecar:    running on :{port} ({version})");
+            if data.running {
+                if let Some(port) = data.port {
+                    eprintln!("  Sidecar:    running on :{port} ({version})");
+                } else {
+                    eprintln!("  Sidecar:    running ({version})");
+                }
             } else {
                 eprintln!("  Sidecar:    not running");
             }
