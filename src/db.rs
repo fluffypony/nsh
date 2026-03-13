@@ -607,6 +607,12 @@ impl Db {
         Ok(rowid)
     }
 
+    pub fn delete_command_by_id(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM commands WHERE id = ?", params![id])?;
+        Ok(())
+    }
+
     // ── FTS5 search ────────────────────────────────────────────────
 
     pub fn search_history(&self, query: &str, limit: usize) -> rusqlite::Result<Vec<HistoryMatch>> {

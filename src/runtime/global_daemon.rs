@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -888,47 +889,7 @@ fn run_write_thread(
             }
         }
 
-        if batch.len() > 1 {
-            if let Ok(()) = db.conn_execute_batch("BEGIN IMMEDIATE;") {
-                let mut pending: Vec<(mpsc::Sender<DaemonResponse>, DaemonResponse)> = Vec::new();
-                for cmd in batch {
-                    let resp = execute_write(
-                        &db,
-                        cmd.request,
-                        &memory,
-                        &memory_task_tracker,
-                        &memory_tx,
-                        &queue_guards,
-                        &mut session_project_roots,
-                    );
-                    pending.push((cmd.reply, resp));
-                }
-                if db.conn_execute_batch("COMMIT;").is_err() {
-                    let _ = db.conn_execute_batch("ROLLBACK;");
-                    for (reply, _) in pending {
-                        let _ = reply.send(DaemonResponse::error("transaction commit failed"));
-                    }
-                } else {
-                    for (reply, resp) in pending {
-                        let _ = reply.send(resp);
-                    }
-                }
-            } else {
-                for cmd in batch {
-                    let resp = execute_write(
-                        &db,
-                        cmd.request,
-                        &memory,
-                        &memory_task_tracker,
-                        &memory_tx,
-                        &queue_guards,
-                        &mut session_project_roots,
-                    );
-                    let _ = cmd.reply.send(resp);
-                }
-            }
-        } else {
-            let cmd = batch.into_iter().next().unwrap();
+        for cmd in batch {
             let resp = execute_write(
                 &db,
                 cmd.request,
@@ -1078,14 +1039,49 @@ fn execute_write(
     queue_guards: &MemoryQueueGuards,
     session_project_roots: &mut std::collections::HashMap<String, String>,
 ) -> DaemonResponse {
+    try_execute_write(
+        db,
+        request,
+        memory,
+        memory_task_tracker,
+        memory_tx,
+        queue_guards,
+        session_project_roots,
+)
+    .unwrap_or_else(|error| DaemonResponse::error(format!("{error:#}")))
+}
+
+fn rollback_failed_command_record(
+    db: &crate::db::Db,
+    command_id: i64,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match db.delete_command_by_id(command_id) {
+        Ok(()) => error,
+        Err(cleanup_error) => error.context(format!(
+            "failed to remove partially recorded command {command_id}: {cleanup_error}"
+        )),
+    }
+}
+
+fn try_execute_write(
+    db: &crate::db::Db,
+    request: DaemonRequest,
+    memory: &crate::memory::MemorySystem,
+    memory_task_tracker: &MemoryTaskTracker,
+    memory_tx: &MemoryTaskSender,
+    queue_guards: &MemoryQueueGuards,
+    session_project_roots: &mut std::collections::HashMap<String, String>,
+) -> anyhow::Result<DaemonResponse> {
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_write.request", &req_dbg);
     match request {
         DaemonRequest::Restart => {
             // Handled in accept loop via marker file; acknowledge
             let marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
-            let _ = std::fs::write(&marker, "");
-            DaemonResponse::ok()
+            std::fs::write(&marker, "")
+                .with_context(|| format!("failed to write restart marker at {}", marker.display()))?;
+            Ok(DaemonResponse::ok())
         }
         DaemonRequest::Record {
             session,
@@ -1099,7 +1095,8 @@ fn execute_write(
             duration_ms,
             output,
         } => {
-            match db.insert_command(
+            let id = db
+                .insert_command(
                 &session,
                 &command,
                 &cwd,
@@ -1110,186 +1107,212 @@ fn execute_write(
                 &tty,
                 &shell,
                 pid,
-            ) {
-                Ok(id) => {
-                    if command.starts_with("ssh ") || command == "ssh" {
-                        let _ = db.backfill_command_entities_if_needed();
-                    }
-                    let output_text = output.as_deref().unwrap_or("");
-                    if let Some(trivial) =
-                        crate::summary::trivial_summary(&command, exit_code, output_text)
-                    {
-                        let _ = db.update_summary(id, &trivial);
-                    }
-                    // Detect project switches via CWD change
-                    if let Some(project_root) = detect_project_root_fast(&cwd) {
-                        let switched = match session_project_roots.get(&session) {
-                            Some(prev) => prev != &project_root,
-                            None => true, // first command in session, record but don't emit event
-                        };
-                        let is_first = !session_project_roots.contains_key(&session);
-                        session_project_roots.insert(session.clone(), project_root.clone());
-                        if switched && !is_first {
-                            let event = crate::memory::types::ShellEvent {
-                                event_type: crate::memory::types::ShellEventType::ProjectSwitch,
-                                command: None,
-                                output: None,
-                                exit_code: None,
-                                working_dir: Some(cwd.clone()),
-                                session_id: Some(session.clone()),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                                git_context: None,
-                                instruction: None,
-                                file_path: None,
-                            };
-                            memory.record_event(event);
-                        }
-                    }
+            )
+                .with_context(|| {
+                    format!("failed to record command `{command}` for session `{session}`")
+                })?;
 
-                    if let Ok(Some((conv_id, suggested_cmd))) =
-                        db.find_pending_conversation(&session)
-                    {
-                        if command.trim() == suggested_cmd.trim() {
-                            let snippet = crate::util::truncate(output_text, 500);
-                            let snippet_ref = if snippet.is_empty() {
-                                None
-                            } else {
-                                Some(snippet.as_str())
-                            };
-                            let _ = db.update_conversation_result(conv_id, exit_code, snippet_ref);
-                        } else {
-                            let correction = format!(
-                                "User ran different command: {}",
-                                crate::util::truncate(&command, 200)
-                            );
-                            let _ = db.update_conversation_result(
-                                conv_id,
-                                exit_code,
-                                Some(&correction),
-                            );
-                        }
-                    }
-
-                    // ── Memory: record generic command execution ─────────────
-                    // Skip internal project switch marker; we already emit a dedicated ProjectSwitch event above.
-                    if command != "__nsh_project_switch" {
-                        // Try to capture the per-command output from the per-session capture engine if present.
-                        let mut captured_output: Option<String> = None;
-                        #[cfg(unix)]
-                        {
-                            if !tty.is_empty() {
-                                let req = crate::daemon::DaemonRequest::CaptureRead {
-                                    session: session.clone(),
-                                    max_lines: 500,
-                                };
-                                if let Some(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
-                                    crate::daemon_client::try_send_request(&session, &req)
-                                {
-                                    captured_output = d
-                                        .get("output")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-                                }
-                            }
-                        }
-                        // Fallback to provided output (usually None in global path)
-                        if captured_output.is_none() {
-                            captured_output = output.clone();
-                        }
-
-                        let event = crate::memory::types::ShellEvent {
-                            event_type: crate::memory::types::ShellEventType::CommandExecution,
-                            command: Some(command.clone()),
-                            output: captured_output,
-                            exit_code: Some(exit_code),
-                            working_dir: Some(cwd.clone()),
-                            session_id: Some(session.clone()),
-                            timestamp: started_at.clone(),
-                            git_context: None,
-                            instruction: None,
-                            file_path: None,
-                        };
-                        memory.record_event(event);
-                        if memory.should_flush_ingestion() {
-                            let _ = memory_tx.send(MemoryTask::FlushIngestion);
-                        }
-                    }
-                    DaemonResponse::ok_with_data(serde_json::json!({"id": id}))
+            let output_text = output.as_deref().unwrap_or("");
+            let required_side_effects = (|| -> anyhow::Result<()> {
+                if let Some(trivial) =
+                    crate::summary::trivial_summary(&command, exit_code, output_text)
+                {
+                    db.update_summary(id, &trivial).with_context(|| {
+                        format!("failed to persist trivial summary for command record {id}")
+                    })?;
                 }
-                Err(e) => DaemonResponse::error(format!("{e}")),
+
+                if let Some((conv_id, suggested_cmd)) = db
+                    .find_pending_conversation(&session)
+                    .with_context(|| {
+                        format!(
+                            "failed to look up pending conversation after recording command {id} for session `{session}`"
+                        )
+                    })?
+                {
+                    if command.trim() == suggested_cmd.trim() {
+                        let snippet = crate::util::truncate(output_text, 500);
+                        let snippet_ref = if snippet.is_empty() {
+                            None
+                        } else {
+                            Some(snippet.as_str())
+                        };
+                        db.update_conversation_result(conv_id, exit_code, snippet_ref)
+                            .with_context(|| {
+                                format!(
+                                    "failed to update pending conversation {conv_id} for command record {id}"
+                                )
+                            })?;
+                    } else {
+                        let correction = format!(
+                            "User ran different command: {}",
+                            crate::util::truncate(&command, 200)
+                        );
+                        db.update_conversation_result(conv_id, exit_code, Some(&correction))
+                            .with_context(|| {
+                                format!(
+                                    "failed to mark pending conversation {conv_id} as superseded by command record {id}"
+                                )
+                            })?;
+                    }
+                }
+
+                Ok(())
+            })();
+
+            if let Err(error) = required_side_effects {
+                return Err(rollback_failed_command_record(db, id, error));
             }
+
+            // Detect project switches via CWD change
+            if let Some(project_root) = detect_project_root_fast(&cwd) {
+                let switched = match session_project_roots.get(&session) {
+                    Some(prev) => prev != &project_root,
+                    None => true, // first command in session, record but don't emit event
+                };
+                let is_first = !session_project_roots.contains_key(&session);
+                session_project_roots.insert(session.clone(), project_root.clone());
+                if switched && !is_first {
+                    let event = crate::memory::types::ShellEvent {
+                        event_type: crate::memory::types::ShellEventType::ProjectSwitch,
+                        command: None,
+                        output: None,
+                        exit_code: None,
+                        working_dir: Some(cwd.clone()),
+                        session_id: Some(session.clone()),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        git_context: None,
+                        instruction: None,
+                        file_path: None,
+                    };
+                    memory.record_event(event);
+                }
+            }
+
+            if command.starts_with("ssh ") || command == "ssh" {
+                if let Err(error) = db.backfill_command_entities_if_needed() {
+                    tracing::warn!(
+                        "failed to backfill command entities after recording command {id} for session `{session}`: {error}"
+                    );
+                }
+            }
+
+            // ── Memory: record generic command execution ─────────────
+            // Skip internal project switch marker; we already emit a dedicated ProjectSwitch event above.
+            if command != "__nsh_project_switch" {
+                // Try to capture the per-command output from the per-session capture engine if present.
+                let mut captured_output: Option<String> = None;
+                #[cfg(unix)]
+                {
+                    if !tty.is_empty() {
+                        let req = crate::daemon::DaemonRequest::CaptureRead {
+                            session: session.clone(),
+                            max_lines: 500,
+                        };
+                        if let Some(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
+                            crate::daemon_client::try_send_request(&session, &req)
+                        {
+                            captured_output = d
+                                .get("output")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                        }
+                    }
+                }
+                // Fallback to provided output (usually None in global path)
+                if captured_output.is_none() {
+                    captured_output = output.clone();
+                }
+
+                let event = crate::memory::types::ShellEvent {
+                    event_type: crate::memory::types::ShellEventType::CommandExecution,
+                    command: Some(command.clone()),
+                    output: captured_output,
+                    exit_code: Some(exit_code),
+                    working_dir: Some(cwd.clone()),
+                    session_id: Some(session.clone()),
+                    timestamp: started_at.clone(),
+                    git_context: None,
+                    instruction: None,
+                    file_path: None,
+                };
+                memory.record_event(event);
+                if memory.should_flush_ingestion() {
+                    let _ = memory_tx.send(MemoryTask::FlushIngestion);
+                }
+            }
+
+            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
         }
-        DaemonRequest::Heartbeat { session } => match db.update_heartbeat(&session) {
-            Ok(()) => {
-                crate::daemon::generate_summaries_sync_pub(db);
-                DaemonResponse::ok()
-            }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+        DaemonRequest::Heartbeat { session } => {
+            db.update_heartbeat(&session)
+                .with_context(|| format!("failed to update heartbeat for session `{session}`"))?;
+            crate::daemon::generate_summaries_sync_pub(db);
+            Ok(DaemonResponse::ok())
+        }
         DaemonRequest::CreateSession {
             session,
             tty,
             shell,
             pid,
-        } => match db.create_session(&session, &tty, &shell, pid) {
-            Ok(()) => {
-                // Emit a SessionStart event into memory (best-effort)
-                let event = crate::memory::types::ShellEvent {
-                    event_type: crate::memory::types::ShellEventType::SessionStart,
-                    command: None,
-                    output: None,
-                    exit_code: None,
-                    working_dir: None,
-                    session_id: Some(session.clone()),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    git_context: None,
-                    instruction: None,
-                    file_path: None,
-                };
-                memory.record_event(event);
-                if memory.should_flush_ingestion() {
-                    let _ = memory_tx.send(MemoryTask::FlushIngestion);
-                }
-                DaemonResponse::ok()
+        } => {
+            db.create_session(&session, &tty, &shell, pid)
+                .with_context(|| format!("failed to create session `{session}`"))?;
+            // Emit a SessionStart event into memory (best-effort)
+            let event = crate::memory::types::ShellEvent {
+                event_type: crate::memory::types::ShellEventType::SessionStart,
+                command: None,
+                output: None,
+                exit_code: None,
+                working_dir: None,
+                session_id: Some(session.clone()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                git_context: None,
+                instruction: None,
+                file_path: None,
+            };
+            memory.record_event(event);
+            if memory.should_flush_ingestion() {
+                let _ = memory_tx.send(MemoryTask::FlushIngestion);
             }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::EndSession { session } => match db.end_session(&session) {
-            Ok(()) => {
-                session_project_roots.remove(&session);
-                // Emit a SessionEnd event into memory (best-effort)
-                let event = crate::memory::types::ShellEvent {
-                    event_type: crate::memory::types::ShellEventType::SessionEnd,
-                    command: None,
-                    output: None,
-                    exit_code: None,
-                    working_dir: None,
-                    session_id: Some(session.clone()),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    git_context: None,
-                    instruction: None,
-                    file_path: None,
-                };
-                memory.record_event(event);
-                if memory.should_flush_ingestion() {
-                    let _ = memory_tx.send(MemoryTask::FlushIngestion);
-                }
-                DaemonResponse::ok()
-            }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::SetSessionLabel { session, label } => {
-            match db.set_session_label(&session, &label) {
-                Ok(updated) => {
-                    DaemonResponse::ok_with_data(serde_json::json!({"updated": updated}))
-                }
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            Ok(DaemonResponse::ok())
         }
-        DaemonRequest::ClearConversations { session } => match db.clear_conversations(&session) {
-            Ok(()) => DaemonResponse::ok(),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+        DaemonRequest::EndSession { session } => {
+            db.end_session(&session)
+                .with_context(|| format!("failed to end session `{session}`"))?;
+            session_project_roots.remove(&session);
+            // Emit a SessionEnd event into memory (best-effort)
+            let event = crate::memory::types::ShellEvent {
+                event_type: crate::memory::types::ShellEventType::SessionEnd,
+                command: None,
+                output: None,
+                exit_code: None,
+                working_dir: None,
+                session_id: Some(session.clone()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                git_context: None,
+                instruction: None,
+                file_path: None,
+            };
+            memory.record_event(event);
+            if memory.should_flush_ingestion() {
+                let _ = memory_tx.send(MemoryTask::FlushIngestion);
+            }
+            Ok(DaemonResponse::ok())
+        }
+        DaemonRequest::SetSessionLabel { session, label } => {
+            let updated = db
+                .set_session_label(&session, &label)
+                .with_context(|| format!("failed to set label for session `{session}`"))?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"updated": updated}),
+            ))
+        }
+        DaemonRequest::ClearConversations { session } => {
+            db.clear_conversations(&session)
+                .with_context(|| format!("failed to clear conversations for session `{session}`"))?;
+            Ok(DaemonResponse::ok())
+        }
         DaemonRequest::InsertConversation {
             session_id,
             query,
@@ -1299,7 +1322,8 @@ fn execute_write(
             executed,
             pending,
         } => {
-            match db.insert_conversation(
+            let id = db
+                .insert_conversation(
                 &session_id,
                 &query,
                 response_type.as_str(),
@@ -1307,10 +1331,11 @@ fn execute_write(
                 explanation.as_deref(),
                 executed,
                 pending,
-            ) {
-                Ok(id) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            )
+                .with_context(|| {
+                    format!("failed to insert conversation for session `{session_id}`")
+                })?;
+            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
         }
         DaemonRequest::InsertUsage {
             session_id,
@@ -1322,7 +1347,8 @@ fn execute_write(
             cost_usd,
             generation_id,
         } => {
-            match db.insert_usage(
+            let id = db
+                .insert_usage(
                 &session_id,
                 query_text.as_deref(),
                 &model,
@@ -1331,62 +1357,90 @@ fn execute_write(
                 output_tokens,
                 cost_usd,
                 generation_id.as_deref(),
-            ) {
-                Ok(id) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            )
+                .with_context(|| format!("failed to insert usage for session `{session_id}`"))?;
+            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
         }
         DaemonRequest::UpdateConversationResult {
             conv_id,
             exit_code,
             output_snippet,
-        } => match db.update_conversation_result(conv_id, exit_code, output_snippet.as_deref()) {
-            Ok(()) => DaemonResponse::ok(),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+        } => {
+            db.update_conversation_result(conv_id, exit_code, output_snippet.as_deref())
+                .with_context(|| format!("failed to update conversation result for {conv_id}"))?;
+            Ok(DaemonResponse::ok())
+        }
 
-        DaemonRequest::SetMeta { key, value } => match db.set_meta(&key, &value) {
-            Ok(()) => DaemonResponse::ok(),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::Prune { retention_days } => match db.prune(retention_days) {
-            Ok(count) => DaemonResponse::ok_with_data(serde_json::json!({"pruned": count})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::RebuildFts => match db.rebuild_fts() {
-            Ok(()) => DaemonResponse::ok(),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::CleanupOrphanedSessions => match db.cleanup_orphaned_sessions() {
-            Ok(count) => DaemonResponse::ok_with_data(serde_json::json!({"cleaned": count})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::UpdateSummary { id, summary } => match db.update_summary(id, &summary) {
-            Ok(updated) => DaemonResponse::ok_with_data(serde_json::json!({"updated": updated})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::MarkSummaryError { id, error } => match db.mark_summary_error(id, &error) {
-            Ok(()) => DaemonResponse::ok(),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+        DaemonRequest::SetMeta { key, value } => {
+            db.set_meta(&key, &value)
+                .with_context(|| format!("failed to set metadata key `{key}`"))?;
+            Ok(DaemonResponse::ok())
+        }
+        DaemonRequest::Prune { retention_days } => {
+            let count = db
+                .prune(retention_days)
+                .with_context(|| format!("failed to prune records older than {retention_days} days"))?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"pruned": count}),
+            ))
+        }
+        DaemonRequest::RebuildFts => {
+            db.rebuild_fts().context("failed to rebuild FTS indexes")?;
+            Ok(DaemonResponse::ok())
+        }
+        DaemonRequest::CleanupOrphanedSessions => {
+            let count = db
+                .cleanup_orphaned_sessions()
+                .context("failed to clean up orphaned sessions")?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"cleaned": count}),
+            ))
+        }
+        DaemonRequest::UpdateSummary { id, summary } => {
+            let updated = db
+                .update_summary(id, &summary)
+                .with_context(|| format!("failed to update summary for command {id}"))?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"updated": updated}),
+            ))
+        }
+        DaemonRequest::MarkSummaryError { id, error } => {
+            db.mark_summary_error(id, &error)
+                .with_context(|| format!("failed to mark summary error for command {id}"))?;
+            Ok(DaemonResponse::ok())
+        }
         DaemonRequest::UpdateUsageCost {
             generation_id,
             cost,
-        } => match db.update_usage_cost(&generation_id, cost) {
-            Ok(updated) => DaemonResponse::ok_with_data(serde_json::json!({"updated": updated})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::MarkUnsummarizedForLlm => match db.mark_unsummarized_for_llm() {
-            Ok(count) => DaemonResponse::ok_with_data(serde_json::json!({"count": count})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::BackfillEntities => match db.backfill_command_entities_if_needed() {
-            Ok(count) => DaemonResponse::ok_with_data(serde_json::json!({"backfilled": count})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+        } => {
+            let updated = db
+                .update_usage_cost(&generation_id, cost)
+                .with_context(|| {
+                    format!("failed to update usage cost for generation `{generation_id}`")
+                })?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"updated": updated}),
+            ))
+        }
+        DaemonRequest::MarkUnsummarizedForLlm => {
+            let count = db
+                .mark_unsummarized_for_llm()
+                .context("failed to mark unsummarized commands for LLM processing")?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"count": count}),
+            ))
+        }
+        DaemonRequest::BackfillEntities => {
+            let count = db
+                .backfill_command_entities_if_needed()
+                .context("failed to backfill command entities")?;
+            Ok(DaemonResponse::ok_with_data(
+                serde_json::json!({"backfilled": count}),
+            ))
+        }
         DaemonRequest::GenerateSummaries | DaemonRequest::SummarizeCheck { .. } => {
             crate::daemon::generate_summaries_sync_pub(db);
-            DaemonResponse::ok()
+            Ok(DaemonResponse::ok())
         }
         // ── Memory write operations ──────────────────────
         DaemonRequest::MemoryRecordEvent { event_json } => {
@@ -1399,16 +1453,16 @@ fn execute_write(
                     {
                         tracing::debug!("memory thread disconnected, flush skipped");
                     }
-                    DaemonResponse::ok()
+                    Ok(DaemonResponse::ok())
                 }
-                Err(e) => DaemonResponse::error(format!("invalid event JSON: {e}")),
+                Err(e) => Ok(DaemonResponse::error(format!("invalid event JSON: {e}"))),
             }
         }
         DaemonRequest::MemoryFlushIngestion => {
             if memory_tx.send(MemoryTask::FlushIngestion).is_err() {
                 tracing::debug!("memory thread disconnected, flush skipped");
             }
-            DaemonResponse::ok()
+            Ok(DaemonResponse::ok())
         }
         DaemonRequest::MemoryIngestBatch { events_json } => {
             match serde_json::from_str::<Vec<crate::memory::types::ShellEvent>>(&events_json) {
@@ -1416,9 +1470,9 @@ fn execute_write(
                     if memory_tx.send(MemoryTask::IngestBatch { events }).is_err() {
                         tracing::debug!("memory thread disconnected, ingest skipped");
                     }
-                    DaemonResponse::ok()
+                    Ok(DaemonResponse::ok())
                 }
-                Err(e) => DaemonResponse::error(format!("invalid events JSON: {e}")),
+                Err(e) => Ok(DaemonResponse::error(format!("invalid events JSON: {e}"))),
             }
         }
         DaemonRequest::MemoryCoreAppend {
@@ -1430,7 +1484,7 @@ fn execute_write(
             let lbl = crate::memory::types::CoreLabel::from_str(&label)
                 .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
             match lbl {
-                Err(e) => e,
+                Err(e) => Ok(e),
                 Ok(l) => {
                     let input = serde_json::json!({
                         "label": label,
@@ -1439,12 +1493,14 @@ fn execute_write(
                     if let Err(error) =
                         authorize_memory_tool_request(&caller, "core_memory_append", &input)
                     {
-                        return DaemonResponse::error(format!("Security check failed: {error}"));
+                        return Ok(DaemonResponse::error(format!(
+                            "Security check failed: {error}"
+                        )));
                     }
-                    match memory.update_core_block(l, op, &content) {
-                        Ok(()) => DaemonResponse::ok(),
-                        Err(e) => DaemonResponse::error(format!("{e}")),
-                    }
+                    memory
+                        .update_core_block(l, op, &content)
+                        .with_context(|| format!("failed to append core memory block `{label}`"))?;
+                    Ok(DaemonResponse::ok())
                 }
             }
         }
@@ -1457,7 +1513,7 @@ fn execute_write(
             let lbl = crate::memory::types::CoreLabel::from_str(&label)
                 .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
             match lbl {
-                Err(e) => e,
+                Err(e) => Ok(e),
                 Ok(l) => {
                     let input = serde_json::json!({
                         "label": label,
@@ -1466,12 +1522,14 @@ fn execute_write(
                     if let Err(error) =
                         authorize_memory_tool_request(&caller, "core_memory_rewrite", &input)
                     {
-                        return DaemonResponse::error(format!("Security check failed: {error}"));
+                        return Ok(DaemonResponse::error(format!(
+                            "Security check failed: {error}"
+                        )));
                     }
-                    match memory.update_core_block(l, op, &content) {
-                        Ok(()) => DaemonResponse::ok(),
-                        Err(e) => DaemonResponse::error(format!("{e}")),
-                    }
+                    memory
+                        .update_core_block(l, op, &content)
+                        .with_context(|| format!("failed to rewrite core memory block `{label}`"))?;
+                    Ok(DaemonResponse::ok())
                 }
             }
         }
@@ -1482,20 +1540,22 @@ fn execute_write(
         } => {
             let parsed_data = match parse_memory_json(&data_json) {
                 Ok(parsed_data) => parsed_data,
-                Err(error) => return DaemonResponse::error(error),
+                Err(error) => return Ok(DaemonResponse::error(error)),
             };
             let input = serde_json::json!({
                 "memory_type": memory_type.as_str(),
                 "data": parsed_data
             });
             if let Err(error) = authorize_memory_tool_request(&caller, "store_memory", &input) {
-                return DaemonResponse::error(format!("Security check failed: {error}"));
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
             }
             use crate::daemon_db::DbAccess;
-            match DbAccess::memory_store(db, memory_type, &data_json) {
-                Ok(id) => DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            let id = DbAccess::memory_store(db, memory_type, &data_json).with_context(|| {
+                format!("failed to store {} memory entry", memory_type.as_str())
+            })?;
+            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
         }
         DaemonRequest::MemoryDelete {
             memory_type,
@@ -1504,64 +1564,66 @@ fn execute_write(
             caller,
         } => {
             if let Err(error) = require_sensitive_memory_confirmation("memory delete", confirmed) {
-                return DaemonResponse::error(format!("Security check failed: {error}"));
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
             }
             audit_sensitive_daemon_action(
                 &caller,
                 "memory_delete",
                 &format!("{}:{id}", memory_type.as_str()),
             );
-            match memory.delete_memory(memory_type, &id) {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            memory
+                .delete_memory(memory_type, &id)
+                .with_context(|| format!("failed to delete {} memory `{id}`", memory_type.as_str()))?;
+            Ok(DaemonResponse::ok())
         }
         DaemonRequest::MemoryRunDecay => match memory.run_decay() {
-            Ok(report) => DaemonResponse::ok_with_data(serde_json::json!({
+            Ok(report) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
                 "episodic_deleted": report.episodic_deleted,
                 "semantic_deleted": report.semantic_deleted,
                 "procedural_deleted": report.procedural_deleted,
                 "resource_deleted": report.resource_deleted,
                 "knowledge_deleted": report.knowledge_deleted,
-            })),
-            Err(e) => DaemonResponse::error(format!("{e}")),
+            }))),
+            Err(e) => Err(e.into()),
         },
         DaemonRequest::MemoryRunReflection => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::RunReflection) {
-                Ok(status) => DaemonResponse::ok_with_data(serde_json::json!({
+                Ok(status) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
                     "status": status.as_status(),
                     "task": memory_task_tracker.task_snapshot(MemoryTaskKind::RunReflection),
-                })),
+                }))),
                 Err(e) => {
                     memory_task_tracker.mark_failed(MemoryTaskKind::RunReflection, e.to_string());
                     tracing::debug!("memory thread disconnected, reflection skipped: {e}");
-                    DaemonResponse::error(e.to_string())
+                    Err(e)
                 }
             }
         }
         DaemonRequest::MemoryBootstrapScan => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::BootstrapScan) {
-                Ok(status) => DaemonResponse::ok_with_data(serde_json::json!({
+                Ok(status) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
                     "status": status.as_status(),
                     "task": memory_task_tracker.task_snapshot(MemoryTaskKind::BootstrapScan),
-                })),
+                }))),
                 Err(e) => {
                     memory_task_tracker.mark_failed(MemoryTaskKind::BootstrapScan, e.to_string());
                     tracing::debug!("memory thread disconnected, bootstrap skipped: {e}");
-                    DaemonResponse::error(e.to_string())
+                    Err(e)
                 }
             }
         }
         DaemonRequest::MemoryClearAll { confirmed, caller } => {
             if let Err(error) = require_sensitive_memory_confirmation("memory clear-all", confirmed)
             {
-                return DaemonResponse::error(format!("Security check failed: {error}"));
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
             }
             audit_sensitive_daemon_action(&caller, "memory_clear_all", "all");
-            match memory.clear_all() {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            memory.clear_all().context("failed to clear all memory data")?;
+            Ok(DaemonResponse::ok())
         }
         DaemonRequest::MemoryClearByType {
             memory_type,
@@ -1571,13 +1633,14 @@ fn execute_write(
             if let Err(error) =
                 require_sensitive_memory_confirmation("memory clear-by-type", confirmed)
             {
-                return DaemonResponse::error(format!("Security check failed: {error}"));
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
             }
             audit_sensitive_daemon_action(&caller, "memory_clear_by_type", memory_type.as_str());
-            match db.clear_memories_by_type(memory_type) {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            db.clear_memories_by_type(memory_type)
+                .with_context(|| format!("failed to clear {} memory records", memory_type.as_str()))?;
+            Ok(DaemonResponse::ok())
         }
         DaemonRequest::RunDoctor {
             retention_days,
@@ -1585,16 +1648,15 @@ fn execute_write(
             no_vacuum,
         } => {
             let config = crate::config::Config::load().unwrap_or_default();
-            match db.run_doctor(retention_days, no_prune, no_vacuum, &config) {
-                Ok(()) => DaemonResponse::ok(),
-                Err(e) => DaemonResponse::error(format!("{e}")),
-            }
+            db.run_doctor(retention_days, no_prune, no_vacuum, &config)
+                .context("failed to run doctor checks")?;
+            Ok(DaemonResponse::ok())
         }
         other => {
             let _ = other;
             let resp = DaemonResponse::error("unexpected write request");
             log_daemon("server.execute_write.response", &format!("{resp:?}"));
-            resp
+            Ok(resp)
         }
     }
 }
@@ -2724,5 +2786,62 @@ mod tests {
             }
             other => panic!("expected confirmation error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn execute_write_rolls_back_record_when_summary_side_effect_fails() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        db.conn_execute_batch(
+            "
+            CREATE TRIGGER fail_summary_update
+            BEFORE UPDATE OF summary ON commands
+            BEGIN
+                SELECT RAISE(ABORT, 'summary write blocked');
+            END;
+            ",
+        )
+        .expect("install summary failure trigger");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+        let tracker = MemoryTaskTracker::default();
+        let (memory_tx, _memory_rx) = mpsc::channel();
+        let queue_guards = MemoryQueueGuards::new();
+        let mut session_project_roots = std::collections::HashMap::new();
+
+        let response = execute_write(
+            &db,
+            DaemonRequest::Record {
+                session: "sess-1".into(),
+                command: "true".into(),
+                cwd: "/tmp".into(),
+                exit_code: 0,
+                started_at: "2026-02-01T10:00:00Z".into(),
+                tty: "/dev/pts/0".into(),
+                pid: 1234,
+                shell: "zsh".into(),
+                duration_ms: Some(12),
+                output: None,
+            },
+            &memory,
+            &tracker,
+            &memory_tx,
+            &queue_guards,
+            &mut session_project_roots,
+        );
+
+        match response {
+            DaemonResponse::Error { message } => {
+                assert!(
+                    message.contains("failed to persist trivial summary"),
+                    "unexpected message: {message}"
+                );
+                assert!(
+                    message.contains("summary write blocked"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected record failure, got {other:?}"),
+        }
+
+        assert_eq!(db.command_count().expect("count commands"), 0);
     }
 }
