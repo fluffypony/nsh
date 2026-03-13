@@ -1,22 +1,29 @@
+use anyhow::Context;
 use std::io::Write;
 use std::path::Path;
 
-pub fn audit_log(session_id: &str, query: &str, tool: &str, response: &str, risk: &str) {
+pub fn audit_log(
+    session_id: &str,
+    query: &str,
+    tool: &str,
+    response: &str,
+    risk: &str,
+) -> anyhow::Result<()> {
     if cfg!(test) {
-        return;
+        return Ok(());
     }
 
     if std::env::var("NSH_TEST_MODE").is_ok() {
-        return;
+        return Ok(());
     }
 
     if std::env::var("RUST_TEST_THREADS").is_ok() {
-        return;
+        return Ok(());
     }
 
     let dir = crate::config::Config::nsh_dir();
-    audit_log_to_dir(&dir, session_id, query, tool, response, risk);
-    rotate_audit_log();
+    audit_log_to_dir(&dir, session_id, query, tool, response, risk)?;
+    rotate_audit_log_in_dir(&dir)
 }
 
 fn audit_log_to_dir(
@@ -26,43 +33,52 @@ fn audit_log_to_dir(
     tool: &str,
     response: &str,
     risk: &str,
-) {
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("failed to create audit log directory {}", dir.display()))?;
     let path = dir.join("audit.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
+        .with_context(|| format!("failed to open audit log {}", path.display()))?;
+    #[cfg(unix)]
     {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-        let entry = serde_json::json!({
-            "ts": chrono::Utc::now().to_rfc3339(),
-            "session": session_id,
-            "query": query,
-            "tool": tool,
-            "response": response,
-            "risk": risk,
-        });
-        let _ = writeln!(f, "{entry}");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to set audit log permissions for {}", path.display()))?;
     }
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "session": session_id,
+        "query": query,
+        "tool": tool,
+        "response": response,
+        "risk": risk,
+    });
+    writeln!(f, "{entry}")
+        .with_context(|| format!("failed to append audit entry to {}", path.display()))?;
+    Ok(())
 }
 
-pub fn rotate_audit_log() {
+pub fn rotate_audit_log() -> anyhow::Result<()> {
     let dir = crate::config::Config::nsh_dir();
-    rotate_audit_log_in_dir(&dir);
+    rotate_audit_log_in_dir(&dir)
 }
 
-fn rotate_audit_log_in_dir(dir: &Path) {
+fn rotate_audit_log_in_dir(dir: &Path) -> anyhow::Result<()> {
     let log_path = dir.join("audit.log");
-    let Ok(input_file) = std::fs::OpenOptions::new()
+    let input_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&log_path)
-    else {
-        return;
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to open audit log {}", log_path.display()));
+        }
     };
 
     #[cfg(unix)]
@@ -71,15 +87,15 @@ fn rotate_audit_log_in_dir(dir: &Path) {
 
         let ret = unsafe { libc::flock(input_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if ret != 0 {
-            return;
+            return Ok(());
         }
     }
 
-    let Ok(meta) = input_file.metadata() else {
-        return;
-    };
+    let meta = input_file
+        .metadata()
+        .with_context(|| format!("failed to stat audit log {}", log_path.display()))?;
     if meta.len() <= 15_000_000 {
-        return;
+        return Ok(());
     }
 
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S");
@@ -103,41 +119,66 @@ fn rotate_audit_log_in_dir(dir: &Path) {
         .truncate(true)
         .open(&archive_path);
 
-    let Ok(output_file) = output_file else {
-        return;
+    let output_file = match output_file {
+        Ok(file) => file,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to create audit archive {}", archive_path.display())
+            });
+        }
     };
     let mut encoder = flate2::write::GzEncoder::new(output_file, flate2::Compression::default());
     let mut reader = std::io::BufReader::new(&input_file);
-    if std::io::copy(&mut reader, &mut encoder).is_err() {
-        return;
-    }
-    if encoder.finish().is_err() {
-        return;
-    }
+    std::io::copy(&mut reader, &mut encoder).with_context(|| {
+        format!(
+            "failed to compress audit log {} into {}",
+            log_path.display(),
+            archive_path.display()
+        )
+    })?;
+    encoder
+        .finish()
+        .with_context(|| format!("failed to finish audit archive {}", archive_path.display()))?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(&archive_path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| {
+                format!(
+                    "failed to set audit archive permissions for {}",
+                    archive_path.display()
+                )
+            })?;
     }
 
-    let _ = input_file.set_len(0);
+    input_file
+        .set_len(0)
+        .with_context(|| format!("failed to truncate audit log {}", log_path.display()))?;
 
-    cleanup_old_archives_in_dir(dir);
+    cleanup_old_archives_in_dir(dir)?;
+    Ok(())
 }
 
 #[cfg(test)]
-fn cleanup_old_archives() {
+fn cleanup_old_archives() -> anyhow::Result<()> {
     let dir = crate::config::Config::nsh_dir();
-    cleanup_old_archives_in_dir(&dir);
+    cleanup_old_archives_in_dir(&dir)
 }
 
-fn cleanup_old_archives_in_dir(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+fn cleanup_old_archives_in_dir(dir: &Path) -> anyhow::Result<()> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to list audit archives in {}", dir.display()));
+        }
     };
     let mut archives: Vec<std::path::PathBuf> = entries
-        .flatten()
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("failed to scan audit archives in {}", dir.display()))?
+        .into_iter()
         .filter(|e| {
             let name = e.file_name().to_string_lossy().to_string();
             name.starts_with("audit_") && name.ends_with(".log.gz")
@@ -146,8 +187,11 @@ fn cleanup_old_archives_in_dir(dir: &Path) {
         .collect();
     archives.sort();
     while archives.len() > 5 {
-        let _ = std::fs::remove_file(archives.remove(0));
+        let stale = archives.remove(0);
+        std::fs::remove_file(&stale)
+            .with_context(|| format!("failed to remove audit archive {}", stale.display()))?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -167,21 +211,22 @@ mod tests {
     #[serial_test::serial]
     fn test_cleanup_old_archives_limit() {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
-        cleanup_old_archives();
+        cleanup_old_archives().expect("cleanup old archives");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_audit_log_no_panic() {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
-        audit_log("test-session", "test query", "command", "ls", "safe");
+        audit_log("test-session", "test query", "command", "ls", "safe")
+            .expect("audit log");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_rotate_audit_log_no_panic() {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
-        rotate_audit_log();
+        rotate_audit_log().expect("rotate audit log");
     }
 
     #[test]
@@ -203,7 +248,7 @@ mod tests {
     #[serial_test::serial]
     fn test_rotate_small_log_is_noop() {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
-        rotate_audit_log();
+        rotate_audit_log().expect("rotate small audit log");
     }
 
     #[test]
@@ -268,7 +313,8 @@ mod tests {
             "command",
             "echo 'hello world' && rm -rf /",
             "dangerous",
-        );
+        )
+        .expect("audit log with special characters");
     }
 
     #[test]
@@ -277,14 +323,15 @@ mod tests {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         let long_query = "x".repeat(100_000);
         let long_response = "y".repeat(100_000);
-        audit_log("sess-long", &long_query, "chat", &long_response, "safe");
+        audit_log("sess-long", &long_query, "chat", &long_response, "safe")
+            .expect("audit log with long strings");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_audit_log_empty_strings() {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
-        audit_log("", "", "", "", "");
+        audit_log("", "", "", "", "").expect("audit log with empty strings");
     }
 
     #[test]
@@ -297,7 +344,8 @@ mod tests {
             "chat",
             "Ñoño résumé",
             "safe",
-        );
+        )
+        .expect("audit log with unicode");
     }
 
     #[test]
@@ -312,7 +360,7 @@ mod tests {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = with_temp_home();
         let path = crate::config::Config::nsh_dir().join("audit.log");
         let existed = path.exists();
-        rotate_audit_log();
+        rotate_audit_log().expect("rotate nonexistent audit log");
         if !existed {
             assert!(!path.exists() || std::fs::metadata(&path).unwrap().len() == 0);
         }
@@ -350,13 +398,14 @@ mod tests {
 
     #[test]
     fn test_cleanup_old_archives_does_not_panic_with_no_dir() {
-        cleanup_old_archives();
+        cleanup_old_archives().expect("cleanup without audit dir");
     }
 
     #[test]
     fn test_audit_log_to_dir_creates_file_with_valid_json() {
         let tmp = tempfile::tempdir().unwrap();
-        audit_log_to_dir(tmp.path(), "s1", "hello", "chat", "hi", "safe");
+        audit_log_to_dir(tmp.path(), "s1", "hello", "chat", "hi", "safe")
+            .expect("write audit log");
 
         let log_path = tmp.path().join("audit.log");
         assert!(log_path.exists());
@@ -377,8 +426,10 @@ mod tests {
     #[test]
     fn test_audit_log_to_dir_appends_multiple_entries() {
         let tmp = tempfile::tempdir().unwrap();
-        audit_log_to_dir(tmp.path(), "s1", "q1", "t1", "r1", "safe");
-        audit_log_to_dir(tmp.path(), "s2", "q2", "t2", "r2", "high");
+        audit_log_to_dir(tmp.path(), "s1", "q1", "t1", "r1", "safe")
+            .expect("write first audit log");
+        audit_log_to_dir(tmp.path(), "s2", "q2", "t2", "r2", "high")
+            .expect("write second audit log");
 
         let contents = std::fs::read_to_string(tmp.path().join("audit.log")).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
@@ -404,7 +455,7 @@ mod tests {
         }
         assert!(std::fs::metadata(&log_path).unwrap().len() > 15_000_000);
 
-        rotate_audit_log_in_dir(tmp.path());
+        rotate_audit_log_in_dir(tmp.path()).expect("rotate large audit log");
 
         assert_eq!(
             std::fs::metadata(&log_path).unwrap().len(),
@@ -439,7 +490,7 @@ mod tests {
         let log_path = tmp.path().join("audit.log");
         std::fs::write(&log_path, "small content").unwrap();
 
-        rotate_audit_log_in_dir(tmp.path());
+        rotate_audit_log_in_dir(tmp.path()).expect("leave small audit log in place");
 
         let contents = std::fs::read_to_string(&log_path).unwrap();
         assert_eq!(
@@ -464,7 +515,7 @@ mod tests {
     #[test]
     fn test_rotate_nonexistent_file_in_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        rotate_audit_log_in_dir(tmp.path());
+        rotate_audit_log_in_dir(tmp.path()).expect("rotate nonexistent file");
     }
 
     #[test]
@@ -485,7 +536,7 @@ mod tests {
             .collect();
         assert_eq!(before.len(), 8);
 
-        cleanup_old_archives_in_dir(tmp.path());
+        cleanup_old_archives_in_dir(tmp.path()).expect("cleanup archived logs");
 
         let after: Vec<_> = std::fs::read_dir(tmp.path())
             .unwrap()
@@ -518,7 +569,7 @@ mod tests {
             std::fs::write(tmp.path().join(&name), "fake").unwrap();
         }
 
-        cleanup_old_archives_in_dir(tmp.path());
+        cleanup_old_archives_in_dir(tmp.path()).expect("keep five archives");
 
         let count = std::fs::read_dir(tmp.path())
             .unwrap()
@@ -541,7 +592,7 @@ mod tests {
         std::fs::write(tmp.path().join("other_file.txt"), "keep me").unwrap();
         std::fs::write(tmp.path().join("audit.log"), "keep me too").unwrap();
 
-        cleanup_old_archives_in_dir(tmp.path());
+        cleanup_old_archives_in_dir(tmp.path()).expect("ignore non archive files");
 
         assert!(tmp.path().join("other_file.txt").exists());
         assert!(tmp.path().join("audit.log").exists());
@@ -565,7 +616,7 @@ mod tests {
             }
         }
 
-        rotate_audit_log_in_dir(tmp.path());
+        rotate_audit_log_in_dir(tmp.path()).expect("rotate audit log and cleanup old archives");
 
         let archive_count = std::fs::read_dir(tmp.path())
             .unwrap()
@@ -587,7 +638,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        audit_log_to_dir(tmp.path(), "s1", "q", "t", "r", "safe");
+        audit_log_to_dir(tmp.path(), "s1", "q", "t", "r", "safe")
+            .expect("write audit log with secure permissions");
 
         let log_path = tmp.path().join("audit.log");
         let perms = std::fs::metadata(&log_path).unwrap().permissions();
@@ -598,35 +650,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_rotate_audit_log_in_dir_cannot_open_log() {
         let tmp = tempfile::tempdir().unwrap();
         let log_path = tmp.path().join("audit.log");
         std::fs::write(&log_path, "x".repeat(16_000_000)).unwrap();
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        rotate_audit_log_in_dir(tmp.path());
+        let error =
+            rotate_audit_log_in_dir(tmp.path()).expect_err("permission error should surface");
+        assert!(error.to_string().contains("failed to open audit log"));
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        }
+        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]
     fn test_cleanup_old_archives_in_dir_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        cleanup_old_archives_in_dir(tmp.path());
+        cleanup_old_archives_in_dir(tmp.path()).expect("cleanup empty archive dir");
         let count = std::fs::read_dir(tmp.path()).unwrap().count();
         assert_eq!(count, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_rotate_audit_log_in_dir_cannot_create_archive() {
         let tmp = tempfile::tempdir().unwrap();
@@ -634,14 +683,22 @@ mod tests {
         std::fs::write(&log_path, "y".repeat(16_000_000)).unwrap();
 
         let archive_dir = tmp.path();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let original_perms = std::fs::metadata(archive_dir).unwrap().permissions();
-            std::fs::set_permissions(archive_dir, std::fs::Permissions::from_mode(0o444)).unwrap();
-            rotate_audit_log_in_dir(tmp.path());
-            std::fs::set_permissions(archive_dir, original_perms).unwrap();
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let original_perms = std::fs::metadata(archive_dir).unwrap().permissions();
+        std::fs::set_permissions(archive_dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let error =
+            rotate_audit_log_in_dir(tmp.path()).expect_err("archive creation failure should surface");
+        std::fs::set_permissions(archive_dir, original_perms).unwrap();
+        assert!(
+            format!("{error:#}").contains("audit"),
+            "unexpected error: {error:#}"
+        );
+        let archive_count = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".log.gz"))
+            .count();
+        assert_eq!(archive_count, 0, "rotation should not leave partial archives");
     }
 
     #[test]
@@ -654,7 +711,8 @@ mod tests {
             "chat",
             "response\nwith\nnewlines",
             "medium",
-        );
+        )
+        .expect("write audit log with all fields");
 
         let contents = std::fs::read_to_string(tmp.path().join("audit.log")).unwrap();
         let v: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
@@ -665,19 +723,18 @@ mod tests {
 
     #[test]
     fn test_audit_log_to_dir_invalid_dir() {
-        audit_log_to_dir(
-            Path::new("/nonexistent/dir/that/does/not/exist"),
-            "s1",
-            "q",
-            "t",
-            "r",
-            "safe",
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        let bad_dir = tmp.path().join("not-a-directory");
+        std::fs::write(&bad_dir, "occupied").unwrap();
+
+        let error = audit_log_to_dir(&bad_dir, "s1", "q", "t", "r", "safe")
+            .expect_err("audit log write should fail for non-directory path");
+        assert!(error.to_string().contains("failed to create audit log directory"));
     }
 
     #[test]
     fn test_cleanup_old_archives_standalone() {
-        cleanup_old_archives();
+        cleanup_old_archives().expect("standalone cleanup");
     }
 
     #[test]
@@ -693,7 +750,7 @@ mod tests {
         }
         assert!(std::fs::metadata(&log_path).unwrap().len() > 15_000_000);
 
-        rotate_audit_log_in_dir(tmp.path());
+        rotate_audit_log_in_dir(tmp.path()).expect("rotate audit log and truncate source");
 
         let truncated = std::fs::read_to_string(&log_path).unwrap();
         assert!(truncated.is_empty(), "log should be emptied after rotation");
@@ -714,7 +771,7 @@ mod tests {
             }
         }
 
-        rotate_audit_log_in_dir(tmp.path());
+        rotate_audit_log_in_dir(tmp.path()).expect("rotate audit log and set archive permissions");
 
         let archives: Vec<_> = std::fs::read_dir(tmp.path())
             .unwrap()

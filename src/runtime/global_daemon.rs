@@ -81,9 +81,24 @@ fn audit_sensitive_daemon_action(
     caller: &crate::daemon::CallerContext,
     action: &str,
     details: &str,
-) {
+) -> anyhow::Result<()> {
+    audit_sensitive_daemon_action_with(caller, action, details, |session, query, tool, response, risk| {
+        crate::audit::audit_log(session, query, tool, response, risk)
+    })
+}
+
+fn audit_sensitive_daemon_action_with<F>(
+    caller: &crate::daemon::CallerContext,
+    action: &str,
+    details: &str,
+    audit_log: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(&str, &str, &str, &str, &str) -> anyhow::Result<()>,
+{
     let (session, query, response) = sensitive_daemon_audit_fields(caller, action, details);
-    crate::audit::audit_log(&session, &query, action, &response, "high");
+    audit_log(&session, &query, action, &response, "high")
+        .with_context(|| format!("failed to audit sensitive daemon action `{action}`"))
 }
 
 fn authorize_session_access(
@@ -1614,10 +1629,10 @@ fn try_execute_write(
                 &caller,
                 "memory_delete",
                 &format!("{}:{id}", memory_type.as_str()),
-            );
-            memory
-                .delete_memory(memory_type, &id)
-                .with_context(|| format!("failed to delete {} memory `{id}`", memory_type.as_str()))?;
+            )?;
+            memory.delete_memory(memory_type, &id).with_context(|| {
+                format!("failed to delete {} memory `{id}`", memory_type.as_str())
+            })?;
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::MemoryRunDecay => {
@@ -1651,8 +1666,10 @@ fn try_execute_write(
                     "Security check failed: {error}"
                 )));
             }
-            audit_sensitive_daemon_action(&caller, "memory_clear_all", "all");
-            memory.clear_all().context("failed to clear all memory data")?;
+            audit_sensitive_daemon_action(&caller, "memory_clear_all", "all")?;
+            memory
+                .clear_all()
+                .context("failed to clear all memory data")?;
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::MemoryClearByType {
@@ -1667,9 +1684,10 @@ fn try_execute_write(
                     "Security check failed: {error}"
                 )));
             }
-            audit_sensitive_daemon_action(&caller, "memory_clear_by_type", memory_type.as_str());
-            db.clear_memories_by_type(memory_type)
-                .with_context(|| format!("failed to clear {} memory records", memory_type.as_str()))?;
+            audit_sensitive_daemon_action(&caller, "memory_clear_by_type", memory_type.as_str())?;
+            db.clear_memories_by_type(memory_type).with_context(|| {
+                format!("failed to clear {} memory records", memory_type.as_str())
+            })?;
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::RunDoctor {
@@ -2137,7 +2155,11 @@ fn execute_read(
             if let Err(error) = authorize_memory_tool_request(&caller, "retrieve_secret", &input) {
                 return DaemonResponse::error(format!("Security check failed: {error}"));
             }
-            audit_sensitive_daemon_action(&caller, "retrieve_secret", &caption_query);
+            if let Err(error) =
+                audit_sensitive_daemon_action(&caller, "retrieve_secret", &caption_query)
+            {
+                return DaemonResponse::error(format!("{error:#}"));
+            }
             match db.search_knowledge_fts(&caption_query, 3, &["low", "medium", "high"]) {
                 Ok(results) => {
                     let json: Vec<serde_json::Value> = results
@@ -2829,6 +2851,30 @@ mod tests {
     fn execute_write_requires_confirmation_for_memory_clear_all() {
         let db = crate::db::Db::open_in_memory().expect("open db");
         let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+    #[test]
+    fn audit_sensitive_daemon_action_surfaces_audit_failures() {
+        let caller = crate::daemon::CallerContext {
+            session: Some("caller".into()),
+            explicit_user_request: Some("show me the production api key".into()),
+        };
+
+        let error = audit_sensitive_daemon_action_with(
+            &caller,
+            "retrieve_secret",
+            "Production API",
+            |_, _, _, _, _| Err(anyhow::anyhow!("disk full")),
+        )
+        .expect_err("audit error should surface");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to audit sensitive daemon action `retrieve_secret`"),
+            "unexpected message: {error:#}"
+        );
+        assert!(format!("{error:#}").contains("disk full"));
+    }
+
         let tracker = MemoryTaskTracker::default();
         let (memory_tx, _memory_rx) = mpsc::channel();
         let queue_guards = MemoryQueueGuards::new();
