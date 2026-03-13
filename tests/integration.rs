@@ -32,19 +32,63 @@ fn daemon_starting(output: &Output) -> bool {
     stdout.contains("still starting up") || stderr.contains("still starting up")
 }
 
+fn global_daemon_socket_path(home: &Path) -> std::path::PathBuf {
+    home.join(".nsh").join("nshd.sock")
+}
+
+#[cfg(unix)]
+fn wait_for_global_daemon_ready(home: &Path, timeout: Duration) -> bool {
+    use std::os::unix::net::UnixStream;
+
+    let socket_path = global_daemon_socket_path(home);
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        match UnixStream::connect(&socket_path) {
+            Ok(_) => return true,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::AddrNotAvailable
+                ) => std::thread::yield_now(),
+            Err(_) if socket_path.exists() => return true,
+            Err(_) => std::thread::yield_now(),
+        }
+    }
+    false
+}
+
+#[cfg(not(unix))]
+fn wait_for_global_daemon_ready(home: &Path, timeout: Duration) -> bool {
+    let pid_path = home.join(".nsh").join("nshd.pid");
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if pid_path.exists() {
+            return true;
+        }
+        std::thread::yield_now();
+    }
+    false
+}
+
 fn run_nsh_until<F>(home: &Path, args: &[&str], ready: F) -> Output
 where
     F: Fn(&Output) -> bool,
 {
-    let mut last = run_nsh(home, args);
-    for _ in 0..9 {
-        if ready(&last) {
-            return last;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-        last = run_nsh(home, args);
+    let first = run_nsh(home, args);
+    if ready(&first) || !daemon_starting(&first) {
+        return first;
     }
-    last
+
+    assert!(
+        wait_for_global_daemon_ready(home, Duration::from_secs(2)),
+        "global daemon did not become ready; stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    run_nsh(home, args)
 }
 
 #[test]
@@ -580,18 +624,14 @@ fn update_checker_builder_preserves_configuration() {
 
 #[test]
 fn provider_routing_strips_sidecar_model_prefix() {
-    let sidecar = nsh::provider::openai_compat::cliproxyapi_base_url();
     assert_eq!(
-        nsh::provider::routing::model_name_for_transport(
-            "anthropic/claude-sonnet-4.6",
-            &sidecar
-        ),
+        nsh::provider::routing::model_name_for_transport("anthropic/claude-sonnet-4.6", true),
         "claude-sonnet-4.6"
     );
     assert_eq!(
         nsh::provider::routing::model_name_for_transport(
             "anthropic/claude-sonnet-4.6",
-            "https://api.openrouter.ai/v1"
+            false
         ),
         "anthropic/claude-sonnet-4.6"
     );

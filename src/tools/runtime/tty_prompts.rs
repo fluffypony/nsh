@@ -1,3 +1,63 @@
+const INPUT_POLL_SLICE: std::time::Duration = std::time::Duration::from_millis(200);
+
+enum TimedInputStep {
+    Pending,
+    Event(crossterm::event::Event),
+    Expired,
+    Error,
+}
+
+trait TimedInputSource {
+    fn next_step(&mut self, max_wait: std::time::Duration) -> TimedInputStep;
+}
+
+struct CrosstermTimedInput {
+    deadline: std::time::Instant,
+}
+
+impl CrosstermTimedInput {
+    fn new(timeout_secs: u64) -> Self {
+        Self {
+            deadline: std::time::Instant::now()
+                + std::time::Duration::from_secs(timeout_secs.max(1)),
+        }
+    }
+}
+
+impl TimedInputSource for CrosstermTimedInput {
+    fn next_step(&mut self, max_wait: std::time::Duration) -> TimedInputStep {
+        use crossterm::event;
+
+        let now = std::time::Instant::now();
+        if now >= self.deadline {
+            return TimedInputStep::Expired;
+        }
+
+        let wait = self.deadline.saturating_duration_since(now).min(max_wait);
+        let polled = match event::poll(wait) {
+            Ok(polled) => polled,
+            Err(_) => return TimedInputStep::Error,
+        };
+        if !polled {
+            return if std::time::Instant::now() >= self.deadline {
+                TimedInputStep::Expired
+            } else {
+                TimedInputStep::Pending
+            };
+        }
+
+        match event::read() {
+            Ok(event) => TimedInputStep::Event(event),
+            Err(_) => TimedInputStep::Error,
+        }
+    }
+}
+
+enum UserInputProgress {
+    Continue,
+    Submit(Option<String>),
+}
+
 fn is_confirmation_accepted(line: &str) -> bool {
     matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
@@ -106,56 +166,83 @@ pub fn prompt_tty_confirmation_safe(prompt: &str) -> std::io::Result<bool> {
     Ok(read_tty_confirmation_safe())
 }
 
+fn handle_user_input_event(line: &mut String, event: crossterm::event::Event) -> UserInputProgress {
+    use crossterm::event::{Event, KeyCode, KeyEventKind};
+
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+            KeyCode::Enter => {
+                let trimmed = line.trim().to_string();
+                UserInputProgress::Submit((!trimmed.is_empty()).then_some(trimmed))
+            }
+            KeyCode::Char(c) => {
+                line.push(c);
+                UserInputProgress::Continue
+            }
+            KeyCode::Backspace => {
+                line.pop();
+                UserInputProgress::Continue
+            }
+            _ => UserInputProgress::Continue,
+        },
+        _ => UserInputProgress::Continue,
+    }
+}
+
+fn read_user_input_with_timeout_from(source: &mut impl TimedInputSource) -> Option<String> {
+    let mut line = String::new();
+
+    loop {
+        match source.next_step(INPUT_POLL_SLICE) {
+            TimedInputStep::Pending => {}
+            TimedInputStep::Expired | TimedInputStep::Error => return None,
+            TimedInputStep::Event(event) => match handle_user_input_event(&mut line, event) {
+                UserInputProgress::Continue => {}
+                UserInputProgress::Submit(result) => return result,
+            },
+        }
+    }
+}
+
 /// Read a single line of user input with a timeout (in seconds).
 /// Returns Some(trimmed_line) if input received and non-empty; otherwise None.
 pub fn read_user_input_with_timeout(timeout_secs: u64) -> Option<String> {
-    use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-
-    let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
-    let start = std::time::Instant::now();
-    let mut line = String::new();
-
-    while start.elapsed() < timeout {
-        let remaining = timeout.saturating_sub(start.elapsed());
-        let wait = remaining.min(std::time::Duration::from_millis(200));
-        let polled = match event::poll(wait) {
-            Ok(v) => v,
-            Err(_) => return None,
-        };
-        if !polled {
-            continue;
-        }
-
-        match event::read() {
-            Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => match key.code {
-                KeyCode::Enter => {
-                    let trimmed = line.trim().to_string();
-                    return if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    };
-                }
-                KeyCode::Char(c) => line.push(c),
-                KeyCode::Backspace => {
-                    line.pop();
-                }
-                _ => {}
-            },
-            Ok(_) => {}
-            Err(_) => return None,
-        }
-    }
-
-    None
+    let mut source = CrosstermTimedInput::new(timeout_secs);
+    read_user_input_with_timeout_from(&mut source)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        is_confirmation_accepted, is_default_yes_confirmation_accepted,
-        is_yes_confirmation_accepted,
-    };
+    use super::*;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use std::collections::VecDeque;
+
+    struct FakeTimedInput {
+        steps: VecDeque<TimedInputStep>,
+    }
+
+    impl FakeTimedInput {
+        fn new(steps: Vec<TimedInputStep>) -> Self {
+            Self {
+                steps: steps.into(),
+            }
+        }
+    }
+
+    impl TimedInputSource for FakeTimedInput {
+        fn next_step(&mut self, _max_wait: std::time::Duration) -> TimedInputStep {
+            self.steps.pop_front().unwrap_or(TimedInputStep::Expired)
+        }
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
 
     #[test]
     fn confirmation_accepts_short_and_long_yes() {
@@ -177,5 +264,56 @@ mod tests {
         assert!(is_default_yes_confirmation_accepted("y"));
         assert!(!is_default_yes_confirmation_accepted("n"));
         assert!(!is_default_yes_confirmation_accepted("NO"));
+    }
+
+    #[test]
+    fn read_user_input_with_timeout_collects_chars_and_backspace() {
+        let mut input = FakeTimedInput::new(vec![
+            TimedInputStep::Event(key(KeyCode::Char('h'))),
+            TimedInputStep::Event(key(KeyCode::Char('i'))),
+            TimedInputStep::Event(key(KeyCode::Backspace)),
+            TimedInputStep::Event(key(KeyCode::Char('o'))),
+            TimedInputStep::Event(key(KeyCode::Enter)),
+        ]);
+
+        assert_eq!(
+            read_user_input_with_timeout_from(&mut input).as_deref(),
+            Some("ho")
+        );
+    }
+
+    #[test]
+    fn read_user_input_with_timeout_ignores_non_press_and_resize_events() {
+        let mut input = FakeTimedInput::new(vec![
+            TimedInputStep::Event(Event::Resize(80, 24)),
+            TimedInputStep::Event(Event::Key(KeyEvent {
+                code: KeyCode::Char('x'),
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Release,
+                state: KeyEventState::NONE,
+            })),
+            TimedInputStep::Event(key(KeyCode::Char('y'))),
+            TimedInputStep::Event(key(KeyCode::Enter)),
+        ]);
+
+        assert_eq!(
+            read_user_input_with_timeout_from(&mut input).as_deref(),
+            Some("y")
+        );
+    }
+
+    #[test]
+    fn read_user_input_with_timeout_returns_none_for_empty_submit() {
+        let mut input =
+            FakeTimedInput::new(vec![TimedInputStep::Event(key(KeyCode::Enter))]);
+
+        assert_eq!(read_user_input_with_timeout_from(&mut input), None);
+    }
+
+    #[test]
+    fn read_user_input_with_timeout_returns_none_when_time_expires() {
+        let mut input = FakeTimedInput::new(vec![TimedInputStep::Pending, TimedInputStep::Expired]);
+
+        assert_eq!(read_user_input_with_timeout_from(&mut input), None);
     }
 }

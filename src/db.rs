@@ -3167,6 +3167,24 @@ mod tests {
         (home, home_guard, xdg_data_guard, xdg_config_guard)
     }
 
+    fn set_conversation_created_at(db: &Db, id: i64, created_at: &str) {
+        db.conn
+            .execute(
+                "UPDATE conversations SET created_at = ? WHERE id = ?",
+                params![created_at, id],
+            )
+            .unwrap();
+    }
+
+    fn set_session_last_heartbeat(db: &Db, session_id: &str, last_heartbeat: &str) {
+        db.conn
+            .execute(
+                "UPDATE sessions SET last_heartbeat = ? WHERE id = ?",
+                params![last_heartbeat, session_id],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn test_create_and_end_session() {
         let db = test_db();
@@ -3337,18 +3355,20 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation(
-            "s1",
-            "first query",
-            "chat",
-            "first response",
-            None,
-            false,
-            false,
-        )
-        .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.insert_conversation(
+        let first_id = db
+            .insert_conversation(
+                "s1",
+                "first query",
+                "chat",
+                "first response",
+                None,
+                false,
+                false,
+            )
+            .unwrap();
+        set_conversation_created_at(&db, first_id, "2025-01-01T00:00:00Z");
+        let second_id = db
+            .insert_conversation(
             "s1",
             "second query",
             "command",
@@ -3357,7 +3377,8 @@ mod tests {
             false,
             false,
         )
-        .unwrap();
+            .unwrap();
+        set_conversation_created_at(&db, second_id, "2025-01-01T00:00:01Z");
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 2);
@@ -4103,17 +4124,18 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
         for i in 0..5 {
-            db.insert_conversation(
-                "s1",
-                &format!("query{i}"),
-                "chat",
-                &format!("resp{i}"),
-                None,
-                false,
-                false,
-            )
-            .unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            let id = db
+                .insert_conversation(
+                    "s1",
+                    &format!("query{i}"),
+                    "chat",
+                    &format!("resp{i}"),
+                    None,
+                    false,
+                    false,
+                )
+                .unwrap();
+            set_conversation_created_at(&db, id, &format!("2025-01-01T00:00:0{i}Z"));
         }
 
         let convos = db.get_conversations("s1", 3).unwrap();
@@ -5639,16 +5661,8 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        let hb1: Option<String> = db
-            .conn
-            .query_row(
-                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        set_session_last_heartbeat(&db, "s1", "2025-01-01T00:00:00Z");
+        let hb1 = Some("2025-01-01T00:00:00Z".to_string());
         db.update_heartbeat("s1").unwrap();
 
         let hb2: Option<String> = db
@@ -6957,12 +6971,14 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation("s1", "first", "command", "echo first", None, false, true)
+        let id1 = db
+            .insert_conversation("s1", "first", "command", "echo first", None, false, true)
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        set_conversation_created_at(&db, id1, "2025-01-01T00:00:00Z");
         let id2 = db
             .insert_conversation("s1", "second", "command", "echo second", None, false, true)
             .unwrap();
+        set_conversation_created_at(&db, id2, "2025-01-01T00:00:01Z");
 
         let pending = db.find_pending_conversation("s1").unwrap();
         assert!(pending.is_some());
@@ -7452,15 +7468,8 @@ mod tests {
     fn test_update_heartbeat_on_existing_session() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
-        let before: String = db
-            .conn
-            .query_row(
-                "SELECT last_heartbeat FROM sessions WHERE id = 's1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        set_session_last_heartbeat(&db, "s1", "2025-01-01T00:00:00Z");
+        let before = "2025-01-01T00:00:00Z".to_string();
         db.update_heartbeat("s1").unwrap();
         let after: String = db
             .conn
@@ -7875,11 +7884,14 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation("s1", "third", "chat", "r3", None, false, false)
+        let third_id = db
+            .insert_conversation("s1", "third", "chat", "r3", None, false, false)
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        db.insert_conversation("s1", "fourth", "chat", "r4", None, false, false)
+        set_conversation_created_at(&db, third_id, "2025-01-01T00:00:00Z");
+        let fourth_id = db
+            .insert_conversation("s1", "fourth", "chat", "r4", None, false, false)
             .unwrap();
+        set_conversation_created_at(&db, fourth_id, "2025-01-01T00:00:01Z");
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 2);
@@ -11079,11 +11091,14 @@ mod tests {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
-        db.insert_conversation("s1", "old build", "command", "make old", None, false, false)
+        let old_id = db
+            .insert_conversation("s1", "old build", "command", "make old", None, false, false)
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        db.insert_conversation("s1", "new build", "command", "make new", None, false, false)
+        set_conversation_created_at(&db, old_id, "2025-01-01T00:00:00Z");
+        let new_id = db
+            .insert_conversation("s1", "new build", "command", "make new", None, false, false)
             .unwrap();
+        set_conversation_created_at(&db, new_id, "2025-01-01T00:00:01Z");
 
         let pending = db.find_pending_conversation("s1").unwrap();
         assert!(pending.is_some());

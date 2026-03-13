@@ -46,6 +46,39 @@ fn schedule_for_attempt(attempt: usize) -> Duration {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MonitorStep {
+    status: ConnectivityStatus,
+    online: bool,
+    next_attempt: usize,
+}
+
+fn evaluate_monitor_step<F>(current_url: &str, attempt: usize, signaled: bool, probe: F) -> MonitorStep
+where
+    F: FnOnce(&str) -> bool,
+{
+    let status = if current_url.is_empty() {
+        ConnectivityStatus::Unknown
+    } else if probe(current_url) {
+        ConnectivityStatus::Online
+    } else {
+        ConnectivityStatus::Offline
+    };
+    let next_attempt = if matches!(status, ConnectivityStatus::Online | ConnectivityStatus::Unknown)
+    {
+        0
+    } else if signaled {
+        (attempt + 1).min(4)
+    } else {
+        attempt.saturating_add(1)
+    };
+    MonitorStep {
+        status,
+        online: matches!(status, ConnectivityStatus::Online),
+        next_attempt,
+    }
+}
+
 fn probe_once(url: &str) -> bool {
     // Probe inline with explicit socket/DNS timeouts to avoid leaking helper threads.
     probe_once_inner(url)
@@ -130,26 +163,10 @@ fn monitor() -> &'static ConnectivityMonitor {
                         .lock()
                         .map(|url| url.clone())
                         .unwrap_or_default();
-                    let current_status = if current_url.is_empty() {
-                        ConnectivityStatus::Unknown
-                    } else if probe_once(&current_url) {
-                        ConnectivityStatus::Online
-                    } else {
-                        ConnectivityStatus::Offline
-                    };
-                    let ok = matches!(current_status, ConnectivityStatus::Online);
-                    STATUS.store(current_status as u8, Ordering::SeqCst);
-                    ONLINE.store(ok, Ordering::SeqCst);
-                    if matches!(
-                        current_status,
-                        ConnectivityStatus::Online | ConnectivityStatus::Unknown
-                    ) {
-                        attempt = 0;
-                    } else if !signaled {
-                        attempt = attempt.saturating_add(1);
-                    } else {
-                        attempt = (attempt + 1).min(4);
-                    }
+                    let step = evaluate_monitor_step(&current_url, attempt, signaled, probe_once);
+                    STATUS.store(step.status as u8, Ordering::SeqCst);
+                    ONLINE.store(step.online, Ordering::SeqCst);
+                    attempt = step.next_attempt;
                 }
             })
             .ok();
@@ -218,5 +235,57 @@ mod tests {
 
         assert_eq!(status(), ConnectivityStatus::Unknown);
         assert!(!is_online());
+    }
+
+    #[test]
+    fn monitor_step_resets_attempt_for_unknown_and_online_results() {
+        let unknown = evaluate_monitor_step("", 3, false, |_| false);
+        assert_eq!(
+            unknown,
+            MonitorStep {
+                status: ConnectivityStatus::Unknown,
+                online: false,
+                next_attempt: 0,
+            }
+        );
+
+        let online = evaluate_monitor_step("https://example.test", 5, false, |_| true);
+        assert_eq!(
+            online,
+            MonitorStep {
+                status: ConnectivityStatus::Online,
+                online: true,
+                next_attempt: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn monitor_step_increments_attempts_for_unsignaled_failures() {
+        let step = evaluate_monitor_step("https://example.test", 2, false, |_| false);
+        assert_eq!(
+            step,
+            MonitorStep {
+                status: ConnectivityStatus::Offline,
+                online: false,
+                next_attempt: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn monitor_step_caps_signaled_failures_at_short_backoff() {
+        let first = evaluate_monitor_step("https://example.test", 1, true, |_| false);
+        assert_eq!(first.next_attempt, 2);
+
+        let capped = evaluate_monitor_step("https://example.test", 9, true, |_| false);
+        assert_eq!(
+            capped,
+            MonitorStep {
+                status: ConnectivityStatus::Offline,
+                online: false,
+                next_attempt: 4,
+            }
+        );
     }
 }
