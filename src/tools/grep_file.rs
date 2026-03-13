@@ -1,14 +1,7 @@
+use crate::tools::ToolInvocationOutcome;
 use regex::Regex;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
-
-fn ok(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
-    crate::tools::ToolInvocationOutcome::success(msg)
-}
-
-fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
-    crate::tools::ToolInvocationOutcome::failure(msg)
-}
 
 #[cfg(unix)]
 fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -34,20 +27,21 @@ pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
-    Ok(execute_outcome_with_access(input, sensitive_file_access)?.into_content())
+    crate::tools::outcome_to_content(execute_outcome_with_access(input, sensitive_file_access))
 }
 
 pub fn execute_outcome_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
-) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
+) -> anyhow::Result<ToolInvocationOutcome> {
     let raw_path = input["path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("path is required"))?;
 
-    let path = match crate::tools::validate_read_path_with_access(raw_path, sensitive_file_access) {
-        Ok(p) => p,
-        Err(msg) => return Ok(fail(msg)),
+    let path = match crate::tools::validate_read_path_tool_outcome(raw_path, sensitive_file_access)
+    {
+        Ok(path) => path,
+        Err(outcome) => return Ok(outcome),
     };
 
     let pattern = input["pattern"].as_str();
@@ -63,10 +57,10 @@ pub fn execute_outcome_with_access(
             sensitive_file_access,
         )?;
         return Ok(match read_result {
-            crate::tools::ToolInvocationOutcome::Success(content) => ok(format!(
+            ToolInvocationOutcome::Success(content) => ToolInvocationOutcome::success(format!(
                 "Note: grep_file without 'pattern' is deprecated and will be removed. Use read_file instead.\n\n{content}"
             )),
-            crate::tools::ToolInvocationOutcome::Failure(content) => fail(content),
+            ToolInvocationOutcome::Failure(content) => ToolInvocationOutcome::failure(content),
         });
     }
 
@@ -77,7 +71,7 @@ pub fn execute_outcome_with_access(
         if let Ok(meta) = std::fs::symlink_metadata(&path) {
             let ft = meta.file_type();
             if ft.is_block_device() || ft.is_char_device() || ft.is_fifo() || ft.is_socket() {
-                return Ok(fail(format!(
+                return Ok(ToolInvocationOutcome::failure(format!(
                     "Cannot grep '{}': not a regular file. Use run_command with 'grep' instead.",
                     path.display()
                 )));
@@ -85,8 +79,12 @@ pub fn execute_outcome_with_access(
         }
     }
     let file = match open_for_read(&path) {
-        Ok(f) => f,
-        Err(e) => return Ok(fail(format!("Error reading '{path_display}': {e}"))),
+        Ok(file) => file,
+        Err(e) => {
+            return Ok(ToolInvocationOutcome::failure(format!(
+                "Error reading '{path_display}': {e}"
+            )));
+        }
     };
     let mut reader = BufReader::new(file);
 
@@ -94,7 +92,11 @@ pub fn execute_outcome_with_access(
         Some(pat) => {
             let re = match Regex::new(pat) {
                 Ok(r) => r,
-                Err(e) => return Ok(fail(format!("Invalid regex '{pat}': {e}"))),
+                Err(e) => {
+                    return Ok(ToolInvocationOutcome::failure(format!(
+                        "Invalid regex '{pat}': {e}"
+                    )));
+                }
             };
 
             let mut result = String::new();
@@ -109,7 +111,11 @@ pub fn execute_outcome_with_access(
                 line.clear();
                 let bytes = match reader.read_line(&mut line) {
                     Ok(n) => n,
-                    Err(e) => return Ok(fail(format!("Error reading '{path_display}': {e}"))),
+                    Err(e) => {
+                        return Ok(ToolInvocationOutcome::failure(format!(
+                            "Error reading '{path_display}': {e}"
+                        )));
+                    }
                 };
                 if bytes == 0 {
                     break;
@@ -126,7 +132,7 @@ pub fn execute_outcome_with_access(
                         }
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
-                            return Ok(ok(result));
+                            return Ok(ToolInvocationOutcome::success(result));
                         }
                         result.push_str(&format!("    {ctx_no:>4}: {ctx_line}\n"));
                         output_lines += 1;
@@ -136,7 +142,7 @@ pub fn execute_outcome_with_access(
                     if last_emitted_line != Some(line_no) {
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
-                            return Ok(ok(result));
+                            return Ok(ToolInvocationOutcome::success(result));
                         }
                         result.push_str(&format!(">>> {line_no:>4}: {line_str}\n"));
                         output_lines += 1;
@@ -149,7 +155,7 @@ pub fn execute_outcome_with_access(
                     if last_emitted_line != Some(line_no) {
                         if output_lines >= max_lines {
                             result.push_str("\n[... truncated]\n");
-                            return Ok(ok(result));
+                            return Ok(ToolInvocationOutcome::success(result));
                         }
                         result.push_str(&format!("    {line_no:>4}: {line_str}\n"));
                         output_lines += 1;
@@ -167,9 +173,11 @@ pub fn execute_outcome_with_access(
             }
 
             if result.is_empty() {
-                Ok(ok(format!("No matches for '{pat}' in {path_display}")))
+                Ok(ToolInvocationOutcome::success(format!(
+                    "No matches for '{pat}' in {path_display}"
+                )))
             } else {
-                Ok(ok(result))
+                Ok(ToolInvocationOutcome::success(result))
             }
         }
         None => unreachable!("handled above"),

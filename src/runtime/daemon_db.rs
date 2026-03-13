@@ -85,120 +85,94 @@ pub trait DbAccess {
     // Note: event recording is routed via daemon requests from query flow; no direct trait use required.
 }
 
+macro_rules! forward_dbaccess_method {
+    (fn $name:ident (&self $(, $arg:ident : $ty:ty )* $(,)? ) -> $return:ty;) => {
+        fn $name(&self, $( $arg : $ty ),*) -> $return {
+            crate::db::Db::$name(self, $( $arg ),*).map_err(Into::into)
+        }
+    };
+}
+
 impl DbAccess for Db {
-    fn get_conversations(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<ConversationExchange>> {
-        Ok(self.get_conversations(session_id, limit)?)
-    }
-
-    fn recent_commands_with_summaries(
-        &self,
-        session_id: &str,
-        limit: usize,
-    ) -> anyhow::Result<Vec<CommandWithSummary>> {
-        Ok(self.recent_commands_with_summaries(session_id, limit)?)
-    }
-
-    fn other_sessions_with_summaries(
-        &self,
-        session_id: &str,
-        max_ttys: usize,
-        summaries_per_tty: usize,
-    ) -> anyhow::Result<Vec<OtherSessionSummary>> {
-        Ok(self.other_sessions_with_summaries(session_id, max_ttys, summaries_per_tty)?)
-    }
-
-    fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>> {
-        Ok(self.search_history(query, limit)?)
-    }
-
-    fn search_history_advanced(
-        &self,
-        fts_query: Option<&str>,
-        regex_pattern: Option<&str>,
-        since: Option<&str>,
-        until: Option<&str>,
-        exit_code: Option<i32>,
-        failed_only: bool,
-        session_filter: Option<&str>,
-        current_session: Option<&str>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<HistoryMatch>> {
-        Ok(self.search_history_advanced(
-            fts_query,
-            regex_pattern,
-            since,
-            until,
-            exit_code,
-            failed_only,
-            session_filter,
-            current_session,
-            limit,
-        )?)
-    }
-
-    fn search_command_entities(
-        &self,
-        executable: Option<&str>,
-        entity: Option<&str>,
-        entity_type: Option<&str>,
-        since: Option<&str>,
-        until: Option<&str>,
-        session_filter: Option<&str>,
-        current_session: Option<&str>,
-        limit: usize,
-    ) -> anyhow::Result<Vec<CommandEntityMatch>> {
-        Ok(self.search_command_entities(
-            executable,
-            entity,
-            entity_type,
-            since,
-            until,
-            session_filter,
-            current_session,
-            limit,
-        )?)
-    }
-
-    fn insert_conversation(
-        &self,
-        session_id: &str,
-        query: &str,
-        response_type: &str,
-        response: &str,
-        explanation: Option<&str>,
-        executed: bool,
-        pending: bool,
-    ) -> anyhow::Result<i64> {
-        Ok(self.insert_conversation(
-            session_id,
-            query,
-            response_type,
-            response,
-            explanation,
-            executed,
-            pending,
-        )?)
-    }
-
-    fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()> {
-        Ok(self.clear_conversations(session_id)?)
-    }
-
-    fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>> {
-        Ok(self.commands_needing_llm_summary(limit)?)
-    }
-
-    fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool> {
-        Ok(self.update_summary(id, summary)?)
-    }
-
-    fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()> {
-        Ok(self.mark_summary_error(id, error)?)
-    }
+    forward_dbaccess_method!(
+        fn get_conversations(
+            &self,
+            session_id: &str,
+            limit: usize,
+        ) -> anyhow::Result<Vec<ConversationExchange>>;
+    );
+    forward_dbaccess_method!(
+        fn recent_commands_with_summaries(
+            &self,
+            session_id: &str,
+            limit: usize,
+        ) -> anyhow::Result<Vec<CommandWithSummary>>;
+    );
+    forward_dbaccess_method!(
+        fn other_sessions_with_summaries(
+            &self,
+            session_id: &str,
+            max_ttys: usize,
+            summaries_per_tty: usize,
+        ) -> anyhow::Result<Vec<OtherSessionSummary>>;
+    );
+    forward_dbaccess_method!(
+        fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>>;
+    );
+    forward_dbaccess_method!(
+        fn search_history_advanced(
+            &self,
+            fts_query: Option<&str>,
+            regex_pattern: Option<&str>,
+            since: Option<&str>,
+            until: Option<&str>,
+            exit_code: Option<i32>,
+            failed_only: bool,
+            session_filter: Option<&str>,
+            current_session: Option<&str>,
+            limit: usize,
+        ) -> anyhow::Result<Vec<HistoryMatch>>;
+    );
+    forward_dbaccess_method!(
+        fn search_command_entities(
+            &self,
+            executable: Option<&str>,
+            entity: Option<&str>,
+            entity_type: Option<&str>,
+            since: Option<&str>,
+            until: Option<&str>,
+            session_filter: Option<&str>,
+            current_session: Option<&str>,
+            limit: usize,
+        ) -> anyhow::Result<Vec<CommandEntityMatch>>;
+    );
+    forward_dbaccess_method!(
+        fn insert_conversation(
+            &self,
+            session_id: &str,
+            query: &str,
+            response_type: &str,
+            response: &str,
+            explanation: Option<&str>,
+            executed: bool,
+            pending: bool,
+        ) -> anyhow::Result<i64>;
+    );
+    forward_dbaccess_method!(
+        fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()>;
+    );
+    forward_dbaccess_method!(
+        fn commands_needing_llm_summary(
+            &self,
+            limit: usize,
+        ) -> anyhow::Result<Vec<CommandForSummary>>;
+    );
+    forward_dbaccess_method!(
+        fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool>;
+    );
+    forward_dbaccess_method!(
+        fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()>;
+    );
 
     fn memory_retrieve_prompt(
         &self,
@@ -289,11 +263,11 @@ impl DbAccess for Db {
     }
 
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
-        Ok(self.append_core_block(label, content)?)
+        self.append_core_block(label, content).map_err(Into::into)
     }
 
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()> {
-        Ok(self.update_core_block(label, content)?)
+        self.update_core_block(label, content).map_err(Into::into)
     }
 
     fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String> {
@@ -965,8 +939,8 @@ impl DbAccess for DaemonDb {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::test_support::EnvVarGuard;
     use crate::memory::types::MemoryType;
+    use crate::test_support::EnvVarGuard;
     use serial_test::serial;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;

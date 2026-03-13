@@ -21,17 +21,18 @@ pub mod write_file;
 
 mod runtime;
 
-pub use runtime::outcome::ToolInvocationOutcome;
+pub use runtime::outcome::{ToolInvocationOutcome, outcome_to_content, outcome_to_result};
 pub use runtime::path_access::{
-    normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_with_access,
+    normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_tool_outcome,
+    validate_read_path_with_access,
 };
+pub(crate) use runtime::process_pump;
 pub use runtime::registry::{ToolDefinition, all_tool_definitions};
 pub use runtime::timeout_policy::default_timeout_for_tool;
 pub use runtime::tty_prompts::{
     read_tty_confirmation, read_tty_confirmation_default_yes, read_tty_confirmation_safe,
     read_tty_yes_confirmation, read_user_input_with_timeout,
 };
-pub(crate) use runtime::process_pump;
 
 #[cfg(test)]
 mod tests;

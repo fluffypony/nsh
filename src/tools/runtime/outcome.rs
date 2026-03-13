@@ -34,9 +34,20 @@ impl ToolInvocationOutcome {
     }
 }
 
+pub fn outcome_to_content(result: anyhow::Result<ToolInvocationOutcome>) -> anyhow::Result<String> {
+    result.map(ToolInvocationOutcome::into_content)
+}
+
+pub fn outcome_to_result(result: anyhow::Result<ToolInvocationOutcome>) -> anyhow::Result<String> {
+    match result? {
+        ToolInvocationOutcome::Success(content) => Ok(content),
+        ToolInvocationOutcome::Failure(content) => Err(anyhow::anyhow!(content)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ToolInvocationOutcome;
+    use super::{ToolInvocationOutcome, outcome_to_content, outcome_to_result};
 
     #[test]
     fn from_result_and_into_parts_preserve_success_state() {
@@ -52,5 +63,21 @@ mod tests {
 
         assert_eq!(created.into_parts(), ("boom".to_string(), true));
         assert_eq!(from_result.into_content(), "bad input");
+    }
+
+    #[test]
+    fn outcome_to_content_flattens_both_states() {
+        let success = outcome_to_content(Ok(ToolInvocationOutcome::success("ok"))).unwrap();
+        let failure = outcome_to_content(Ok(ToolInvocationOutcome::failure("nope"))).unwrap();
+
+        assert_eq!(success, "ok");
+        assert_eq!(failure, "nope");
+    }
+
+    #[test]
+    fn outcome_to_result_turns_failures_into_errors() {
+        let err = outcome_to_result(Ok(ToolInvocationOutcome::failure("blocked"))).unwrap_err();
+
+        assert!(err.to_string().contains("blocked"));
     }
 }

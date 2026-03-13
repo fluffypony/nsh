@@ -1,39 +1,27 @@
+use crate::tools::ToolInvocationOutcome;
 use crate::util::human_size;
 use glob::Pattern;
 use std::fs::Metadata;
-
-fn ok(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
-    crate::tools::ToolInvocationOutcome::success(msg)
-}
-
-fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
-    crate::tools::ToolInvocationOutcome::failure(msg)
-}
 
 pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
-    match execute_outcome_with_access(input, sensitive_file_access)? {
-        crate::tools::ToolInvocationOutcome::Success(content) => Ok(content),
-        crate::tools::ToolInvocationOutcome::Failure(content) => Err(anyhow::anyhow!(content)),
-    }
+    crate::tools::outcome_to_result(execute_outcome_with_access(input, sensitive_file_access))
 }
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     execute_with_access(input, "block")
 }
 
-pub fn execute_outcome(
-    input: &serde_json::Value,
-) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
+pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
     execute_outcome_with_access(input, "block")
 }
 
 pub fn execute_outcome_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
-) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
+) -> anyhow::Result<ToolInvocationOutcome> {
     let pattern_str = input["pattern"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("pattern is required"))?;
@@ -46,16 +34,22 @@ pub fn execute_outcome_with_access(
     let root = crate::tools::validate_read_path_with_access(root_raw, sensitive_file_access)
         .map_err(|e| anyhow::anyhow!(e))?;
     if !root.exists() {
-        return Ok(fail(format!("path does not exist: {root_raw}")));
+        return Ok(ToolInvocationOutcome::failure(format!(
+            "path does not exist: {root_raw}"
+        )));
     }
     if !root.is_dir() {
-        return Ok(fail(format!("path is not a directory: {root_raw}")));
+        return Ok(ToolInvocationOutcome::failure(format!(
+            "path is not a directory: {root_raw}"
+        )));
     }
 
     let pattern = match Pattern::new(pattern_str) {
         Ok(p) => p,
         Err(e) => {
-            return Ok(fail(format!("invalid glob pattern '{pattern_str}': {e}")));
+            return Ok(ToolInvocationOutcome::failure(format!(
+                "invalid glob pattern '{pattern_str}': {e}"
+            )));
         }
     };
 
@@ -108,9 +102,9 @@ pub fn execute_outcome_with_access(
         out.push_str("\n[glob search timed out after 15s — try a narrower pattern]");
     }
     if out.trim().is_empty() {
-        return Ok(ok("No matches found"));
+        return Ok(ToolInvocationOutcome::success("No matches found"));
     }
-    Ok(ok(out.trim_end().to_string()))
+    Ok(ToolInvocationOutcome::success(out.trim_end().to_string()))
 }
 
 #[cfg(unix)]

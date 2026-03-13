@@ -4,6 +4,14 @@ pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
     validate_read_path_with_access(raw_path, "block")
 }
 
+pub fn validate_read_path_tool_outcome(
+    raw_path: &str,
+    sensitive_file_access: &str,
+) -> Result<PathBuf, super::outcome::ToolInvocationOutcome> {
+    validate_read_path_with_access(raw_path, sensitive_file_access)
+        .map_err(super::outcome::ToolInvocationOutcome::failure)
+}
+
 pub fn normalize_sensitive_file_access_mode(mode: &str) -> &str {
     match mode {
         "allow" | "ask" | "block" => mode,
@@ -52,54 +60,55 @@ pub fn validate_read_path_with_access(
     // impractical to fix without openat-style path resolution, and is
     // also impractical to abuse or attack.
     if sensitive_file_access != "allow"
-        && let Some(home) = dirs::home_dir() {
-            // Allowlist: reads under ~/.nsh/skills are considered safe so the agent
-            // can introspect installed skills (READ-ONLY). This prevents a deadlock
-            // where it cannot answer questions about skills it just installed.
-            let allowed_read_only = home.join(".nsh").join("skills");
-            let allowed_read_only = allowed_read_only
-                .canonicalize()
-                .unwrap_or(allowed_read_only);
-            if canonical.starts_with(&allowed_read_only) {
-                return Ok(canonical);
-            }
+        && let Some(home) = dirs::home_dir()
+    {
+        // Allowlist: reads under ~/.nsh/skills are considered safe so the agent
+        // can introspect installed skills (READ-ONLY). This prevents a deadlock
+        // where it cannot answer questions about skills it just installed.
+        let allowed_read_only = home.join(".nsh").join("skills");
+        let allowed_read_only = allowed_read_only
+            .canonicalize()
+            .unwrap_or(allowed_read_only);
+        if canonical.starts_with(&allowed_read_only) {
+            return Ok(canonical);
+        }
 
-            let sensitive_dirs = [
-                home.join(".ssh"),
-                home.join(".gnupg"),
-                home.join(".gpg"),
-                home.join(".aws"),
-                home.join(".config/gcloud"),
-                home.join(".azure"),
-                home.join(".kube"),
-                home.join(".docker"),
-                home.join(".nsh"),
-            ];
+        let sensitive_dirs = [
+            home.join(".ssh"),
+            home.join(".gnupg"),
+            home.join(".gpg"),
+            home.join(".aws"),
+            home.join(".config/gcloud"),
+            home.join(".azure"),
+            home.join(".kube"),
+            home.join(".docker"),
+            home.join(".nsh"),
+        ];
 
-            for dir in &sensitive_dirs {
-                let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                if canonical.starts_with(&dir_canonical) {
-                    if sensitive_file_access == "ask" {
-                        let th = crate::tui::theme::current_theme();
-                        eprintln!(
-                            "{}⚠ '{raw_path}' is in a sensitive directory{}",
-                            th.warning, th.reset
-                        );
-                        eprint!("{}Allow access? [y/N]{} ", th.warning, th.reset);
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        if super::tty_prompts::read_tty_confirmation() {
-                            break;
-                        }
-                        return Err(format!(
-                            "Access denied: '{raw_path}' is in a sensitive directory"
-                        ));
+        for dir in &sensitive_dirs {
+            let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            if canonical.starts_with(&dir_canonical) {
+                if sensitive_file_access == "ask" {
+                    let th = crate::tui::theme::current_theme();
+                    eprintln!(
+                        "{}⚠ '{raw_path}' is in a sensitive directory{}",
+                        th.warning, th.reset
+                    );
+                    eprint!("{}Allow access? [y/N]{} ", th.warning, th.reset);
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    if super::tty_prompts::read_tty_confirmation() {
+                        break;
                     }
                     return Err(format!(
                         "Access denied: '{raw_path}' is in a sensitive directory"
                     ));
                 }
+                return Err(format!(
+                    "Access denied: '{raw_path}' is in a sensitive directory"
+                ));
             }
         }
+    }
 
     Ok(canonical)
 }
@@ -107,7 +116,8 @@ pub fn validate_read_path_with_access(
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_with_access,
+        normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_tool_outcome,
+        validate_read_path_with_access,
     };
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
@@ -145,5 +155,15 @@ mod tests {
             validate_read_path_with_access(skill_file.to_str().unwrap(), "block").unwrap();
 
         assert_eq!(resolved, std::fs::canonicalize(skill_file).unwrap());
+    }
+
+    #[test]
+    fn validate_read_path_tool_outcome_wraps_denials() {
+        let outcome = validate_read_path_tool_outcome("../secret", "block").unwrap_err();
+
+        assert_eq!(
+            outcome.into_content(),
+            "Access denied: path '../secret' contains '..' components"
+        );
     }
 }
