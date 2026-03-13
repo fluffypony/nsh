@@ -13,6 +13,7 @@ enum MemoryTask {
     IngestBatch {
         events: Vec<crate::memory::types::ShellEvent>,
     },
+    RunDecay,
     RunReflection,
     BootstrapScan,
 }
@@ -132,6 +133,7 @@ impl MemoryQueueDecision {
 
 #[derive(Clone)]
 struct MemoryQueueGuards {
+    decay_pending: Arc<AtomicBool>,
     reflection_pending: Arc<AtomicBool>,
     bootstrap_pending: Arc<AtomicBool>,
 }
@@ -139,6 +141,7 @@ struct MemoryQueueGuards {
 impl MemoryQueueGuards {
     fn new() -> Self {
         Self {
+            decay_pending: Arc::new(AtomicBool::new(false)),
             reflection_pending: Arc::new(AtomicBool::new(false)),
             bootstrap_pending: Arc::new(AtomicBool::new(false)),
         }
@@ -149,6 +152,7 @@ impl MemoryQueueGuards {
 enum MemoryTaskKind {
     FlushIngestion,
     IngestBatch,
+    RunDecay,
     RunReflection,
     BootstrapScan,
 }
@@ -158,6 +162,7 @@ impl MemoryTaskKind {
         match task {
             MemoryTask::FlushIngestion => Self::FlushIngestion,
             MemoryTask::IngestBatch { .. } => Self::IngestBatch,
+            MemoryTask::RunDecay => Self::RunDecay,
             MemoryTask::RunReflection => Self::RunReflection,
             MemoryTask::BootstrapScan => Self::BootstrapScan,
         }
@@ -167,6 +172,7 @@ impl MemoryTaskKind {
         match self {
             Self::FlushIngestion => "flush_ingestion",
             Self::IngestBatch => "ingest_batch",
+            Self::RunDecay => "run_decay",
             Self::RunReflection => "run_reflection",
             Self::BootstrapScan => "bootstrap_scan",
         }
@@ -176,6 +182,7 @@ impl MemoryTaskKind {
         match self {
             Self::FlushIngestion => "memory.flush.error",
             Self::IngestBatch => "memory.ingest.error",
+            Self::RunDecay => "memory.decay.error",
             Self::RunReflection => "memory.reflection.error",
             Self::BootstrapScan => "memory.bootstrap.error",
         }
@@ -203,6 +210,7 @@ impl Default for MemoryTaskStatus {
 struct MemoryTaskTracker {
     flush_ingestion: Arc<Mutex<MemoryTaskStatus>>,
     ingest_batch: Arc<Mutex<MemoryTaskStatus>>,
+    run_decay: Arc<Mutex<MemoryTaskStatus>>,
     run_reflection: Arc<Mutex<MemoryTaskStatus>>,
     bootstrap_scan: Arc<Mutex<MemoryTaskStatus>>,
 }
@@ -212,6 +220,7 @@ impl MemoryTaskTracker {
         match kind {
             MemoryTaskKind::FlushIngestion => &self.flush_ingestion,
             MemoryTaskKind::IngestBatch => &self.ingest_batch,
+            MemoryTaskKind::RunDecay => &self.run_decay,
             MemoryTaskKind::RunReflection => &self.run_reflection,
             MemoryTaskKind::BootstrapScan => &self.bootstrap_scan,
         }
@@ -228,6 +237,13 @@ impl MemoryTaskTracker {
     fn mark_running(&self, kind: MemoryTaskKind) {
         self.update(kind, |status| {
             status.state = "running".to_string();
+            status.error = None;
+        });
+    }
+
+    fn mark_queued(&self, kind: MemoryTaskKind) {
+        self.update(kind, |status| {
+            status.state = "queued".to_string();
             status.error = None;
         });
     }
@@ -264,6 +280,7 @@ impl MemoryTaskTracker {
         serde_json::json!({
             "flush_ingestion": self.task_snapshot(MemoryTaskKind::FlushIngestion),
             "ingest_batch": self.task_snapshot(MemoryTaskKind::IngestBatch),
+            "run_decay": self.task_snapshot(MemoryTaskKind::RunDecay),
             "run_reflection": self.task_snapshot(MemoryTaskKind::RunReflection),
             "bootstrap_scan": self.task_snapshot(MemoryTaskKind::BootstrapScan),
         })
@@ -473,20 +490,35 @@ fn schedule_startup_memory_maintenance(
     memory: &crate::memory::MemorySystem,
     memory_tx: &MemoryTaskSender,
     memory_queue_guards: &MemoryQueueGuards,
+    memory_task_tracker: &MemoryTaskTracker,
 ) {
     if !memory.has_bootstrapped()
-        && let Err(error) =
-            enqueue_unique_memory_task(memory_tx, memory_queue_guards, MemoryTask::BootstrapScan)
+        && let Err(error) = queue_memory_task(
+            memory_tx,
+            memory_queue_guards,
+            memory_task_tracker,
+            MemoryTask::BootstrapScan,
+        )
     {
         tracing::debug!("bootstrap task enqueue failed at startup: {error}");
     }
-    if memory.should_run_decay() {
-        let _ = memory_tx.send(MemoryTask::FlushIngestion);
-        let _ = send_memory_decay_once(memory);
+    if memory.should_run_decay()
+        && let Err(error) = queue_memory_task(
+            memory_tx,
+            memory_queue_guards,
+            memory_task_tracker,
+            MemoryTask::RunDecay,
+        )
+    {
+        tracing::debug!("decay task enqueue failed at startup: {error}");
     }
     if memory.should_run_reflection()
-        && let Err(error) =
-            enqueue_unique_memory_task(memory_tx, memory_queue_guards, MemoryTask::RunReflection)
+        && let Err(error) = queue_memory_task(
+            memory_tx,
+            memory_queue_guards,
+            memory_task_tracker,
+            MemoryTask::RunReflection,
+        )
     {
         tracing::debug!("reflection task enqueue failed at startup: {error}");
     }
@@ -813,7 +845,12 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         memory_tx.clone(),
         memory_queue_guards.clone(),
     )?;
-    schedule_startup_memory_maintenance(&memory, &memory_tx, &memory_queue_guards);
+    schedule_startup_memory_maintenance(
+        &memory,
+        &memory_tx,
+        &memory_queue_guards,
+        &memory_task_tracker,
+    );
 
     let active_conns = Arc::new(AtomicUsize::new(0));
     let active_sessions: ActiveSessions =
@@ -959,6 +996,19 @@ fn run_memory_thread(
                     Err(_) => Err("timed out after 120s".to_string()),
                 }
             }),
+            MemoryTask::RunDecay => rt.block_on(async {
+                match tokio::time::timeout(std::time::Duration::from_secs(120), async {
+                    memory.flush_ingestion(&llm).await?;
+                    memory.run_decay()?;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("timed out after 120s".to_string()),
+                }
+            }),
             MemoryTask::RunReflection => rt.block_on(async {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(120),
@@ -987,6 +1037,9 @@ fn run_memory_thread(
 
         // Always clear queue flags, even after panic, so maintenance work can be retried.
         match task_name {
+            "run_decay" => {
+                queue_guards.decay_pending.store(false, Ordering::SeqCst);
+            }
             "run_reflection" => {
                 queue_guards
                     .reflection_pending
@@ -1017,17 +1070,6 @@ fn run_memory_thread(
     }
 
     log_daemon("memory.thread", "memory thread exiting");
-}
-
-fn send_memory_decay_once(memory: &crate::memory::MemorySystem) -> Result<(), ()> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| ())?;
-    rt.block_on(async {
-        let _ = memory.run_decay();
-    });
-    Ok(())
 }
 
 fn execute_write(
@@ -1578,41 +1620,29 @@ fn try_execute_write(
                 .with_context(|| format!("failed to delete {} memory `{id}`", memory_type.as_str()))?;
             Ok(DaemonResponse::ok())
         }
-        DaemonRequest::MemoryRunDecay => match memory.run_decay() {
-            Ok(report) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
-                "episodic_deleted": report.episodic_deleted,
-                "semantic_deleted": report.semantic_deleted,
-                "procedural_deleted": report.procedural_deleted,
-                "resource_deleted": report.resource_deleted,
-                "knowledge_deleted": report.knowledge_deleted,
-            }))),
-            Err(e) => Err(e.into()),
-        },
+        DaemonRequest::MemoryRunDecay => {
+            queue_memory_task_response(
+                memory_tx,
+                queue_guards,
+                memory_task_tracker,
+                MemoryTask::RunDecay,
+            )
+        }
         DaemonRequest::MemoryRunReflection => {
-            match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::RunReflection) {
-                Ok(status) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
-                    "status": status.as_status(),
-                    "task": memory_task_tracker.task_snapshot(MemoryTaskKind::RunReflection),
-                }))),
-                Err(e) => {
-                    memory_task_tracker.mark_failed(MemoryTaskKind::RunReflection, e.to_string());
-                    tracing::debug!("memory thread disconnected, reflection skipped: {e}");
-                    Err(e)
-                }
-            }
+            queue_memory_task_response(
+                memory_tx,
+                queue_guards,
+                memory_task_tracker,
+                MemoryTask::RunReflection,
+            )
         }
         DaemonRequest::MemoryBootstrapScan => {
-            match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::BootstrapScan) {
-                Ok(status) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
-                    "status": status.as_status(),
-                    "task": memory_task_tracker.task_snapshot(MemoryTaskKind::BootstrapScan),
-                }))),
-                Err(e) => {
-                    memory_task_tracker.mark_failed(MemoryTaskKind::BootstrapScan, e.to_string());
-                    tracing::debug!("memory thread disconnected, bootstrap skipped: {e}");
-                    Err(e)
-                }
-            }
+            queue_memory_task_response(
+                memory_tx,
+                queue_guards,
+                memory_task_tracker,
+                MemoryTask::BootstrapScan,
+            )
         }
         DaemonRequest::MemoryClearAll { confirmed, caller } => {
             if let Err(error) = require_sensitive_memory_confirmation("memory clear-all", confirmed)
@@ -1672,6 +1702,7 @@ fn enqueue_unique_memory_task(
         _ => None,
     };
 
+        MemoryTask::RunDecay => Some(&queue_guards.decay_pending),
     if let Some(flag) = pending_flag
         && flag
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1695,6 +1726,41 @@ fn run_read_thread(
     rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>,
     memory: Arc<crate::memory::MemorySystem>,
     memory_task_tracker: MemoryTaskTracker,
+fn queue_memory_task(
+    memory_tx: &MemoryTaskSender,
+    queue_guards: &MemoryQueueGuards,
+    memory_task_tracker: &MemoryTaskTracker,
+    task: MemoryTask,
+) -> anyhow::Result<MemoryQueueDecision> {
+    let task_kind = MemoryTaskKind::from_task(&task);
+    let decision = enqueue_unique_memory_task(memory_tx, queue_guards, task)?;
+    if matches!(decision, MemoryQueueDecision::Enqueued) {
+        memory_task_tracker.mark_queued(task_kind);
+    }
+    Ok(decision)
+}
+
+fn queue_memory_task_response(
+    memory_tx: &MemoryTaskSender,
+    queue_guards: &MemoryQueueGuards,
+    memory_task_tracker: &MemoryTaskTracker,
+    task: MemoryTask,
+) -> anyhow::Result<DaemonResponse> {
+    let task_kind = MemoryTaskKind::from_task(&task);
+    let task_name = task_kind.status_key();
+    match queue_memory_task(memory_tx, queue_guards, memory_task_tracker, task) {
+        Ok(status) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
+            "status": status.as_status(),
+            "task": memory_task_tracker.task_snapshot(task_kind),
+        }))),
+        Err(error) => {
+            memory_task_tracker.mark_failed(task_kind, error.to_string());
+            tracing::debug!("memory thread disconnected, {task_name} skipped: {error}");
+            Err(error)
+        }
+    }
+}
+
 ) {
     loop {
         let cmd = loop {
@@ -2187,6 +2253,7 @@ mod tests_memory_stats {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+                assert_eq!(d["background_tasks"]["run_decay"]["state"].as_str(), Some("idle"));
     }
 }
 #[cfg(unix)]
@@ -2795,6 +2862,59 @@ mod tests {
             "
             CREATE TRIGGER fail_summary_update
             BEFORE UPDATE OF summary ON commands
+    #[test]
+    fn enqueue_unique_memory_task_deduplicates_decay() {
+        let (memory_tx, memory_rx) = mpsc::channel();
+        let queue_guards = MemoryQueueGuards::new();
+
+        assert!(matches!(
+            enqueue_unique_memory_task(&memory_tx, &queue_guards, MemoryTask::RunDecay)
+                .expect("first enqueue"),
+            MemoryQueueDecision::Enqueued
+        ));
+        assert!(matches!(
+            enqueue_unique_memory_task(&memory_tx, &queue_guards, MemoryTask::RunDecay)
+                .expect("second enqueue"),
+            MemoryQueueDecision::Busy
+        ));
+        assert!(matches!(
+            memory_rx.recv().expect("queued task"),
+            MemoryTask::RunDecay
+        ));
+    }
+
+    #[test]
+    fn execute_write_queues_memory_decay_task() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+        let tracker = MemoryTaskTracker::default();
+        let (memory_tx, memory_rx) = mpsc::channel();
+        let queue_guards = MemoryQueueGuards::new();
+        let mut session_project_roots = std::collections::HashMap::new();
+
+        let response = execute_write(
+            &db,
+            DaemonRequest::MemoryRunDecay,
+            &memory,
+            &tracker,
+            &memory_tx,
+            &queue_guards,
+            &mut session_project_roots,
+        );
+
+        match response {
+            DaemonResponse::Ok { data: Some(data) } => {
+                assert_eq!(data["status"].as_str(), Some("queued"));
+                assert_eq!(data["task"]["state"].as_str(), Some("queued"));
+            }
+            other => panic!("expected queued response, got {other:?}"),
+        }
+        assert!(matches!(
+            memory_rx.recv().expect("queued task"),
+            MemoryTask::RunDecay
+        ));
+    }
+
             BEGIN
                 SELECT RAISE(ABORT, 'summary write blocked');
             END;
