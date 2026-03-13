@@ -1,10 +1,16 @@
 use reqwest::Url;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
 
 static ONLINE: AtomicBool = AtomicBool::new(true);
-static TRIGGER_TX: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+struct ConnectivityMonitor {
+    probe_url: Arc<Mutex<String>>,
+    trigger_tx: mpsc::Sender<()>,
+}
+
+static MONITOR: OnceLock<ConnectivityMonitor> = OnceLock::new();
 
 fn connectivity_probe_url(config: &crate::config::Config) -> String {
     let p = config.provider.default.as_str();
@@ -37,14 +43,13 @@ fn probe_once(url: &str) -> bool {
 }
 
 fn probe_once_inner(url: &str) -> bool {
-    if let Ok(u) = Url::parse(url) {
-        if let Some(host) = u.host_str() {
+    if let Ok(u) = Url::parse(url)
+        && let Some(host) = u.host_str() {
             let port = u.port_or_known_default().unwrap_or(80);
-            if let Ok(addr) = format!("{}:{}", host, port).parse::<std::net::SocketAddr>() {
-                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+            if let Ok(addr) = format!("{}:{}", host, port).parse::<std::net::SocketAddr>()
+                && std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
                     return true;
                 }
-            }
 
             // Resolve with explicit timeout to avoid blocking this monitoring thread
             // on slow or wedged system DNS resolvers.
@@ -78,7 +83,6 @@ fn probe_once_inner(url: &str) -> bool {
                 }
             }
         }
-    }
     false
 }
 
@@ -87,43 +91,70 @@ pub fn is_online() -> bool {
 }
 
 pub fn trigger_immediate_check() {
-    if let Some(tx) = TRIGGER_TX.get() {
-        let _ = tx.send(());
+    if let Some(monitor) = MONITOR.get() {
+        let _ = monitor.trigger_tx.send(());
     }
 }
 
-pub fn start(config: &crate::config::Config) {
-    let url = connectivity_probe_url(config);
-    let (tx, rx) = mpsc::channel::<()>();
-    let _ = TRIGGER_TX.set(tx);
-    std::thread::Builder::new()
-        .name("nshd-connectivity".into())
-        .spawn(move || {
-            let mut attempt: usize = 0;
-            loop {
-                // Block for either a trigger or timeout for next scheduled probe
-                let wait = schedule_for_attempt(attempt);
-                let signaled = rx.recv_timeout(wait).is_ok();
-
-                // Either due or forced, probe now
-                let ok = probe_once(&url);
-                ONLINE.store(ok, Ordering::SeqCst);
-                if ok {
-                    attempt = 0; // reset backoff on success
-                } else if !signaled {
-                    attempt = attempt.saturating_add(1);
-                } else {
-                    // If forced and still offline, only advance slightly
-                    attempt = (attempt + 1).min(4);
+fn monitor() -> &'static ConnectivityMonitor {
+    MONITOR.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<()>();
+        let probe_url = Arc::new(Mutex::new(String::new()));
+        let probe_url_for_thread = Arc::clone(&probe_url);
+        std::thread::Builder::new()
+            .name("nshd-connectivity".into())
+            .spawn(move || {
+                let mut attempt: usize = 0;
+                loop {
+                    let wait = schedule_for_attempt(attempt);
+                    let signaled = rx.recv_timeout(wait).is_ok();
+                    let current_url = probe_url_for_thread
+                        .lock()
+                        .map(|url| url.clone())
+                        .unwrap_or_default();
+                    let ok = if current_url.is_empty() {
+                        true
+                    } else {
+                        probe_once(&current_url)
+                    };
+                    ONLINE.store(ok, Ordering::SeqCst);
+                    if ok {
+                        attempt = 0;
+                    } else if !signaled {
+                        attempt = attempt.saturating_add(1);
+                    } else {
+                        attempt = (attempt + 1).min(4);
+                    }
                 }
-            }
-        })
-        .ok();
+            })
+            .ok();
+
+        ConnectivityMonitor {
+            probe_url,
+            trigger_tx: tx,
+        }
+    })
+}
+
+#[cfg(test)]
+fn current_probe_url() -> Option<String> {
+    MONITOR
+        .get()
+        .and_then(|monitor| monitor.probe_url.lock().ok().map(|url| url.clone()))
+}
+
+pub fn start(config: &crate::config::Config) {
+    let monitor = monitor();
+    if let Ok(mut probe_url) = monitor.probe_url.lock() {
+        *probe_url = connectivity_probe_url(config);
+    }
+    let _ = monitor.trigger_tx.send(());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_schedule_progression() {
         let secs: Vec<u64> = (0..15).map(|i| schedule_for_attempt(i).as_secs()).collect();
@@ -133,5 +164,23 @@ mod tests {
         );
         assert!(secs[12] >= 300);
         assert!(secs[13] >= 300);
+    }
+
+    #[test]
+    fn test_start_updates_probe_url_when_reconfigured() {
+        let mut config = crate::config::Config::default();
+        config.provider.default = "openrouter".into();
+        start(&config);
+        assert_eq!(
+            current_probe_url().as_deref(),
+            Some("https://openrouter.ai/api/v1/models")
+        );
+
+        config.provider.default = "openai".into();
+        start(&config);
+        assert_eq!(
+            current_probe_url().as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
     }
 }

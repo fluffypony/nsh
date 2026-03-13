@@ -13,6 +13,7 @@ pub enum DaemonRequest {
     /// Get the daemon's compiled version info
     GetVersion,
     Record {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         command: String,
         cwd: String,
@@ -30,12 +31,15 @@ pub enum DaemonRequest {
         output: Option<String>,
     },
     Heartbeat {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     CaptureMark {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     CaptureRead {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         #[serde(default = "default_max_lines")]
         max_lines: usize,
@@ -45,6 +49,7 @@ pub enum DaemonRequest {
         max_lines: usize,
     },
     Context {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     GetSystemInfo,
@@ -54,18 +59,22 @@ pub enum DaemonRequest {
         input: serde_json::Value,
     },
     SummarizeCheck {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     CreateSession {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         tty: String,
         shell: String,
         pid: i64,
     },
     EndSession {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     SetSessionLabel {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         label: String,
     },
@@ -73,9 +82,11 @@ pub enum DaemonRequest {
         tty: String,
     },
     ClearConversations {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     GetConversations {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         #[serde(default = "default_limit")]
         limit: usize,
@@ -91,7 +102,7 @@ pub enum DaemonRequest {
     InsertConversation {
         session_id: String,
         query: String,
-        response_type: String,
+        response_type: crate::db::ConversationResponseKind,
         response: String,
         explanation: Option<String>,
         #[serde(default)]
@@ -115,6 +126,7 @@ pub enum DaemonRequest {
         output_snippet: Option<String>,
     },
     FindPendingConversation {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     GetMeta {
@@ -125,14 +137,17 @@ pub enum DaemonRequest {
         value: String,
     },
     GetSessionLabel {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
     },
     RecentCommandsWithSummaries {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         #[serde(default = "default_limit")]
         limit: usize,
     },
     OtherSessionsWithSummaries {
+        #[serde(rename = "session_id", alias = "session")]
         session: String,
         #[serde(default = "default_max_ttys")]
         max_ttys: usize,
@@ -508,7 +523,7 @@ pub enum DbCommand {
     InsertConversation {
         session_id: String,
         query: String,
-        response_type: String,
+        response_type: crate::db::ConversationResponseKind,
         response: String,
         explanation: Option<String>,
         executed: bool,
@@ -631,7 +646,7 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
                 let result = db.insert_conversation(
                     &session_id,
                     &query,
-                    &response_type,
+                    response_type.as_str(),
                     &response,
                     explanation.as_deref(),
                     executed,
@@ -1395,6 +1410,7 @@ mod tests {
         }"#;
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"session_id\":\"s1\""));
         let re: DaemonRequest = serde_json::from_str(&json).unwrap();
         if let DaemonRequest::Record {
             session,
@@ -1429,6 +1445,7 @@ mod tests {
             session: "sess42".into(),
         };
         let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"session_id\":\"sess42\""));
         let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
         if let DaemonRequest::SummarizeCheck { session } = parsed {
             assert_eq!(session, "sess42");

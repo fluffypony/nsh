@@ -2,11 +2,10 @@ use crate::memory::types::DetectedSecret;
 
 pub fn is_ignored_path(path: &str, patterns: &[String]) -> bool {
     for pattern in patterns {
-        if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
-            if glob_pattern.matches(path) {
+        if let Ok(glob_pattern) = glob::Pattern::new(pattern)
+            && glob_pattern.matches(path) {
                 return true;
             }
-        }
     }
     false
 }

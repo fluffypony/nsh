@@ -155,11 +155,9 @@ fn generate_fast_path_keywords(event: &ShellEvent) -> String {
         if let Some(dir) = std::path::Path::new(trimmed)
             .file_name()
             .and_then(|n| n.to_str())
-        {
-            if !dir.is_empty() {
+            && !dir.is_empty() {
                 keywords.push(dir.to_string());
             }
-        }
     }
     keywords.dedup();
     keywords.join(" ")

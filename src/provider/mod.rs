@@ -43,6 +43,25 @@ pub enum ContentBlock {
     },
 }
 
+pub fn message_text_content(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+pub fn last_nonempty_text_content(message: &Message) -> Option<String> {
+    message.content.iter().rev().find_map(|block| match block {
+        ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub model: String,
@@ -158,13 +177,12 @@ pub fn parse_openai_response(json: &serde_json::Value) -> anyhow::Result<Message
     let mut content = Vec::new();
 
     // Text content
-    if let Some(text) = msg["content"].as_str() {
-        if !text.is_empty() {
+    if let Some(text) = msg["content"].as_str()
+        && !text.is_empty() {
             content.push(ContentBlock::Text {
                 text: text.to_string(),
             });
         }
-    }
 
     // Tool calls
     if let Some(tool_calls) = msg["tool_calls"].as_array() {
@@ -252,6 +270,52 @@ mod tests {
         );
         assert!(
             matches!(&msg.content[1], ContentBlock::ToolUse { name, .. } if name == "read_file")
+        );
+    }
+
+    #[test]
+    fn message_text_content_joins_text_blocks() {
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: "hello".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "search".into(),
+                    input: json!({"q": "x"}),
+                },
+                ContentBlock::Text {
+                    text: " world".into(),
+                },
+            ],
+        };
+
+        assert_eq!(message_text_content(&message), "hello world");
+    }
+
+    #[test]
+    fn last_nonempty_text_content_skips_blank_blocks() {
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text { text: "".into() },
+                ContentBlock::Text {
+                    text: "done".into(),
+                },
+                ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "search".into(),
+                    input: json!({"q": "x"}),
+                },
+                ContentBlock::Text { text: "   ".into() },
+            ],
+        };
+
+        assert_eq!(
+            last_nonempty_text_content(&message).as_deref(),
+            Some("done")
         );
     }
 

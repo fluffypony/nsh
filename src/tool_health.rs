@@ -5,6 +5,12 @@ pub struct ToolHealthTracker {
     outcomes: HashMap<String, VecDeque<(Instant, bool)>>,
 }
 
+impl Default for ToolHealthTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolHealthTracker {
     pub fn new() -> Self {
         Self {
@@ -64,14 +70,13 @@ impl ToolHealthTracker {
             "run_command" | "command" => {
                 if let Some(cmd) = input["command"].as_str() {
                     let first = cmd.split_whitespace().next().unwrap_or("");
-                    if !first.is_empty() {
-                        if which::which(first).is_err() {
+                    if !first.is_empty()
+                        && which::which(first).is_err() {
                             parts.push(format!("DIAGNOSTIC: '{}' not found in PATH.", first));
                             parts.push(
                                 "SUGGESTION: Install it first, or use a different tool.".into(),
                             );
                         }
-                    }
                 }
             }
             "web_search" | "github" => {
@@ -117,5 +122,54 @@ impl ToolHealthTracker {
         );
 
         parts.join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolHealthTracker;
+    use serde_json::json;
+
+    #[test]
+    fn consecutive_failures_only_counts_recent_window() {
+        let mut tracker = ToolHealthTracker::new();
+
+        for _ in 0..25 {
+            tracker.record("read_file", false);
+        }
+
+        assert_eq!(tracker.consecutive_failures("read_file"), 20);
+
+        tracker.record("read_file", true);
+        tracker.record("read_file", false);
+        tracker.record("read_file", false);
+
+        assert_eq!(tracker.consecutive_failures("read_file"), 2);
+    }
+
+    #[test]
+    fn enrich_error_reports_missing_path_and_recovery() {
+        let tracker = ToolHealthTracker::new();
+        let input = json!({"path": "/tmp/nsh-tool-health-missing-file"});
+
+        let enriched = tracker.enrich_error("read_file", &input, "timed out");
+
+        assert!(enriched.contains("does not exist"));
+        assert!(enriched.contains("Check the path with list_directory or glob first."));
+        assert!(enriched.contains("RECOVERY: Try run_command with `head` or `cat` instead."));
+    }
+
+    #[test]
+    fn enrich_error_warns_after_repeated_failures() {
+        let mut tracker = ToolHealthTracker::new();
+        for _ in 0..3 {
+            tracker.record("web_search", false);
+        }
+
+        let enriched = tracker.enrich_error("web_search", &json!({}), "request timed out");
+
+        assert!(enriched.contains("failed 3 consecutive times"));
+        assert!(enriched.contains("Try local alternatives"));
+        assert!(enriched.contains("Try the github tool, or work with existing context."));
     }
 }

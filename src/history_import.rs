@@ -34,11 +34,10 @@ fn clear_stale_lock_if_needed() {
     let Ok(modified) = meta.modified() else {
         return;
     };
-    if let Ok(elapsed) = modified.elapsed() {
-        if elapsed.as_secs() > IMPORT_LOCK_STALE_SECS {
+    if let Ok(elapsed) = modified.elapsed()
+        && elapsed.as_secs() > IMPORT_LOCK_STALE_SECS {
             let _ = std::fs::remove_file(path);
         }
-    }
 }
 
 pub fn import_in_progress() -> bool {
@@ -206,12 +205,11 @@ fn discover_history_files() -> Vec<(PathBuf, Shell)> {
     let mut files: Vec<(PathBuf, Shell)> = Vec::new();
     let home = dirs::home_dir().unwrap_or_default();
 
-    if let Some(path) = std::env::var("HISTFILE").ok().map(PathBuf::from) {
-        if path.exists() {
+    if let Some(path) = std::env::var("HISTFILE").ok().map(PathBuf::from)
+        && path.exists() {
             let shell = detect_shell_from_content(&path);
             files.push((path, shell));
         }
-    }
 
     for (path, shell) in [
         (home.join(".bash_history"), Shell::Bash),
@@ -294,12 +292,11 @@ fn parse_bash(path: &Path, file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<U
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix('#') {
-            if let Ok(ts) = rest.trim().parse::<i64>() {
+        if let Some(rest) = line.strip_prefix('#')
+            && let Ok(ts) = rest.trim().parse::<i64>() {
                 pending_timestamp = Some(ts);
                 continue;
             }
-        }
 
         let timestamp = if let Some(ts) = pending_timestamp.take() {
             DateTime::from_timestamp(ts, 0).unwrap_or(file_mtime)
@@ -399,11 +396,10 @@ fn parse_fish(path: &Path, _file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<
             }
             current_cmd = Some(cmd.to_string());
             current_when = None;
-        } else if let Some(rest) = line.trim_start().strip_prefix("when: ") {
-            if let Ok(ts_val) = rest.trim().parse::<i64>() {
+        } else if let Some(rest) = line.trim_start().strip_prefix("when: ")
+            && let Ok(ts_val) = rest.trim().parse::<i64>() {
                 current_when = DateTime::from_timestamp(ts_val, 0);
             }
-        }
     }
 
     if let Some(cmd) = current_cmd {
@@ -435,8 +431,8 @@ fn parse_powershell(path: &Path, file_mtime: DateTime<Utc>) -> Vec<(String, Date
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EnvVarGuard;
     use serial_test::serial;
-    use std::ffi::OsStr;
     use std::fs;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -451,39 +447,6 @@ mod tests {
 
     fn fixed_mtime() -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000, 0).unwrap()
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only, serialized by #[serial] where needed.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only, serialized by #[serial] where needed.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only, serialized by #[serial] where needed.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only, serialized by #[serial] where needed.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
     }
 
     fn temp_home() -> TempDir {

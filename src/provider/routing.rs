@@ -3,11 +3,10 @@ use crate::config::ProviderAuth;
 
 pub fn model_name_for_transport(original_model: &str, base_url: &str) -> String {
     let sidecar_base_url = super::openai_compat::cliproxyapi_base_url();
-    if base_url == sidecar_base_url {
-        if let Some((_, plain)) = original_model.split_once('/') {
+    if base_url == sidecar_base_url
+        && let Some((_, plain)) = original_model.split_once('/') {
             return plain.to_string();
         }
-    }
     original_model.to_string()
 }
 

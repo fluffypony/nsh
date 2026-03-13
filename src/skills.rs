@@ -6,7 +6,13 @@ use std::sync::Mutex;
 
 use crate::tools::ToolDefinition;
 
-static APPROVED_SKILLS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+static APPROVED_SKILLS: Mutex<Option<HashSet<SkillApprovalKey>>> = Mutex::new(None);
+
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
+struct SkillApprovalKey {
+    name: String,
+    source_scope: PathBuf,
+}
 
 #[derive(Debug, Deserialize)]
 struct SkillFile {
@@ -104,19 +110,18 @@ fn load_repo_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<
         }
 
         // Skip .git and hidden directories
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with('.') {
                 continue;
             }
-        }
 
         // 1. Check for TOML-based skills (skill.toml / nsh.toml)
         let mut found_toml = false;
         for fname in ["skill.toml", "nsh.toml"] {
             let candidate = path.join(fname);
             if candidate.exists() {
-                if let Ok(content) = std::fs::read_to_string(&candidate) {
-                    if let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
+                if let Ok(content) = std::fs::read_to_string(&candidate)
+                    && let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
                         let mut skill: Skill = skill_file.into();
                         skill.is_project = is_project;
                         skill.source_dir = Some(path.clone());
@@ -127,7 +132,6 @@ fn load_repo_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<
                         skills.insert(skill.name.clone(), skill);
                         found_toml = true;
                     }
-                }
                 break;
             }
         }
@@ -146,13 +150,11 @@ fn load_repo_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<
 fn load_skill_docs_from_dir(dir: &Path) -> Option<String> {
     for fname in ["SKILL.md", "skill.md", "README.md", "readme.md"] {
         let candidate = dir.join(fname);
-        if candidate.exists() {
-            if let Ok(content) = std::fs::read_to_string(&candidate) {
-                if !content.trim().is_empty() {
+        if candidate.exists()
+            && let Ok(content) = std::fs::read_to_string(&candidate)
+                && !content.trim().is_empty() {
                     return Some(content);
                 }
-            }
-        }
     }
     None
 }
@@ -216,7 +218,7 @@ fn parse_skill_frontmatter(content: &str) -> (SkillFrontmatter, String) {
     }
 
     // Find the closing ---
-    let after_first = &trimmed[3..].trim_start_matches(|c: char| c == '-');
+    let after_first = &trimmed[3..].trim_start_matches('-');
     let rest = after_first.trim_start_matches('\n');
     let Some(end_pos) = rest.find("\n---") else {
         return (empty, content.to_string());
@@ -224,7 +226,7 @@ fn parse_skill_frontmatter(content: &str) -> (SkillFrontmatter, String) {
 
     let fm_str = &rest[..end_pos];
     let body = &rest[end_pos + 4..]; // skip \n---
-    let body = body.trim_start_matches(|c: char| c == '-' || c == '\n');
+    let body = body.trim_start_matches(['-', '\n']);
 
     let mut name = None;
     let mut description = None;
@@ -367,13 +369,11 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
 
         // Load companion .md docs if not already inline
         let mut docs = skill_file.docs;
-        if docs.is_none() && has_companion_docs {
-            if let Ok(md_content) = std::fs::read_to_string(&companion_md) {
-                if !md_content.trim().is_empty() {
+        if docs.is_none() && has_companion_docs
+            && let Ok(md_content) = std::fs::read_to_string(&companion_md)
+                && !md_content.trim().is_empty() {
                     docs = Some(md_content);
                 }
-            }
-        }
 
         skills.insert(
             skill_file.name.clone(),
@@ -461,21 +461,51 @@ fn validate_param_value(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn check_project_skill_approval(skill: &Skill) -> anyhow::Result<()> {
+fn normalize_skill_source_scope(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    absolute.canonicalize().unwrap_or(absolute)
+}
+
+fn project_skill_approval_key(skill: &Skill) -> Option<SkillApprovalKey> {
     if !skill.is_project {
-        return Ok(());
+        return None;
     }
+
+    let source_scope = skill
+        .source_dir
+        .as_deref()
+        .map(normalize_skill_source_scope)
+        .unwrap_or_else(|| normalize_skill_source_scope(Path::new(".")));
+
+    Some(SkillApprovalKey {
+        name: skill.name.clone(),
+        source_scope,
+    })
+}
+
+fn check_project_skill_approval(skill: &Skill) -> anyhow::Result<()> {
+    let Some(approval_key) = project_skill_approval_key(skill) else {
+        return Ok(());
+    };
 
     let mut guard = APPROVED_SKILLS.lock().unwrap();
     let approved = guard.get_or_insert_with(HashSet::new);
 
-    if approved.contains(&skill.name) {
+    if approved.contains(&approval_key) {
         return Ok(());
     }
 
     eprintln!(
-        "nsh: project skill '{}' will run: {}",
-        skill.name, skill.command
+        "nsh: project skill '{}' from '{}' will run: {}",
+        skill.name,
+        approval_key.source_scope.display(),
+        skill.command
     );
     eprint!("Allow? [y/N] ");
 
@@ -483,7 +513,7 @@ fn check_project_skill_approval(skill: &Skill) -> anyhow::Result<()> {
     std::io::stdin().read_line(&mut answer)?;
 
     if answer.trim().eq_ignore_ascii_case("y") {
-        approved.insert(skill.name.clone());
+        approved.insert(approval_key);
         Ok(())
     } else {
         anyhow::bail!("Project skill '{}' was not approved by user", skill.name)
@@ -1073,6 +1103,53 @@ command = "echo project"
             source_dir: None,
         };
         assert!(check_project_skill_approval(&skill).is_ok());
+    }
+
+    #[test]
+    fn test_project_skill_approval_key_uses_normalized_source_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill = Skill {
+            name: "project_test".to_string(),
+            description: "test".to_string(),
+            command: "echo hi".to_string(),
+            runtime: None,
+            script: None,
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: true,
+            docs: None,
+            source_dir: Some(tmp.path().join(".").join("skill")),
+        };
+
+        let key = project_skill_approval_key(&skill).unwrap();
+        assert!(key.source_scope.is_absolute());
+        assert!(key.source_scope.ends_with("skill"));
+    }
+
+    #[test]
+    fn test_project_skill_approval_key_distinguishes_same_name_from_different_sources() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+
+        let skill = |source_dir: &Path| Skill {
+            name: "shared_name".to_string(),
+            description: "test".to_string(),
+            command: "echo hi".to_string(),
+            runtime: None,
+            script: None,
+            timeout_seconds: 5,
+            terminal: false,
+            parameters: HashMap::new(),
+            is_project: true,
+            docs: None,
+            source_dir: Some(source_dir.to_path_buf()),
+        };
+
+        let first_key = project_skill_approval_key(&skill(first.path())).unwrap();
+        let second_key = project_skill_approval_key(&skill(second.path())).unwrap();
+
+        assert_ne!(first_key, second_key);
     }
 
     #[test]

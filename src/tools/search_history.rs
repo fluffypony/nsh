@@ -329,57 +329,50 @@ fn infer_command_from_query(query: &str) -> Option<String> {
     let lower = query.to_ascii_lowercase();
     let used_with_re =
         Regex::new(r"\bthat\s+([a-z0-9_./-]+)\s+has\s+been\s+used\s+with\b").unwrap();
-    if let Some(caps) = used_with_re.captures(&lower) {
-        if let Some(m) = caps.get(1) {
-            if let Some(cmd) = normalize_query_command_word(m.as_str()) {
+    if let Some(caps) = used_with_re.captures(&lower)
+        && let Some(m) = caps.get(1)
+            && let Some(cmd) = normalize_query_command_word(m.as_str()) {
                 return Some(cmd);
             }
-        }
-    }
 
     let words = tokenize_query_words(&lower);
     for (idx, word) in words.iter().enumerate() {
-        if matches!(word.as_str(), "into" | "from" | "to" | "with") {
-            if let Some(cmd) = find_previous_command_candidate(&words, idx) {
+        if matches!(word.as_str(), "into" | "from" | "to" | "with")
+            && let Some(cmd) = find_previous_command_candidate(&words, idx) {
                 return Some(cmd);
             }
-        }
     }
 
-    if let Some(i_idx) = words.iter().position(|w| w == "i") {
-        if let Some(cmd) = find_next_command_candidate(&words, i_idx + 1) {
+    if let Some(i_idx) = words.iter().position(|w| w == "i")
+        && let Some(cmd) = find_next_command_candidate(&words, i_idx + 1) {
             return Some(cmd);
         }
-    }
 
     for word in &words {
-        if let Some(cmd) = normalize_query_command_word(word) {
-            if !is_query_stopword(&cmd) {
+        if let Some(cmd) = normalize_query_command_word(word)
+            && !is_query_stopword(&cmd) {
                 return Some(cmd);
             }
-        }
     }
     None
 }
 
 fn find_previous_command_candidate(words: &[String], idx: usize) -> Option<String> {
     for word in words[..idx].iter().rev() {
-        if let Some(cmd) = normalize_query_command_word(word) {
-            if !is_query_stopword(&cmd) {
+        if let Some(cmd) = normalize_query_command_word(word)
+            && !is_query_stopword(&cmd) {
                 return Some(cmd);
             }
-        }
     }
     None
 }
 
 fn find_next_command_candidate(words: &[String], start: usize) -> Option<String> {
     for word in words.iter().skip(start) {
-        if let Some(cmd) = normalize_query_command_word(word) {
-            if !is_query_stopword(&cmd) {
+        if let Some(cmd) = normalize_query_command_word(word)
+            && !is_query_stopword(&cmd) {
                 return Some(cmd);
             }
-        }
     }
     None
 }
@@ -428,27 +421,23 @@ fn extract_query_entity(query: &str) -> Option<String> {
     }
 
     let user_host_re = Regex::new(r"\b[a-zA-Z0-9._-]+@([a-zA-Z0-9._:-]+)\b").unwrap();
-    if let Some(caps) = user_host_re.captures(query) {
-        if let Some(m) = caps.get(1) {
-            if let Some(v) = normalize_query_entity(m.as_str()) {
+    if let Some(caps) = user_host_re.captures(query)
+        && let Some(m) = caps.get(1)
+            && let Some(v) = normalize_query_entity(m.as_str()) {
                 return Some(v);
             }
-        }
-    }
 
     let ipv4_re = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap();
-    if let Some(m) = ipv4_re.find(query) {
-        if let Some(v) = normalize_query_entity(m.as_str()) {
+    if let Some(m) = ipv4_re.find(query)
+        && let Some(v) = normalize_query_entity(m.as_str()) {
             return Some(v);
         }
-    }
 
     let host_re = Regex::new(r"\b[a-zA-Z0-9][a-zA-Z0-9._-]*\.[a-zA-Z]{2,}\b").unwrap();
-    if let Some(m) = host_re.find(query) {
-        if let Some(v) = normalize_query_entity(m.as_str()) {
+    if let Some(m) = host_re.find(query)
+        && let Some(v) = normalize_query_entity(m.as_str()) {
             return Some(v);
         }
-    }
     None
 }
 
@@ -464,11 +453,10 @@ fn normalize_query_entity(entity: &str) -> Option<String> {
     if host.starts_with('[') && host.ends_with(']') && host.len() > 2 {
         host = &host[1..host.len() - 1];
     }
-    if let Some((h, port)) = host.rsplit_once(':') {
-        if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
+    if let Some((h, port)) = host.rsplit_once(':')
+        && !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
             host = h;
         }
-    }
     let host = host.trim_matches('.');
     if host.is_empty() {
         return None;

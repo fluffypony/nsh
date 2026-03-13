@@ -24,13 +24,6 @@ pub enum Commands {
         hash: bool,
     },
 
-    /// Start PTY wrapper (called by init script)
-    Wrap {
-        /// Shell to wrap
-        #[arg(long, default_value = "")]
-        shell: String,
-    },
-
     /// Handle a natural language query (called by ? / ?? alias)
     Query {
         /// Enable thinking/reasoning mode

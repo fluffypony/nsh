@@ -133,3 +133,125 @@ fn resolve_core() -> Option<std::path::PathBuf> {
 
     Some(core_path)
 }
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::{resolve_core, seed_wrap_contract_env};
+    use serial_test::serial;
+    use std::ffi::{OsStr, OsString};
+
+    struct EnvVarGuard {
+        key: String,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set<K, V>(key: K, value: V) -> Self
+        where
+            K: Into<String>,
+            V: AsRef<OsStr>,
+        {
+            let key = key.into();
+            let original = std::env::var_os(&key);
+            // SAFETY: test-only env mutation guarded by serial execution.
+            unsafe { std::env::set_var(&key, value.as_ref()) };
+            Self { key, original }
+        }
+
+        fn remove<K: Into<String>>(key: K) -> Self {
+            let key = key.into();
+            let original = std::env::var_os(&key);
+            // SAFETY: test-only env mutation guarded by serial execution.
+            unsafe { std::env::remove_var(&key) };
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                // SAFETY: test-only env mutation guarded by serial execution.
+                unsafe { std::env::set_var(&self.key, value) };
+            } else {
+                // SAFETY: test-only env mutation guarded by serial execution.
+                unsafe { std::env::remove_var(&self.key) };
+            }
+        }
+    }
+
+    fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        (home, home_guard, xdg_config_guard, xdg_data_guard)
+    }
+
+    fn clear_wrap_env() -> [EnvVarGuard; 6] {
+        [
+            EnvVarGuard::remove("NSH_WRAP_SCROLLBACK_LINES"),
+            EnvVarGuard::remove("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES"),
+            EnvVarGuard::remove("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS"),
+            EnvVarGuard::remove("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS"),
+            EnvVarGuard::remove("NSH_WRAP_CAPTURE_MODE"),
+            EnvVarGuard::remove("NSH_WRAP_ALT_SCREEN_MODE"),
+        ]
+    }
+
+    #[test]
+    #[serial]
+    fn seed_wrap_contract_env_loads_default_contract_values() {
+        let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+        let _wrap_guards = clear_wrap_env();
+
+        seed_wrap_contract_env();
+
+        assert_eq!(
+            std::env::var("NSH_WRAP_SCROLLBACK_LINES").ok().as_deref(),
+            Some("1000")
+        );
+        assert_eq!(
+            std::env::var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES").ok().as_deref(),
+            Some("65536")
+        );
+        assert_eq!(
+            std::env::var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS").ok().as_deref(),
+            Some("10485760")
+        );
+        assert_eq!(
+            std::env::var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS")
+                .ok()
+                .as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            std::env::var("NSH_WRAP_CAPTURE_MODE").ok().as_deref(),
+            Some("vt100")
+        );
+        assert_eq!(
+            std::env::var("NSH_WRAP_ALT_SCREEN_MODE").ok().as_deref(),
+            Some("drop")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_core_uses_managed_binary_when_present() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+        let sibling_core = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("nsh-core");
+        if sibling_core.exists() {
+            return;
+        }
+
+        let managed_dir = home.path().join(".nsh").join("bin");
+        let managed_core = managed_dir.join("nsh-core");
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        std::fs::write(&managed_core, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(resolve_core(), Some(managed_core));
+    }
+}

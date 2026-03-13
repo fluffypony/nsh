@@ -7,6 +7,26 @@ pub enum CommandExecutionOutcome {
     ContinueWithResult { content: String, is_error: bool },
 }
 
+struct CommandRequest {
+    command: String,
+    explanation: String,
+    pending: bool,
+    risk: RiskLevel,
+    risk_reason: Option<&'static str>,
+}
+
+struct CommandExecutionPlan {
+    auto_execute_pending: bool,
+    should_execute_immediately: bool,
+    execute_via_shell_autorun: bool,
+}
+
+struct ImmediateCommandResult {
+    output_content: String,
+    is_error: bool,
+    exit_code: i32,
+}
+
 /// Handle the `command` tool: display explanation, write command to
 /// pending file for shell hook to prefill.
 pub fn execute(
@@ -18,23 +38,10 @@ pub fn execute(
     config: &crate::config::Config,
     force_autorun: bool,
 ) -> anyhow::Result<CommandExecutionOutcome> {
-    // Clean stale pending files from a previous invocation
-    {
-        let nsh_dir = crate::config::Config::nsh_dir();
-        let stale_cmd = nsh_dir.join(format!("pending_cmd_{session_id}"));
-        if stale_cmd.exists() {
-            let _ = std::fs::remove_file(&stale_cmd);
-            let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
-            let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
-        }
-    }
+    clear_stale_pending_files(session_id);
+    let request = build_command_request(input, original_query, db, session_id);
 
-    let raw_command = input["command"].as_str().unwrap_or("");
-    let explanation = input["explanation"].as_str().unwrap_or("");
-    let pending = input["pending"].as_bool().unwrap_or(false);
-    let command = normalize_command_for_prefill(raw_command, original_query, db, session_id);
-
-    if let Some(reason) = reject_reason_for_generated_command(&command, original_query) {
+    if let Some(reason) = reject_reason_for_generated_command(&request.command, original_query) {
         eprintln!("nsh: skipped invalid generated command ({reason})");
         return Ok(CommandExecutionOutcome::ContinueWithResult {
             content: format!(
@@ -44,20 +51,124 @@ pub fn execute(
         });
     }
 
-    // Normalize benign cwd substitutions before risk assessment to avoid false positives
+    if let Some(outcome) = confirm_command_request(&request)? {
+        return Ok(outcome);
+    }
+
+    emit_command_preview(&request)?;
+    let plan = plan_command_execution(&request, config, force_autorun);
+
+    if matches!(request.risk, RiskLevel::Safe)
+        && plan.auto_execute_pending
+        && !crate::streaming::json_output_enabled()
+    {
+        eprintln!("\x1b[2m  $ {}\x1b[0m", request.command);
+    }
+
+    if plan.should_execute_immediately && request.pending {
+        eprintln!("\x1b[2m(auto-running)\x1b[0m");
+        eprintln!(
+            "\x1b[2m  ⟳ intermediate step — nsh will continue automatically after this finishes\x1b[0m"
+        );
+        let result = execute_pending_command(input, &request.command, config);
+        if !private {
+            record_command_execution(
+                db,
+                session_id,
+                original_query,
+                &request,
+                config,
+                true,
+                false,
+            )?;
+        }
+        if result.is_error {
+            eprintln!(
+                "\n\x1b[33mcommand exited with code {}\x1b[0m",
+                result.exit_code
+            );
+        }
+        return Ok(CommandExecutionOutcome::ContinueWithResult {
+            content: result.output_content,
+            is_error: result.is_error,
+        });
+    }
+
+    if config.execution.mode != "confirm" || plan.execute_via_shell_autorun {
+        write_pending_shell_files(
+            session_id,
+            &request.command,
+            request.pending,
+            plan.execute_via_shell_autorun,
+        )?;
+    }
+
+    if !private {
+        record_command_execution(
+            db,
+            session_id,
+            original_query,
+            &request,
+            config,
+            false,
+            request.pending,
+        )?;
+    }
+
+    eprint!("\x1b[0m");
+    std::io::Write::flush(&mut std::io::stderr()).ok();
+
+    Ok(CommandExecutionOutcome::Terminal)
+}
+
+fn clear_stale_pending_files(session_id: &str) {
+    let nsh_dir = crate::config::Config::nsh_dir();
+    let stale_cmd = nsh_dir.join(format!("pending_cmd_{session_id}"));
+    if stale_cmd.exists() {
+        let _ = std::fs::remove_file(&stale_cmd);
+        let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
+        let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
+    }
+}
+
+fn build_command_request(
+    input: &serde_json::Value,
+    original_query: &str,
+    db: &dyn DbAccess,
+    session_id: &str,
+) -> CommandRequest {
+    let raw_command = input["command"].as_str().unwrap_or("");
+    let command = normalize_command_for_prefill(raw_command, original_query, db, session_id);
+    let (risk, risk_reason) = assess_command_risk(&command);
+    CommandRequest {
+        command,
+        explanation: input["explanation"].as_str().unwrap_or("").to_string(),
+        pending: input["pending"].as_bool().unwrap_or(false),
+        risk,
+        risk_reason,
+    }
+}
+
+fn assess_command_risk(command: &str) -> (RiskLevel, Option<&'static str>) {
     let cwd_str = std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ".".to_string());
     let risk_command = command
         .replace("$(pwd)", &cwd_str)
         .replace("`pwd`", &cwd_str);
-    let (risk, reason) = crate::security::assess_command(&risk_command);
+    crate::security::assess_command(&risk_command)
+}
 
-    match &risk {
+fn confirm_command_request(
+    request: &CommandRequest,
+) -> anyhow::Result<Option<CommandExecutionOutcome>> {
+    match &request.risk {
         RiskLevel::Dangerous => {
-            let reason_str = reason.unwrap_or("potentially destructive command");
+            let reason_str = request
+                .risk_reason
+                .unwrap_or("potentially destructive command");
             eprintln!("\x1b[1;31m⚠ DANGEROUS: {reason_str}\x1b[0m");
-            eprintln!("\x1b[1;31mCommand: {command}\x1b[0m");
+            eprintln!("\x1b[1;31mCommand: {}\x1b[0m", request.command);
             eprint!("\x1b[1;31mType 'yes' to proceed: \x1b[0m");
             let input_line = {
                 use std::io::{BufRead, IsTerminal};
@@ -77,413 +188,276 @@ pub fn execute(
                             eprintln!(
                                 "Cannot confirm — stdin is piped. Aborting dangerous command."
                             );
-                            return Ok(CommandExecutionOutcome::ContinueWithResult {
+                            return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
                                 content: "DENIED: dangerous command not approved by user. Try a different approach.".into(),
                                 is_error: true,
-                            });
+                            }));
                         }
                     }
                 }
             };
             if input_line.trim() != "yes" {
                 eprintln!("Aborted.");
-                return Ok(CommandExecutionOutcome::ContinueWithResult {
+                return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
                     content:
                         "DENIED: dangerous command not approved by user. Try a different approach."
                             .into(),
                     is_error: true,
-                });
+                }));
             }
         }
         RiskLevel::Elevated => {
-            let reason_str = reason.unwrap_or("elevated privileges");
+            let reason_str = request.risk_reason.unwrap_or("elevated privileges");
             eprintln!("\x1b[33m⚡ {reason_str}\x1b[0m");
         }
         RiskLevel::Safe => {}
     }
+    Ok(None)
+}
 
-    // Display rich command preview (or JSON event in --json mode)
+fn emit_command_preview(request: &CommandRequest) -> anyhow::Result<()> {
     if crate::streaming::json_output_enabled() {
         let event = serde_json::json!({
             "type": "command",
-            "command": command,
-            "explanation": explanation,
-            "risk": risk.to_string(),
-            "pending": pending,
+            "command": request.command,
+            "explanation": request.explanation,
+            "risk": request.risk.to_string(),
+            "pending": request.pending,
         });
         eprintln!("{}", serde_json::to_string(&event)?);
-    } else {
-        match &risk {
-            RiskLevel::Safe => {
-                if !explanation.is_empty() {
-                    eprintln!("\x1b[2m  {explanation}\x1b[0m");
-                }
-            }
-            RiskLevel::Elevated => {
-                if !explanation.is_empty() {
-                    eprintln!("\x1b[2m  {explanation}\x1b[0m");
-                }
-                eprintln!("\x1b[2m  $ {command}\x1b[0m");
-            }
-            RiskLevel::Dangerous => {
-                display_command_preview(&command, explanation, &risk);
-                eprintln!("\x1b[2m  ↵ Enter to run · Edit first · Ctrl-C to cancel\x1b[0m");
-            }
-        }
+        return Ok(());
     }
 
-    let can_autorun = match risk {
+    match &request.risk {
+        RiskLevel::Safe => {
+            if !request.explanation.is_empty() {
+                eprintln!("\x1b[2m  {}\x1b[0m", request.explanation);
+            }
+        }
+        RiskLevel::Elevated => {
+            if !request.explanation.is_empty() {
+                eprintln!("\x1b[2m  {}\x1b[0m", request.explanation);
+            }
+            eprintln!("\x1b[2m  $ {}\x1b[0m", request.command);
+        }
+        RiskLevel::Dangerous => {
+            display_command_preview(&request.command, &request.explanation, &request.risk);
+            eprintln!("\x1b[2m  ↵ Enter to run · Edit first · Ctrl-C to cancel\x1b[0m");
+        }
+    }
+    Ok(())
+}
+
+fn plan_command_execution(
+    request: &CommandRequest,
+    config: &crate::config::Config,
+    force_autorun: bool,
+) -> CommandExecutionPlan {
+    let can_autorun = match request.risk {
         RiskLevel::Safe => true,
         RiskLevel::Elevated => config.execution.allow_unsafe_autorun,
         RiskLevel::Dangerous => false,
     };
-    // Auto-approve safe commands in autorun mode
     let autorun_mode = config.execution.mode == "autorun";
     let mut user_confirmed_intermediate = false;
-    if pending
+    if request.pending
         && !force_autorun
         && config.execution.confirm_intermediate_steps
-        && !matches!(risk, RiskLevel::Dangerous)
+        && !matches!(request.risk, RiskLevel::Dangerous)
     {
         eprint!("\x1b[1;33mRun intermediate command now? [Y/n]\x1b[0m ");
         let _ = std::io::Write::flush(&mut std::io::stderr());
         user_confirmed_intermediate = crate::tools::read_tty_confirmation_default_yes();
     }
 
-    let auto_execute_pending =
-        pending && !force_autorun && !config.execution.confirm_intermediate_steps && can_autorun;
-
-    if matches!(risk, RiskLevel::Safe)
-        && auto_execute_pending
-        && !crate::streaming::json_output_enabled()
-    {
-        eprintln!("\x1b[2m  $ {command}\x1b[0m");
-    }
-
+    let auto_execute_pending = request.pending
+        && !force_autorun
+        && !config.execution.confirm_intermediate_steps
+        && can_autorun;
     let should_execute_immediately = ((force_autorun || autorun_mode) && can_autorun)
         || user_confirmed_intermediate
         || auto_execute_pending;
-    let execute_via_shell_autorun = should_execute_immediately && !pending;
-    if should_execute_immediately && pending {
-        eprintln!("\x1b[2m(auto-running)\x1b[0m");
-        eprintln!(
-            "\x1b[2m  ⟳ intermediate step — nsh will continue automatically after this finishes\x1b[0m"
-        );
-        let mut expected_secs = input["expected_timeout_seconds"]
-            .as_u64()
-            .unwrap_or(300)
-            .clamp(5, 3600);
 
-        #[cfg(unix)]
-        let child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command.as_str())
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
-        #[cfg(windows)]
-        let child = std::process::Command::new("cmd")
-            .args(["/C", command.as_str()])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+    CommandExecutionPlan {
+        auto_execute_pending,
+        should_execute_immediately,
+        execute_via_shell_autorun: should_execute_immediately && !request.pending,
+    }
+}
 
-        let output_content;
-        let is_error;
-        let exit_code;
+fn execute_pending_command(
+    input: &serde_json::Value,
+    command: &str,
+    config: &crate::config::Config,
+) -> ImmediateCommandResult {
+    let mut expected_secs = input["expected_timeout_seconds"]
+        .as_u64()
+        .unwrap_or(300)
+        .clamp(5, 3600);
 
-        match child {
-            Ok(mut child) => {
-                let stdout_pipe = child.stdout.take();
-                let stderr_pipe = child.stderr.take();
+    #[cfg(unix)]
+    let child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    #[cfg(windows)]
+    let child = std::process::Command::new("cmd")
+        .args(["/C", command])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
 
-                let last_output =
-                    std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-                let json_mode = crate::streaming::json_output_enabled();
-                let redaction_stdout = config.redaction.clone();
-                let redaction_stderr = config.redaction.clone();
+    match child {
+        Ok(child) => {
+            let json_mode = crate::streaming::json_output_enabled();
+            let mut pumped = crate::tools::process_pump::attach_output_pumps(
+                child,
+                &config.redaction,
+                !json_mode,
+            );
+            let mut start = std::time::Instant::now();
+            let mut has_prompted_once = false;
 
-                let last_out_stdout = std::sync::Arc::clone(&last_output);
-                let stdout_thread = std::thread::spawn(move || {
-                    let mut accumulated = Vec::new();
-                    if let Some(pipe) = stdout_pipe {
-                        use std::io::Read;
-                        let mut reader = std::io::BufReader::new(pipe);
-                        let mut buf = [0u8; 4096];
-                        loop {
-                            match reader.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if !json_mode {
-                                        let chunk = String::from_utf8_lossy(&buf[..n]);
-                                        let redacted = crate::redact::redact_secrets(
-                                            &chunk,
-                                            &redaction_stdout,
-                                        );
-                                        let _ = std::io::Write::write_all(
-                                            &mut std::io::stderr(),
-                                            redacted.as_bytes(),
-                                        );
-                                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                                    }
-                                    accumulated.extend_from_slice(&buf[..n]);
-                                    *last_out_stdout.lock().unwrap() = std::time::Instant::now();
-                                }
-                                Err(_) => break,
-                            }
-                        }
+            loop {
+                match pumped.child.try_wait() {
+                    Ok(Some(status)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        let (stdout_text, stderr_text) = pumped.finish();
+                        let exit_code = status.code().unwrap_or(-1);
+                        let output_content = format_pumped_command_output(
+                            &stdout_text,
+                            &stderr_text,
+                            exit_code,
+                            config,
+                        );
+                        return ImmediateCommandResult {
+                            output_content,
+                            is_error: exit_code != 0,
+                            exit_code,
+                        };
                     }
-                    String::from_utf8_lossy(&accumulated).into_owned()
-                });
+                    Ok(None) => {
+                        let last_out_age = pumped.last_output_age();
+                        let elapsed = start.elapsed().as_secs();
 
-                let last_out_stderr = std::sync::Arc::clone(&last_output);
-                let stderr_thread = std::thread::spawn(move || {
-                    let mut accumulated = Vec::new();
-                    if let Some(pipe) = stderr_pipe {
-                        use std::io::Read;
-                        let mut reader = std::io::BufReader::new(pipe);
-                        let mut buf = [0u8; 4096];
-                        loop {
-                            match reader.read(&mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    if !json_mode {
-                                        let chunk = String::from_utf8_lossy(&buf[..n]);
-                                        let redacted = crate::redact::redact_secrets(
-                                            &chunk,
-                                            &redaction_stderr,
-                                        );
-                                        let _ = std::io::Write::write_all(
-                                            &mut std::io::stderr(),
-                                            redacted.as_bytes(),
-                                        );
-                                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                                    }
-                                    accumulated.extend_from_slice(&buf[..n]);
-                                    *last_out_stderr.lock().unwrap() = std::time::Instant::now();
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    }
-                    String::from_utf8_lossy(&accumulated).into_owned()
-                });
-
-                let mut start = std::time::Instant::now();
-                let mut has_prompted_once = false;
-
-                loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => {
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                            let stdout_text = stdout_thread.join().unwrap_or_default();
-                            let stderr_text = stderr_thread.join().unwrap_or_default();
-
-                            exit_code = status.code().unwrap_or(-1);
-                            is_error = exit_code != 0;
-
-                            let mut result = String::new();
-                            if !stdout_text.trim().is_empty() {
-                                result.push_str(&crate::util::truncate(&stdout_text, 8000));
-                            }
-                            if !stderr_text.trim().is_empty() {
-                                if !result.is_empty() {
-                                    result.push_str("\n--- stderr ---\n");
-                                }
-                                result.push_str(&crate::util::truncate(&stderr_text, 4000));
-                            }
-                            result.push_str(&format!("\n[exit code: {}]", exit_code));
-
-                            // Annotate if exit code 0 but output contains error patterns
-                            if exit_code == 0 {
-                                let combined_lower = result.to_lowercase();
-                                let warning_patterns = [
-                                    "error:",
-                                    "failed",
-                                    "fatal:",
-                                    "permission denied",
-                                    "not found",
-                                    "cannot",
-                                    "unable to",
-                                    "refused",
-                                    "timeout",
-                                    "timed out",
-                                ];
-                                if warning_patterns.iter().any(|p| combined_lower.contains(p)) {
-                                    result.push_str(
-                                        "\n\n[NOTE: exit code 0 but output contains error-like patterns — verify the command actually succeeded]"
-                                    );
-                                }
-                            }
-
-                            output_content =
-                                crate::redact::redact_secrets(&result, &config.redaction);
-                            break;
-                        }
-                        Ok(None) => {
-                            let last_out_age = last_output.lock().unwrap().elapsed();
-                            let elapsed = start.elapsed().as_secs();
-
-                            if elapsed >= expected_secs
-                                && last_out_age > std::time::Duration::from_secs(30)
-                            {
-                                if !has_prompted_once {
-                                    eprintln!(
-                                        "\n\x1b[2m  ⏱ Command running for {}s with no recent output (waiting…)\x1b[0m",
-                                        elapsed
-                                    );
-                                    has_prompted_once = true;
-                                    start = std::time::Instant::now();
-                                } else {
-                                    eprint!(
-                                        "\n\x1b[1;33mNo output for {}s (total {}s). Continue waiting? [Y/n]\x1b[0m ",
-                                        last_out_age.as_secs(),
-                                        elapsed
-                                    );
-                                    let _ = std::io::Write::flush(&mut std::io::stderr());
-                                    let cont = crate::tools::read_tty_confirmation_safe();
-                                    if !cont {
-                                        let _ = child.kill();
-                                        let _ = child.wait();
-                                        output_content = format!(
+                        if elapsed >= expected_secs
+                            && last_out_age > std::time::Duration::from_secs(30)
+                        {
+                            if !has_prompted_once {
+                                eprintln!(
+                                    "\n\x1b[2m  ⏱ Command running for {}s with no recent output (waiting…)\x1b[0m",
+                                    elapsed
+                                );
+                                has_prompted_once = true;
+                                start = std::time::Instant::now();
+                            } else {
+                                eprint!(
+                                    "\n\x1b[1;33mNo output for {}s (total {}s). Continue waiting? [Y/n]\x1b[0m ",
+                                    last_out_age.as_secs(),
+                                    elapsed
+                                );
+                                let _ = std::io::Write::flush(&mut std::io::stderr());
+                                if !crate::tools::read_tty_confirmation_safe() {
+                                    let _ = pumped.child.kill();
+                                    let _ = pumped.child.wait();
+                                    return ImmediateCommandResult {
+                                        output_content: format!(
                                             "Command timed out after {}s (user cancelled wait)",
                                             elapsed
-                                        );
-                                        is_error = true;
-                                        exit_code = 124;
-                                        break;
-                                    } else {
-                                        start = std::time::Instant::now();
-                                        expected_secs = (expected_secs * 2).min(1800);
-                                    }
+                                        ),
+                                        is_error: true,
+                                        exit_code: 124,
+                                    };
                                 }
+                                start = std::time::Instant::now();
+                                expected_secs = (expected_secs * 2).min(1800);
                             }
-                            std::thread::sleep(std::time::Duration::from_millis(100));
                         }
-                        Err(e) => {
-                            output_content = format!("Failed to execute command: {e}");
-                            is_error = true;
-                            exit_code = -1;
-                            break;
-                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(error) => {
+                        return ImmediateCommandResult {
+                            output_content: format!("Failed to execute command: {error}"),
+                            is_error: true,
+                            exit_code: -1,
+                        };
                     }
                 }
             }
-            Err(e) => {
-                let formatted = format_execution_output(Err(e), config);
-                output_content = formatted.0;
-                is_error = formatted.1;
-                exit_code = formatted.2;
+        }
+        Err(error) => {
+            let (output_content, is_error, exit_code) = format_execution_output(Err(error), config);
+            ImmediateCommandResult {
+                output_content,
+                is_error,
+                exit_code,
             }
         }
+    }
+}
 
-        if !private {
-            let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
-            let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
-            let redacted_explanation = Some(crate::redact::redact_secrets(
-                explanation,
-                &config.redaction,
-            ));
-            db.insert_conversation(
-                session_id,
-                &redacted_query,
-                "command",
-                &redacted_response,
-                redacted_explanation.as_deref(),
-                true,
-                false,
-            )?;
-            crate::audit::audit_log(
-                session_id,
-                original_query,
-                "command",
-                &command,
-                &risk.to_string(),
+fn format_pumped_command_output(
+    stdout_text: &str,
+    stderr_text: &str,
+    exit_code: i32,
+    config: &crate::config::Config,
+) -> String {
+    let mut result = String::new();
+    if !stdout_text.trim().is_empty() {
+        result.push_str(&crate::util::truncate(stdout_text, 8000));
+    }
+    if !stderr_text.trim().is_empty() {
+        if !result.is_empty() {
+            result.push_str("\n--- stderr ---\n");
+        }
+        result.push_str(&crate::util::truncate(stderr_text, 4000));
+    }
+    result.push_str(&format!("\n[exit code: {exit_code}]"));
+
+    if exit_code == 0 {
+        let combined_lower = result.to_lowercase();
+        let warning_patterns = [
+            "error:",
+            "failed",
+            "fatal:",
+            "permission denied",
+            "not found",
+            "cannot",
+            "unable to",
+            "refused",
+            "timeout",
+            "timed out",
+        ];
+        if warning_patterns
+            .iter()
+            .any(|pattern| combined_lower.contains(pattern))
+        {
+            result.push_str(
+                "\n\n[NOTE: exit code 0 but output contains error-like patterns — verify the command actually succeeded]",
             );
         }
-        if is_error {
-            eprintln!("\n\x1b[33mcommand exited with code {exit_code}\x1b[0m");
-        }
-        return Ok(CommandExecutionOutcome::ContinueWithResult {
-            content: output_content,
-            is_error,
-        });
     }
 
-    if config.execution.mode != "confirm" || execute_via_shell_autorun {
-        // Write pending files for shell hook to pick up.
-        // Order matters: cmd_file is written LAST because it's the trigger
-        // the shell hook polls for. Writing it before the flags creates a race.
-        let nsh_dir = crate::config::Config::nsh_dir();
+    crate::redact::redact_secrets(&result, &config.redaction)
+}
 
-        // 1. Write pending_flag FIRST (if pending)
-        if pending {
-            let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
-            let tmp = pending_file.with_extension("tmp");
-            {
-                use std::io::Write;
-                #[cfg(unix)]
-                use std::os::unix::fs::OpenOptionsExt;
-                #[cfg(unix)]
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp)?;
-                #[cfg(not(unix))]
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&tmp)?;
-                f.write_all(b"1")?;
-            }
-            std::fs::rename(&tmp, &pending_file)?;
-        }
+fn write_pending_shell_files(
+    session_id: &str,
+    command: &str,
+    pending: bool,
+    execute_via_shell_autorun: bool,
+) -> anyhow::Result<()> {
+    let nsh_dir = crate::config::Config::nsh_dir();
 
-        if !pending {
-            // Clear any stale pending_flag from a previous sequence
-            let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
-            let _ = std::fs::remove_file(&stale_flag);
-        }
-
-        // 2. Write autorun flag SECOND (if autorun)
-        let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
-        if execute_via_shell_autorun {
-            let tmp = autorun_file.with_extension("tmp");
-            {
-                use std::io::Write;
-                #[cfg(unix)]
-                use std::os::unix::fs::OpenOptionsExt;
-                #[cfg(unix)]
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp)?;
-                #[cfg(not(unix))]
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&tmp)?;
-                f.write_all(b"1")?;
-            }
-            std::fs::rename(&tmp, &autorun_file)?;
-            eprintln!("\x1b[2m(auto-running)\x1b[0m");
-        } else {
-            let _ = std::fs::remove_file(&autorun_file);
-        }
-
-        // 3. Write cmd_file LAST — this is the trigger the shell hook polls for
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+    if pending {
+        let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
+        let tmp = pending_file.with_extension("tmp");
         {
             use std::io::Write;
-            let tmp = cmd_file.with_extension("tmp");
             #[cfg(unix)]
             use std::os::unix::fs::OpenOptionsExt;
             #[cfg(unix)]
@@ -499,40 +473,100 @@ pub fn execute(
                 .create(true)
                 .truncate(true)
                 .open(&tmp)?;
-            f.write_all(command.as_bytes())?;
-            std::fs::rename(&tmp, &cmd_file)?;
+            f.write_all(b"1")?;
         }
+        std::fs::rename(&tmp, &pending_file)?;
+    } else {
+        let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
+        let _ = std::fs::remove_file(&stale_flag);
     }
 
-    if !private {
-        let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
-        let redacted_response = crate::redact::redact_secrets(&command, &config.redaction);
-        let redacted_explanation = Some(crate::redact::redact_secrets(
-            explanation,
-            &config.redaction,
-        ));
-        db.insert_conversation(
-            session_id,
-            &redacted_query,
-            "command",
-            &redacted_response,
-            redacted_explanation.as_deref(),
-            false,
-            pending,
-        )?;
-        crate::audit::audit_log(
-            session_id,
-            original_query,
-            "command",
-            &command,
-            &risk.to_string(),
-        );
+    let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
+    if execute_via_shell_autorun {
+        let tmp = autorun_file.with_extension("tmp");
+        {
+            use std::io::Write;
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+            #[cfg(unix)]
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            #[cfg(not(unix))]
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)?;
+            f.write_all(b"1")?;
+        }
+        std::fs::rename(&tmp, &autorun_file)?;
+        eprintln!("\x1b[2m(auto-running)\x1b[0m");
+    } else {
+        let _ = std::fs::remove_file(&autorun_file);
     }
 
-    eprint!("\x1b[0m");
-    std::io::Write::flush(&mut std::io::stderr()).ok();
+    let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+    {
+        use std::io::Write;
+        let tmp = cmd_file.with_extension("tmp");
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(unix)]
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        #[cfg(not(unix))]
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(command.as_bytes())?;
+        std::fs::rename(&tmp, &cmd_file)?;
+    }
 
-    Ok(CommandExecutionOutcome::Terminal)
+    Ok(())
+}
+
+fn record_command_execution(
+    db: &dyn DbAccess,
+    session_id: &str,
+    original_query: &str,
+    request: &CommandRequest,
+    config: &crate::config::Config,
+    executed: bool,
+    pending: bool,
+) -> anyhow::Result<()> {
+    let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
+    let redacted_response = crate::redact::redact_secrets(&request.command, &config.redaction);
+    let redacted_explanation = Some(crate::redact::redact_secrets(
+        &request.explanation,
+        &config.redaction,
+    ));
+    db.insert_conversation(
+        session_id,
+        &redacted_query,
+        "command",
+        &redacted_response,
+        redacted_explanation.as_deref(),
+        executed,
+        pending,
+    )?;
+    crate::audit::audit_log(
+        session_id,
+        original_query,
+        "command",
+        &request.command,
+        &request.risk.to_string(),
+    );
+    Ok(())
 }
 
 fn format_execution_output(
@@ -857,11 +891,10 @@ fn choose_candidate_from_cd_history(
 }
 
 fn extract_cd_target_from_command(command: &str) -> Option<String> {
-    if let Ok(parts) = shell_words::split(command) {
-        if parts.first().map(|p| p.as_str()) == Some("cd") && parts.len() >= 2 {
+    if let Ok(parts) = shell_words::split(command)
+        && parts.first().map(|p| p.as_str()) == Some("cd") && parts.len() >= 2 {
             return Some(parts[1].clone());
         }
-    }
     None
 }
 
@@ -938,7 +971,7 @@ fn display_command_preview(command: &str, explanation: &str, risk: &crate::secur
 mod tests {
     use super::*;
     use crate::security::RiskLevel;
-    use std::ffi::OsStr;
+    use crate::test_support::EnvVarGuard;
     use std::path::PathBuf;
 
     struct CwdGuard {
@@ -956,39 +989,6 @@ mod tests {
     impl Drop for CwdGuard {
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.old);
-        }
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only; guarded by #[serial_test::serial] on callers.
-                unsafe { std::env::remove_var(self.key) };
-            }
         }
     }
 

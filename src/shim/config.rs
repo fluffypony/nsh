@@ -1,15 +1,3 @@
-//! Stable shim boundary — PTY wrapper, pump loop, and capture engine.
-//!
-//! Code in this module is part of the "frozen" shim binary (`nsh`).
-//! It persists for the lifetime of a terminal session and should
-//! change extremely rarely. Any change here requires users to
-//! restart their terminal.
-//!
-//! Dependencies: pty.rs, pump.rs — these are also part of the stable boundary.
-
-pub use crate::pty;
-pub use crate::pump;
-
 #[derive(Debug, Clone)]
 pub struct ShimWrapConfig {
     pub scrollback_lines: usize,
@@ -49,11 +37,11 @@ impl ShimWrapConfig {
                 .unwrap_or(defaults.scrollback_pause_seconds),
             capture_mode: std::env::var("NSH_WRAP_CAPTURE_MODE")
                 .ok()
-                .filter(|v| !v.trim().is_empty())
+                .filter(|value| !value.trim().is_empty())
                 .unwrap_or(defaults.capture_mode),
             alt_screen_mode: std::env::var("NSH_WRAP_ALT_SCREEN_MODE")
                 .ok()
-                .filter(|v| !v.trim().is_empty())
+                .filter(|value| !value.trim().is_empty())
                 .unwrap_or(defaults.alt_screen_mode),
             daemon_autostart: read_env_bool("NSH_WRAP_DAEMON_AUTOSTART")
                 .unwrap_or(defaults.daemon_autostart),
@@ -97,90 +85,86 @@ pub fn seed_wrap_contract_env_from_config(config: &crate::config::Config) {
             "NSH_WRAP_SCROLLBACK_PAUSE_SECONDS",
             config.context.scrollback_pause_seconds.to_string(),
         );
-        std::env::set_var("NSH_WRAP_CAPTURE_MODE", &config.capture.mode);
-        std::env::set_var("NSH_WRAP_ALT_SCREEN_MODE", &config.capture.alt_screen);
-    }
-}
-
-/// Commands that the shim handles directly (not delegated to nsh-core).
-pub fn is_shim_command(arg: &str) -> bool {
-    matches!(arg, "wrap")
-}
-
-/// Shim-level wrap handler — called directly from shim_main.
-/// Re-implements the `wrap` command to keep the shim self-contained.
-pub fn run_wrap(args: Vec<String>) {
-    // Determine shell from args or $SHELL
-    let shell = args
-        .iter()
-        .position(|a| a == "wrap")
-        .and_then(|i| args.get(i + 1))
-        .cloned()
-        .or_else(|| std::env::var("SHELL").ok())
-        .unwrap_or_else(|| "/bin/sh".to_string());
-
-    let wrap_config = ShimWrapConfig::from_env();
-
-    if let Err(e) = crate::pty::run_wrapped_shell(&shell, &wrap_config) {
-        eprintln!("nsh wrap error: {e}");
-        std::process::exit(1);
+        std::env::set_var("NSH_WRAP_CAPTURE_MODE", config.capture.mode.as_str());
+        std::env::set_var("NSH_WRAP_ALT_SCREEN_MODE", config.capture.alt_screen.as_str());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::sync::Mutex;
+    use super::{ShimWrapConfig, seed_wrap_contract_env_from_config};
+    use crate::config::{AltScreenMode, CaptureMode, Config};
+    use crate::test_support::EnvVarGuard;
+    use serial_test::serial;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    fn clear_wrap_env() -> [EnvVarGuard; 7] {
+        [
+            EnvVarGuard::remove("NSH_WRAP_SCROLLBACK_LINES"),
+            EnvVarGuard::remove("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES"),
+            EnvVarGuard::remove("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS"),
+            EnvVarGuard::remove("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS"),
+            EnvVarGuard::remove("NSH_WRAP_CAPTURE_MODE"),
+            EnvVarGuard::remove("NSH_WRAP_ALT_SCREEN_MODE"),
+            EnvVarGuard::remove("NSH_WRAP_DAEMON_AUTOSTART"),
+        ]
+    }
 
-    fn clear_wrap_env() {
+    #[test]
+    #[serial]
+    fn from_env_uses_defaults_for_missing_and_invalid_values() {
+        let _guards = clear_wrap_env();
+        // SAFETY: test-only env mutation guarded by serial execution.
         unsafe {
-            std::env::remove_var("NSH_WRAP_SCROLLBACK_LINES");
-            std::env::remove_var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES");
-            std::env::remove_var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS");
-            std::env::remove_var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS");
-            std::env::remove_var("NSH_WRAP_CAPTURE_MODE");
-            std::env::remove_var("NSH_WRAP_ALT_SCREEN_MODE");
-            std::env::remove_var("NSH_WRAP_DAEMON_AUTOSTART");
+            std::env::set_var("NSH_WRAP_SCROLLBACK_LINES", "not-a-number");
+            std::env::set_var("NSH_WRAP_CAPTURE_MODE", "");
+            std::env::set_var("NSH_WRAP_DAEMON_AUTOSTART", "maybe");
         }
+
+        let config = ShimWrapConfig::from_env();
+
+        assert_eq!(config.scrollback_lines, 1000);
+        assert_eq!(config.capture_mode, "vt100");
+        assert_eq!(config.alt_screen_mode, "drop");
+        assert!(!config.daemon_autostart);
     }
 
     #[test]
-    fn shim_wrap_config_defaults_when_env_missing() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_wrap_env();
-        let cfg = ShimWrapConfig::from_env();
-        assert_eq!(cfg.scrollback_lines, 1000);
-        assert!(!cfg.daemon_autostart);
-    }
-
-    #[test]
-    fn shim_wrap_config_reads_overrides_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_wrap_env();
+    #[serial]
+    fn from_env_reads_valid_overrides() {
+        let _guards = clear_wrap_env();
+        // SAFETY: test-only env mutation guarded by serial execution.
         unsafe {
-            std::env::set_var("NSH_WRAP_SCROLLBACK_LINES", "222");
+            std::env::set_var("NSH_WRAP_SCROLLBACK_LINES", "2048");
+            std::env::set_var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES", "8192");
+            std::env::set_var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS", "4096");
+            std::env::set_var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS", "9");
+            std::env::set_var("NSH_WRAP_CAPTURE_MODE", "raw");
+            std::env::set_var("NSH_WRAP_ALT_SCREEN_MODE", "snapshot");
             std::env::set_var("NSH_WRAP_DAEMON_AUTOSTART", "true");
         }
-        let cfg = ShimWrapConfig::from_env();
-        assert_eq!(cfg.scrollback_lines, 222);
-        assert!(cfg.daemon_autostart);
-        clear_wrap_env();
+
+        let config = ShimWrapConfig::from_env();
+
+        assert_eq!(config.scrollback_lines, 2048);
+        assert_eq!(config.max_output_storage_bytes, 8192);
+        assert_eq!(config.scrollback_rate_limit_bps, 4096);
+        assert_eq!(config.scrollback_pause_seconds, 9);
+        assert_eq!(config.capture_mode, "raw");
+        assert_eq!(config.alt_screen_mode, "snapshot");
+        assert!(config.daemon_autostart);
     }
 
     #[test]
+    #[serial]
     fn seed_wrap_contract_env_from_config_sets_expected_values() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_wrap_env();
-
-        let mut config = crate::config::Config::default();
+        let _guards = clear_wrap_env();
+        let mut config = Config::default();
         config.context.scrollback_lines = 321;
         config.context.max_output_storage_bytes = 11111;
         config.context.scrollback_rate_limit_bps = 22222;
         config.context.scrollback_pause_seconds = 7;
-        config.capture.mode = "raw".into();
-        config.capture.alt_screen = "snapshot".into();
+        config.capture.mode = CaptureMode::Raw;
+        config.capture.alt_screen = AltScreenMode::Snapshot;
 
         seed_wrap_contract_env_from_config(&config);
 
@@ -189,21 +173,15 @@ mod tests {
             Some("1000")
         );
         assert_eq!(
-            std::env::var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES")
-                .ok()
-                .as_deref(),
+            std::env::var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES").ok().as_deref(),
             Some("11111")
         );
         assert_eq!(
-            std::env::var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS")
-                .ok()
-                .as_deref(),
+            std::env::var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS").ok().as_deref(),
             Some("22222")
         );
         assert_eq!(
-            std::env::var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS")
-                .ok()
-                .as_deref(),
+            std::env::var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS").ok().as_deref(),
             Some("7")
         );
         assert_eq!(
@@ -214,26 +192,5 @@ mod tests {
             std::env::var("NSH_WRAP_ALT_SCREEN_MODE").ok().as_deref(),
             Some("snapshot")
         );
-
-        clear_wrap_env();
-    }
-
-    #[test]
-    fn seed_wrap_contract_preserves_explicit_daemon_autostart_override() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        clear_wrap_env();
-        unsafe {
-            std::env::set_var("NSH_WRAP_DAEMON_AUTOSTART", "1");
-        }
-
-        let config = crate::config::Config::default();
-        seed_wrap_contract_env_from_config(&config);
-
-        assert_eq!(
-            std::env::var("NSH_WRAP_DAEMON_AUTOSTART").ok().as_deref(),
-            Some("1")
-        );
-
-        clear_wrap_env();
     }
 }

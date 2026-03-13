@@ -151,15 +151,13 @@ pub fn is_global_daemon_running() -> bool {
     if !socket_path.exists() {
         return false;
     }
-    if let Ok(pid_str) = std::fs::read_to_string(crate::daemon::global_daemon_pid_path()) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            if unsafe { libc::kill(pid, 0) } != 0 {
+    if let Ok(pid_str) = std::fs::read_to_string(crate::daemon::global_daemon_pid_path())
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+            && unsafe { libc::kill(pid, 0) } != 0 {
                 let _ = std::fs::remove_file(&socket_path);
                 let _ = std::fs::remove_file(crate::daemon::global_daemon_pid_path());
                 return false;
             }
-        }
-    }
     UnixStream::connect(&socket_path)
         .and_then(|s| {
             s.set_write_timeout(Some(Duration::from_millis(100)))?;
@@ -259,8 +257,8 @@ pub fn stop_global_daemon() -> bool {
     #[cfg(unix)]
     {
         let pid_path = crate::daemon::global_daemon_pid_path();
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid_str.trim().parse::<i32>() {
                 unsafe { libc::kill(pid, libc::SIGTERM) };
                 for _ in 0..20 {
                     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -271,7 +269,6 @@ pub fn stop_global_daemon() -> bool {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
                 return true;
             }
-        }
     }
     false
 }
@@ -353,9 +350,9 @@ pub fn signal_daemon_restart() -> bool {
     {
         // File-based cooldown to avoid restart storms
         let lockfile = crate::config::Config::nsh_dir().join("restart.lock");
-        if let Ok(meta) = std::fs::metadata(&lockfile) {
-            if let Ok(modified) = meta.modified() {
-                if modified
+        if let Ok(meta) = std::fs::metadata(&lockfile)
+            && let Ok(modified) = meta.modified()
+                && modified
                     .elapsed()
                     .map(|d| d.as_secs() < 10)
                     .unwrap_or(false)
@@ -363,15 +360,12 @@ pub fn signal_daemon_restart() -> bool {
                     tracing::debug!("restart.lock fresh; skipping SIGHUP");
                     return false;
                 }
-            }
-        }
         let _ = std::fs::write(&lockfile, format!("{}", std::process::id()));
         let pid_path = crate::daemon::global_daemon_pid_path();
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid_str.trim().parse::<i32>() {
                 return unsafe { libc::kill(pid, libc::SIGHUP) } == 0;
             }
-        }
         false
     }
     #[cfg(not(unix))]
@@ -526,7 +520,7 @@ mod tests {
 
                 let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
                 assert_eq!(parsed["type"], "heartbeat");
-                assert_eq!(parsed["session"], "sess-42");
+                assert_eq!(parsed["session_id"], "sess-42");
 
                 let resp =
                     DaemonResponse::ok_with_data(serde_json::json!({"received": parsed["type"]}));
@@ -788,7 +782,7 @@ mod tests {
                 reader.read_line(&mut line).unwrap();
                 let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
                 assert_eq!(parsed["type"], "heartbeat");
-                assert_eq!(parsed["session"], "mysess");
+                assert_eq!(parsed["session_id"], "mysess");
 
                 let resp = DaemonResponse::ok();
                 let mut resp_json = serde_json::to_string(&resp).unwrap();

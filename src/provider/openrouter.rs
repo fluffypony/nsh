@@ -32,8 +32,10 @@ mod tests {
 
     #[test]
     fn build_config_fails_when_openrouter_not_configured() {
-        let mut provider = crate::config::ProviderConfig::default();
-        provider.openrouter = None;
+        let provider = crate::config::ProviderConfig {
+            openrouter: None,
+            ..Default::default()
+        };
         let result = build_openrouter_compat_config(&provider);
         let err = result.err().expect("should fail when openrouter is None");
         assert!(err.to_string().contains("OpenRouter not configured"));
@@ -41,12 +43,14 @@ mod tests {
 
     #[test]
     fn build_config_uses_custom_base_url_when_provided() {
-        let mut provider = crate::config::ProviderConfig::default();
-        provider.openrouter = Some(crate::config::ProviderAuth {
-            api_key: Some("test-key".into()),
-            api_key_cmd: None,
-            base_url: Some("https://custom.example.com/v1".into()),
-        });
+        let provider = crate::config::ProviderConfig {
+            openrouter: Some(crate::config::ProviderAuth {
+                api_key: Some("test-key".into()),
+                api_key_cmd: None,
+                base_url: Some("https://custom.example.com/v1".into()),
+            }),
+            ..Default::default()
+        };
         let cfg = build_openrouter_compat_config(&provider).expect("config should build");
         assert_eq!(cfg.base_url, "https://custom.example.com/v1");
         assert_eq!(cfg.debug_provider_name, "openrouter");

@@ -16,8 +16,8 @@ pub fn route(event: &ShellEvent) -> RoutingDecision {
             return decision;
         }
         ShellEventType::UserInstruction => {
-            if let Some(ref text) = event.instruction {
-                if is_explicit_memory_directive(text) {
+            if let Some(ref text) = event.instruction
+                && is_explicit_memory_directive(text) {
                     decision.update_core = Some(CoreUpdateDecision {
                         label: "human".into(),
                         op: "append".into(),
@@ -25,7 +25,6 @@ pub fn route(event: &ShellEvent) -> RoutingDecision {
                     decision.reasoning = "Explicit memory directive detected".into();
                     return decision;
                 }
-            }
             decision.update_semantic = true;
             decision.reasoning = "User instruction may contain useful facts".into();
             return decision;
@@ -62,12 +61,11 @@ pub fn route(event: &ShellEvent) -> RoutingDecision {
         decision.reasoning = "User preference detected".into();
     }
 
-    if let Some(ref path) = event.file_path {
-        if is_config_file(path) {
+    if let Some(ref path) = event.file_path
+        && is_config_file(path) {
             decision.update_resource = true;
             decision.reasoning = "Config file interaction".into();
         }
-    }
 
     if reads_significant_file(cmd) {
         decision.update_resource = true;

@@ -156,46 +156,8 @@ pub fn daemon_log(path: &str, section: &str, content: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EnvVarGuard;
     use serial_test::serial;
-
-    struct EnvVarGuard {
-        key: String,
-        original: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set<K: Into<String>, V: AsRef<str>>(key: K, value: V) -> Self {
-            let key = key.into();
-            let original = std::env::var(&key).ok();
-            unsafe {
-                std::env::set_var(&key, value.as_ref());
-            }
-            Self { key, original }
-        }
-
-        fn remove<K: Into<String>>(key: K) -> Self {
-            let key = key.into();
-            let original = std::env::var(&key).ok();
-            unsafe {
-                std::env::remove_var(&key);
-            }
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.original {
-                unsafe {
-                    std::env::set_var(&self.key, value);
-                }
-            } else {
-                unsafe {
-                    std::env::remove_var(&self.key);
-                }
-            }
-        }
-    }
 
     fn setup_test_home() -> (
         tempfile::TempDir,
@@ -205,7 +167,7 @@ mod tests {
         EnvVarGuard,
     ) {
         let home = tempfile::tempdir().expect("temp home");
-        let home_guard = EnvVarGuard::set("HOME", home.path().to_string_lossy());
+        let home_guard = EnvVarGuard::set("HOME", home.path());
         let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
         let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
         let debug_guard = EnvVarGuard::remove("NSH_DEBUG_LLM_IO");

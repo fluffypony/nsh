@@ -67,3 +67,30 @@ impl MemoryLlmClient for ProviderLlmClient {
             .ok_or_else(|| anyhow::anyhow!("memory llm returned invalid JSON"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_model_prefers_configured_fast_model() {
+        let mut config = crate::config::Config::default();
+        config.models.fast = vec!["fast-model".into()];
+        config.provider.model = "fallback-model".into();
+
+        let client = ProviderLlmClient::new(&config);
+
+        assert_eq!(client.fast_model(), "fast-model");
+    }
+
+    #[test]
+    fn fast_model_falls_back_to_provider_model() {
+        let mut config = crate::config::Config::default();
+        config.models.fast.clear();
+        config.provider.model = "fallback-model".into();
+
+        let client = ProviderLlmClient::new(&config);
+
+        assert_eq!(client.fast_model(), "fallback-model");
+    }
+}

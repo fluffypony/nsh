@@ -5,7 +5,11 @@
 // Note: Avoid importing std::io::Write here to prevent unused import warnings.
 
 // ─── ANSI Style Constants ────────────────────────────────────────────
+pub mod display;
+pub mod json_display;
+pub mod stream_consumer;
 pub mod theme;
+pub mod streaming;
 
 pub mod style {
     pub const RESET: &str = "\x1b[0m";
@@ -246,4 +250,22 @@ pub fn tool_divider(tool_name: &str) {
     let pad = w.saturating_sub(label_len);
     let th = crate::tui::theme::current_theme();
     eprintln!("  {}{}{}{}", th.dim, label, "─".repeat(pad), th.reset);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pad_right, wrap_text};
+
+    #[test]
+    fn wrap_text_preserves_paragraph_breaks() {
+        let wrapped = wrap_text("alpha beta\n\ngamma delta", 6);
+
+        assert_eq!(wrapped, vec!["alpha", "beta", "", "gamma", "delta"]);
+    }
+
+    #[test]
+    fn pad_right_extends_short_strings_to_requested_width() {
+        assert_eq!(pad_right("hi", 5), "hi   ");
+        assert_eq!(pad_right("hello", 3), "hello");
+    }
 }

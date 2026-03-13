@@ -1,3 +1,4 @@
+use crate::util::human_size;
 use glob::Pattern;
 use std::fs::Metadata;
 
@@ -110,18 +111,6 @@ pub fn execute_outcome_with_access(
         return Ok(ok("No matches found"));
     }
     Ok(ok(out.trim_end().to_string()))
-}
-
-fn human_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    for unit in UNITS {
-        if size < 1024.0 {
-            return format!("{size:.0}{unit}");
-        }
-        size /= 1024.0;
-    }
-    format!("{size:.0}PB")
 }
 
 #[cfg(unix)]

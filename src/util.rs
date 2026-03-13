@@ -40,6 +40,78 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
+pub(crate) fn human_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    for unit in UNITS {
+        if size < 1024.0 {
+            return format!("{size:.0}{unit}");
+        }
+        size /= 1024.0;
+    }
+    format!("{size:.0}PB")
+}
+
+#[cfg(unix)]
+pub(crate) fn check_peer_uid(
+    stream: &std::os::unix::net::UnixStream,
+    log_rejection: bool,
+) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                &mut cred as *mut _ as *mut libc::c_void,
+                &mut len,
+            )
+        };
+        if rc != 0 {
+            if log_rejection {
+                tracing::warn!("Rejecting daemon connection: SO_PEERCRED failed");
+            }
+            return false;
+        }
+        if cred.uid != unsafe { libc::getuid() } {
+            if log_rejection {
+                tracing::warn!("Rejecting daemon connection from uid {}", cred.uid);
+            }
+            return false;
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    {
+        use std::os::fd::AsRawFd;
+        let mut euid: libc::uid_t = 0;
+        let mut egid: libc::gid_t = 0;
+        let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut euid, &mut egid) };
+        if rc != 0 {
+            if log_rejection {
+                tracing::warn!("Rejecting daemon connection: getpeereid failed");
+            }
+            return false;
+        }
+        if euid != unsafe { libc::getuid() } {
+            if log_rejection {
+                tracing::warn!("Rejecting daemon connection from uid {}", euid);
+            }
+            return false;
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    {
+        tracing::warn!(
+            "Peer UID check not implemented for this platform, relying on socket permissions"
+        );
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

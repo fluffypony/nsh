@@ -4,14 +4,15 @@
 
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 fn test_home() -> tempfile::TempDir {
     tempfile::tempdir().expect("failed to create temp HOME")
 }
 
 fn nsh_command(home: &Path) -> Command {
-    let mut cmd = Command::new("cargo");
-    cmd.args(["run", "--"])
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_nsh-core"));
+    cmd
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME");
@@ -23,6 +24,27 @@ fn run_nsh(home: &Path, args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("failed to run nsh command")
+}
+
+fn daemon_starting(output: &Output) -> bool {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stdout.contains("still starting up") || stderr.contains("still starting up")
+}
+
+fn run_nsh_until<F>(home: &Path, args: &[&str], ready: F) -> Output
+where
+    F: Fn(&Output) -> bool,
+{
+    let mut last = run_nsh(home, args);
+    for _ in 0..9 {
+        if ready(&last) {
+            return last;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        last = run_nsh(home, args);
+    }
+    last
 }
 
 #[test]
@@ -262,41 +284,40 @@ fn test_doctor_capture_succeeds() {
 #[test]
 fn test_memory_stats_cli_outputs_telemetry_keys() {
     let home = test_home();
-    let output = run_nsh(home.path(), &["memory", "stats"]);
+    let output = run_nsh_until(home.path(), &["memory", "stats"], |output| {
+        output.status.success() && !daemon_starting(output)
+    });
 
     assert!(output.status.success(), "nsh memory stats should succeed");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Allow daemon startup races in CI: either we got JSON with keys or a startup message
-    let ok = stdout.contains("\"core\"")
-        && stdout.contains("\"decay_runs\"")
-        && stdout.contains("\"reflection_runs\"")
-        || stderr.contains("nsh is still starting up");
     assert!(
-        ok,
-        "expected telemetry keys or startup notice; stdout: {stdout}, stderr: {stderr}"
+        stdout.contains("\"core\"")
+            && stdout.contains("\"decay_runs\"")
+            && stdout.contains("\"reflection_runs\""),
+        "expected telemetry keys, got stdout: {stdout}, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
 #[test]
 fn test_memory_telemetry_cli_outputs_only_telem_keys() {
     let home = test_home();
-    let output = run_nsh(home.path(), &["memory", "telemetry"]);
+    let output = run_nsh_until(home.path(), &["memory", "telemetry"], |output| {
+        output.status.success() && !daemon_starting(output)
+    });
 
     assert!(
         output.status.success(),
         "nsh memory telemetry should succeed"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let ok = (stdout.contains("\"decay_runs\"")
-        && stdout.contains("\"last_decay_at\"")
-        && stdout.contains("\"reflection_runs\"")
-        && stdout.contains("\"last_reflection_at\""))
-        || stderr.contains("nsh is still starting up");
     assert!(
-        ok,
-        "expected telemetry JSON or startup notice; stdout: {stdout}, stderr: {stderr}"
+        stdout.contains("\"decay_runs\"")
+            && stdout.contains("\"last_decay_at\"")
+            && stdout.contains("\"reflection_runs\"")
+            && stdout.contains("\"last_reflection_at\""),
+        "expected telemetry JSON, got stdout: {stdout}, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -545,63 +566,65 @@ fn test_session_label_missing_session() {
         "Expected 'not found' for missing session, got: {stderr}"
     );
 }
-use std::time::Duration;
-
 #[test]
-fn update_checker_parses_latest() {
-    // This is a smoke test that ensures the type compiles and basic defaults are sane
+fn update_checker_builder_preserves_configuration() {
+    let platform = nsh::cliproxyapi::detect_platform_asset();
     let checker = nsh::update_checker::GitHubReleaseChecker::new("router-for-me/CLIProxyAPIPlus")
         .with_current_version(Some("v0.0.0".into()))
-        .with_platform(nsh::cliproxyapi::detect_platform_asset());
-    // Do not actually hit the network in tests; just assert fields are set
+        .with_platform(platform.clone());
+    assert_eq!(checker.repo, "router-for-me/CLIProxyAPIPlus");
+    assert_eq!(checker.current_version.as_deref(), Some("v0.0.0"));
+    assert_eq!(checker.platform_asset_fragment, platform);
     assert_eq!(checker.check_interval, Duration::from_secs(3600));
 }
 
 #[test]
-fn provider_chain_effective_model_name_strips_prefix_when_sidecar_active() {
-    // Simulate presence of sidecar port file by writing it into a temp dir is complex; instead,
-    // directly validate the helper behavior using the function contract by calling the internal
-    // function through a representative transformation scenario.
-    // We cannot access private fn directly; instead we assert that calling chain with an already
-    // normalized model does not panic and returns error due to empty provider — this smoke test
-    // exists simply to compile-link the module functions.
-    let _ = nsh::provider::chain::is_retryable_error(&anyhow::anyhow!("429 Too Many Requests"));
+fn provider_routing_strips_sidecar_model_prefix() {
+    let sidecar = nsh::provider::openai_compat::cliproxyapi_base_url();
+    assert_eq!(
+        nsh::provider::routing::model_name_for_transport(
+            "anthropic/claude-sonnet-4.6",
+            &sidecar
+        ),
+        "claude-sonnet-4.6"
+    );
+    assert_eq!(
+        nsh::provider::routing::model_name_for_transport(
+            "anthropic/claude-sonnet-4.6",
+            "https://api.openrouter.ai/v1"
+        ),
+        "anthropic/claude-sonnet-4.6"
+    );
 }
 
 #[test]
 fn cliproxy_status_includes_update_meta_fields() {
-    use nsh::daemon::DaemonResponse;
-
-    // Seed DB meta with expected keys
-    let db = nsh::db::Db::open().expect("db open");
-    db.set_meta("cliproxyapi_last_update_check", "2026-02-22T12:00:03Z")
-        .unwrap();
-    db.set_meta("cliproxyapi_last_update_status", "up_to_date")
-        .unwrap();
-    db.set_meta("cliproxyapi_installed_version", "6.6.80")
-        .unwrap();
-
-    // Call the inline handler via the same route lib uses
-    // We cannot easily spin the real daemon here; instead exercise the same
-    // serialization path used by CLI by building the response payload.
-    // The helper module is only available in crate tests; for integration tests,
-    // invoke the same internal logic by constructing a response via the
-    // request handler behind a feature gate exposed for tests.
-    let resp = match nsh::global_daemon::test_helpers::sidecar_status_inline() {
-        Some(DaemonResponse::Ok { data: Some(d) }) => d,
-        other => panic!("unexpected response: {other:?}"),
-    };
+    let home = test_home();
+    let output = run_nsh_until(home.path(), &["cli-proxy", "status"], |output| {
+        output.status.success() && serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok()
+    });
 
     assert!(
-        resp.get("last_update_check").is_some(),
+        output.status.success(),
+        "nsh cli-proxy status should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let status: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cliproxy status should return JSON");
+    assert!(status.get("running").is_some(), "missing running");
+    assert!(status.get("port").is_some(), "missing port");
+    assert!(status.get("version").is_some(), "missing version");
+    assert!(
+        status.get("last_update_check").is_some(),
         "missing last_update_check"
     );
     assert!(
-        resp.get("last_update_status").is_some(),
+        status.get("last_update_status").is_some(),
         "missing last_update_status"
     );
     assert!(
-        resp.get("installed_version").is_some(),
+        status.get("installed_version").is_some(),
         "missing installed_version"
     );
 }

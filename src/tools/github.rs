@@ -61,13 +61,11 @@ fn build_client() -> anyhow::Result<reqwest::Client> {
     );
 
     // Opportunistically use GITHUB_TOKEN if available (raises rate limit to 5000/hr)
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        if !token.is_empty() {
-            if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
+    if let Ok(token) = std::env::var("GITHUB_TOKEN")
+        && !token.is_empty()
+            && let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
                 headers.insert(reqwest::header::AUTHORIZATION, val);
             }
-        }
-    }
 
     Ok(reqwest::Client::builder()
         .default_headers(headers)
@@ -77,19 +75,16 @@ fn build_client() -> anyhow::Result<reqwest::Client> {
 
 /// Check rate-limit headers and emit a warning if running low.
 fn check_rate_limit(headers: &reqwest::header::HeaderMap) {
-    if let Some(remaining) = headers.get("x-ratelimit-remaining") {
-        if let Ok(s) = remaining.to_str() {
-            if let Ok(n) = s.parse::<u32>() {
-                if n <= 5 {
+    if let Some(remaining) = headers.get("x-ratelimit-remaining")
+        && let Ok(s) = remaining.to_str()
+            && let Ok(n) = s.parse::<u32>()
+                && n <= 5 {
                     let th = crate::tui::theme::current_theme();
                     eprintln!(
                         "  {}⚠ GitHub API rate limit nearly exhausted ({} remaining){}",
                         th.warning, n, th.reset
                     );
                 }
-            }
-        }
-    }
 }
 
 /// Main tool entry point — dispatches on `action`.
@@ -352,4 +347,36 @@ async fn fetch_file(
 
     let content = resp.text().await?;
     Ok(crate::util::truncate(&content, 32000).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_repo_spec;
+
+    #[test]
+    fn parse_repo_spec_accepts_owner_repo() {
+        let (owner, repo, path) = parse_repo_spec("openai/openai-rust").unwrap();
+
+        assert_eq!(owner, "openai");
+        assert_eq!(repo, "openai-rust");
+        assert_eq!(path, None);
+    }
+
+    #[test]
+    fn parse_repo_spec_accepts_blob_url_with_path() {
+        let (owner, repo, path) = parse_repo_spec(
+            "https://github.com/openai/openai-rust/blob/main/README.md",
+        )
+        .unwrap();
+
+        assert_eq!(owner, "openai");
+        assert_eq!(repo, "openai-rust");
+        assert_eq!(path.as_deref(), Some("main/README.md"));
+    }
+
+    #[test]
+    fn parse_repo_spec_rejects_invalid_input() {
+        let err = parse_repo_spec("not-a-repo").unwrap_err();
+        assert!(err.to_string().contains("Invalid repo format"));
+    }
 }

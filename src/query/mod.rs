@@ -108,13 +108,64 @@ pub struct QueryOptions {
     pub json_output: bool,
 }
 
-pub async fn handle_query(
-    query: &str,
-    config: &Config,
-    db: &dyn DbAccess,
-    session_id: &str,
+struct QuerySessionSetup<'a> {
+    config: &'a Config,
+    db: &'a dyn DbAccess,
+    session_id: &'a str,
     opts: QueryOptions,
-) -> anyhow::Result<()> {
+    query: String,
+    original_query: String,
+    boundary: String,
+    cancelled: Arc<AtomicBool>,
+    provider: Box<dyn LlmProvider>,
+    transport_base_url: Option<String>,
+    chain: Vec<String>,
+    skills: Vec<crate::skills::Skill>,
+    mcp_client: Arc<tokio::sync::Mutex<crate::mcp::McpClient>>,
+    tool_defs: Vec<tools::ToolDefinition>,
+    class_tools: HashMap<String, Vec<tools::ToolDefinition>>,
+    loaded_classes: HashSet<String>,
+    mcp_tool_names: HashSet<String>,
+    xml_context: String,
+    system: String,
+    messages: Vec<Message>,
+}
+
+fn normalize_query_input(query: &str) -> String {
+    let query = if query == "__NSH_CONTINUE__" {
+        "Continue the previous pending task. The latest output is in the context above."
+    } else {
+        query
+    };
+
+    match query.trim().to_lowercase().as_str() {
+        "fix" | "fix it" | "fix this" | "fix last" | "wtf" | "why" | "what happened" | "help" => {
+            "The previous command failed. Analyze the error output from the terminal context, \
+             diagnose the problem, and suggest a corrected command. The error is already in your \
+             terminal context — respond directly with the fix."
+                .to_string()
+        }
+        "again" | "retry" => {
+            "Re-run the last command that failed, applying any obvious fixes if the error is clear."
+                .to_string()
+        }
+        "try again" | "that's wrong" | "wrong" | "no" | "nope" | "not that" => {
+            "The previous response was wrong or didn't solve the problem. Review what you \
+             suggested before (visible in the conversation context) and provide a DIFFERENT \
+             solution. Do not repeat the same command or approach."
+                .to_string()
+        }
+        _ => query.to_string(),
+    }
+}
+
+async fn initialize_query_session<'a>(
+    query: &str,
+    config: &'a Config,
+    db: &'a dyn DbAccess,
+    session_id: &'a str,
+    opts: QueryOptions,
+) -> anyhow::Result<QuerySessionSetup<'a>> {
     crate::streaming::configure_display(&config.display);
     crate::streaming::set_json_output(opts.json_output);
 
@@ -123,29 +174,8 @@ pub async fn handle_query(
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled)).ok();
 
     let boundary = crate::security::generate_boundary();
-
-    let query = if query == "__NSH_CONTINUE__" {
-        "Continue the previous pending task. The latest output is in the context above."
-    } else {
-        query
-    };
-
-    let query = match query.trim().to_lowercase().as_str() {
-        "fix" | "fix it" | "fix this" | "fix last" | "wtf" | "why" | "what happened" | "help" => {
-            "The previous command failed. Analyze the error output from the terminal context, \
-             diagnose the problem, and suggest a corrected command. The error is already in your \
-             terminal context — respond directly with the fix."
-        }
-        "again" | "retry" => {
-            "Re-run the last command that failed, applying any obvious fixes if the error is clear."
-        }
-        "try again" | "that's wrong" | "wrong" | "no" | "nope" | "not that" => {
-            "The previous response was wrong or didn't solve the problem. Review what you \
-             suggested before (visible in the conversation context) and provide a DIFFERENT \
-             solution. Do not repeat the same command or approach."
-        }
-        _ => query,
-    };
+    let query = normalize_query_input(query);
+    let original_query = query.clone();
 
     let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
     let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
@@ -154,12 +184,11 @@ pub async fn handle_query(
         &provider_cfg,
     )?
     .map(|cfg| cfg.base_url);
-    let chain: Vec<String> = if config.models.main.is_empty() {
+    let chain = if config.models.main.is_empty() {
         vec![config.provider.model.clone()]
     } else {
         config.models.main.clone()
     };
-    let chain = &chain;
 
     // Placeholder for future model capability detection (tool-calling/JSON mode)
     let _model_name = chain.first().cloned().unwrap_or_default();
@@ -184,7 +213,7 @@ pub async fn handle_query(
     // Skill classes: one tool per skill
     for sk in &skills {
         let class = format!("skill:{}", sk.name);
-        let defs = crate::skills::skill_tool_definitions(&[sk.clone()]);
+        let defs = crate::skills::skill_tool_definitions(std::slice::from_ref(sk));
         class_tools.insert(class, defs);
     }
     // MCP classes: group by server name (prefix mcp_<server>_)
@@ -201,7 +230,7 @@ pub async fn handle_query(
     }
 
     // Track which classes are already loaded (skills and MCP tools are preloaded initially)
-    let mut loaded_classes: HashSet<String> = class_tools.keys().cloned().collect();
+    let loaded_classes: HashSet<String> = class_tools.keys().cloned().collect();
 
     // Add meta-tools for JIT discovery/loading
     tool_defs.push(tools::ToolDefinition {
@@ -239,7 +268,6 @@ pub async fn handle_query(
     let config_xml = crate::config::build_config_xml(config, &skills, &mcp_info);
 
     let mut relevant_history_xml = String::new();
-    let original_query = query;
     let should_search_history = original_query.len() >= 4
         && original_query.chars().any(|c| c.is_alphanumeric())
         && !original_query.starts_with("The previous command failed")
@@ -301,15 +329,7 @@ pub async fn handle_query(
         &relevant_history_xml,
         &memory_prompt,
     );
-    let mut messages: Vec<Message> = Vec::new();
-
-    // Tool health tracker for enriching error messages and tracking consecutive failures
-    let mut tool_health = crate::tool_health::ToolHealthTracker::new();
-
-    // Cumulative time budget for this query
-    let query_start = std::time::Instant::now();
-    let max_query_duration =
-        std::time::Duration::from_secs(config.execution.max_query_duration_seconds);
+    let mut messages = Vec::new();
 
     // Conversation history from this session
     for exchange in &ctx.history.conversation_history {
@@ -331,6 +351,85 @@ pub async fn handle_query(
             text: query.to_string(),
         }],
     });
+
+    Ok(QuerySessionSetup {
+        config,
+        db,
+        session_id,
+        opts,
+        query,
+        original_query,
+        boundary,
+        cancelled,
+        provider,
+        transport_base_url,
+        chain,
+        skills,
+        mcp_client,
+        tool_defs,
+        class_tools,
+        loaded_classes,
+        mcp_tool_names,
+        xml_context,
+        system,
+        messages,
+    })
+}
+
+async fn finalize_query_session(session: QuerySessionSetup<'_>) {
+    session.mcp_client.lock().await.shutdown().await;
+
+    let config_clone = session.config.clone();
+    let session_clone = session.session_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = backfill_llm_summaries(&config_clone, &session_clone).await {
+            tracing::debug!("LLM summary backfill: {e}");
+        }
+    });
+}
+
+pub async fn handle_query(
+    query: &str,
+    config: &Config,
+    db: &dyn DbAccess,
+    session_id: &str,
+    opts: QueryOptions,
+) -> anyhow::Result<()> {
+    let mut session = initialize_query_session(query, config, db, session_id, opts).await?;
+    let result = run_agent_tool_loop(&mut session).await;
+    finalize_query_session(session).await;
+    result
+}
+
+async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Result<()> {
+    let config = session.config;
+    let db = session.db;
+    let session_id = session.session_id;
+    let opts = session.opts;
+    let query = session.query.as_str();
+    let original_query = session.original_query.as_str();
+    let boundary = session.boundary.as_str();
+    let cancelled = Arc::clone(&session.cancelled);
+    let provider = session.provider.as_ref();
+    let transport_base_url = session.transport_base_url.as_deref();
+    let chain = &session.chain;
+    let skills = &session.skills;
+    let mcp_client = Arc::clone(&session.mcp_client);
+    let tool_defs = &mut session.tool_defs;
+    let class_tools = &session.class_tools;
+    let loaded_classes = &mut session.loaded_classes;
+    let mcp_tool_names = &session.mcp_tool_names;
+    let xml_context = session.xml_context.as_str();
+    let system = &session.system;
+    let messages = &mut session.messages;
+
+    // Tool health tracker for enriching error messages and tracking consecutive failures
+    let mut tool_health = crate::tool_health::ToolHealthTracker::new();
+
+    // Cumulative time budget for this query
+    let query_start = std::time::Instant::now();
+    let max_query_duration =
+        std::time::Duration::from_secs(config.execution.max_query_duration_seconds);
 
     // ── Agentic tool loop ──────────────────────────────
     let max_iterations = config.execution.effective_max_tool_iterations();
@@ -422,7 +521,7 @@ pub async fn handle_query(
             stream: true,
             extra_body,
         };
-        let request = if let Some(base_url) = transport_base_url.as_deref() {
+        let request = if let Some(base_url) = transport_base_url {
             crate::provider::with_transport_base_url(&request, base_url)
         } else {
             request
@@ -434,8 +533,7 @@ pub async fn handle_query(
             Some(streaming::SpinnerGuard::new())
         };
         let chain_result =
-            chain::call_chain_with_fallback_think(provider.as_ref(), request, chain, opts.think)
-                .await;
+            chain::call_chain_with_fallback_think(provider, request, chain, opts.think).await;
         drop(_spinner);
 
         let (mut rx, _used_model) = match chain_result {
@@ -548,18 +646,7 @@ pub async fn handle_query(
             } else {
                 force_json_next = false;
             }
-            let text_content: String = response
-                .content
-                .iter()
-                .filter_map(|b| {
-                    if let ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
+            let text_content = crate::provider::message_text_content(&response);
             // Extract and validate required keys for a generic tool use contract
             let required = [
                 crate::json_extract::RequiredKeyPath::new(&["tool"]),
@@ -612,7 +699,7 @@ pub async fn handle_query(
                     .first()
                     .cloned()
                     .unwrap_or_else(|| config.provider.model.clone());
-                let model_name = if let Some(base_url) = transport_base_url.as_deref() {
+                let model_name = if let Some(base_url) = transport_base_url {
                     crate::provider::routing::model_name_for_transport(&model_name, base_url)
                 } else {
                     model_name
@@ -631,13 +718,13 @@ pub async fn handle_query(
                         None
                     },
                 };
-                let retry_request = if let Some(base_url) = transport_base_url.as_deref() {
+                let retry_request = if let Some(base_url) = transport_base_url {
                     crate::provider::with_transport_base_url(&retry_request, base_url)
                 } else {
                     retry_request
                 };
                 if let Ok(json) = crate::json_extract::extract_with_retry(
-                    provider.as_ref(),
+                    provider,
                     retry_request,
                     &required,
                     2,
@@ -745,7 +832,7 @@ pub async fn handle_query(
         for block in &response.content {
             if let ContentBlock::ToolUse { id, name, input } = block {
                 if let Err(msg) = validate_tool_input(name, input) {
-                    let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
+                    let wrapped = crate::security::wrap_tool_result(name, &msg, boundary);
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
                         content: wrapped,
@@ -765,7 +852,7 @@ pub async fn handle_query(
                             content: crate::security::wrap_tool_result(
                                 name,
                                 &correction,
-                                &boundary,
+                                boundary,
                             ),
                             is_error: true,
                         });
@@ -784,8 +871,8 @@ pub async fn handle_query(
                 // Additional semantic guard: if model insists on store_memory semantic with empty data, abort sooner
                 if name == "store_memory" {
                     let mt = input["memory_type"].as_str().unwrap_or("");
-                    if mt == "semantic" {
-                        if let Some(data) = input.get("data") {
+                    if mt == "semantic"
+                        && let Some(data) = input.get("data") {
                             let parsed_type = crate::memory::types::MemoryType::parse(mt)
                                 .map_err(|e| e.to_string());
                             let validation = parsed_type.and_then(|pt| {
@@ -793,7 +880,7 @@ pub async fn handle_query(
                             });
                             if let Err(msg) = validation {
                                 let wrapped =
-                                    crate::security::wrap_tool_result(name, &msg, &boundary);
+                                    crate::security::wrap_tool_result(name, &msg, boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -809,7 +896,6 @@ pub async fn handle_query(
                                 continue;
                             }
                         }
-                    }
                 }
 
                 match name.as_str() {
@@ -821,7 +907,7 @@ pub async fn handle_query(
                             let msg = format!(
                                 "Rejected command tool call: {reason}. Use a concrete shell command or use search_history/chat for non-command questions."
                             );
-                            let wrapped = crate::security::wrap_tool_result(name, &msg, &boundary);
+                            let wrapped = crate::security::wrap_tool_result(name, &msg, boundary);
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: wrapped,
@@ -842,7 +928,7 @@ pub async fn handle_query(
                                 let err_msg = format!("Command tool error: {e}");
                                 display_tool_error(&err_msg, opts.json_output);
                                 let wrapped =
-                                    crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                    crate::security::wrap_tool_result(name, &err_msg, boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -860,7 +946,7 @@ pub async fn handle_query(
                                     crate::redact::redact_secrets(&content, &config.redaction);
                                 let sanitized = crate::security::sanitize_tool_output(&redacted);
                                 let wrapped =
-                                    crate::security::wrap_tool_result(name, &sanitized, &boundary);
+                                    crate::security::wrap_tool_result(name, &sanitized, boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -885,7 +971,7 @@ pub async fn handle_query(
                                 let wrapped = crate::security::wrap_tool_result(
                                     name,
                                     "Message displayed.",
-                                    &boundary,
+                                    boundary,
                                 );
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
@@ -896,7 +982,7 @@ pub async fn handle_query(
                             Err(e) => {
                                 let err_msg = format!("Error: {e}");
                                 let wrapped =
-                                    crate::security::wrap_tool_result(name, &err_msg, &boundary);
+                                    crate::security::wrap_tool_result(name, &err_msg, boundary);
                                 tool_results.push(ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: wrapped,
@@ -922,7 +1008,7 @@ pub async fn handle_query(
                                 (err_msg, true)
                             }
                         };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -949,7 +1035,7 @@ pub async fn handle_query(
                                 (err_msg, true)
                             }
                         };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -962,7 +1048,7 @@ pub async fn handle_query(
                             Ok(msg) => (msg, false),
                             Err(e) => (format!("Error: {e}"), true),
                         };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -975,7 +1061,7 @@ pub async fn handle_query(
                             Ok(msg) => (msg, false),
                             Err(e) => (format!("Error: {e}"), true),
                         };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -988,7 +1074,7 @@ pub async fn handle_query(
                             Ok(msg) => (msg, false),
                             Err(e) => (format!("Error: {e}"), true),
                         };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -1029,13 +1115,13 @@ pub async fn handle_query(
                                 th.success, th.reset, class_name, summary
                             );
                             let wrapped = crate::security::wrap_tool_result(
-                                &name,
+                                name,
                                 &format!(
                                     "Loaded {} tool(s) from class '{}'",
                                     defs.len(),
                                     class_name
                                 ),
-                                &boundary,
+                                boundary,
                             );
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -1044,9 +1130,9 @@ pub async fn handle_query(
                             });
                         } else {
                             let wrapped = crate::security::wrap_tool_result(
-                                &name,
+                                name,
                                 &format!("Class '{}' not found", class_name),
-                                &boundary,
+                                boundary,
                             );
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -1059,7 +1145,7 @@ pub async fn handle_query(
                         let goal = input["goal"].as_str().unwrap_or("");
                         let mut suggestions: Vec<(String, usize)> = Vec::new();
                         let goal_lc = goal.to_lowercase();
-                        for (class, defs) in &class_tools {
+                        for (class, defs) in class_tools {
                             // Simple heuristic: match by class name or tool names
                             let hay = format!(
                                 "{} {}",
@@ -1105,7 +1191,7 @@ pub async fn handle_query(
                                 _ => {}
                             }
                         }
-                        let wrapped = crate::security::wrap_tool_result(&name, &body, &boundary);
+                        let wrapped = crate::security::wrap_tool_result(name, &body, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
                             content: wrapped,
@@ -1126,7 +1212,7 @@ pub async fn handle_query(
 
                         if !approved {
                             let msg = "User declined coding agent delegation.";
-                            let wrapped = crate::security::wrap_tool_result(name, msg, &boundary);
+                            let wrapped = crate::security::wrap_tool_result(name, msg, boundary);
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: wrapped,
@@ -1134,14 +1220,16 @@ pub async fn handle_query(
                             });
                         } else {
                             let result = crate::coding_agent::run_coding_agent(
-                                task,
-                                extra_context,
-                                config,
-                                db,
-                                session_id,
-                                &xml_context,
-                                &cancelled,
-                                opts.force_autorun,
+                                crate::coding_agent::CodingAgentRequest {
+                                    task,
+                                    context: extra_context,
+                                    config,
+                                    db,
+                                    session_id,
+                                    project_context_xml: xml_context,
+                                    cancelled: &cancelled,
+                                    force_autorun: opts.force_autorun,
+                                },
                             )
                             .await;
                             let (content, is_error) = match result {
@@ -1174,7 +1262,7 @@ pub async fn handle_query(
                                 crate::redact::redact_secrets(&content, &config.redaction);
                             let sanitized = crate::security::sanitize_tool_output(&redacted);
                             let wrapped =
-                                crate::security::wrap_tool_result(name, &sanitized, &boundary);
+                                crate::security::wrap_tool_result(name, &sanitized, boundary);
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
                                 content: wrapped,
@@ -1247,7 +1335,7 @@ pub async fn handle_query(
                         let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                         let sanitized = crate::security::sanitize_tool_output(&redacted);
                         let wrapped =
-                            crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                            crate::security::wrap_tool_result(&name, &sanitized, boundary);
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: id,
                             content: wrapped,
@@ -1322,7 +1410,7 @@ pub async fn handle_query(
                             let wrapped = crate::security::wrap_tool_result(
                                 &name,
                                 "Memory system is disabled or in incognito mode",
-                                &boundary,
+                                boundary,
                             );
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id,
@@ -1330,12 +1418,12 @@ pub async fn handle_query(
                                 is_error: true,
                             });
                         } else if let Err(e) =
-                            crate::security::assess_memory_tool_call(&name, &input, &messages)
+                            crate::security::assess_memory_tool_call(&name, &input, messages)
                         {
                             let wrapped = crate::security::wrap_tool_result(
                                 &name,
                                 &format!("Security check failed: {e}"),
-                                &boundary,
+                                boundary,
                             );
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id,
@@ -1411,7 +1499,7 @@ pub async fn handle_query(
                             };
                             let sanitized = crate::security::sanitize_tool_output(&content);
                             let wrapped =
-                                crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                                crate::security::wrap_tool_result(&name, &sanitized, boundary);
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id,
                                 content: wrapped,
@@ -1526,11 +1614,10 @@ pub async fn handle_query(
                                             best = Some((s, d));
                                         }
                                     }
-                                    if let Some((s, d)) = best {
-                                        if d <= 2 {
+                                    if let Some((s, d)) = best
+                                        && d <= 2 {
                                             matched_skill = Some((*s).clone());
                                         }
-                                    }
                                 }
                             }
                             if let Some(skill) = matched_skill {
@@ -1622,7 +1709,7 @@ pub async fn handle_query(
                 let redacted = crate::redact::redact_secrets(&content, &config.redaction);
                 let redacted = crate::util::truncate(&redacted, 32000);
                 let sanitized = crate::security::sanitize_tool_output(&redacted);
-                let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+                let wrapped = crate::security::wrap_tool_result(&name, &sanitized, boundary);
                 tool_results.push(ContentBlock::ToolResult {
                     tool_use_id: id,
                     content: wrapped,
@@ -1657,7 +1744,7 @@ pub async fn handle_query(
             };
             let redacted = crate::redact::redact_secrets(&content, &config.redaction);
             let sanitized = crate::security::sanitize_tool_output(&redacted);
-            let wrapped = crate::security::wrap_tool_result(&name, &sanitized, &boundary);
+            let wrapped = crate::security::wrap_tool_result(&name, &sanitized, boundary);
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: id,
                 content: wrapped,
@@ -1698,17 +1785,6 @@ pub async fn handle_query(
             tools::chat::render_response(&response)?;
         }
     }
-
-    // ── Cleanup ────────────────────────────────────────
-    mcp_client.lock().await.shutdown().await;
-
-    let config_clone = config.clone();
-    let session_clone = session_id.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = backfill_llm_summaries(&config_clone, &session_clone).await {
-            tracing::debug!("LLM summary backfill: {e}");
-        }
-    });
 
     Ok(())
 }
@@ -2814,11 +2890,10 @@ fn execute_sync_tool_outcome(
 fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
     match name {
         "search_history" => {
-            if let Some(q) = input["query"].as_str() {
-                if !q.trim().is_empty() {
+            if let Some(q) = input["query"].as_str()
+                && !q.trim().is_empty() {
                     return format!("searching history for \"{q}\"");
                 }
-            }
             if let Some(cmd) = input["command"].as_str() {
                 if let Some(entity) = input["entity"].as_str() {
                     return format!("searching history for `{cmd}` targets matching \"{entity}\"");

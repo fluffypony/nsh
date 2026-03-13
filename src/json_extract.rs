@@ -10,36 +10,31 @@ pub fn extract_json(input: &str) -> Option<serde_json::Value> {
         return Some(val);
     }
     // 3. Extract from code fences
-    if let Some(json_str) = extract_from_code_fence(trimmed) {
-        if let Ok(val) = serde_json::from_str(json_str.trim()) {
+    if let Some(json_str) = extract_from_code_fence(trimmed)
+        && let Ok(val) = serde_json::from_str(json_str.trim()) {
             return Some(val);
         }
-    }
     // 4. Find outermost { ... } (try progressively shorter tails)
-    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        if start < end {
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
+        && start < end {
             // Try from outermost first
             if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
                 return Some(val);
             }
             // Try progressively smaller substrings (handle trailing junk)
             for scan_end in (start + 1..=end).rev() {
-                if trimmed.as_bytes()[scan_end] == b'}' {
-                    if let Ok(val) = serde_json::from_str(&trimmed[start..=scan_end]) {
+                if trimmed.as_bytes()[scan_end] == b'}'
+                    && let Ok(val) = serde_json::from_str(&trimmed[start..=scan_end]) {
                         return Some(val);
                     }
-                }
             }
         }
-    }
     // 5. Same for arrays
-    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']')) {
-        if start < end {
-            if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
+    if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']'))
+        && start < end
+            && let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
                 return Some(val);
             }
-        }
-    }
     None
 }
 
@@ -373,8 +368,7 @@ mod tests {
         };
         let err = extract_with_retry(&provider, req, &required, 1)
             .await
-            .err()
-            .expect("should fail");
+            .expect_err("should fail");
         assert!(err.to_string().contains("missing keys"));
     }
 }

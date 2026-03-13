@@ -49,19 +49,33 @@ fn supports_truecolor() -> bool {
         .unwrap_or(false)
 }
 
-fn supports_256color() -> bool {
-    std::env::var("TERM")
-        .map(|v| v.contains("256color"))
-        .unwrap_or(false)
-        || supports_truecolor()
-}
-
 pub fn current_theme() -> &'static Theme {
     if supports_truecolor() {
         &MOCHA
-    } else if supports_256color() {
-        &MOCHA_256
     } else {
         &MOCHA_256
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MOCHA, MOCHA_256, current_theme, supports_truecolor};
+    use crate::test_support::EnvVarGuard;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn supports_truecolor_detects_truecolor_values() {
+        let _guard = EnvVarGuard::set("COLORTERM", "truecolor");
+        assert!(supports_truecolor());
+        assert_eq!(current_theme().accent, MOCHA.accent);
+    }
+
+    #[test]
+    #[serial]
+    fn current_theme_falls_back_to_256_palette() {
+        let _guard = EnvVarGuard::remove("COLORTERM");
+        assert!(!supports_truecolor());
+        assert_eq!(current_theme().accent, MOCHA_256.accent);
     }
 }

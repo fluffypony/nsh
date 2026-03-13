@@ -153,40 +153,7 @@ fn cleanup_old_archives_in_dir(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only; this module's stateful tests are serialized.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only; this module's stateful tests are serialized.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only; this module's stateful tests are serialized.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only; this module's stateful tests are serialized.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
+    use crate::test_support::EnvVarGuard;
 
     fn with_temp_home() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
         let home = tempfile::tempdir().unwrap();

@@ -10,18 +10,38 @@ static SPINNER_HANDLE: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(N
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 static LAST_STREAM_HAD_TEXT: AtomicBool = AtomicBool::new(false);
 
-static CHAT_COLOR: OnceLock<String> = OnceLock::new();
-static SPINNER_FRAMES: OnceLock<Vec<String>> = OnceLock::new();
+#[derive(Default)]
+struct DisplayRuntimeConfig {
+    chat_color: Option<String>,
+    spinner_frames: Option<Vec<String>>,
+}
+
+static DISPLAY_RUNTIME: OnceLock<Mutex<DisplayRuntimeConfig>> = OnceLock::new();
+
+fn display_runtime() -> &'static Mutex<DisplayRuntimeConfig> {
+    DISPLAY_RUNTIME.get_or_init(|| Mutex::new(DisplayRuntimeConfig::default()))
+}
+
+fn default_spinner_frames() -> Vec<String> {
+    vec!["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷", "⣾", "⣽"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
 
 pub fn configure_display(config: &crate::config::DisplayConfig) {
-    let _ = CHAT_COLOR.set(config.chat_color.clone());
     let frames: Vec<String> = config
         .thinking_indicator
         .chars()
         .map(|c| c.to_string())
         .collect();
-    if !frames.is_empty() {
-        let _ = SPINNER_FRAMES.set(frames);
+    if let Ok(mut state) = display_runtime().lock() {
+        state.chat_color = Some(config.chat_color.clone());
+        state.spinner_frames = if frames.is_empty() {
+            None
+        } else {
+            Some(frames)
+        };
     }
 }
 
@@ -37,25 +57,20 @@ pub fn last_stream_had_text() -> bool {
     LAST_STREAM_HAD_TEXT.load(Ordering::SeqCst)
 }
 
-fn chat_color() -> &'static str {
-    // Prefer configured chat color; otherwise, use the theme's primary text color
-    CHAT_COLOR
-        .get()
-        .map(|s| s.as_str())
-        .unwrap_or(crate::tui::theme::current_theme().text)
+fn chat_color() -> String {
+    display_runtime()
+        .lock()
+        .ok()
+        .and_then(|state| state.chat_color.clone())
+        .unwrap_or_else(|| crate::tui::theme::current_theme().text.to_string())
 }
 
-fn spinner_frames() -> &'static [String] {
-    static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
-    SPINNER_FRAMES.get().unwrap_or_else(|| {
-        DEFAULT.get_or_init(|| {
-            // Smooth Braille-inspired animation; keep >=10 frames to satisfy tests
-            vec!["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷", "⣾", "⣽"]
-                .into_iter()
-                .map(String::from)
-                .collect()
-        })
-    })
+fn spinner_frames() -> Vec<String> {
+    display_runtime()
+        .lock()
+        .ok()
+        .and_then(|state| state.spinner_frames.clone())
+        .unwrap_or_else(default_spinner_frames)
 }
 
 pub fn show_spinner() {
@@ -83,12 +98,11 @@ pub fn show_spinner() {
 
 pub fn hide_spinner() {
     SPINNER_ACTIVE.store(false, Ordering::SeqCst);
-    if let Ok(mut guard) = SPINNER_HANDLE.lock() {
-        if let Some(handle) = guard.take() {
+    if let Ok(mut guard) = SPINNER_HANDLE.lock()
+        && let Some(handle) = guard.take() {
             let _ = handle.join();
         }
-    }
-    eprint!("\r{}", "\x1b[K");
+    eprint!("\r\x1b[K");
     io::stderr().flush().ok();
 }
 
@@ -193,26 +207,48 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use tokio::sync::mpsc;
 
+    fn reset_display_runtime() {
+        if let Ok(mut state) = display_runtime().lock() {
+            *state = DisplayRuntimeConfig::default();
+        }
+    }
+
+    fn reset_streaming_test_state() {
+        hide_spinner();
+        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        reset_display_runtime();
+        JSON_OUTPUT.store(false, Ordering::SeqCst);
+        LAST_STREAM_HAD_TEXT.store(false, Ordering::SeqCst);
+    }
+
+    #[serial_test::serial]
     #[test]
     fn test_configure_display() {
+        reset_streaming_test_state();
         let config = crate::config::DisplayConfig::default();
         configure_display(&config);
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_chat_color_default() {
+        reset_streaming_test_state();
         let color = chat_color();
         assert!(!color.is_empty());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_spinner_frames_default() {
+        reset_streaming_test_state();
         let frames = spinner_frames();
         assert!(!frames.is_empty());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_hide_spinner_noop_when_not_active() {
+        reset_streaming_test_state();
         hide_spinner();
     }
 
@@ -334,9 +370,10 @@ mod tests {
         assert!(msg.content.is_empty());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_spinner_guard_creates_and_drops() {
-        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        reset_streaming_test_state();
         {
             let guard = SpinnerGuard::new();
             assert!(guard.did_start);
@@ -349,7 +386,7 @@ mod tests {
     #[serial_test::serial]
     #[test]
     fn test_spinner_guard_second_is_noop() {
-        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        reset_streaming_test_state();
         let guard1 = SpinnerGuard::new();
         assert!(guard1.did_start);
         let guard2 = SpinnerGuard::new();
@@ -360,15 +397,18 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_spinner_frames_returns_defaults() {
+        reset_streaming_test_state();
         let frames = spinner_frames();
-        assert!(frames.len() >= 10);
-        assert_eq!(frames[0], "⠋");
+        assert_eq!(frames, default_spinner_frames());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_show_and_hide_spinner() {
+        reset_streaming_test_state();
         show_spinner();
         std::thread::sleep(std::time::Duration::from_millis(100));
         hide_spinner();
@@ -493,42 +533,71 @@ mod tests {
         assert!(msg.content.is_empty());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_chat_color_returns_nonempty() {
+        reset_streaming_test_state();
         let c = chat_color();
         assert!(!c.is_empty());
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_configure_display_custom_values() {
+        reset_streaming_test_state();
         let config = crate::config::DisplayConfig {
             chat_color: "\x1b[1;32m".into(),
             thinking_indicator: "/-\\|".into(),
         };
         configure_display(&config);
+        assert_eq!(chat_color(), "\x1b[1;32m");
+        assert_eq!(spinner_frames(), vec!["/", "-", "\\", "|"]);
     }
 
+    #[serial_test::serial]
+    #[test]
+    fn test_configure_display_allows_reconfiguration() {
+        reset_streaming_test_state();
+        let first = crate::config::DisplayConfig {
+            chat_color: "\x1b[1;31m".into(),
+            thinking_indicator: "..".into(),
+        };
+        configure_display(&first);
+        assert_eq!(chat_color(), "\x1b[1;31m");
+        assert_eq!(spinner_frames(), vec![".", "."]);
+
+        let second = crate::config::DisplayConfig {
+            chat_color: "\x1b[1;34m".into(),
+            thinking_indicator: "<>".into(),
+        };
+        configure_display(&second);
+        assert_eq!(chat_color(), "\x1b[1;34m");
+        assert_eq!(spinner_frames(), vec!["<", ">"]);
+    }
+
+    #[serial_test::serial]
     #[test]
     fn test_show_spinner_then_immediate_hide() {
-        SPINNER_ACTIVE.store(false, Ordering::SeqCst);
+        reset_streaming_test_state();
         show_spinner();
         assert!(SPINNER_ACTIVE.load(Ordering::SeqCst));
         hide_spinner();
         assert!(!SPINNER_ACTIVE.load(Ordering::SeqCst));
     }
 
+    #[serial_test::serial]
     #[test]
     fn test_spinner_guard_already_active_returns_did_start_false() {
+        reset_streaming_test_state();
         SPINNER_ACTIVE.store(true, Ordering::SeqCst);
         let guard = SpinnerGuard::new();
         assert!(!guard.did_start);
         drop(guard);
         assert!(SPINNER_ACTIVE.load(Ordering::SeqCst));
         SPINNER_ACTIVE.store(false, Ordering::SeqCst);
-        if let Ok(mut h) = SPINNER_HANDLE.lock() {
-            if let Some(handle) = h.take() {
+        if let Ok(mut h) = SPINNER_HANDLE.lock()
+            && let Some(handle) = h.take() {
                 let _ = handle.join();
             }
-        }
     }
 }

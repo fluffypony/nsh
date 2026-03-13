@@ -160,18 +160,16 @@ pub fn run_wrapped_shell(
         .filter_map(|(k, v)| std::ffi::CString::new(format!("{k}={v}")).ok())
         .collect();
     env_vec.push(std::ffi::CString::new("NSH_PTY_ACTIVE=1").unwrap());
-    if let Some(ref orig_tty) = orig_tty {
-        if let Ok(var) = std::ffi::CString::new(format!("NSH_ORIG_TTY={orig_tty}")) {
+    if let Some(ref orig_tty) = orig_tty
+        && let Ok(var) = std::ffi::CString::new(format!("NSH_ORIG_TTY={orig_tty}")) {
             env_vec.push(var);
         }
-    }
     // Preserve NSH_WRAP_SESSION_ID across the wrap boundary so the child
     // shell init derives the same session identity.
-    if let Ok(wsid) = std::env::var("NSH_WRAP_SESSION_ID") {
-        if let Ok(var) = std::ffi::CString::new(format!("NSH_WRAP_SESSION_ID={wsid}")) {
+    if let Ok(wsid) = std::env::var("NSH_WRAP_SESSION_ID")
+        && let Ok(var) = std::ffi::CString::new(format!("NSH_WRAP_SESSION_ID={wsid}")) {
             env_vec.push(var);
         }
-    }
     let env_ptrs: Vec<*const libc::c_char> = env_vec
         .iter()
         .map(|e| e.as_ptr())

@@ -2,7 +2,7 @@ use crate::daemon_db::DbAccess;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-fn trash_dir() -> PathBuf {
+pub(crate) fn trash_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         dirs::home_dir().unwrap().join(".Trash")
@@ -249,7 +249,7 @@ pub fn execute(
     }
 
     let path = expand_tilde(raw_path);
-    validate_path_with_access(&path, &config.tools.sensitive_file_access)?;
+    validate_path_with_access(&path, config.tools.sensitive_file_access.as_str())?;
 
     let cyan_italic = "\x1b[3;36m";
     let bold = "\x1b[1m";
@@ -328,41 +328,8 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use crate::test_support::EnvVarGuard;
     use tempfile::NamedTempFile;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
         let home = tempfile::tempdir().unwrap();

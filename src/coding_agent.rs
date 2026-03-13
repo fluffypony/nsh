@@ -134,16 +134,28 @@ pub fn coding_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-pub async fn run_coding_agent(
-    task: &str,
-    context: &str,
-    config: &Config,
-    _db: &dyn DbAccess,
-    _session_id: &str,
-    project_context_xml: &str,
-    cancelled: &Arc<AtomicBool>,
-    force_autorun: bool,
-) -> anyhow::Result<String> {
+pub struct CodingAgentRequest<'a> {
+    pub task: &'a str,
+    pub context: &'a str,
+    pub config: &'a Config,
+    pub db: &'a dyn DbAccess,
+    pub session_id: &'a str,
+    pub project_context_xml: &'a str,
+    pub cancelled: &'a Arc<AtomicBool>,
+    pub force_autorun: bool,
+}
+
+pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result<String> {
+    let CodingAgentRequest {
+        task,
+        context,
+        config,
+        db: _db,
+        session_id: _session_id,
+        project_context_xml,
+        cancelled,
+        force_autorun,
+    } = request;
     let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
     let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
     let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
@@ -290,12 +302,8 @@ pub async fn run_coding_agent(
         }
         messages.push(response.clone());
 
-        for block in &response.content {
-            if let ContentBlock::Text { text } = block {
-                if !text.trim().is_empty() {
-                    last_text = text.clone();
-                }
-            }
+        if let Some(text) = crate::provider::last_nonempty_text_content(&response) {
+            last_text = text;
         }
 
         let mut tool_results = Vec::new();
@@ -791,11 +799,13 @@ async fn execute_bash(
             } => {
                 eprintln!("\n\x1b[33m⏳ No output for {}s. [Enter] continue, [c] cancel\x1b[0m", stall_threshold.as_secs());
                 let should_cancel = tokio::task::spawn_blocking(|| {
-                    match crate::tools::read_user_input_with_timeout(10) {
-                        Some(s) if s.to_lowercase() == "c" => true,
-                        _ => false,
-                    }
-                }).await.unwrap_or(false);
+                    matches!(
+                        crate::tools::read_user_input_with_timeout(10),
+                        Some(s) if s.to_lowercase() == "c"
+                    )
+                })
+                .await
+                .unwrap_or(false);
                 if should_cancel {
                     let _ = child.start_kill();
                     #[cfg(unix)]
@@ -898,7 +908,7 @@ fn estimate_timeout_seconds(command: &str, working_dir: &Path) -> u64 {
             || lower.starts_with("yum ")
             || lower.starts_with("cargo install"))
     {
-        return 300u64.min(900);
+        return 300;
     }
 
     let base = if lower.starts_with("cargo test") {
@@ -1336,6 +1346,13 @@ mod tests {
         let test_t = estimate_timeout_seconds("cargo test", tmp.path());
         let git_t = estimate_timeout_seconds("git status", tmp.path());
         assert!(test_t > git_t);
+    }
+
+    #[test]
+    fn test_estimate_timeout_seconds_uses_network_install_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let timeout = estimate_timeout_seconds("npm install ripgrep", tmp.path());
+        assert_eq!(timeout, 300);
     }
 
     #[test]

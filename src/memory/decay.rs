@@ -41,13 +41,20 @@ pub fn run_decay(
         params![expire_cutoff],
     )? as usize;
 
-    // Record last decay time
+    Ok(report)
+}
+
+pub fn record_decay_run(conn: &Connection) -> anyhow::Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_decay_at', datetime('now'))",
         [],
     )?;
-
-    Ok(report)
+    conn.execute(
+        "INSERT INTO memory_config(key, value) VALUES('decay_runs', '1') \
+         ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
+        [],
+    )?;
+    Ok(())
 }
 
 pub fn get_fade_cutoff(conn: &Connection, fade_after_days: u32) -> anyhow::Result<String> {
@@ -112,7 +119,7 @@ mod tests {
     #[test]
     fn should_run_decay_after_recent_run() {
         let conn = setup();
-        run_decay(&conn, 30, 90).unwrap();
+        record_decay_run(&conn).unwrap();
         assert!(!should_run_decay(&conn));
     }
 
@@ -296,9 +303,9 @@ mod tests {
     }
 
     #[test]
-    fn decay_records_last_decay_timestamp() {
+    fn record_decay_run_sets_last_decay_timestamp() {
         let conn = setup();
-        run_decay(&conn, 30, 90).unwrap();
+        record_decay_run(&conn).unwrap();
 
         let last: String = conn
             .query_row(

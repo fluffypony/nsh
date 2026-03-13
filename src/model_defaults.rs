@@ -85,3 +85,40 @@ pub fn provider_models(provider: &str) -> ProviderModelDefaults {
 pub fn to_vec(models: &[&str]) -> Vec<String> {
     models.iter().map(|m| (*m).to_string()).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DEFAULT_FALLBACK_MODEL, DEFAULT_PROVIDER, OPENAI_DEFAULTS, OPENROUTER_DEFAULTS,
+        provider_models, to_vec,
+    };
+
+    #[test]
+    fn provider_models_returns_expected_defaults_for_known_provider() {
+        let defaults = provider_models("openrouter");
+
+        assert_eq!(defaults.default_model, OPENROUTER_DEFAULTS.default_model);
+        assert_eq!(defaults.main, OPENROUTER_DEFAULTS.main);
+        assert_eq!(defaults.fast, OPENROUTER_DEFAULTS.fast);
+        assert_eq!(defaults.coding, OPENROUTER_DEFAULTS.coding);
+        assert_eq!(DEFAULT_PROVIDER, "openrouter");
+        assert_eq!(DEFAULT_FALLBACK_MODEL, "anthropic/claude-sonnet-4.6");
+    }
+
+    #[test]
+    fn provider_models_fall_back_to_openai_for_unknown_provider() {
+        let defaults = provider_models("unknown-provider");
+
+        assert_eq!(defaults.default_model, OPENAI_DEFAULTS.default_model);
+        assert_eq!(defaults.main, OPENAI_DEFAULTS.main);
+        assert_eq!(defaults.fast, OPENAI_DEFAULTS.fast);
+        assert_eq!(defaults.coding, OPENAI_DEFAULTS.coding);
+    }
+
+    #[test]
+    fn to_vec_copies_model_identifiers() {
+        let values = to_vec(&["alpha", "beta", "gamma"]);
+
+        assert_eq!(values, vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+    }
+}

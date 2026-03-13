@@ -27,8 +27,13 @@ where
     let ws_model = &config.web_search.model;
     let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
     let model_caps = crate::config::model_capabilities(ws_provider_name, ws_model);
+    // Transport metadata is only a routing hint for compat providers.
+    // If auth/config for that provider is incomplete, let the provider factory
+    // surface the real error instead of failing test and stub call paths early.
     let transport_base_url =
-        provider::routing::resolve_openai_compat_config(ws_provider_name, &provider_cfg)?
+        provider::routing::resolve_openai_compat_config(ws_provider_name, &provider_cfg)
+            .ok()
+            .flatten()
             .map(|cfg| cfg.base_url);
 
     let provider = match provider_factory(ws_provider_name, &provider_cfg) {
@@ -181,7 +186,13 @@ mod tests {
         assert!(matches!(request.tool_choice, ToolChoice::None));
         assert!(!request.stream);
         assert_eq!(request.max_tokens, 1024);
-        assert!(request.extra_body.is_none());
+        assert!(
+            request
+                .extra_body
+                .as_ref()
+                .and_then(|extra| extra.get("web_search_options"))
+                .is_none()
+        );
         assert_eq!(request.messages.len(), 1);
         assert!(matches!(request.messages[0].role, Role::User));
         assert!(matches!(

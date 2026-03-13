@@ -1,4 +1,5 @@
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 const SCHEMA_VERSION: i32 = 6;
 const COMMAND_ENTITY_BACKFILL_MAX_ID_KEY: &str = "command_entities_backfilled_max_id_v1";
@@ -692,7 +693,7 @@ impl Db {
         let rows = stmt.query_map(params![session_id, limit as i64], |row| {
             Ok(ConversationExchange {
                 query: row.get(0)?,
-                response_type: row.get(1)?,
+                response_type: ConversationResponseKind::from(row.get::<_, String>(1)?),
                 response: row.get(2)?,
                 explanation: row.get(3)?,
                 result_exit_code: row.get(4)?,
@@ -1557,12 +1558,11 @@ impl Db {
         );
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if let Some(exe) = executable_filter.map(normalize_executable_name) {
-            if !exe.is_empty() {
+        if let Some(exe) = executable_filter.map(normalize_executable_name)
+            && !exe.is_empty() {
                 sql.push_str(" AND ce.executable = ?");
                 params_vec.push(Box::new(exe));
             }
-        }
 
         if let Some(entity_ty) = entity_type_filter.map(|s| s.trim().to_ascii_lowercase()) {
             if entity_ty == "machine" {
@@ -2066,14 +2066,13 @@ impl Db {
             })?;
             let mut results: Vec<HistoryMatch> = rows.collect::<Result<_, _>>()?;
 
-            if let Some(pattern) = regex_pattern {
-                if let Ok(re) = regex::Regex::new(pattern) {
+            if let Some(pattern) = regex_pattern
+                && let Ok(re) = regex::Regex::new(pattern) {
                     results.retain(|r| {
                         re.is_match(&r.command)
                             || r.output.as_deref().is_some_and(|o| re.is_match(o))
                     });
                 }
-            }
 
             return Ok(results);
         }
@@ -2515,11 +2514,10 @@ impl Db {
 
         // Heuristics
         let mut decay_status = "OK".to_string();
-        if let Some(ts) = Self::parse_sqlite_datetime(&last_decay_at) {
-            if (chrono::Utc::now() - ts).num_hours() > 48 {
+        if let Some(ts) = Self::parse_sqlite_datetime(&last_decay_at)
+            && (chrono::Utc::now() - ts).num_hours() > 48 {
                 decay_status = "WARN: last decay > 48h ago".into();
             }
-        }
         let mut reflection_status = "OK".to_string();
         if reflection_runs == 0 && stats.episodic_count > 100 {
             reflection_status = "WARN: no reflections and episodic>100".into();
@@ -2706,10 +2704,74 @@ pub struct OtherSessionSummary {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(into = "String", from = "String")]
+pub enum ConversationResponseKind {
+    Chat,
+    Command,
+    Other(String),
+}
+
+impl ConversationResponseKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Chat => "chat",
+            Self::Command => "command",
+            Self::Other(value) => value.as_str(),
+        }
+    }
+
+    pub fn is_command(&self) -> bool {
+        matches!(self, Self::Command)
+    }
+}
+
+impl From<&str> for ConversationResponseKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "chat" | "answer" => Self::Chat,
+            "command" => Self::Command,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for ConversationResponseKind {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "chat" | "answer" => Self::Chat,
+            "command" => Self::Command,
+            _ => Self::Other(value),
+        }
+    }
+}
+
+impl From<ConversationResponseKind> for String {
+    fn from(value: ConversationResponseKind) -> Self {
+        match value {
+            ConversationResponseKind::Chat => "chat".to_string(),
+            ConversationResponseKind::Command => "command".to_string(),
+            ConversationResponseKind::Other(other) => other,
+        }
+    }
+}
+
+impl PartialEq<&str> for ConversationResponseKind {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for ConversationResponseKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConversationExchange {
     pub query: String,
-    pub response_type: String,
+    pub response_type: ConversationResponseKind,
     pub response: String,
     pub explanation: Option<String>,
     pub result_exit_code: Option<i32>,
@@ -2730,8 +2792,8 @@ impl ConversationExchange {
     pub fn to_assistant_message(&self, tool_id: &str) -> crate::provider::Message {
         use crate::provider::{ContentBlock, Message, Role};
 
-        match self.response_type.as_str() {
-            "command" => {
+        match self.response_type {
+            ConversationResponseKind::Command => {
                 let input = serde_json::json!({
                     "command": self.response,
                     "explanation": self.explanation
@@ -2765,12 +2827,13 @@ impl ConversationExchange {
     pub fn to_tool_result_message(&self, tool_id: &str) -> crate::provider::Message {
         use crate::provider::{ContentBlock, Message, Role};
 
-        let tool_name = match self.response_type.as_str() {
-            "command" => "command",
-            _ => "chat",
+        let tool_name = if self.response_type.is_command() {
+            "command"
+        } else {
+            "chat"
         };
-        let mut raw_content = match self.response_type.as_str() {
-            "command" => format!("Command prefilled: {}", self.response),
+        let mut raw_content = match self.response_type {
+            ConversationResponseKind::Command => format!("Command prefilled: {}", self.response),
             _ => self.response.clone(),
         };
         if let Some(code) = &self.result_exit_code {
@@ -3002,11 +3065,10 @@ fn normalize_host_token(token: &str) -> Option<String> {
     }
 
     // host:port (but keep IPv6 literals intact)
-    if let Some((h, port)) = host.rsplit_once(':') {
-        if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
+    if let Some((h, port)) = host.rsplit_once(':')
+        && !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) {
             host = h;
         }
-    }
 
     let host = host.trim_matches('.');
     if host.is_empty() {
@@ -3048,7 +3110,7 @@ fn is_hostname_like(value: &str) -> bool {
 #[cfg(all(test, not(any())))]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use crate::test_support::EnvVarGuard;
 
     type UsageRow = (
         String,
@@ -3062,39 +3124,6 @@ mod tests {
 
     fn test_db() -> Db {
         Db::open_in_memory().expect("in-memory db")
-    }
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
     }
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
@@ -6585,7 +6614,7 @@ mod tests {
     fn test_conversation_exchange_to_user_message() {
         let exchange = ConversationExchange {
             query: "what is rust".to_string(),
-            response_type: "chat".to_string(),
+            response_type: "chat".into(),
             response: "A systems language".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -6603,10 +6632,18 @@ mod tests {
     }
 
     #[test]
+    fn test_conversation_response_kind_preserves_unknown_variant() {
+        let kind: ConversationResponseKind = serde_json::from_str("\"assistant_note\"").unwrap();
+        assert_eq!(kind.as_str(), "assistant_note");
+        assert!(!kind.is_command());
+        assert_eq!(serde_json::to_string(&kind).unwrap(), "\"assistant_note\"");
+    }
+
+    #[test]
     fn test_conversation_exchange_to_assistant_message_command() {
         let exchange = ConversationExchange {
             query: "build it".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "cargo build".to_string(),
             explanation: Some("builds the project".to_string()),
             result_exit_code: None,
@@ -6630,7 +6667,7 @@ mod tests {
     fn test_conversation_exchange_to_assistant_message_chat() {
         let exchange = ConversationExchange {
             query: "explain".to_string(),
-            response_type: "chat".to_string(),
+            response_type: "chat".into(),
             response: "here is the explanation".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -6651,7 +6688,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_command_with_result() {
         let exchange = ConversationExchange {
             query: "run tests".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "cargo test".to_string(),
             explanation: None,
             result_exit_code: Some(0),
@@ -6681,7 +6718,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_command_no_output() {
         let exchange = ConversationExchange {
             query: "deploy".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "kubectl apply".to_string(),
             explanation: None,
             result_exit_code: Some(1),
@@ -6702,7 +6739,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_chat() {
         let exchange = ConversationExchange {
             query: "hi".to_string(),
-            response_type: "chat".to_string(),
+            response_type: "chat".into(),
             response: "hello there".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -6723,7 +6760,7 @@ mod tests {
     fn test_conversation_exchange_to_assistant_command_no_explanation() {
         let exchange = ConversationExchange {
             query: "list".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "ls".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -9090,7 +9127,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_command_no_result() {
         let exchange = ConversationExchange {
             query: "do something".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "echo hi".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -9111,7 +9148,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_chat_no_result() {
         let exchange = ConversationExchange {
             query: "hello".to_string(),
-            response_type: "chat".to_string(),
+            response_type: "chat".into(),
             response: "hi there".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -9489,7 +9526,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_command_with_exit_no_output() {
         let exchange = ConversationExchange {
             query: "check".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "test -f file.txt".to_string(),
             explanation: None,
             result_exit_code: Some(1),
@@ -9810,7 +9847,7 @@ mod tests {
     fn test_conversation_exchange_to_tool_result_chat_with_exit_code() {
         let exchange = ConversationExchange {
             query: "q".to_string(),
-            response_type: "chat".to_string(),
+            response_type: "chat".into(),
             response: "some response".to_string(),
             explanation: None,
             result_exit_code: Some(0),
@@ -10821,7 +10858,7 @@ mod tests {
     fn test_conversation_exchange_to_user_message_preserves_content() {
         let exchange = ConversationExchange {
             query: "multi line\nquery\ntext".to_string(),
-            response_type: "chat".to_string(),
+            response_type: "chat".into(),
             response: "resp".to_string(),
             explanation: None,
             result_exit_code: None,
@@ -10841,7 +10878,7 @@ mod tests {
     fn test_conversation_exchange_to_assistant_message_command_empty_explanation() {
         let exchange = ConversationExchange {
             query: "do it".to_string(),
-            response_type: "command".to_string(),
+            response_type: "command".into(),
             response: "rm -rf /tmp/junk".to_string(),
             explanation: Some("".to_string()),
             result_exit_code: None,

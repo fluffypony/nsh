@@ -82,3 +82,55 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
         Ok(key)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{decrypt_secret, encrypt_secret};
+    use crate::test_support::EnvVarGuard;
+    use serial_test::serial;
+
+    fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        (home, home_guard, xdg_config_guard, xdg_data_guard)
+    }
+
+    #[test]
+    #[serial]
+    fn encrypt_secret_round_trips_and_creates_vault_key() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+        std::fs::create_dir_all(home.path().join(".nsh")).unwrap();
+
+        let ciphertext = encrypt_secret("super-secret-value").unwrap();
+        let key_path = home.path().join(".nsh").join("vault.key");
+
+        assert!(key_path.exists());
+        assert_eq!(std::fs::read(&key_path).unwrap().len(), 32);
+        assert_ne!(ciphertext, "super-secret-value");
+        assert_eq!(decrypt_secret(&ciphertext).unwrap(), "super-secret-value");
+    }
+
+    #[test]
+    #[serial]
+    fn encrypt_secret_reuses_existing_key() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+        let nsh_dir = home.path().join(".nsh");
+        let key_path = nsh_dir.join("vault.key");
+        std::fs::create_dir_all(&nsh_dir).unwrap();
+        let key = [7u8; 32];
+        std::fs::write(&key_path, key).unwrap();
+
+        let ciphertext = encrypt_secret("seeded-key").unwrap();
+
+        assert_eq!(std::fs::read(&key_path).unwrap(), key);
+        assert_eq!(decrypt_secret(&ciphertext).unwrap(), "seeded-key");
+    }
+
+    #[test]
+    fn decrypt_secret_rejects_too_short_payload() {
+        let err = decrypt_secret("aabbccdd").unwrap_err();
+        assert!(err.to_string().contains("too short"));
+    }
+}

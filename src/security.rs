@@ -387,11 +387,10 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
             }
         }
         "mv" => {
-            if let Some(last) = rest.last() {
-                if is_dangerous_target(last) {
+            if let Some(last) = rest.last()
+                && is_dangerous_target(last) {
                     return (RiskLevel::Elevated, Some("move to critical path"));
                 }
-            }
             (RiskLevel::Safe, None)
         }
         _ => (RiskLevel::Safe, None),
@@ -575,10 +574,6 @@ pub fn assess_memory_tool_call(
             let caption = input["caption_query"].as_str().unwrap_or("");
             if caption.is_empty() {
                 return Err("retrieve_secret requires a non-empty caption_query".into());
-            }
-            if _conversation.is_empty() {
-                // Daemon-side calls do not have conversation context; enforce field-level validation only.
-                return Ok(());
             }
             // Require evidence that the user explicitly asked for a secret/credential
             let user_requested = _conversation.iter().any(|msg| {

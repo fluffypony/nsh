@@ -140,11 +140,10 @@ impl McpServer {
                     .error_for_status()?;
 
                 // Capture session ID
-                if let Some(sid) = resp.headers().get("mcp-session-id") {
-                    if let Ok(s) = sid.to_str() {
+                if let Some(sid) = resp.headers().get("mcp-session-id")
+                    && let Ok(s) = sid.to_str() {
                         *session_id = Some(s.to_string());
                     }
-                }
 
                 let content_type = resp
                     .headers()
@@ -183,8 +182,7 @@ impl McpServer {
                                         }
                                         if let Ok(resp) =
                                             serde_json::from_str::<JsonRpcResponse>(data)
-                                        {
-                                            if resp.id.is_some() {
+                                            && resp.id.is_some() {
                                                 if let Some(err) = resp.error {
                                                     anyhow::bail!(
                                                         "MCP error {}: {}",
@@ -196,7 +194,6 @@ impl McpServer {
                                                     .result
                                                     .unwrap_or(serde_json::Value::Null));
                                             }
-                                        }
                                     }
                                 }
                             }
@@ -272,11 +269,10 @@ async fn read_stdio_response(
         if trimmed.is_empty() {
             continue;
         }
-        if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
-            if resp.id == Some(expected_id) {
+        if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed)
+            && resp.id == Some(expected_id) {
                 return Ok(resp);
             }
-        }
     }
 }
 
@@ -312,7 +308,7 @@ impl McpClient {
         let timeout = Duration::from_secs(config.timeout_seconds);
         let transport_type = config.effective_transport();
 
-        let transport = match transport_type.as_str() {
+        let transport = match transport_type {
             "http" => {
                 let url = config
                     .url
@@ -329,8 +325,8 @@ impl McpClient {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 if let Some(tok) = &config.bearer_token {
-                    let value = if tok.starts_with('$') {
-                        std::env::var(&tok[1..]).unwrap_or_default()
+                    let value = if let Some(env_var) = tok.strip_prefix('$') {
+                        std::env::var(env_var).unwrap_or_default()
                     } else {
                         tok.clone()
                     };
@@ -439,12 +435,11 @@ impl McpClient {
                 // Apply disable/rename filters from config if available
                 let (mut disabled, mut rename): (Vec<String>, HashMap<String, String>) =
                     (Vec::new(), HashMap::new());
-                if let Some(cfg) = crate::config::Config::load().ok().map(|c| c.mcp.servers) {
-                    if let Some(sc) = cfg.get(server_name) {
+                if let Some(cfg) = crate::config::Config::load().ok().map(|c| c.mcp.servers)
+                    && let Some(sc) = cfg.get(server_name) {
                         disabled = sc.disable_tools.clone();
                         rename = sc.rename_tools.clone();
                     }
-                }
                 if disabled.iter().any(|s| {
                     if s.is_empty() {
                         return false;

@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
 use crate::provider::*;
@@ -20,6 +21,11 @@ pub struct OpenAICompatProviderConfig {
     pub extra_headers: Vec<(String, String)>,
     pub timeout_seconds: u64,
     pub debug_provider_name: String,
+}
+
+struct OpenAITransportResponse {
+    response: reqwest::Response,
+    debug_path: Option<PathBuf>,
 }
 
 impl OpenAICompatProvider {
@@ -65,11 +71,10 @@ impl OpenAICompatProvider {
         }
 
         if !tools.is_empty() {
-            if anthropic {
-                if let Some(last) = tools.last_mut() {
+            if anthropic
+                && let Some(last) = tools.last_mut() {
                     last["cache_control"] = json!({"type": "ephemeral"});
                 }
-            }
             body["tools"] = json!(tools);
         }
 
@@ -97,13 +102,12 @@ impl OpenAICompatProvider {
         }
 
         // Optional native web search tool hint for OpenAI endpoints (non-critical)
-        if self.base_url.contains("api.openai.com") {
-            if caps.supports_web_search {
+        if self.base_url.contains("api.openai.com")
+            && caps.supports_web_search {
                 // Provide a hint via extra_body if caller passed a tools array; noop otherwise
                 // This is intentionally non-fatal and may be ignored by endpoints that don't support it.
                 // body["tools"] may already exist; do not mutate structure significantly here.
             }
-        }
 
         if let Some(serde_json::Value::Object(map)) = &request.extra_body {
             for (k, v) in map {
@@ -136,6 +140,78 @@ impl OpenAICompatProvider {
         }
         req
     }
+
+    async fn record_error_response(
+        &self,
+        response: reqwest::Response,
+        label: &str,
+        debug_path: Option<&Path>,
+    ) -> anyhow::Error {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if let Some(path) = debug_path {
+            crate::debug_io::append(
+                path,
+                "raw_provider_response",
+                &format!("status={status}\n{text}"),
+            );
+        }
+        anyhow::anyhow!("API error ({label} {status}): {text}")
+    }
+
+    async fn send_transport_request(
+        &self,
+        body: serde_json::Value,
+        model: &str,
+        fallback_log_label: &str,
+    ) -> anyhow::Result<OpenAITransportResponse> {
+        let debug_path = crate::debug_io::begin(&self.debug_provider_name, &body);
+        let response = self.build_http_request(&body, model).send().await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(OpenAITransportResponse {
+                response,
+                debug_path,
+            });
+        }
+
+        if is_retryable(status)
+            && let Some(fallback) = &self.fallback_model {
+                tracing::warn!("Primary failed ({status}), {fallback_log_label}: {fallback}");
+                let fallback_model =
+                    crate::provider::routing::model_name_for_transport(fallback, &self.base_url);
+                let mut fallback_body = body.clone();
+                fallback_body["model"] = json!(&fallback_model);
+                let fallback_response = self
+                    .build_http_request(&fallback_body, &fallback_model)
+                    .send()
+                    .await?;
+                if fallback_response.status().is_success() {
+                    return Ok(OpenAITransportResponse {
+                        response: fallback_response,
+                        debug_path,
+                    });
+                }
+                return Err(self
+                    .record_error_response(fallback_response, "fallback", debug_path.as_deref())
+                    .await);
+            }
+
+        Err(self
+            .record_error_response(response, "primary", debug_path.as_deref())
+            .await)
+    }
+
+    fn append_json_debug(&self, debug_path: Option<&Path>, response_json: &serde_json::Value) {
+        if let Some(path) = debug_path {
+            crate::debug_io::append(
+                path,
+                "raw_provider_response",
+                &serde_json::to_string_pretty(response_json)
+                    .unwrap_or_else(|_| response_json.to_string()),
+            );
+        }
+    }
 }
 
 /// Read the CLIProxyAPI sidecar's local base URL or fall back to 8317.
@@ -157,64 +233,14 @@ impl LlmProvider for OpenAICompatProvider {
         let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(false);
-        let debug_path = crate::debug_io::begin(&self.debug_provider_name, &body);
-        let resp = self.build_http_request(&body, &model).send().await?;
-        let status = resp.status();
-
-        if !status.is_success() {
-            if is_retryable(status) {
-                if let Some(fallback) = &self.fallback_model {
-                    tracing::warn!("Primary model failed ({status}), trying fallback: {fallback}");
-                    let mut fb = body.clone();
-                    let fallback_model = crate::provider::routing::model_name_for_transport(
-                        fallback,
-                        &self.base_url,
-                    );
-                    fb["model"] = json!(&fallback_model);
-                    let resp2 = self.build_http_request(&fb, &fallback_model).send().await?;
-                    let status2 = resp2.status();
-                    if !status2.is_success() {
-                        let text = resp2.text().await.unwrap_or_default();
-                        if let Some(path) = &debug_path {
-                            crate::debug_io::append(
-                                path,
-                                "raw_provider_response",
-                                &format!("status={status2}\n{text}"),
-                            );
-                        }
-                        anyhow::bail!("API error (fallback {status2}): {text}");
-                    }
-                    let response_json: serde_json::Value = resp2.json().await?;
-                    if let Some(path) = &debug_path {
-                        crate::debug_io::append(
-                            path,
-                            "raw_provider_response",
-                            &serde_json::to_string_pretty(&response_json)
-                                .unwrap_or_else(|_| response_json.to_string()),
-                        );
-                    }
-                    return parse_openai_response(&response_json);
-                }
-            }
-            let text = resp.text().await.unwrap_or_default();
-            if let Some(path) = &debug_path {
-                crate::debug_io::append(
-                    path,
-                    "raw_provider_response",
-                    &format!("status={status}\n{text}"),
-                );
-            }
-            anyhow::bail!("API error ({status}): {text}");
-        }
-        let response_json: serde_json::Value = resp.json().await?;
-        if let Some(path) = &debug_path {
-            crate::debug_io::append(
-                path,
-                "raw_provider_response",
-                &serde_json::to_string_pretty(&response_json)
-                    .unwrap_or_else(|_| response_json.to_string()),
-            );
-        }
+        let OpenAITransportResponse {
+            response,
+            debug_path,
+        } = self
+            .send_transport_request(body, &model, "trying fallback")
+            .await?;
+        let response_json: serde_json::Value = response.json().await?;
+        self.append_json_debug(debug_path.as_deref(), &response_json);
         parse_openai_response(&response_json)
     }
 
@@ -225,48 +251,13 @@ impl LlmProvider for OpenAICompatProvider {
         let model = request.model.clone();
         let mut body = self.build_request_body(&request);
         body["stream"] = json!(true);
-        let debug_path = crate::debug_io::begin(&self.debug_provider_name, &body);
-
-        let resp = self.build_http_request(&body, &model).send().await?;
-        let status = resp.status();
-
-        if !status.is_success() {
-            if is_retryable(status) {
-                if let Some(fallback) = &self.fallback_model {
-                    tracing::warn!("Primary failed ({status}), stream fallback: {fallback}");
-                    let mut fb = body.clone();
-                    let fallback_model = crate::provider::routing::model_name_for_transport(
-                        fallback,
-                        &self.base_url,
-                    );
-                    fb["model"] = json!(&fallback_model);
-                    let resp2 = self.build_http_request(&fb, &fallback_model).send().await?;
-                    let status2 = resp2.status();
-                    if !status2.is_success() {
-                        let text = resp2.text().await.unwrap_or_default();
-                        if let Some(path) = &debug_path {
-                            crate::debug_io::append(
-                                path,
-                                "raw_provider_response",
-                                &format!("status={status2}\n{text}"),
-                            );
-                        }
-                        anyhow::bail!("API error (fallback {status2}): {text}");
-                    }
-                    return spawn_openai_stream(resp2, debug_path);
-                }
-            }
-            let text = resp.text().await.unwrap_or_default();
-            if let Some(path) = &debug_path {
-                crate::debug_io::append(
-                    path,
-                    "raw_provider_response",
-                    &format!("status={status}\n{text}"),
-                );
-            }
-            anyhow::bail!("API error ({status}): {text}");
-        }
-        spawn_openai_stream(resp, debug_path)
+        let OpenAITransportResponse {
+            response,
+            debug_path,
+        } = self
+            .send_transport_request(body, &model, "stream fallback")
+            .await?;
+        spawn_openai_stream(response, debug_path)
     }
 }
 
@@ -2143,19 +2134,17 @@ pub fn spawn_openai_stream(
                 crate::debug_io::append(path, "raw_provider_response", &event.data);
             }
 
-            if generation_id.is_none() {
-                if let Some(id) = chunk["id"].as_str() {
+            if generation_id.is_none()
+                && let Some(id) = chunk["id"].as_str() {
                     let _ = tx.send(StreamEvent::GenerationId(id.to_string())).await;
                     generation_id = Some(id.to_string());
                 }
-            }
 
             let delta = &chunk["choices"][0]["delta"];
-            if let Some(content) = delta["content"].as_str() {
-                if !content.is_empty() {
+            if let Some(content) = delta["content"].as_str()
+                && !content.is_empty() {
                     let _ = tx.send(StreamEvent::TextDelta(content.to_string())).await;
                 }
-            }
             if let Some(tool_calls) = delta["tool_calls"].as_array() {
                 for tc in tool_calls {
                     let idx = tc["index"].as_u64().unwrap_or(0) as usize;
@@ -2170,11 +2159,10 @@ pub fn spawn_openai_stream(
                             let _ = tx.send(StreamEvent::ToolUseStart { id, name }).await;
                         }
                     }
-                    if let Some(args) = tc["function"]["arguments"].as_str() {
-                        if !args.is_empty() {
+                    if let Some(args) = tc["function"]["arguments"].as_str()
+                        && !args.is_empty() {
                             let _ = tx.send(StreamEvent::ToolUseDelta(args.to_string())).await;
                         }
-                    }
                 }
             }
             if chunk["choices"][0]["finish_reason"].as_str().is_some() {

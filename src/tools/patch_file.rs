@@ -4,26 +4,10 @@ use crate::tools::write_file::{
 };
 use std::io::{self, Write};
 #[cfg(test)]
+use crate::tools::write_file::trash_dir;
+#[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
-
-#[cfg(test)]
-fn trash_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().unwrap().join(".Trash")
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        #[cfg(target_os = "windows")]
-        {
-            return dirs::data_local_dir().unwrap().join("nsh").join("trash");
-        }
-        dirs::data_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap().join(".local/share"))
-            .join("Trash/files")
-    }
-}
 
 #[cfg(test)]
 fn is_root() -> bool {
@@ -112,7 +96,7 @@ pub fn execute(
         raw_path,
         search,
         replace,
-        &config.tools.sensitive_file_access,
+        config.tools.sensitive_file_access.as_str(),
     ) {
         Ok(p) => p,
         Err(e) => return Ok(Some(e.to_string())),
@@ -207,41 +191,8 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
+    use crate::test_support::EnvVarGuard;
     use tempfile::NamedTempFile;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
         let home = tempfile::tempdir().unwrap();
@@ -710,6 +661,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_execute_sensitive_path_blocked() {
         let home = dirs::home_dir().unwrap();
         let input = serde_json::json!({
@@ -720,7 +672,10 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("blocked"));
+        let message = result.expect("sensitive path should return an error message");
+        assert!(
+            message.contains("blocked"),
+            "expected blocked sensitive-path message, got: {message}"
+        );
     }
 }

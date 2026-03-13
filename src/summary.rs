@@ -72,18 +72,7 @@ pub async fn generate_llm_summary(
         request
     };
     let response = provider.complete(request).await?;
-    let text = response
-        .content
-        .iter()
-        .filter_map(|b| {
-            if let crate::provider::ContentBlock::Text { text } = b {
-                Some(text.as_str())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("");
+    let text = crate::provider::message_text_content(&response);
     if text.trim().is_empty() {
         anyhow::bail!("empty summary response");
     }

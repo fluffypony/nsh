@@ -503,7 +503,7 @@ impl DbAccess for DaemonDb {
                     .get("response_type")
                     .and_then(|x| x.as_str())
                     .unwrap_or_default()
-                    .to_string(),
+                    .into(),
                 response: v
                     .get("response")
                     .and_then(|x| x.as_str())
@@ -694,7 +694,7 @@ impl DbAccess for DaemonDb {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<HistoryMatch>> {
-        let data = match self.request(DaemonRequest::SearchHistoryAdvanced {
+        let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistoryAdvanced {
             fts_query: fts_query.map(str::to_string),
             regex_pattern: regex_pattern.map(str::to_string),
             since: since.map(str::to_string),
@@ -704,13 +704,7 @@ impl DbAccess for DaemonDb {
             session_filter: session_filter.map(str::to_string),
             current_session: current_session.map(str::to_string),
             limit,
-        }) {
-            Ok(d) => Self::data_or_empty(d),
-            Err(e) => {
-                tracing::warn!("search_history_advanced failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
+        })?);
         let arr = data
             .get("results")
             .and_then(|v| v.as_array())
@@ -770,7 +764,7 @@ impl DbAccess for DaemonDb {
         limit: usize,
     ) -> anyhow::Result<Vec<CommandEntityMatch>> {
         let limit = limit.min(200);
-        let data = match self.request(DaemonRequest::SearchCommandEntities {
+        let data = Self::data_or_empty(self.request(DaemonRequest::SearchCommandEntities {
             executable: executable.map(str::to_string),
             entity: entity.map(str::to_string),
             entity_type: entity_type.map(str::to_string),
@@ -779,13 +773,7 @@ impl DbAccess for DaemonDb {
             session_filter: session_filter.map(str::to_string),
             current_session: current_session.map(str::to_string),
             limit,
-        }) {
-            Ok(d) => Self::data_or_empty(d),
-            Err(e) => {
-                tracing::warn!("search_command_entities failed: {e}");
-                return Ok(Vec::new());
-            }
-        };
+        })?);
         let arr = data
             .get("results")
             .and_then(|v| v.as_array())
@@ -846,7 +834,7 @@ impl DbAccess for DaemonDb {
         let data = Self::data_or_empty(self.request(DaemonRequest::InsertConversation {
             session_id: session_id.to_string(),
             query: query.to_string(),
-            response_type: response_type.to_string(),
+            response_type: response_type.into(),
             response: response.to_string(),
             explanation: explanation.map(str::to_string),
             executed,
@@ -977,54 +965,16 @@ impl DbAccess for DaemonDb {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::test_support::EnvVarGuard;
     use crate::memory::types::MemoryType;
     use serial_test::serial;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::path::Path;
 
-    struct EnvVarGuard {
-        key: String,
-        original: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set<K: Into<String>, V: AsRef<str>>(key: K, value: V) -> Self {
-            let key = key.into();
-            let original = std::env::var(&key).ok();
-            unsafe {
-                std::env::set_var(&key, value.as_ref());
-            }
-            Self { key, original }
-        }
-
-        fn remove<K: Into<String>>(key: K) -> Self {
-            let key = key.into();
-            let original = std::env::var(&key).ok();
-            unsafe {
-                std::env::remove_var(&key);
-            }
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.original {
-                unsafe {
-                    std::env::set_var(&self.key, value);
-                }
-            } else {
-                unsafe {
-                    std::env::remove_var(&self.key);
-                }
-            }
-        }
-    }
-
     fn setup_isolated_home() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
         let home = tempfile::tempdir().expect("temp home");
-        let home_guard = EnvVarGuard::set("HOME", home.path().to_string_lossy());
+        let home_guard = EnvVarGuard::set("HOME", home.path());
         let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
         let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
         (home, home_guard, xdg_config_guard, xdg_data_guard)
@@ -1259,7 +1209,7 @@ mod tests {
 
         let request = request_rx.recv().expect("captured request");
         assert_eq!(request["type"], "get_conversations");
-        assert_eq!(request["session"], "sess-1");
+        assert_eq!(request["session_id"], "sess-1");
         assert_eq!(request["limit"], 5);
         assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
         handle.join().expect("join daemon thread");
@@ -1391,6 +1341,40 @@ mod tests {
         assert_eq!(request["session_filter"], "current");
         assert_eq!(request["current_session"], "sess-entity");
         assert_eq!(request["limit"], 12);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn search_history_advanced_propagates_daemon_errors() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (_request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::error("advanced search unavailable"),
+        );
+
+        let db = DaemonDb::new();
+        let err = db
+            .search_history_advanced(None, None, None, None, None, false, None, None, 5)
+            .expect_err("search_history_advanced should propagate daemon errors");
+        assert!(err.to_string().contains("advanced search unavailable"));
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn search_command_entities_propagates_daemon_errors() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (_request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::error("entity search unavailable"),
+        );
+
+        let db = DaemonDb::new();
+        let err = db
+            .search_command_entities(None, None, None, None, None, None, None, 5)
+            .expect_err("search_command_entities should propagate daemon errors");
+        assert!(err.to_string().contains("entity search unavailable"));
         handle.join().expect("join daemon thread");
     }
 

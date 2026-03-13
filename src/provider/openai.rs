@@ -27,8 +27,10 @@ mod tests {
 
     #[test]
     fn build_config_fails_when_openai_not_configured() {
-        let mut provider = crate::config::ProviderConfig::default();
-        provider.openai = None;
+        let provider = crate::config::ProviderConfig {
+            openai: None,
+            ..Default::default()
+        };
         let result = build_openai_compat_config(&provider);
         let err = result.err().expect("should fail when openai is None");
         assert!(err.to_string().contains("OpenAI not configured"));
@@ -36,12 +38,14 @@ mod tests {
 
     #[test]
     fn build_config_uses_default_base_url() {
-        let mut provider = crate::config::ProviderConfig::default();
-        provider.openai = Some(crate::config::ProviderAuth {
-            api_key: Some("test-key".into()),
-            api_key_cmd: None,
-            base_url: None,
-        });
+        let provider = crate::config::ProviderConfig {
+            openai: Some(crate::config::ProviderAuth {
+                api_key: Some("test-key".into()),
+                api_key_cmd: None,
+                base_url: None,
+            }),
+            ..Default::default()
+        };
         let cfg = build_openai_compat_config(&provider).expect("config should build");
         assert_eq!(cfg.base_url, "https://api.openai.com/v1");
         assert_eq!(cfg.debug_provider_name, "openai");

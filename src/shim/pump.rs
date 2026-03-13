@@ -468,11 +468,10 @@ pub fn pump_loop(
     loop {
         if winch_pending.swap(false, Ordering::Relaxed) {
             let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-            if unsafe { libc::ioctl(stdin_raw, libc::TIOCGWINSZ, &mut ws) } == 0 {
-                if let Ok(mut eng) = capture.lock() {
+            if unsafe { libc::ioctl(stdin_raw, libc::TIOCGWINSZ, &mut ws) } == 0
+                && let Ok(mut eng) = capture.lock() {
                     eng.set_size(ws.ws_row, ws.ws_col);
                 }
-            }
         }
 
         let idle = last_activity.elapsed() > Duration::from_secs(5);
@@ -540,14 +539,13 @@ pub fn pump_loop(
                     break;
                 }
 
-                if let (Some(idx), Some(l)) = (legacy_idx, listener.as_ref()) {
-                    if poll_fds[idx].revents().contains(PollFlags::IN) {
+                if let (Some(idx), Some(l)) = (legacy_idx, listener.as_ref())
+                    && poll_fds[idx].revents().contains(PollFlags::IN) {
                         handle_socket_connection(l, &capture);
                     }
-                }
 
-                if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref()) {
-                    if poll_fds[idx].revents().contains(PollFlags::IN) {
+                if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref())
+                    && poll_fds[idx].revents().contains(PollFlags::IN) {
                         handle_daemon_connection(
                             l,
                             &capture,
@@ -556,7 +554,6 @@ pub fn pump_loop(
                             &session_id,
                         );
                     }
-                }
             }
             Err(e) => {
                 if e == rustix::io::Errno::INTR {
@@ -637,8 +634,8 @@ fn handle_io(
                 let _ = write_all(real_stdout, &buf[..n]);
                 *last_activity = Instant::now();
                 let redacting = redact_active_path.exists();
-                if !redacting {
-                    if let Ok(mut eng) = capture.lock() {
+                if !redacting
+                    && let Ok(mut eng) = capture.lock() {
                         eng.process(&buf[..n]);
                         if last_flush.elapsed() >= Duration::from_secs(2) {
                             let text = eng.get_lines(1000);
@@ -649,7 +646,6 @@ fn handle_io(
                             *last_flush = Instant::now();
                         }
                     }
-                }
             }
             Err(e) if e == rustix::io::Errno::INTR || e == rustix::io::Errno::AGAIN => {}
             Err(_) => return true,
@@ -676,55 +672,6 @@ fn handle_io(
 }
 
 #[cfg(unix)]
-fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        let rc = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                &mut cred as *mut _ as *mut libc::c_void,
-                &mut len,
-            )
-        };
-        if rc != 0 {
-            tracing::warn!("Rejecting daemon connection: SO_PEERCRED failed");
-            return false;
-        }
-        if cred.uid != unsafe { libc::getuid() } {
-            tracing::warn!("Rejecting daemon connection from uid {}", cred.uid);
-            return false;
-        }
-    }
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-    {
-        use std::os::fd::AsRawFd;
-        let mut euid: libc::uid_t = 0;
-        let mut egid: libc::gid_t = 0;
-        let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut euid, &mut egid) };
-        if rc != 0 {
-            tracing::warn!("Rejecting daemon connection: getpeereid failed");
-            return false;
-        }
-        if euid != unsafe { libc::getuid() } {
-            tracing::warn!("Rejecting daemon connection from uid {}", euid);
-            return false;
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-    {
-        tracing::warn!(
-            "Peer UID check not implemented for this platform, relying on socket permissions"
-        );
-    }
-    true
-}
-
-#[cfg(unix)]
 fn handle_socket_connection(
     listener: &std::os::unix::net::UnixListener,
     capture: &Mutex<CaptureEngine>,
@@ -732,7 +679,7 @@ fn handle_socket_connection(
     use std::io::Write;
 
     if let Ok((mut stream, _)) = listener.accept() {
-        if !check_peer_uid(&stream) {
+        if !crate::util::check_peer_uid(&stream, true) {
             return;
         }
         stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
@@ -754,7 +701,7 @@ fn handle_daemon_connection(
     const MAX_CONCURRENT: usize = 8;
 
     if let Ok((stream, _)) = listener.accept() {
-        if !check_peer_uid(&stream) {
+        if !crate::util::check_peer_uid(&stream, true) {
             return;
         }
 

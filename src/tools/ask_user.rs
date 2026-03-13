@@ -91,13 +91,11 @@ where
 }
 
 fn resolve_option_selection(input: String, options: Option<&[String]>) -> String {
-    if let Some(opts) = options {
-        if let Ok(num) = input.parse::<usize>() {
-            if num >= 1 && num <= opts.len() {
+    if let Some(opts) = options
+        && let Ok(num) = input.parse::<usize>()
+            && num >= 1 && num <= opts.len() {
                 return opts[num - 1].clone();
             }
-        }
-    }
     input
 }
 

@@ -151,57 +151,19 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             .split_first()
             .ok_or_else(|| anyhow::anyhow!("empty command"))?;
 
-        let mut child = Command::new(exe)
+        let child = Command::new(exe)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-
-        let mut stdout_reader = child.stdout.take().unwrap();
-        let mut stderr_reader = child.stderr.take().unwrap();
-
-        let (tx_out, rx_out) = std::sync::mpsc::channel();
-        let (tx_err, rx_err) = std::sync::mpsc::channel();
-        let redaction_cfg_out = config.redaction.clone();
-        let redaction_cfg_err = config.redaction.clone();
-
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut buf = [0u8; 1024];
-            let mut full = Vec::new();
-            while let Ok(n) = stdout_reader.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                let chunk = String::from_utf8_lossy(&buf[..n]);
-                let redacted = redact::redact_secrets(&chunk, &redaction_cfg_out);
-                eprint!("{redacted}");
-                full.extend_from_slice(&buf[..n]);
-            }
-            let _ = tx_out.send(full);
-        });
-
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut buf = [0u8; 1024];
-            let mut full = Vec::new();
-            while let Ok(n) = stderr_reader.read(&mut buf) {
-                if n == 0 {
-                    break;
-                }
-                let chunk = String::from_utf8_lossy(&buf[..n]);
-                let redacted = redact::redact_secrets(&chunk, &redaction_cfg_err);
-                eprint!("{redacted}");
-                full.extend_from_slice(&buf[..n]);
-            }
-            let _ = tx_err.send(full);
-        });
+        let mut pumped =
+            crate::tools::process_pump::attach_output_pumps(child, &config.redaction, true);
 
         let timeout_secs = config.execution.tool_timeout_seconds.max(30);
         let mut start = std::time::Instant::now();
         let status = loop {
-            match child.try_wait()? {
+            match pumped.child.try_wait()? {
                 Some(status) => break status,
                 None => {
                     if start.elapsed().as_secs() >= timeout_secs {
@@ -211,8 +173,8 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
                         );
                         let _ = std::io::Write::flush(&mut std::io::stderr());
                         if !crate::tools::read_tty_confirmation_default_yes() {
-                            let _ = child.kill();
-                            let _ = child.wait();
+                            let _ = pumped.child.kill();
+                            let _ = pumped.child.wait();
                             return Ok(format!(
                                 "Command timed out after {}s. User cancelled.",
                                 timeout_secs
@@ -226,14 +188,9 @@ pub fn execute(cmd: &str, config: &Config) -> anyhow::Result<String> {
             }
         };
 
-        let stdout_bytes = rx_out.recv().unwrap_or_default();
-        let stderr_bytes = rx_err.recv().unwrap_or_default();
+        let (stdout_str, stderr_str) = pumped.finish();
 
-        (
-            String::from_utf8_lossy(&stdout_bytes).into_owned(),
-            String::from_utf8_lossy(&stderr_bytes).into_owned(),
-            status.code().unwrap_or(-1),
-        )
+        (stdout_str, stderr_str, status.code().unwrap_or(-1))
     };
 
     let max_chars = 8000;

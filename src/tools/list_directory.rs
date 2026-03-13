@@ -1,3 +1,4 @@
+use crate::util::human_size;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,7 +10,6 @@ fn fail(msg: impl Into<String>) -> crate::tools::ToolInvocationOutcome {
     crate::tools::ToolInvocationOutcome::failure(msg)
 }
 
-#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     execute_with_access(input, "block")
 }
@@ -142,18 +142,6 @@ fn relative_display(root: &Path, entry_path: &Path, recursive: bool) -> String {
         .unwrap_or_else(|_| entry_path.to_path_buf())
         .to_string_lossy()
         .to_string()
-}
-
-fn human_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = bytes as f64;
-    for unit in UNITS {
-        if size < 1024.0 {
-            return format!("{size:.0}{unit}");
-        }
-        size /= 1024.0;
-    }
-    format!("{size:.0}PB")
 }
 
 #[cfg(test)]

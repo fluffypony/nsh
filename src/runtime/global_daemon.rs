@@ -25,11 +25,26 @@ fn normalize_memory_type_for_search(
     }
 }
 
-fn parse_memory_json(input: &str) -> serde_json::Value {
-    serde_json::from_str::<serde_json::Value>(input).unwrap_or_else(|_| serde_json::json!({}))
+fn parse_memory_json(input: &str) -> Result<serde_json::Value, String> {
+    serde_json::from_str::<serde_json::Value>(input)
+        .map_err(|error| format!("invalid memory tool JSON: {error}"))
 }
 
 type MemoryTaskSender = mpsc::Sender<MemoryTask>;
+type MemoryRuntimeParts = (
+    crate::config::Config,
+    Arc<crate::memory::MemorySystem>,
+    MemoryQueueGuards,
+    MemoryTaskTracker,
+    MemoryTaskSender,
+    std::thread::JoinHandle<()>,
+);
+type DbWorkerParts = (
+    mpsc::Sender<WriteCommand>,
+    mpsc::Sender<ReadCommand>,
+    std::thread::JoinHandle<()>,
+    Vec<std::thread::JoinHandle<()>>,
+);
 
 enum MemoryQueueDecision {
     Enqueued,
@@ -57,6 +72,131 @@ impl MemoryQueueGuards {
             reflection_pending: Arc::new(AtomicBool::new(false)),
             bootstrap_pending: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MemoryTaskKind {
+    FlushIngestion,
+    IngestBatch,
+    RunReflection,
+    BootstrapScan,
+}
+
+impl MemoryTaskKind {
+    fn from_task(task: &MemoryTask) -> Self {
+        match task {
+            MemoryTask::FlushIngestion => Self::FlushIngestion,
+            MemoryTask::IngestBatch { .. } => Self::IngestBatch,
+            MemoryTask::RunReflection => Self::RunReflection,
+            MemoryTask::BootstrapScan => Self::BootstrapScan,
+        }
+    }
+
+    fn status_key(self) -> &'static str {
+        match self {
+            Self::FlushIngestion => "flush_ingestion",
+            Self::IngestBatch => "ingest_batch",
+            Self::RunReflection => "run_reflection",
+            Self::BootstrapScan => "bootstrap_scan",
+        }
+    }
+
+    fn error_log_key(self) -> &'static str {
+        match self {
+            Self::FlushIngestion => "memory.flush.error",
+            Self::IngestBatch => "memory.ingest.error",
+            Self::RunReflection => "memory.reflection.error",
+            Self::BootstrapScan => "memory.bootstrap.error",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MemoryTaskStatus {
+    state: String,
+    finished_at: Option<String>,
+    error: Option<String>,
+}
+
+impl Default for MemoryTaskStatus {
+    fn default() -> Self {
+        Self {
+            state: "idle".to_string(),
+            finished_at: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct MemoryTaskTracker {
+    flush_ingestion: Arc<Mutex<MemoryTaskStatus>>,
+    ingest_batch: Arc<Mutex<MemoryTaskStatus>>,
+    run_reflection: Arc<Mutex<MemoryTaskStatus>>,
+    bootstrap_scan: Arc<Mutex<MemoryTaskStatus>>,
+}
+
+impl MemoryTaskTracker {
+    fn slot(&self, kind: MemoryTaskKind) -> &Arc<Mutex<MemoryTaskStatus>> {
+        match kind {
+            MemoryTaskKind::FlushIngestion => &self.flush_ingestion,
+            MemoryTaskKind::IngestBatch => &self.ingest_batch,
+            MemoryTaskKind::RunReflection => &self.run_reflection,
+            MemoryTaskKind::BootstrapScan => &self.bootstrap_scan,
+        }
+    }
+
+    fn update(&self, kind: MemoryTaskKind, update: impl FnOnce(&mut MemoryTaskStatus)) {
+        let mut guard = self
+            .slot(kind)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        update(&mut guard);
+    }
+
+    fn mark_running(&self, kind: MemoryTaskKind) {
+        self.update(kind, |status| {
+            status.state = "running".to_string();
+            status.error = None;
+        });
+    }
+
+    fn mark_succeeded(&self, kind: MemoryTaskKind) {
+        self.update(kind, |status| {
+            status.state = "ok".to_string();
+            status.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            status.error = None;
+        });
+    }
+
+    fn mark_failed(&self, kind: MemoryTaskKind, error: String) {
+        self.update(kind, |status| {
+            status.state = "error".to_string();
+            status.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            status.error = Some(error);
+        });
+    }
+
+    fn task_snapshot(&self, kind: MemoryTaskKind) -> serde_json::Value {
+        let guard = self
+            .slot(kind)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        serde_json::json!({
+            "state": guard.state,
+            "finished_at": guard.finished_at,
+            "error": guard.error,
+        })
+    }
+
+    fn snapshot_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "flush_ingestion": self.task_snapshot(MemoryTaskKind::FlushIngestion),
+            "ingest_batch": self.task_snapshot(MemoryTaskKind::IngestBatch),
+            "run_reflection": self.task_snapshot(MemoryTaskKind::RunReflection),
+            "bootstrap_scan": self.task_snapshot(MemoryTaskKind::BootstrapScan),
+        })
     }
 }
 
@@ -99,55 +239,62 @@ fn cleanup_session_artifacts(session_id: &str, info: &SessionInfo) {
     }
 }
 
-pub fn run_global_daemon() -> anyhow::Result<()> {
-    log_daemon("server.lifecycle", "starting global daemon");
-    // Restart cooldown: if we just restarted moments ago, wait a bit to avoid flapping
-    let restart_marker = crate::config::Config::nsh_dir().join("nshd-restart-at");
-    if let Ok(content) = std::fs::read_to_string(&restart_marker) {
-        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(content.trim()) {
-            let age = chrono::Utc::now().signed_duration_since(ts);
+fn apply_restart_cooldown(restart_marker: &std::path::Path) {
+    if let Ok(content) = std::fs::read_to_string(restart_marker) {
+        if let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(content.trim()) {
+            let age = chrono::Utc::now().signed_duration_since(timestamp);
             if age.num_seconds() < 5 {
                 let wait = 5 - age.num_seconds();
                 std::thread::sleep(Duration::from_secs(wait as u64));
             }
         }
-        let _ = std::fs::remove_file(&restart_marker);
+        let _ = std::fs::remove_file(restart_marker);
     }
+}
+
+fn acquire_global_daemon_lock() -> anyhow::Result<Option<std::fs::File>> {
     let lock_path = crate::daemon::global_daemon_lock_path();
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
         .open(&lock_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if ret != 0 {
-            log_daemon(
-                "server.lifecycle",
-                "another daemon already holds lock; exiting",
-            );
-            return Ok(());
-        }
+
+    use std::os::fd::AsRawFd;
+    let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if ret != 0 {
+        log_daemon(
+            "server.lifecycle",
+            "another daemon already holds lock; exiting",
+        );
+        return Ok(None);
     }
 
-    #[cfg(unix)]
+    Ok(Some(lock_file))
+}
+
+fn detach_global_daemon() {
     unsafe {
         libc::setsid();
     }
+}
 
+fn write_global_pid_file() -> anyhow::Result<std::path::PathBuf> {
     let pid_path = crate::daemon::global_daemon_pid_path();
     std::fs::write(&pid_path, std::process::id().to_string())?;
+    Ok(pid_path)
+}
 
+fn bind_global_listener() -> anyhow::Result<(std::path::PathBuf, std::os::unix::net::UnixListener)>
+{
     let socket_path = crate::daemon::global_daemon_socket_path();
     let _ = std::fs::remove_file(&socket_path);
-
-    #[cfg(unix)]
     let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+    Ok((socket_path, listener))
+}
 
+fn open_daemon_datastores() -> anyhow::Result<(crate::db::Db, Vec<crate::db::Db>)> {
     let write_db = crate::db::Db::open()?;
-
     let _ = write_db.cleanup_orphaned_sessions();
     crate::history_import::import_if_needed(&write_db);
     let _ = write_db.backfill_command_entities_if_needed();
@@ -155,32 +302,33 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let read_dbs: Vec<crate::db::Db> = (0..3)
         .filter_map(|_| crate::db::Db::open_readonly().ok())
         .collect();
-
     if read_dbs.is_empty() {
         anyhow::bail!("nshd: failed to open any read-only DB connections");
     }
 
-    // ── Memory system ──────────────────────────────────
+    Ok((write_db, read_dbs))
+}
+
+fn start_memory_runtime() -> anyhow::Result<MemoryRuntimeParts> {
     let config = crate::config::Config::load().unwrap_or_default();
     let db_path = crate::config::Config::nsh_dir().join("nsh.db");
     let memory_queue_guards = MemoryQueueGuards::new();
+    let memory_task_tracker = MemoryTaskTracker::default();
     let memory = Arc::new(
         crate::memory::MemorySystem::open(config.memory.clone(), db_path).unwrap_or_else(|e| {
             log_daemon("memory.init.error", &e.to_string());
-            // Fall back to in-memory (will lose data on restart, but won't crash)
             crate::memory::MemorySystem::open(config.memory.clone(), ":memory:".into())
                 .expect("in-memory MemorySystem must succeed")
         }),
     );
 
-    // Start connectivity monitor (best-effort)
     crate::connectivity::start(&config);
 
-    // Background async thread for LLM-dependent memory operations
     let (memory_tx, memory_rx) = mpsc::channel::<MemoryTask>();
     let memory_for_thread = Arc::clone(&memory);
     let config_for_memory = config.clone();
     let memory_guards_for_thread = memory_queue_guards.clone();
+    let memory_tracker_for_thread = memory_task_tracker.clone();
     let memory_thread = std::thread::Builder::new()
         .name("nshd-memory".into())
         .spawn(move || {
@@ -189,14 +337,34 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                 memory_rx,
                 config_for_memory,
                 memory_guards_for_thread,
+                memory_tracker_for_thread,
             );
         })?;
 
+    Ok((
+        config,
+        memory,
+        memory_queue_guards,
+        memory_task_tracker,
+        memory_tx,
+        memory_thread,
+    ))
+}
+
+fn start_db_worker_threads(
+    write_db: crate::db::Db,
+    read_dbs: Vec<crate::db::Db>,
+    memory: Arc<crate::memory::MemorySystem>,
+    memory_task_tracker: MemoryTaskTracker,
+    memory_tx: MemoryTaskSender,
+    memory_queue_guards: MemoryQueueGuards,
+) -> anyhow::Result<DbWorkerParts> {
     let (write_tx, write_rx) = mpsc::channel::<WriteCommand>();
     let (read_tx, read_rx) = mpsc::channel::<ReadCommand>();
     let read_rx = Arc::new(Mutex::new(read_rx));
 
     let memory_for_writer = Arc::clone(&memory);
+    let memory_tracker_for_writer = memory_task_tracker.clone();
     let memory_tx_for_writer = memory_tx.clone();
     let memory_guards_for_writer = memory_queue_guards.clone();
     let write_thread = std::thread::Builder::new()
@@ -206,6 +374,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
                 write_db,
                 write_rx,
                 memory_for_writer,
+                memory_tracker_for_writer,
                 memory_tx_for_writer,
                 memory_guards_for_writer,
             );
@@ -214,375 +383,398 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let read_threads: Vec<_> = read_dbs
         .into_iter()
         .enumerate()
-        .map(|(i, db)| {
+        .map(|(index, db)| {
             let rx = Arc::clone(&read_rx);
-            let mem = Arc::clone(&memory);
+            let memory = Arc::clone(&memory);
+            let tracker = memory_task_tracker.clone();
             std::thread::Builder::new()
-                .name(format!("nshd-reader-{i}"))
+                .name(format!("nshd-reader-{index}"))
                 .spawn(move || {
-                    run_read_thread(db, rx, mem);
+                    run_read_thread(db, rx, memory, tracker);
                 })
                 .unwrap()
         })
         .collect();
 
-    // Startup maintenance tasks (wire MemorySystem methods to avoid dead code and keep system tidy)
-    if !memory.has_bootstrapped() {
-        if let Err(e) =
-            enqueue_unique_memory_task(&memory_tx, &memory_queue_guards, MemoryTask::BootstrapScan)
+    Ok((write_tx, read_tx, write_thread, read_threads))
+}
+
+fn schedule_startup_memory_maintenance(
+    memory: &crate::memory::MemorySystem,
+    memory_tx: &MemoryTaskSender,
+    memory_queue_guards: &MemoryQueueGuards,
+) {
+    if !memory.has_bootstrapped()
+        && let Err(error) =
+            enqueue_unique_memory_task(memory_tx, memory_queue_guards, MemoryTask::BootstrapScan)
         {
-            tracing::debug!("bootstrap task enqueue failed at startup: {e}");
+            tracing::debug!("bootstrap task enqueue failed at startup: {error}");
         }
-    }
     if memory.should_run_decay() {
         let _ = memory_tx.send(MemoryTask::FlushIngestion);
-        let _ = send_memory_decay_once(&memory);
+        let _ = send_memory_decay_once(memory);
     }
-    if memory.should_run_reflection() {
-        if let Err(e) =
-            enqueue_unique_memory_task(&memory_tx, &memory_queue_guards, MemoryTask::RunReflection)
+    if memory.should_run_reflection()
+        && let Err(error) =
+            enqueue_unique_memory_task(memory_tx, memory_queue_guards, MemoryTask::RunReflection)
         {
-            tracing::debug!("reflection task enqueue failed at startup: {e}");
+            tracing::debug!("reflection task enqueue failed at startup: {error}");
+        }
+}
+
+fn spawn_background_monitors(
+    restart_pending: Arc<AtomicBool>,
+    active_sessions: ActiveSessions,
+) -> anyhow::Result<()> {
+    spawn_system_monitor(restart_pending, active_sessions);
+    spawn_sidecar_update_checker()?;
+    Ok(())
+}
+
+fn spawn_system_monitor(restart_pending: Arc<AtomicBool>, active_sessions: ActiveSessions) {
+    let monitor_exe_path = std::env::current_exe().ok();
+    let monitor_initial_mtime = monitor_exe_path
+        .as_ref()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok());
+    std::thread::spawn(move || {
+        let mut last_skill_pull = std::time::Instant::now();
+        let mut last_prune = std::time::Instant::now();
+        loop {
+            let _ = crate::context::sample_volatile_info();
+            let _ = crate::context::get_semi_dynamic_info();
+            if last_skill_pull.elapsed() > std::time::Duration::from_secs(3600) {
+                last_skill_pull = std::time::Instant::now();
+                if let Some(skills_dir) =
+                    dirs::home_dir().map(|home| home.join(".nsh").join("skills"))
+                    && skills_dir.is_dir()
+                        && let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.join(".git").is_dir() {
+                                    let _ = std::process::Command::new("git")
+                                        .args([
+                                            "-C",
+                                            path.to_string_lossy().as_ref(),
+                                            "pull",
+                                            "--ff-only",
+                                            "-q",
+                                        ])
+                                        .stdin(std::process::Stdio::null())
+                                        .stdout(std::process::Stdio::null())
+                                        .stderr(std::process::Stdio::null())
+                                        .status();
+                                }
+                            }
+                        }
+            }
+            if last_prune.elapsed() > std::time::Duration::from_secs(300) {
+                last_prune = std::time::Instant::now();
+                let cutoff = Instant::now() - Duration::from_secs(600);
+                if let Ok(mut guard) = active_sessions.write() {
+                    let stale: Vec<(String, SessionInfo)> = guard
+                        .iter()
+                        .filter(|(_, info)| info.last_seen < cutoff)
+                        .map(|(session_id, info)| (session_id.clone(), info.clone()))
+                        .collect();
+                    guard.retain(|_, info| info.last_seen >= cutoff);
+                    drop(guard);
+                    for (session_id, info) in stale {
+                        cleanup_session_artifacts(&session_id, &info);
+                    }
+                }
+            }
+            if let Some(ref path) = monitor_exe_path
+                && let Ok(metadata) = std::fs::metadata(path)
+                    && let Ok(mtime) = metadata.modified()
+                        && Some(mtime) != monitor_initial_mtime {
+                            tracing::info!(
+                                "nshd: binary updated on disk, scheduling graceful restart"
+                            );
+                            restart_pending.store(true, Ordering::Relaxed);
+                            break;
+                        }
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    });
+}
+
+fn spawn_sidecar_update_checker() -> anyhow::Result<()> {
+    std::thread::Builder::new()
+        .name("nshd-update-checker".into())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(3600));
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                let mut last_status = String::from("unknown");
+                let mut last_version: Option<String> = None;
+                if let Ok(runtime) = runtime {
+                    let (status, version_opt) = runtime.block_on(async move {
+                        match crate::cliproxyapi::check_for_update().await {
+                            Ok(Some((url, version))) => {
+                                match crate::cliproxyapi::download_and_install(&url, &version).await
+                                {
+                                    Ok(_) => {
+                                        let _ = crate::cliproxyapi::stop_sidecar();
+                                        let _ = crate::cliproxyapi::ensure_running();
+                                        ("updated".to_string(), Some(version))
+                                    }
+                                    Err(_) => ("failed".to_string(), Some(version)),
+                                }
+                            }
+                            Ok(None) => (
+                                "up_to_date".to_string(),
+                                std::fs::read_to_string(crate::cliproxyapi::version_file()).ok(),
+                            ),
+                            Err(_) => (
+                                "error".to_string(),
+                                std::fs::read_to_string(crate::cliproxyapi::version_file()).ok(),
+                            ),
+                        }
+                    });
+                    last_status = status;
+                    last_version = version_opt;
+                }
+
+                if let Ok(db) = crate::db::Db::open() {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let _ = db.set_meta("cliproxyapi_last_update_check", &now);
+                    let _ = db.set_meta("cliproxyapi_last_update_status", &last_status);
+                    if let Some(version) = last_version {
+                        let _ = db.set_meta("cliproxyapi_installed_version", version.trim());
+                    }
+                }
+            }
+        })?;
+    Ok(())
+}
+
+fn run_global_accept_loop(
+    listener: &std::os::unix::net::UnixListener,
+    write_tx: &mpsc::Sender<WriteCommand>,
+    read_tx: &mpsc::Sender<ReadCommand>,
+    active_conns: Arc<AtomicUsize>,
+    active_sessions: ActiveSessions,
+    last_activity: Arc<Mutex<Instant>>,
+    restart_pending: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    const MAX_GLOBAL_CONNS: usize = 32;
+
+    listener.set_nonblocking(true)?;
+    static LAST_RESTART_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+    {
+        let hup_flag = Arc::clone(&restart_pending);
+        signal_hook::flag::register(signal_hook::consts::SIGHUP, hup_flag)?;
+    }
+
+    let mut restart_requested_at: Option<Instant> = None;
+
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if !crate::util::check_peer_uid(&stream, false) {
+                    continue;
+                }
+                if active_conns.load(Ordering::Relaxed) >= MAX_GLOBAL_CONNS {
+                    let _ = write_response(&stream, &DaemonResponse::error("too many connections"));
+                    continue;
+                }
+                active_conns.fetch_add(1, Ordering::Relaxed);
+                *last_activity.lock().unwrap() = Instant::now();
+                let write_tx = write_tx.clone();
+                let read_tx = read_tx.clone();
+                let active_conns = Arc::clone(&active_conns);
+                let last_activity = Arc::clone(&last_activity);
+                let active_sessions = Arc::clone(&active_sessions);
+                std::thread::spawn(move || {
+                    handle_global_connection(stream, write_tx, read_tx, active_sessions);
+                    *last_activity.lock().unwrap() = Instant::now();
+                    active_conns.fetch_sub(1, Ordering::Relaxed);
+                });
+            }
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let idle = last_activity.lock().unwrap().elapsed();
+                if idle > Duration::from_secs(300) {
+                    tracing::info!("nshd: idle timeout, shutting down");
+                    log_daemon("server.lifecycle", "idle timeout reached; shutting down");
+                    break;
+                }
+                if restart_pending.load(Ordering::Relaxed) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let last = LAST_RESTART_EPOCH.load(Ordering::Relaxed);
+                    if now.saturating_sub(last) < 30 {
+                        restart_pending.store(false, Ordering::Relaxed);
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                    if restart_requested_at.is_none() {
+                        restart_requested_at = Some(Instant::now());
+                        log_daemon(
+                            "server.lifecycle",
+                            "restart requested, draining connections...",
+                        );
+                        std::thread::sleep(Duration::from_secs(2));
+                        LAST_RESTART_EPOCH.store(now, Ordering::Relaxed);
+                    }
+                    let drained = active_conns.load(Ordering::Relaxed) == 0;
+                    let timed_out = restart_requested_at
+                        .map(|started| started.elapsed() > Duration::from_secs(10))
+                        .unwrap_or(false);
+                    if drained || timed_out {
+                        if !drained {
+                            log_daemon(
+                                "server.lifecycle",
+                                "drain timeout (10s), force exiting for restart",
+                            );
+                        } else {
+                            log_daemon(
+                                "server.lifecycle",
+                                "all connections drained, exiting for restart",
+                            );
+                        }
+                        break;
+                    }
+                }
+                let restart_marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
+                if restart_marker.exists() {
+                    log_daemon("server.lifecycle", "restart marker detected, shutting down");
+                    restart_pending.store(true, Ordering::Relaxed);
+                    notify_sessions_about_hook_restart(&active_sessions);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                tracing::warn!("nshd: accept error: {error}");
+                log_daemon("server.accept.error", &error.to_string());
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
     }
+
+    Ok(())
+}
+
+fn notify_sessions_about_hook_restart(active_sessions: &ActiveSessions) {
+    let dir = crate::config::Config::nsh_dir();
+    if let Ok(guard) = active_sessions.read() {
+        for (session_id, info) in guard.iter() {
+            if let Some(pid) = info.pid
+                && !pid_alive(pid) {
+                    continue;
+                }
+            if let Some(tty) = &info.tty
+                && !std::path::Path::new(tty).exists() {
+                    continue;
+                }
+            let message = match info.shell.as_deref() {
+                Some("zsh") => "hooks_updated: zsh will auto-reload when idle\n",
+                Some("bash") => "hooks_updated: bash will refresh hooks on next prompt\n",
+                Some("fish") => "hooks_updated: fish auto-reloads hooks\n",
+                _ => "hooks_updated\n",
+            };
+            let _ = std::fs::write(dir.join(format!("nsh_msg_{}", session_id)), message);
+        }
+    }
+}
+
+fn maybe_reexec_global_daemon(
+    restart_pending: &Arc<AtomicBool>,
+    restart_cooldown_marker: &std::path::Path,
+) {
+    if !restart_pending.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let args: Vec<String> = std::env::args().collect();
+    let core_path = crate::config::Config::nsh_dir()
+        .join("bin")
+        .join("nsh-core");
+    let target = if core_path.exists() {
+        core_path
+    } else if let Ok(exe) = std::env::current_exe() {
+        exe
+    } else {
+        let cargo_home = std::env::var("CARGO_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".cargo"));
+        let cargo_nsh = cargo_home.join("bin").join("nsh");
+        if cargo_nsh.exists() {
+            cargo_nsh
+        } else {
+            tracing::error!("cannot find binary for re-exec");
+            return;
+        }
+    };
+    let _ = std::fs::write(restart_cooldown_marker, chrono::Utc::now().to_rfc3339());
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new(&target).args(&args[1..]).exec();
+    tracing::info!("nshd re-exec failed: {err}");
+}
+
+pub fn run_global_daemon() -> anyhow::Result<()> {
+    log_daemon("server.lifecycle", "starting global daemon");
+    let restart_cooldown_marker = crate::config::Config::nsh_dir().join("nshd-restart-at");
+    apply_restart_cooldown(&restart_cooldown_marker);
+
+    let lock_file = match acquire_global_daemon_lock()? {
+        Some(lock_file) => lock_file,
+        None => return Ok(()),
+    };
+    detach_global_daemon();
+
+    let pid_path = write_global_pid_file()?;
+    let (socket_path, listener) = bind_global_listener()?;
+    let (write_db, read_dbs) = open_daemon_datastores()?;
+    let (config, memory, memory_queue_guards, memory_task_tracker, memory_tx, memory_thread) =
+        start_memory_runtime()?;
+    let (write_tx, read_tx, write_thread, read_threads) = start_db_worker_threads(
+        write_db,
+        read_dbs,
+        Arc::clone(&memory),
+        memory_task_tracker.clone(),
+        memory_tx.clone(),
+        memory_queue_guards.clone(),
+    )?;
+    schedule_startup_memory_maintenance(&memory, &memory_tx, &memory_queue_guards);
 
     let active_conns = Arc::new(AtomicUsize::new(0));
     let active_sessions: ActiveSessions =
         std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-    const MAX_GLOBAL_CONNS: usize = 32;
-
     let last_activity = Arc::new(Mutex::new(Instant::now()));
-
-    // Shared restart flag (SIGHUP and monitor thread can set this)
     let restart_pending = Arc::new(AtomicBool::new(false));
 
-    // Spawn system monitor thread — samples CPU/memory every 10 seconds. Also watches binary mtime.
-    {
-        let monitor_exe_path = std::env::current_exe().ok();
-        let monitor_initial_mtime = monitor_exe_path
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .and_then(|m| m.modified().ok());
-        let restart_flag = Arc::clone(&restart_pending);
-        let sessions_for_monitor = std::sync::Arc::clone(&active_sessions);
-        std::thread::spawn(move || {
-            let mut last_skill_pull = std::time::Instant::now();
-            let mut last_prune = std::time::Instant::now();
-            loop {
-                let _ = crate::context::sample_volatile_info();
-                let _ = crate::context::get_semi_dynamic_info();
-                // Periodically update skills by pulling latest changes (hourly)
-                if last_skill_pull.elapsed() > std::time::Duration::from_secs(3600) {
-                    last_skill_pull = std::time::Instant::now();
-                    if let Some(skills_dir) =
-                        dirs::home_dir().map(|h| h.join(".nsh").join("skills"))
-                    {
-                        if skills_dir.is_dir() {
-                            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
-                                for entry in entries.flatten() {
-                                    let path = entry.path();
-                                    if path.join(".git").is_dir() {
-                                        let _ = std::process::Command::new("git")
-                                            .args([
-                                                "-C",
-                                                path.to_string_lossy().as_ref(),
-                                                "pull",
-                                                "--ff-only",
-                                                "-q",
-                                            ])
-                                            .stdin(std::process::Stdio::null())
-                                            .stdout(std::process::Stdio::null())
-                                            .stderr(std::process::Stdio::null())
-                                            .status();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Prune inactive sessions every 5 minutes
-                if last_prune.elapsed() > std::time::Duration::from_secs(300) {
-                    last_prune = std::time::Instant::now();
-                    let cutoff = Instant::now() - Duration::from_secs(600);
-                    if let Ok(mut guard) = sessions_for_monitor.write() {
-                        // Collect stale before retaining for cleanup
-                        let stale: Vec<(String, SessionInfo)> = guard
-                            .iter()
-                            .filter(|(_, info)| info.last_seen < cutoff)
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-                        guard.retain(|_, info| info.last_seen >= cutoff);
-                        drop(guard);
-                        for (sid, info) in stale {
-                            cleanup_session_artifacts(&sid, &info);
-                        }
-                    }
-                }
-                if let Some(ref path) = monitor_exe_path {
-                    if let Ok(meta) = std::fs::metadata(path) {
-                        if let Ok(mtime) = meta.modified() {
-                            if Some(mtime) != monitor_initial_mtime {
-                                tracing::info!(
-                                    "nshd: binary updated on disk, scheduling graceful restart"
-                                );
-                                restart_flag.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
-                    }
-                }
-                std::thread::sleep(Duration::from_secs(10));
-            }
-        });
-    }
-
-    // ── Hourly update checker for sidecar ─────────────────────────────────
-    {
-        std::thread::Builder::new()
-            .name("nshd-update-checker".into())
-            .spawn(|| {
-                loop {
-                    std::thread::sleep(Duration::from_secs(3600));
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build();
-                    let mut last_status = String::from("unknown");
-                    let mut last_version: Option<String> = None;
-                    if let Ok(rt) = rt {
-                        let (status, version_opt) = rt.block_on(async move {
-                            match crate::cliproxyapi::check_for_update().await {
-                                Ok(Some((url, version))) => {
-                                    match crate::cliproxyapi::download_and_install(&url, &version)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            let _ = crate::cliproxyapi::stop_sidecar();
-                                            let _ = crate::cliproxyapi::ensure_running();
-                                            ("updated".to_string(), Some(version))
-                                        }
-                                        Err(_) => ("failed".to_string(), Some(version)),
-                                    }
-                                }
-                                Ok(None) => (
-                                    "up_to_date".to_string(),
-                                    std::fs::read_to_string(crate::cliproxyapi::version_file())
-                                        .ok(),
-                                ),
-                                Err(_) => (
-                                    "error".to_string(),
-                                    std::fs::read_to_string(crate::cliproxyapi::version_file())
-                                        .ok(),
-                                ),
-                            }
-                        });
-                        last_status = status;
-                        last_version = version_opt;
-                    }
-
-                    // Record results in DB meta if possible, avoiding any migrations
-                    if let Ok(db) = crate::db::Db::open() {
-                        let now = chrono::Utc::now().to_rfc3339();
-                        let _ = db.set_meta("cliproxyapi_last_update_check", &now);
-                        let _ = db.set_meta("cliproxyapi_last_update_status", &last_status);
-                        if let Some(v) = last_version {
-                            let _ = db.set_meta("cliproxyapi_installed_version", v.trim());
-                        }
-                    }
-                }
-            })?;
-    }
-
-    #[cfg(unix)]
-    {
-        listener.set_nonblocking(true)?;
-        // Debounce restarts triggered via SIGHUP or monitor
-        static LAST_RESTART_EPOCH: AtomicU64 = AtomicU64::new(0);
-
-        // Handle SIGHUP for graceful restart
-        {
-            let hup_flag = Arc::clone(&restart_pending);
-            signal_hook::flag::register(signal_hook::consts::SIGHUP, hup_flag)?;
-        }
-
-        let mut restart_requested_at: Option<Instant> = None;
-
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    if !check_peer_uid(&stream) {
-                        continue;
-                    }
-                    if active_conns.load(Ordering::Relaxed) >= MAX_GLOBAL_CONNS {
-                        let _ =
-                            write_response(&stream, &DaemonResponse::error("too many connections"));
-                        continue;
-                    }
-                    active_conns.fetch_add(1, Ordering::Relaxed);
-                    *last_activity.lock().unwrap() = Instant::now();
-                    let wt = write_tx.clone();
-                    let rt = read_tx.clone();
-                    let ac = Arc::clone(&active_conns);
-                    let la = Arc::clone(&last_activity);
-                    let sessions_ref = std::sync::Arc::clone(&active_sessions);
-                    std::thread::spawn(move || {
-                        // Track sessions seen in this connection when appropriate
-                        // (session IDs are inside request messages; handle_global_connection will process them)
-                        handle_global_connection(stream, wt, rt, sessions_ref);
-                        *la.lock().unwrap() = Instant::now();
-                        ac.fetch_sub(1, Ordering::Relaxed);
-                    });
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    let idle = last_activity.lock().unwrap().elapsed();
-                    if idle > Duration::from_secs(300) {
-                        tracing::info!("nshd: idle timeout, shutting down");
-                        log_daemon("server.lifecycle", "idle timeout reached; shutting down");
-                        break;
-                    }
-                    // Graceful restart: drain with timeout (10s)
-                    if restart_pending.load(Ordering::Relaxed) {
-                        // Debounce: ignore restart requests if a restart occurred <30s ago
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let last = LAST_RESTART_EPOCH.load(Ordering::Relaxed);
-                        if now.saturating_sub(last) < 30 {
-                            // Too soon; clear flag and continue
-                            restart_pending.store(false, Ordering::Relaxed);
-                            std::thread::sleep(Duration::from_millis(50));
-                            continue;
-                        }
-                        if restart_requested_at.is_none() {
-                            restart_requested_at = Some(Instant::now());
-                            log_daemon(
-                                "server.lifecycle",
-                                "restart requested, draining connections...",
-                            );
-                            // Let in-flight requests begin to drain
-                            std::thread::sleep(Duration::from_secs(2));
-                            // Record last restart request epoch for debounce
-                            LAST_RESTART_EPOCH.store(now, Ordering::Relaxed);
-                        }
-                        let drained = active_conns.load(Ordering::Relaxed) == 0;
-                        let timed_out = restart_requested_at
-                            .map(|t| t.elapsed() > Duration::from_secs(10))
-                            .unwrap_or(false);
-                        if drained || timed_out {
-                            if !drained {
-                                log_daemon(
-                                    "server.lifecycle",
-                                    "drain timeout (10s), force exiting for restart",
-                                );
-                            } else {
-                                log_daemon(
-                                    "server.lifecycle",
-                                    "all connections drained, exiting for restart",
-                                );
-                            }
-                            break;
-                        }
-                    }
-                    // Also check for the restart marker file from clients
-                    let restart_marker =
-                        crate::config::Config::nsh_dir().join("nshd_restart_pending");
-                    if restart_marker.exists() {
-                        log_daemon("server.lifecycle", "restart marker detected, shutting down");
-                        restart_pending.store(true, std::sync::atomic::Ordering::Relaxed);
-                        // Notify only live/active sessions about hook updates (best effort)
-                        let dir = crate::config::Config::nsh_dir();
-                        if let Ok(guard) = active_sessions.read() {
-                            for (sid, info) in guard.iter() {
-                                // Skip dead PIDs where available
-                                #[cfg(unix)]
-                                {
-                                    if let Some(pid) = info.pid {
-                                        if !pid_alive(pid) {
-                                            continue;
-                                        }
-                                    }
-                                }
-                                // Skip messages for missing TTYs
-                                if let Some(tty) = &info.tty {
-                                    if !std::path::Path::new(tty).exists() {
-                                        continue;
-                                    }
-                                }
-                                // Tailor message by shell (minor copy variation)
-                                let msg = match info.shell.as_deref() {
-                                    Some("zsh") => {
-                                        "hooks_updated: zsh will auto-reload when idle\n"
-                                    }
-                                    Some("bash") => {
-                                        "hooks_updated: bash will refresh hooks on next prompt\n"
-                                    }
-                                    Some("fish") => "hooks_updated: fish auto-reloads hooks\n",
-                                    _ => "hooks_updated\n",
-                                };
-                                let _ = std::fs::write(dir.join(format!("nsh_msg_{}", sid)), msg);
-                            }
-                        }
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(e) => {
-                    tracing::warn!("nshd: accept error: {e}");
-                    log_daemon("server.accept.error", &e.to_string());
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
+    spawn_background_monitors(Arc::clone(&restart_pending), Arc::clone(&active_sessions))?;
+    run_global_accept_loop(
+        &listener,
+        &write_tx,
+        &read_tx,
+        Arc::clone(&active_conns),
+        Arc::clone(&active_sessions),
+        Arc::clone(&last_activity),
+        Arc::clone(&restart_pending),
+    )?;
 
     drop(write_tx);
     drop(read_tx);
     drop(memory_tx);
     let _ = write_thread.join();
     let _ = memory_thread.join();
-    for t in read_threads {
-        let _ = t.join();
+    for thread in read_threads {
+        let _ = thread.join();
     }
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&pid_path);
     log_daemon("server.lifecycle", "stopped global daemon");
     drop(lock_file);
 
-    // Start connectivity monitor in background (non-fatal if it fails to spawn)
     crate::connectivity::start(&config);
-
-    // Re-exec if restart was requested, so the new daemon starts immediately
-    if restart_pending.load(Ordering::Relaxed) {
-        let args: Vec<String> = std::env::args().collect();
-        let core_path = crate::config::Config::nsh_dir()
-            .join("bin")
-            .join("nsh-core");
-        let target = if core_path.exists() {
-            core_path
-        } else if let Ok(exe) = std::env::current_exe() {
-            exe
-        } else {
-            // Fallback: try cargo bin location
-            let cargo_home = std::env::var("CARGO_HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".cargo"));
-            let cargo_nsh = cargo_home.join("bin").join("nsh");
-            if cargo_nsh.exists() {
-                cargo_nsh
-            } else {
-                tracing::error!("cannot find binary for re-exec");
-                return Ok(());
-            }
-        };
-        // Write restart marker for startup cooldown
-        let _ = std::fs::write(&restart_marker, chrono::Utc::now().to_rfc3339());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            let err = std::process::Command::new(&target).args(&args[1..]).exec();
-            tracing::info!("nshd re-exec failed: {err}");
-        }
-    }
-
+    maybe_reexec_global_daemon(&restart_pending, &restart_cooldown_marker);
     Ok(())
 }
 
@@ -600,6 +792,7 @@ fn run_write_thread(
     db: crate::db::Db,
     rx: mpsc::Receiver<WriteCommand>,
     memory: Arc<crate::memory::MemorySystem>,
+    memory_task_tracker: MemoryTaskTracker,
     memory_tx: MemoryTaskSender,
     queue_guards: MemoryQueueGuards,
 ) {
@@ -632,6 +825,7 @@ fn run_write_thread(
                         &db,
                         cmd.request,
                         &memory,
+                        &memory_task_tracker,
                         &memory_tx,
                         &queue_guards,
                         &mut session_project_roots,
@@ -654,6 +848,7 @@ fn run_write_thread(
                         &db,
                         cmd.request,
                         &memory,
+                        &memory_task_tracker,
                         &memory_tx,
                         &queue_guards,
                         &mut session_project_roots,
@@ -667,6 +862,7 @@ fn run_write_thread(
                 &db,
                 cmd.request,
                 &memory,
+                &memory_task_tracker,
                 &memory_tx,
                 &queue_guards,
                 &mut session_project_roots,
@@ -681,6 +877,7 @@ fn run_memory_thread(
     rx: mpsc::Receiver<MemoryTask>,
     config: crate::config::Config,
     queue_guards: MemoryQueueGuards,
+    memory_task_tracker: MemoryTaskTracker,
 ) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -702,89 +899,58 @@ fn run_memory_thread(
     // Each task is executed via block_on for the async LLM calls, wrapped in
     // catch_unwind to prevent a panic from killing the memory thread.
     while let Ok(task) = rx.recv() {
-        let task_name = match &task {
-            MemoryTask::FlushIngestion => "flush_ingestion",
-            MemoryTask::IngestBatch { .. } => "ingest_batch",
-            MemoryTask::RunReflection => "run_reflection",
-            MemoryTask::BootstrapScan => "bootstrap_scan",
-        };
+        let task_kind = MemoryTaskKind::from_task(&task);
+        let task_name = task_kind.status_key();
+        memory_task_tracker.mark_running(task_kind);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match task {
-            MemoryTask::FlushIngestion => {
-                rt.block_on(async {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
-                        memory.flush_ingestion(&llm),
-                    )
-                    .await
-                    {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory flush_ingestion error: {e}");
-                            log_daemon("memory.flush.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory flush_ingestion timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            MemoryTask::IngestBatch { events } => {
-                rt.block_on(async {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
-                        memory.ingest_batch(&events, &llm),
-                    )
-                    .await
-                    {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory ingest_batch error: {e}");
-                            log_daemon("memory.ingest.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory ingest_batch timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            MemoryTask::RunReflection => {
-                rt.block_on(async {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
-                        memory.run_reflection(&llm),
-                    )
-                    .await
-                    {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory run_reflection error: {e}");
-                            log_daemon("memory.reflection.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory run_reflection timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
-            MemoryTask::BootstrapScan => {
-                rt.block_on(async {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
-                        memory.bootstrap_scan(&llm),
-                    )
-                    .await
-                    {
-                        Ok(Err(e)) => {
-                            tracing::debug!("memory bootstrap_scan error: {e}");
-                            log_daemon("memory.bootstrap.error", &e.to_string());
-                        }
-                        Err(_) => {
-                            tracing::warn!("memory bootstrap_scan timed out after 120s");
-                        }
-                        _ => {}
-                    }
-                });
-            }
+            MemoryTask::FlushIngestion => rt.block_on(async {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    memory.flush_ingestion(&llm),
+                )
+                .await
+                {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("timed out after 120s".to_string()),
+                }
+            }),
+            MemoryTask::IngestBatch { events } => rt.block_on(async {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    memory.ingest_batch(&events, &llm),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("timed out after 120s".to_string()),
+                }
+            }),
+            MemoryTask::RunReflection => rt.block_on(async {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    memory.run_reflection(&llm),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("timed out after 120s".to_string()),
+                }
+            }),
+            MemoryTask::BootstrapScan => rt.block_on(async {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    memory.bootstrap_scan(&llm),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("timed out after 120s".to_string()),
+                }
+            }),
         }));
 
         // Always clear queue flags, even after panic, so maintenance work can be retried.
@@ -801,11 +967,20 @@ fn run_memory_thread(
             }
             _ => {}
         }
-        if let Err(e) = result {
-            log_daemon(
-                "memory.thread.panic",
-                &format!("panic in {task_name}: {e:?}"),
-            );
+        match result {
+            Ok(Ok(())) => {
+                memory_task_tracker.mark_succeeded(task_kind);
+            }
+            Ok(Err(error)) => {
+                tracing::warn!("memory {task_name} failed: {error}");
+                log_daemon(task_kind.error_log_key(), &error);
+                memory_task_tracker.mark_failed(task_kind, error);
+            }
+            Err(error) => {
+                let panic_message = format!("panic in {task_name}: {error:?}");
+                log_daemon("memory.thread.panic", &panic_message);
+                memory_task_tracker.mark_failed(task_kind, panic_message);
+            }
         }
     }
 
@@ -827,6 +1002,7 @@ fn execute_write(
     db: &crate::db::Db,
     request: DaemonRequest,
     memory: &crate::memory::MemorySystem,
+    memory_task_tracker: &MemoryTaskTracker,
     memory_tx: &MemoryTaskSender,
     queue_guards: &MemoryQueueGuards,
     session_project_roots: &mut std::collections::HashMap<String, String>,
@@ -1055,7 +1231,7 @@ fn execute_write(
             match db.insert_conversation(
                 &session_id,
                 &query,
-                &response_type,
+                response_type.as_str(),
                 &response,
                 explanation.as_deref(),
                 executed,
@@ -1202,10 +1378,14 @@ fn execute_write(
             memory_type,
             data_json,
         } => {
+            let parsed_data = match parse_memory_json(&data_json) {
+                Ok(parsed_data) => parsed_data,
+                Err(error) => return DaemonResponse::error(error),
+            };
             let tool = "store_memory".to_string();
             let input = serde_json::json!({
                 "memory_type": memory_type.as_str(),
-                "data": parse_memory_json(&data_json)
+                "data": parsed_data
             });
             if let Err(e) = crate::security::assess_memory_tool_call(&tool, &input, &[]) {
                 return DaemonResponse::error(format!("Security check failed: {e}"));
@@ -1235,26 +1415,30 @@ fn execute_write(
         DaemonRequest::MemoryRunReflection => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::RunReflection) {
                 Ok(status) => {
-                    return DaemonResponse::ok_with_data(
-                        serde_json::json!({"status": status.as_status()}),
-                    );
+                    DaemonResponse::ok_with_data(serde_json::json!({
+                        "status": status.as_status(),
+                        "task": memory_task_tracker.task_snapshot(MemoryTaskKind::RunReflection),
+                    }))
                 }
                 Err(e) => {
+                    memory_task_tracker.mark_failed(MemoryTaskKind::RunReflection, e.to_string());
                     tracing::debug!("memory thread disconnected, reflection skipped: {e}");
-                    return DaemonResponse::error(e.to_string());
+                    DaemonResponse::error(e.to_string())
                 }
             }
         }
         DaemonRequest::MemoryBootstrapScan => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::BootstrapScan) {
                 Ok(status) => {
-                    return DaemonResponse::ok_with_data(
-                        serde_json::json!({"status": status.as_status()}),
-                    );
+                    DaemonResponse::ok_with_data(serde_json::json!({
+                        "status": status.as_status(),
+                        "task": memory_task_tracker.task_snapshot(MemoryTaskKind::BootstrapScan),
+                    }))
                 }
                 Err(e) => {
+                    memory_task_tracker.mark_failed(MemoryTaskKind::BootstrapScan, e.to_string());
                     tracing::debug!("memory thread disconnected, bootstrap skipped: {e}");
-                    return DaemonResponse::error(e.to_string());
+                    DaemonResponse::error(e.to_string())
                 }
             }
         }
@@ -1299,14 +1483,13 @@ fn enqueue_unique_memory_task(
         _ => None,
     };
 
-    if let Some(flag) = pending_flag {
-        if flag
+    if let Some(flag) = pending_flag
+        && flag
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
             return Ok(MemoryQueueDecision::Busy);
         }
-    }
 
     if memory_tx.send(task).is_err() {
         if let Some(flag) = pending_flag {
@@ -1322,6 +1505,7 @@ fn run_read_thread(
     db: crate::db::Db,
     rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>,
     memory: Arc<crate::memory::MemorySystem>,
+    memory_task_tracker: MemoryTaskTracker,
 ) {
     loop {
         let cmd = loop {
@@ -1335,7 +1519,7 @@ fn run_read_thread(
                 Err(mpsc::TryRecvError::Disconnected) => return,
             }
         };
-        let resp = execute_read(&db, &memory, cmd.request);
+        let resp = execute_read(&db, &memory, &memory_task_tracker, cmd.request);
         let _ = cmd.reply.send(resp);
     }
 }
@@ -1343,6 +1527,7 @@ fn run_read_thread(
 fn execute_read(
     db: &crate::db::Db,
     memory: &crate::memory::MemorySystem,
+    memory_task_tracker: &MemoryTaskTracker,
     request: DaemonRequest,
 ) -> DaemonResponse {
     let req_dbg = format!("{request:?}");
@@ -1663,10 +1848,10 @@ fn execute_read(
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::MemoryRetrieveSecret { caption_query } => {
-            let tool = "retrieve_secret".to_string();
-            let input = serde_json::json!({ "caption_query": caption_query });
-            if let Err(e) = crate::security::assess_memory_tool_call(&tool, &input, &[]) {
-                return DaemonResponse::error(format!("Security check failed: {e}"));
+            if caption_query.trim().is_empty() {
+                return DaemonResponse::error(
+                    "Security check failed: retrieve_secret requires a non-empty caption_query",
+                );
             }
             match db.search_knowledge_fts(&caption_query, 3, &["low", "medium", "high"]) {
                 Ok(results) => {
@@ -1728,6 +1913,7 @@ fn execute_read(
                         "last_decay_at": last_decay_at,
                         "reflection_runs": reflection_runs,
                         "last_reflection_at": last_reflection_at,
+                        "background_tasks": memory_task_tracker.snapshot_json(),
                     }))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
@@ -1756,6 +1942,7 @@ mod tests_memory_stats {
         // In-memory DB and MemorySystem
         let db = crate::db::Db::open_in_memory().expect("db");
         let mem = crate::memory::MemorySystem::open_in_memory().expect("mem");
+        let tracker = MemoryTaskTracker::default();
         // Seed telemetry
         db.set_memory_config("decay_runs", "9").unwrap();
         db.set_memory_config("reflection_runs", "3").unwrap();
@@ -1764,7 +1951,7 @@ mod tests_memory_stats {
         db.set_memory_config("last_reflection_at", "2026-02-20 08:10:11")
             .unwrap();
 
-        let resp = execute_read(&db, &mem, DaemonRequest::MemoryStats);
+        let resp = execute_read(&db, &mem, &tracker, DaemonRequest::MemoryStats);
         match resp {
             DaemonResponse::Ok { data: Some(d) } => {
                 assert!(d.get("core").is_some());
@@ -1774,6 +1961,10 @@ mod tests_memory_stats {
                 assert_eq!(
                     d["last_reflection_at"].as_str(),
                     Some("2026-02-20 08:10:11")
+                );
+                assert_eq!(
+                    d["background_tasks"]["run_reflection"]["state"].as_str(),
+                    Some("idle")
                 );
             }
             other => panic!("unexpected response: {other:?}"),
@@ -1846,11 +2037,10 @@ fn handle_global_connection(
             }
         }
         DaemonRequest::EndSession { session } => {
-            if let Ok(mut guard) = active_sessions.write() {
-                if let Some(info) = guard.remove(session) {
+            if let Ok(mut guard) = active_sessions.write()
+                && let Some(info) = guard.remove(session) {
                     cleanup_session_artifacts(session, &info);
                 }
-            }
         }
         _ => {}
     }
@@ -2050,11 +2240,10 @@ fn detect_project_root_fast(cwd: &str) -> Option<String> {
             }
         }
         // Stop at home directory or filesystem root
-        if let Some(ref h) = home {
-            if dir == h.as_path() {
+        if let Some(ref h) = home
+            && dir == h.as_path() {
                 return None;
             }
-        }
         match dir.parent() {
             Some(p) if p != dir => dir = p,
             _ => return None,
@@ -2089,51 +2278,6 @@ fn write_response(
     json.push('\n');
     w.write_all(json.as_bytes())?;
     w.flush()
-}
-
-#[cfg(unix)]
-fn check_peer_uid(stream: &std::os::unix::net::UnixStream) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-        let rc = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                &mut cred as *mut _ as *mut libc::c_void,
-                &mut len,
-            )
-        };
-        if rc != 0 {
-            return false;
-        }
-        if cred.uid != unsafe { libc::getuid() } {
-            return false;
-        }
-    }
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-    {
-        use std::os::fd::AsRawFd;
-        let mut euid: libc::uid_t = 0;
-        let mut egid: libc::gid_t = 0;
-        let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut euid, &mut egid) };
-        if rc != 0 {
-            return false;
-        }
-        if euid != unsafe { libc::getuid() } {
-            return false;
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-    {
-        tracing::warn!(
-            "Peer UID check not implemented for this platform, relying on socket permissions"
-        );
-    }
-    true
 }
 
 #[cfg(all(test, unix))]
@@ -2260,5 +2404,11 @@ mod tests {
             response.contains("parse error"),
             "unexpected response: {response}"
         );
+    }
+
+    #[test]
+    fn parse_memory_json_rejects_invalid_json() {
+        let err = parse_memory_json("{not-json").expect_err("invalid JSON should fail");
+        assert!(err.contains("invalid memory tool JSON"));
     }
 }

@@ -75,10 +75,249 @@ impl HintsConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum ExecutionMode {
+    #[default]
+    Prefill,
+    Confirm,
+    Autorun,
+}
+
+
+impl ExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Prefill => "prefill",
+            Self::Confirm => "confirm",
+            Self::Autorun => "autorun",
+        }
+    }
+}
+
+impl From<&str> for ExecutionMode {
+    fn from(value: &str) -> Self {
+        match value {
+            "confirm" => Self::Confirm,
+            "autorun" => Self::Autorun,
+            _ => Self::Prefill,
+        }
+    }
+}
+
+impl From<String> for ExecutionMode {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl PartialEq<&str> for ExecutionMode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum SensitiveFileAccess {
+    Allow,
+    Ask,
+    #[default]
+    Block,
+}
+
+
+impl SensitiveFileAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Ask => "ask",
+            Self::Block => "block",
+        }
+    }
+}
+
+impl From<&str> for SensitiveFileAccess {
+    fn from(value: &str) -> Self {
+        match value {
+            "allow" => Self::Allow,
+            "ask" => Self::Ask,
+            _ => Self::Block,
+        }
+    }
+}
+
+impl From<String> for SensitiveFileAccess {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl PartialEq<&str> for SensitiveFileAccess {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for SensitiveFileAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum CaptureMode {
+    Raw,
+    #[default]
+    Vt100,
+}
+
+
+impl CaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Vt100 => "vt100",
+        }
+    }
+}
+
+impl From<&str> for CaptureMode {
+    fn from(value: &str) -> Self {
+        match value {
+            "raw" => Self::Raw,
+            _ => Self::Vt100,
+        }
+    }
+}
+
+impl From<String> for CaptureMode {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl PartialEq<&str> for CaptureMode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for CaptureMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum AltScreenMode {
+    Capture,
+    #[default]
+    Drop,
+    Snapshot,
+}
+
+
+impl AltScreenMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::Drop => "drop",
+            Self::Snapshot => "snapshot",
+        }
+    }
+}
+
+impl From<&str> for AltScreenMode {
+    fn from(value: &str) -> Self {
+        match value {
+            "capture" => Self::Capture,
+            "snapshot" => Self::Snapshot,
+            _ => Self::Drop,
+        }
+    }
+}
+
+impl From<String> for AltScreenMode {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl PartialEq<&str> for AltScreenMode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for AltScreenMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum McpTransportKind {
+    Http,
+    #[default]
+    Stdio,
+}
+
+
+impl McpTransportKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Stdio => "stdio",
+        }
+    }
+}
+
+impl From<&str> for McpTransportKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "http" => Self::Http,
+            _ => Self::Stdio,
+        }
+    }
+}
+
+impl From<String> for McpTransportKind {
+    fn from(value: String) -> Self {
+        Self::from(value.as_str())
+    }
+}
+
+impl PartialEq<&str> for McpTransportKind {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::fmt::Display for McpTransportKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ExecutionConfig {
-    pub mode: String, // "prefill" | "confirm" | "autorun"
+    pub mode: ExecutionMode,
     pub allow_unsafe_autorun: bool,
     pub max_tool_iterations: usize,
     pub confirm_intermediate_steps: bool,
@@ -97,7 +336,7 @@ pub struct ExecutionConfig {
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
-            mode: "prefill".into(),
+            mode: ExecutionMode::Prefill,
             allow_unsafe_autorun: false,
             max_tool_iterations: 50,
             confirm_intermediate_steps: false,
@@ -233,11 +472,10 @@ pub struct ProviderAuth {
 
 impl ProviderAuth {
     pub fn resolve_api_key(&self, provider_name: &str) -> anyhow::Result<Zeroizing<String>> {
-        if let Some(key) = &self.api_key {
-            if !key.is_empty() {
+        if let Some(key) = &self.api_key
+            && !key.is_empty() {
                 return Ok(Zeroizing::new(key.clone()));
             }
-        }
         if let Some(cmd) = &self.api_key_cmd {
             #[cfg(unix)]
             let output = Command::new("sh").arg("-c").arg(cmd).output()?;
@@ -268,13 +506,11 @@ impl ProviderAuth {
             "deepseek" => "DEEPSEEK_API_KEY",
             _ => "",
         };
-        if !env_var.is_empty() {
-            if let Ok(key) = std::env::var(env_var) {
-                if !key.is_empty() {
+        if !env_var.is_empty()
+            && let Ok(key) = std::env::var(env_var)
+                && !key.is_empty() {
                     return Ok(Zeroizing::new(key));
                 }
-            }
-        }
         anyhow::bail!("No API key for {provider_name} (tried config, api_key_cmd, ${env_var})")
     }
 }
@@ -367,7 +603,7 @@ impl Default for ContextConfig {
 #[serde(default)]
 pub struct ToolsConfig {
     pub run_command_allowlist: Vec<String>,
-    pub sensitive_file_access: String,
+    pub sensitive_file_access: SensitiveFileAccess,
 }
 
 impl Default for ToolsConfig {
@@ -420,7 +656,7 @@ impl Default for ToolsConfig {
                 "clip.exe".into(),
                 "cmd.exe /c ver".into(),
             ],
-            sensitive_file_access: "block".into(),
+            sensitive_file_access: SensitiveFileAccess::Block,
         }
     }
 }
@@ -571,15 +807,15 @@ impl Default for RedactionConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
-    pub mode: String,
-    pub alt_screen: String,
+    pub mode: CaptureMode,
+    pub alt_screen: AltScreenMode,
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            mode: "vt100".into(),
-            alt_screen: "drop".into(),
+            mode: CaptureMode::Vt100,
+            alt_screen: AltScreenMode::Drop,
         }
     }
 }
@@ -655,7 +891,7 @@ pub struct McpConfig {
 pub struct McpServerConfig {
     /// Transport type: "stdio" (default) or "http"
     #[serde(default)]
-    pub transport: Option<String>,
+    pub transport: Option<McpTransportKind>,
     /// Command to spawn (required for stdio)
     #[serde(default)]
     pub command: Option<String>,
@@ -684,14 +920,14 @@ pub struct McpServerConfig {
 
 impl McpServerConfig {
     /// Determine effective transport: explicit setting, or inferred from fields.
-    pub fn effective_transport(&self) -> String {
-        if let Some(ref t) = self.transport {
-            return t.clone();
+    pub fn effective_transport(&self) -> &'static str {
+        if let Some(transport) = self.transport {
+            return transport.as_str();
         }
         if self.url.is_some() && self.command.is_none() {
-            "http".into()
+            McpTransportKind::Http.as_str()
         } else {
-            "stdio".into()
+            McpTransportKind::Stdio.as_str()
         }
     }
 }
@@ -890,15 +1126,14 @@ impl Config {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = std::fs::metadata(&path) {
-                    if meta.permissions().mode() & 0o077 != 0 {
+                if let Ok(meta) = std::fs::metadata(&path)
+                    && meta.permissions().mode() & 0o077 != 0 {
                         eprintln!(
                             "nsh: warning: {} is readable by other users. Consider: chmod 600 {}",
                             path.display(),
                             path.display()
                         );
                     }
-                }
             }
             let content = std::fs::read_to_string(&path)?;
             toml::from_str(&content)?
@@ -1057,28 +1292,44 @@ pub fn build_config_xml(
     skills: &[crate::skills::Skill],
     mcp_servers: &[(String, usize)],
 ) -> String {
-    use crate::context::xml_escape;
-
     let mut x = String::from("<nsh_configuration path=\"~/.nsh/config.toml\">\n");
+    append_provider_section(&mut x, config);
+    append_context_section(&mut x, config);
+    append_hints_section(&mut x, config);
+    append_models_section(&mut x, config);
+    append_tools_section(&mut x, config);
+    append_web_search_section(&mut x, config);
+    append_display_section(&mut x, config);
+    append_redaction_section(&mut x, config);
+    append_capture_section(&mut x, config);
+    append_execution_section(&mut x, config);
+    append_db_section(&mut x, config);
+    append_debug_section(&mut x, config);
+    append_mcp_servers(&mut x, config, mcp_servers);
+    append_installed_skills(&mut x, skills);
+    append_memory_section(&mut x, config);
+    x.push_str("</nsh_configuration>");
+    x
+}
 
-    // ── Provider ────────────────────────────────────────
+fn append_provider_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"provider\">\n");
     opt(
-        &mut x,
+        x,
         "default",
         &config.provider.default,
         "Active LLM provider",
         Some("openrouter,anthropic,openai,ollama,gemini"),
     );
     opt(
-        &mut x,
+        x,
         "model",
         &config.provider.model,
         "Primary model for queries",
         None,
     );
     opt(
-        &mut x,
+        x,
         "fallback_model",
         config
             .provider
@@ -1089,7 +1340,7 @@ pub fn build_config_xml(
         None,
     );
     opt(
-        &mut x,
+        x,
         "timeout_seconds",
         &config.provider.timeout_seconds.to_string(),
         "HTTP request timeout in seconds",
@@ -1116,7 +1367,7 @@ pub fn build_config_xml(
     ] {
         let has_key = auth
             .as_ref()
-            .and_then(|a| a.resolve_api_key(name).ok())
+            .and_then(|provider_auth| provider_auth.resolve_api_key(name).ok())
             .is_some();
         x.push_str(&format!(
             "      <provider name=\"{name}\" has_api_key=\"{has_key}\" />\n"
@@ -1124,115 +1375,116 @@ pub fn build_config_xml(
     }
     x.push_str("    </configured_providers>\n");
     x.push_str("  </section>\n");
+}
 
-    // ── Context ─────────────────────────────────────────
+fn append_context_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"context\">\n");
     opt(
-        &mut x,
+        x,
         "scrollback_lines",
         &config.context.scrollback_lines.to_string(),
         "Max terminal scrollback lines captured",
         None,
     );
     opt(
-        &mut x,
+        x,
         "scrollback_pages",
         &config.context.scrollback_pages.to_string(),
         "Terminal pages included in LLM context",
         None,
     );
     opt(
-        &mut x,
+        x,
         "history_summaries",
         &config.context.history_summaries.to_string(),
         "Max command history summaries in context",
         None,
     );
     opt(
-        &mut x,
+        x,
         "history_limit",
         &config.context.history_limit.to_string(),
         "Max conversation history entries per session",
         None,
     );
     opt(
-        &mut x,
+        x,
         "other_tty_summaries",
         &config.context.other_tty_summaries.to_string(),
         "Command summaries per other TTY session",
         None,
     );
     opt(
-        &mut x,
+        x,
         "max_other_ttys",
         &config.context.max_other_ttys.to_string(),
         "Max other TTY sessions included",
         None,
     );
     opt(
-        &mut x,
+        x,
         "project_files_limit",
         &config.context.project_files_limit.to_string(),
         "Max project files listed in context",
         None,
     );
     opt(
-        &mut x,
+        x,
         "git_commits",
         &config.context.git_commits.to_string(),
         "Recent git commits included in context",
         None,
     );
     opt(
-        &mut x,
+        x,
         "retention_days",
         &config.context.retention_days.to_string(),
         "Days to retain command history",
         None,
     );
     opt(
-        &mut x,
+        x,
         "max_output_storage_bytes",
         &config.context.max_output_storage_bytes.to_string(),
         "Max bytes of output stored per command",
         None,
     );
     opt(
-        &mut x,
+        x,
         "max_output_context_chars",
         &config.context.max_output_context_chars.to_string(),
         "Max characters of command output included in context",
         None,
     );
     opt(
-        &mut x,
+        x,
         "include_other_tty",
         &config.context.include_other_tty.to_string(),
         "Include other TTY sessions in context",
         None,
     );
     opt(
-        &mut x,
+        x,
         "restore_last_cwd_per_tty",
         &config.context.restore_last_cwd_per_tty.to_string(),
         "Restore shell cwd to the last directory used on this TTY",
         None,
     );
-    let ci = config
-        .context
-        .custom_instructions
-        .as_deref()
-        .unwrap_or("(none)");
     opt(
-        &mut x,
+        x,
         "custom_instructions",
-        ci,
+        config
+            .context
+            .custom_instructions
+            .as_deref()
+            .unwrap_or("(none)"),
         "Custom instructions appended to system prompt",
         None,
     );
     x.push_str("  </section>\n");
+}
 
-    // ── Hints ───────────────────────────────────────────
+fn append_hints_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"hints\">\n");
     x.push_str(&format!(
         "    <option key=\"suppressed_exit_codes\" value=\"{}\" description=\"Exit codes that should not show '? fix' failure hints\" />\n",
@@ -1247,8 +1499,11 @@ pub fn build_config_xml(
         )
     ));
     x.push_str("  </section>\n");
+}
 
-    // ── Models ──────────────────────────────────────────
+fn append_models_section(x: &mut String, config: &Config) {
+    use crate::context::xml_escape;
+
     x.push_str("  <section name=\"models\">\n");
     x.push_str(&format!(
         "    <option key=\"main\" value=\"{}\" description=\"Model chain for queries (tried in order)\" />\n",
@@ -1263,8 +1518,11 @@ pub fn build_config_xml(
         xml_escape(&config.models.coding.join(", "))
     ));
     x.push_str("  </section>\n");
+}
 
-    // ── Tools ───────────────────────────────────────────
+fn append_tools_section(x: &mut String, config: &Config) {
+    use crate::context::xml_escape;
+
     x.push_str("  <section name=\"tools\">\n");
     x.push_str(&format!(
         "    <option key=\"run_command_allowlist\" value=\"{}\" description=\"Commands the AI can run without user approval\" protected=\"true\" />\n",
@@ -1272,47 +1530,50 @@ pub fn build_config_xml(
     ));
     x.push_str(&format!(
         "    <option key=\"sensitive_file_access\" value=\"{}\" description=\"Controls access to sensitive directories: block | ask | allow (MANUAL EDIT ONLY)\" protected=\"true\" />\n",
-        xml_escape(&config.tools.sensitive_file_access)
+        xml_escape(config.tools.sensitive_file_access.as_str())
     ));
     x.push_str("  </section>\n");
+}
 
-    // ── Web Search ──────────────────────────────────────
+fn append_web_search_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"web_search\">\n");
     opt(
-        &mut x,
+        x,
         "provider",
         &config.web_search.provider,
         "Provider for web search queries",
         None,
     );
     opt(
-        &mut x,
+        x,
         "model",
         &config.web_search.model,
         "Model used for web search",
         None,
     );
     x.push_str("  </section>\n");
+}
 
-    // ── Display ─────────────────────────────────────────
+fn append_display_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"display\">\n");
     opt(
-        &mut x,
+        x,
         "chat_color",
         &config.display.chat_color.replace('\x1b', "\\x1b"),
         "ANSI escape for chat response color",
         None,
     );
     x.push_str("  </section>\n");
+}
 
-    // ── Redaction ───────────────────────────────────────
+fn append_redaction_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"redaction\">\n");
     x.push_str(&format!(
         "    <option key=\"enabled\" value=\"{}\" description=\"Auto-redact secrets before sending to LLM\" protected=\"true\" />\n",
         config.redaction.enabled
     ));
     opt(
-        &mut x,
+        x,
         "replacement",
         &config.redaction.replacement,
         "Replacement text for redacted secrets",
@@ -1327,31 +1588,33 @@ pub fn build_config_xml(
         config.redaction.patterns.len()
     ));
     x.push_str("  </section>\n");
+}
 
-    // ── Capture ─────────────────────────────────────────
+fn append_capture_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"capture\">\n");
     opt(
-        &mut x,
+        x,
         "mode",
-        &config.capture.mode,
+        config.capture.mode.as_str(),
         "Terminal capture mode",
         Some("vt100"),
     );
     opt(
-        &mut x,
+        x,
         "alt_screen",
-        &config.capture.alt_screen,
+        config.capture.alt_screen.as_str(),
         "How to handle alternate screen (TUI apps)",
         Some("drop,snapshot"),
     );
     x.push_str("  </section>\n");
+}
 
-    // ── Execution ───────────────────────────────────────
+fn append_execution_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"execution\">\n");
     opt(
-        &mut x,
+        x,
         "mode",
-        &config.execution.mode,
+        config.execution.mode.as_str(),
         "How suggested commands are delivered",
         Some("prefill,confirm,autorun"),
     );
@@ -1360,28 +1623,28 @@ pub fn build_config_xml(
         config.execution.allow_unsafe_autorun
     ));
     opt(
-        &mut x,
+        x,
         "max_tool_iterations",
         &config.execution.max_tool_iterations.to_string(),
         "Maximum number of tool loop iterations per query",
         None,
     );
     opt(
-        &mut x,
+        x,
         "confirm_intermediate_steps",
         &config.execution.confirm_intermediate_steps.to_string(),
         "Ask y/n before immediately running pending intermediate commands outside autorun",
         Some("true,false"),
     );
     opt(
-        &mut x,
+        x,
         "tool_timeout_seconds",
         &config.execution.tool_timeout_seconds.to_string(),
         "Timeout for individual tool calls in seconds",
         None,
     );
     opt(
-        &mut x,
+        x,
         "autorun_response_timeout_seconds",
         &config
             .execution
@@ -1391,30 +1654,35 @@ pub fn build_config_xml(
         None,
     );
     x.push_str("  </section>\n");
+}
 
-    // ── DB ──────────────────────────────────────────────
+fn append_db_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"db\">\n");
     opt(
-        &mut x,
+        x,
         "busy_timeout_ms",
         &config.db.busy_timeout_ms.to_string(),
         "SQLite busy timeout in milliseconds",
         None,
     );
     x.push_str("  </section>\n");
+}
 
-    // ── Debug ───────────────────────────────────────────
+fn append_debug_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"debug\">\n");
     opt(
-        &mut x,
+        x,
         "llm_io",
         &config.debug.llm_io.to_string(),
         "When true, saves raw LLM requests/responses under ~/.nsh/debug",
         Some("true,false"),
     );
     x.push_str("  </section>\n");
+}
 
-    // ── MCP Servers ─────────────────────────────────────
+fn append_mcp_servers(x: &mut String, config: &Config, mcp_servers: &[(String, usize)]) {
+    use crate::context::xml_escape;
+
     x.push_str(&format!(
         "  <mcp_servers count=\"{}\">\n",
         mcp_servers.len()
@@ -1425,9 +1693,12 @@ pub fn build_config_xml(
             xml_escape(name)
         ));
     }
-    for (name, srv) in &config.mcp.servers {
-        if !mcp_servers.iter().any(|(n, _)| n == name) {
-            let transport = srv.effective_transport();
+    for (name, server) in &config.mcp.servers {
+        if !mcp_servers
+            .iter()
+            .any(|(started_name, _)| started_name == name)
+        {
+            let transport = server.effective_transport();
             x.push_str(&format!(
                 "    <server name=\"{}\" transport=\"{transport}\" status=\"not_started\" />\n",
                 xml_escape(name)
@@ -1435,8 +1706,11 @@ pub fn build_config_xml(
         }
     }
     x.push_str("  </mcp_servers>\n");
+}
 
-    // ── Skills ──────────────────────────────────────────
+fn append_installed_skills(x: &mut String, skills: &[crate::skills::Skill]) {
+    use crate::context::xml_escape;
+
     x.push_str(&format!(
         "  <installed_skills count=\"{}\">\n",
         skills.len()
@@ -1455,18 +1729,19 @@ pub fn build_config_xml(
         ));
     }
     x.push_str("  </installed_skills>\n");
+}
 
-    // ── Memory ──────────────────────────────────────────
+fn append_memory_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"memory\">\n");
     opt(
-        &mut x,
+        x,
         "enabled",
         &config.memory.enabled.to_string(),
         "Enable/disable persistent memory system",
         Some("true,false"),
     );
     opt(
-        &mut x,
+        x,
         "inject_prompt",
         &config.memory.inject_prompt.to_string(),
         "Whether to inject persistent memory context into LLM prompts",
@@ -1477,35 +1752,35 @@ pub fn build_config_xml(
         config.memory.incognito
     ));
     opt(
-        &mut x,
+        x,
         "fade_after_days",
         &config.memory.fade_after_days.to_string(),
         "Days before memories start fading",
         None,
     );
     opt(
-        &mut x,
+        x,
         "expire_after_days",
         &config.memory.expire_after_days.to_string(),
         "Days before memories are deleted",
         None,
     );
     opt(
-        &mut x,
+        x,
         "max_retrieval_per_type",
         &config.memory.max_retrieval_per_type.to_string(),
         "Max memories retrieved per type per query",
         None,
     );
     opt(
-        &mut x,
+        x,
         "consolidation_threshold",
         &config.memory.consolidation_threshold.to_string(),
         "Number of episodic events before triggering reflection",
         None,
     );
     opt(
-        &mut x,
+        x,
         "reflection_interval_hours",
         &config.memory.reflection_interval_hours.to_string(),
         "Hours between automatic reflection runs",
@@ -1516,9 +1791,6 @@ pub fn build_config_xml(
         config.memory.ignore_paths.len()
     ));
     x.push_str("  </section>\n");
-
-    x.push_str("</nsh_configuration>");
-    x
 }
 
 fn opt(x: &mut String, key: &str, value: &str, description: &str, choices: Option<&str>) {
@@ -1536,40 +1808,7 @@ fn opt(x: &mut String, key: &str, value: &str, description: &str, choices: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-
-        fn remove(key: &'static str) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only env changes guarded by serial tests.
-            unsafe { std::env::remove_var(key) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only env changes guarded by serial tests.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
+    use crate::test_support::EnvVarGuard;
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
         let home = tempfile::tempdir().unwrap();
@@ -3361,6 +3600,48 @@ sensitive_file_access = "allow"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.tools.sensitive_file_access, "allow");
+    }
+
+    #[test]
+    fn test_invalid_execution_mode_is_rejected() {
+        let toml_str = r#"
+[execution]
+mode = "fast-and-loose"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_sensitive_file_access_is_rejected() {
+        let toml_str = r#"
+[tools]
+sensitive_file_access = "maybe"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_capture_modes_are_rejected() {
+        let toml_str = r#"
+[capture]
+mode = "telepathy"
+alt_screen = "keep-everything"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_mcp_transport_is_rejected() {
+        let toml_str = r#"
+[mcp.servers.bad]
+transport = "grpc"
+command = "echo"
+"#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
     }
 
     // ── is_setting_protected ────────────────────────────

@@ -1663,7 +1663,6 @@ dependencies = [
  "tar",
  "tempfile",
  "termimad",
- "thiserror 2.0.18",
  "tiktoken-rs",
  "tokio",
  "toml",

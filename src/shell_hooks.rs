@@ -24,45 +24,17 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("last_update_notice_{session_id}")));
 
     // Clean up per-TTY CWD file (only if this process owns the session)
-    if let Ok(env_session) = std::env::var("NSH_SESSION_ID") {
-        if env_session == session_id {
-            if let Ok(tty) = std::env::var("NSH_TTY") {
+    if let Ok(env_session) = std::env::var("NSH_SESSION_ID")
+        && env_session == session_id
+            && let Ok(tty) = std::env::var("NSH_TTY") {
                 crate::fast_cwd::remove_tty_cwd(&tty);
             }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
-
-    struct EnvVarGuard {
-        key: &'static str,
-        old: Option<String>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-            let old = std::env::var(key).ok();
-            // SAFETY: test-only; this test is serialized.
-            unsafe { std::env::set_var(key, value) };
-            Self { key, old }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            if let Some(old) = &self.old {
-                // SAFETY: test-only; this test is serialized.
-                unsafe { std::env::set_var(self.key, old) };
-            } else {
-                // SAFETY: test-only; this test is serialized.
-                unsafe { std::env::remove_var(self.key) };
-            }
-        }
-    }
+    use crate::test_support::EnvVarGuard;
 
     #[test]
     fn test_pending_cmd_prefix() {

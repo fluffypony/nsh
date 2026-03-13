@@ -76,11 +76,10 @@ impl MemorySystem {
         }
 
         // Check ignored paths
-        if let Some(ref cwd) = event.working_dir {
-            if self.is_ignored_path(Path::new(cwd)) {
+        if let Some(ref cwd) = event.working_dir
+            && self.is_ignored_path(Path::new(cwd)) {
                 return;
             }
-        }
 
         // Skip password prompts
         if let Some(ref output) = event.output {
@@ -371,17 +370,7 @@ impl MemorySystem {
             self.config.fade_after_days,
             self.config.expire_after_days,
         )?;
-        // Telemetry counters and timestamps
-        let _ = conn.execute(
-            "INSERT INTO memory_config(key, value) VALUES('last_decay_at', datetime('now')) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![],
-        );
-        let _ = conn.execute(
-            "INSERT INTO memory_config(key, value) VALUES('decay_runs', '1') \
-             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
-            rusqlite::params![],
-        );
+        decay::record_decay_run(&conn)?;
         Ok(report)
     }
 

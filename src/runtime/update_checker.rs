@@ -56,11 +56,10 @@ impl GitHubReleaseChecker {
         if tag.is_empty() {
             return Ok(None);
         }
-        if let Some(cur) = &self.current_version {
-            if cur.trim() == tag.trim() {
+        if let Some(cur) = &self.current_version
+            && cur.trim() == tag.trim() {
                 return Ok(None);
             }
-        }
         let empty: Vec<serde_json::Value> = Vec::new();
         let assets = resp["assets"].as_array().unwrap_or(&empty);
         if let Some(fragment) = &self.platform_asset_fragment {
@@ -106,5 +105,32 @@ impl GitHubReleaseChecker {
         }
         std::fs::rename(&tmp, dest)?;
         Ok(dest.to_path_buf())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitHubReleaseChecker;
+    use std::time::Duration;
+
+    #[test]
+    fn new_sets_expected_defaults() {
+        let checker = GitHubReleaseChecker::new("router-for-me/CLIProxyAPIPlus");
+
+        assert_eq!(checker.repo, "router-for-me/CLIProxyAPIPlus");
+        assert_eq!(checker.current_version, None);
+        assert_eq!(checker.platform_asset_fragment, None);
+        assert_eq!(checker.check_interval, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn builder_methods_override_configuration() {
+        let checker = GitHubReleaseChecker::new("owner/repo")
+            .with_current_version(Some("v1.2.3".into()))
+            .with_platform(Some("linux-amd64".into()));
+
+        assert_eq!(checker.repo, "owner/repo");
+        assert_eq!(checker.current_version.as_deref(), Some("v1.2.3"));
+        assert_eq!(checker.platform_asset_fragment.as_deref(), Some("linux-amd64"));
     }
 }

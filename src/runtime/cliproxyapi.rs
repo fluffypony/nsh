@@ -254,8 +254,8 @@ pub fn start_sidecar(port: u16) -> Result<Child> {
 }
 
 pub fn stop_sidecar() -> Result<()> {
-    if let Ok(pid_str) = std::fs::read_to_string(pid_file()) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+    if let Ok(pid_str) = std::fs::read_to_string(pid_file())
+        && let Ok(pid) = pid_str.trim().parse::<i32>() {
             #[cfg(unix)]
             unsafe {
                 libc::kill(pid, libc::SIGTERM);
@@ -267,15 +267,14 @@ pub fn stop_sidecar() -> Result<()> {
                     .output();
             }
         }
-    }
     let _ = std::fs::remove_file(pid_file());
     let _ = std::fs::remove_file(port_file());
     Ok(())
 }
 
 pub fn is_sidecar_running() -> bool {
-    if let Ok(pid_str) = std::fs::read_to_string(pid_file()) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+    if let Ok(pid_str) = std::fs::read_to_string(pid_file())
+        && let Ok(pid) = pid_str.trim().parse::<i32>() {
             #[cfg(unix)]
             unsafe {
                 return libc::kill(pid, 0) == 0;
@@ -285,16 +284,14 @@ pub fn is_sidecar_running() -> bool {
                 return port_file().exists();
             }
         }
-    }
     false
 }
 
 pub fn ensure_running() -> Result<u16> {
-    if is_sidecar_running() {
-        if let Some(p) = get_port() {
+    if is_sidecar_running()
+        && let Some(p) = get_port() {
             return Ok(p);
         }
-    }
     let port = pick_random_port()?;
     let _ = start_sidecar(port)?;
     Ok(port)
@@ -387,8 +384,8 @@ pub fn detect_existing_oauth_tokens() -> Vec<DetectedOAuthProvider> {
         home.join(".cli-proxy-api"),
         home.join(".config/cliproxyapi"),
     ] {
-        if dir.is_dir() {
-            if let Ok(rd) = std::fs::read_dir(&dir) {
+        if dir.is_dir()
+            && let Ok(rd) = std::fs::read_dir(&dir) {
                 for ent in rd.flatten() {
                     let name = ent.file_name().to_string_lossy().to_string();
                     if !name.ends_with(".json") {
@@ -416,7 +413,6 @@ pub fn detect_existing_oauth_tokens() -> Vec<DetectedOAuthProvider> {
                     });
                 }
             }
-        }
     }
 
     // Copilot
@@ -451,4 +447,76 @@ pub fn detect_existing_oauth_tokens() -> Vec<DetectedOAuthProvider> {
 
     found.dedup_by(|a, b| a.provider == b.provider);
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::EnvVarGuard;
+    use serial_test::serial;
+
+    fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
+        let home = tempfile::tempdir().unwrap();
+        let home_guard = EnvVarGuard::set("HOME", home.path());
+        let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        (home, home_guard, xdg_config_guard, xdg_data_guard)
+    }
+
+    #[test]
+    #[serial]
+    fn path_helpers_and_config_generation_use_nsh_dir() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+        let expected_nsh_dir = home.path().join(".nsh");
+
+        assert_eq!(nsh_dir(), expected_nsh_dir);
+        assert_eq!(bin_dir(), expected_nsh_dir.join("bin"));
+        assert_eq!(port_file(), expected_nsh_dir.join("cliproxyapi.port"));
+        assert_eq!(pid_file(), expected_nsh_dir.join("cliproxyapi.pid"));
+        assert_eq!(version_file(), expected_nsh_dir.join("cliproxyapi.version"));
+        assert_eq!(config_file(), expected_nsh_dir.join("cliproxyapi-config.yaml"));
+        assert_eq!(auth_dir(), expected_nsh_dir.join("cliproxyapi-auth"));
+        assert_eq!(last_check_file(), expected_nsh_dir.join("cliproxyapi-last-check"));
+
+        let log_path = log_file();
+        assert_eq!(log_path, expected_nsh_dir.join("logs").join("cliproxyapi.log"));
+        assert!(expected_nsh_dir.join("logs").is_dir());
+
+        let path = generate_config(8317).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(path, config_file());
+        assert!(content.contains("port: 8317"));
+        assert!(content.contains(&format!("auth-dir: \"{}\"", auth_dir().display())));
+        assert!(auth_dir().is_dir());
+    }
+
+    #[test]
+    #[serial]
+    fn base_url_and_oauth_detection_use_home_state() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+
+        std::fs::create_dir_all(auth_dir()).unwrap();
+        std::fs::write(port_file(), "9876").unwrap();
+        std::fs::write(auth_dir().join("gemini-session.json"), "{}").unwrap();
+
+        let claude_dir = home.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("credentials.json"), "{}").unwrap();
+
+        assert_eq!(get_port(), Some(9876));
+        assert_eq!(base_url().as_deref(), Some("http://127.0.0.1:9876/v1"));
+
+        let detected = detect_existing_oauth_tokens();
+        assert!(detected.iter().any(|entry| entry.provider == "gemini_sub"));
+        assert!(detected.iter().any(|entry| entry.provider == "claude_sub"));
+    }
+
+    #[test]
+    fn login_flag_for_provider_returns_expected_mappings() {
+        assert_eq!(login_flag_for_provider("copilot"), Some("--github-copilot-login"));
+        assert_eq!(login_flag_for_provider("claude_sub"), Some("--claude-login"));
+        assert_eq!(login_flag_for_provider("codex_sub"), Some("--codex-login"));
+        assert_eq!(login_flag_for_provider("gemini_sub"), Some("--login"));
+        assert_eq!(login_flag_for_provider("unknown"), None);
+    }
 }
