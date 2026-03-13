@@ -1,49 +1,32 @@
 use crate::tools::ToolInvocationOutcome;
 
+#[derive(Debug, PartialEq)]
+struct InstallMcpRequest {
+    name: String,
+    transport: McpTransport,
+    args: Vec<String>,
+    env: std::collections::HashMap<String, String>,
+    timeout_seconds: u64,
+}
+
+#[derive(Debug, PartialEq)]
+enum McpTransport {
+    Stdio { command: String },
+    Http { url: String },
+}
+
 pub fn execute(
     input: &serde_json::Value,
     _config: &crate::config::Config,
 ) -> anyhow::Result<String> {
-    let name = input["name"].as_str().unwrap_or("");
-    let transport = input["transport"].as_str().unwrap_or("stdio");
-    let command = input["command"].as_str();
-    let url = input["url"].as_str();
-    let args: Vec<String> = input["args"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let env: std::collections::HashMap<String, String> = input["env"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        })
-        .unwrap_or_default();
-    let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
+    let request = parse_request(input)?;
 
-    if name.is_empty() {
-        anyhow::bail!("install_mcp_server: 'name' is required");
-    }
-    if !name
+    if !request
+        .name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
         anyhow::bail!("install_mcp_server: name must be alphanumeric with underscores/hyphens");
-    }
-    match transport {
-        "stdio" if command.is_none() => {
-            anyhow::bail!("install_mcp_server: 'command' is required for stdio transport");
-        }
-        "http" if url.is_none() => {
-            anyhow::bail!("install_mcp_server: 'url' is required for http transport");
-        }
-        "stdio" | "http" => {}
-        _ => anyhow::bail!("install_mcp_server: transport must be 'stdio' or 'http'"),
     }
 
     // Read existing config
@@ -62,15 +45,19 @@ pub fn execute(
 
     // Build server config table
     let mut server = toml_edit::Table::new();
+    let (transport, command, url) = match &request.transport {
+        McpTransport::Stdio { command } => ("stdio", Some(command.as_str()), None),
+        McpTransport::Http { url } => ("http", None, Some(url.as_str())),
+    };
     if transport != "stdio" {
         server.insert("transport", toml_edit::value(transport));
     }
     if let Some(cmd) = command {
         server.insert("command", toml_edit::value(cmd));
     }
-    if !args.is_empty() {
+    if !request.args.is_empty() {
         let mut arr = toml_edit::Array::new();
-        for a in &args {
+        for a in &request.args {
             arr.push(a.as_str());
         }
         server.insert("args", toml_edit::value(arr));
@@ -78,14 +65,14 @@ pub fn execute(
     if let Some(u) = url {
         server.insert("url", toml_edit::value(u));
     }
-    if !env.is_empty() {
+    if !request.env.is_empty() {
         let mut env_table = toml_edit::Table::new();
-        for (k, v) in &env {
+        for (k, v) in &request.env {
             env_table.insert(k, toml_edit::value(v.as_str()));
         }
         server.insert("env", toml_edit::Item::Table(env_table));
     }
-    server.insert("timeout_seconds", toml_edit::value(timeout as i64));
+    server.insert("timeout_seconds", toml_edit::value(request.timeout_seconds as i64));
 
     // Ensure mcp.servers table exists
     if doc.get("mcp").is_none() {
@@ -94,7 +81,7 @@ pub fn execute(
     if doc["mcp"].get("servers").is_none() {
         doc["mcp"]["servers"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    doc["mcp"]["servers"][name] = toml_edit::Item::Table(server);
+    doc["mcp"]["servers"][request.name.as_str()] = toml_edit::Item::Table(server);
 
     let new_content = doc.to_string();
 
@@ -107,7 +94,7 @@ pub fn execute(
     let dim = "\x1b[2m";
     let reset = "\x1b[0m";
 
-    eprintln!("{bold_yellow}Install MCP server:{reset} {name}");
+    eprintln!("{bold_yellow}Install MCP server:{reset} {}", request.name);
     eprintln!("  Transport: {transport}");
     if let Some(cmd) = command {
         eprintln!("  Command:   {cmd}");
@@ -115,10 +102,10 @@ pub fn execute(
     if let Some(u) = url {
         eprintln!("  URL:       {u}");
     }
-    if !args.is_empty() {
-        eprintln!("  Args:      {}", args.join(" "));
+    if !request.args.is_empty() {
+        eprintln!("  Args:      {}", request.args.join(" "));
     }
-    eprintln!("  Timeout:   {timeout}s");
+    eprintln!("  Timeout:   {}s", request.timeout_seconds);
     eprintln!();
     if !crate::tools::prompt_tty_confirmation(&format!(
         "{bold_yellow}Add to config? [y/N]{reset} "
@@ -141,9 +128,117 @@ pub fn execute(
         let _ = std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600));
     }
 
-    eprintln!("{green}✓ MCP server '{name}' added to config{reset}");
+    eprintln!(
+        "{green}✓ MCP server '{}' added to config{reset}",
+        request.name
+    );
     eprintln!("{dim}Restart your shell or run a new query for it to become active.{reset}");
     Ok("MCP server configuration applied".to_string())
+}
+
+fn parse_request(input: &serde_json::Value) -> anyhow::Result<InstallMcpRequest> {
+    let name = input
+        .get("name")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("install_mcp_server: 'name' is required"))?;
+    let transport = input
+        .get("transport")
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                anyhow::anyhow!("install_mcp_server: 'transport' must be a string")
+            })
+        })
+        .transpose()?
+        .unwrap_or("stdio");
+    let args = parse_string_array_field(input, "args")?;
+    let env = parse_string_map_field(input, "env")?;
+    let timeout_seconds = input
+        .get("timeout_seconds")
+        .map(|value| {
+            value.as_u64().ok_or_else(|| {
+                anyhow::anyhow!("install_mcp_server: 'timeout_seconds' must be an integer")
+            })
+        })
+        .transpose()?
+        .unwrap_or(30);
+
+    let transport = match transport {
+        "stdio" => McpTransport::Stdio {
+            command: input
+                .get("command")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("install_mcp_server: 'command' is required for stdio transport")
+                })?,
+        },
+        "http" => McpTransport::Http {
+            url: input
+                .get("url")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("install_mcp_server: 'url' is required for http transport")
+                })?,
+        },
+        _ => anyhow::bail!("install_mcp_server: transport must be 'stdio' or 'http'"),
+    };
+
+    Ok(InstallMcpRequest {
+        name: name.to_string(),
+        transport,
+        args,
+        env,
+        timeout_seconds,
+    })
+}
+
+fn parse_string_array_field(
+    input: &serde_json::Value,
+    field: &str,
+) -> anyhow::Result<Vec<String>> {
+    let Some(value) = input.get(field) else {
+        return Ok(Vec::new());
+    };
+    let array = value
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("install_mcp_server: '{field}' must be an array"))?;
+    array
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "install_mcp_server: '{field}[{index}]' must be a string"
+                    )
+                })
+        })
+        .collect()
+}
+
+fn parse_string_map_field(
+    input: &serde_json::Value,
+    field: &str,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let Some(value) = input.get(field) else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("install_mcp_server: '{field}' must be an object"))?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            value.as_str().map(|value| (key.clone(), value.to_string())).ok_or_else(
+                || anyhow::anyhow!("install_mcp_server: '{field}.{key}' must be a string"),
+            )
+        })
+        .collect()
 }
 
 pub fn execute_outcome(
@@ -362,60 +457,71 @@ mod tests {
     fn test_args_parsing() {
         let input =
             json!({"name": "srv", "command": "node", "args": ["--port", "3000", "--verbose"]});
-        let args: Vec<String> = input["args"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert_eq!(args, vec!["--port", "3000", "--verbose"]);
+        let request = super::parse_request(&input).unwrap();
+        assert_eq!(request.args, vec!["--port", "3000", "--verbose"]);
     }
 
     #[test]
     fn test_args_missing_defaults_to_empty() {
         let input = json!({"name": "srv", "command": "node"});
-        let args: Vec<String> = input["args"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert!(args.is_empty());
+        let request = super::parse_request(&input).unwrap();
+        assert!(request.args.is_empty());
+    }
+
+    #[test]
+    fn test_args_reject_non_string_entries() {
+        let input = json!({"name": "srv", "command": "node", "args": ["--port", 3000]});
+        let result = super::parse_request(&input);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("'args[1]' must be a string")
+        );
     }
 
     #[test]
     fn test_env_parsing() {
         let input =
             json!({"name": "srv", "command": "node", "env": {"API_KEY": "abc", "PORT": "8080"}});
-        let env: std::collections::HashMap<String, String> = input["env"]
-            .as_object()
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert_eq!(env.len(), 2);
-        assert_eq!(env["API_KEY"], "abc");
-        assert_eq!(env["PORT"], "8080");
+        let request = super::parse_request(&input).unwrap();
+        assert_eq!(request.env.len(), 2);
+        assert_eq!(request.env["API_KEY"], "abc");
+        assert_eq!(request.env["PORT"], "8080");
     }
 
     #[test]
     fn test_env_missing_defaults_to_empty() {
         let input = json!({"name": "srv", "command": "node"});
-        let env: std::collections::HashMap<String, String> = input["env"]
-            .as_object()
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert!(env.is_empty());
+        let request = super::parse_request(&input).unwrap();
+        assert!(request.env.is_empty());
+    }
+
+    #[test]
+    fn test_env_rejects_non_string_values() {
+        let input = json!({"name": "srv", "command": "node", "env": {"PORT": 8080}});
+        let result = super::parse_request(&input);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("'env.PORT' must be a string")
+        );
+    }
+
+    #[test]
+    fn test_timeout_rejects_non_integer() {
+        let input = json!({"name": "srv", "command": "node", "timeout_seconds": "fast"});
+        let result = super::parse_request(&input);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("'timeout_seconds' must be an integer")
+        );
     }
 
     #[test]
