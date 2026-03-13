@@ -2661,7 +2661,7 @@ impl Db {
 
 // ── Data types ─────────────────────────────────────────────────────
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMatch {
     #[allow(dead_code)]
     pub id: i64,
@@ -2678,7 +2678,7 @@ pub struct HistoryMatch {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandEntityMatch {
     pub command_id: i64,
     pub session_id: String,
@@ -2701,7 +2701,7 @@ pub struct OtherSessionCommand {
     pub session_id: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandForSummary {
     pub id: i64,
     pub command: String,
@@ -2710,7 +2710,7 @@ pub struct CommandForSummary {
     pub output: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandWithSummary {
     pub command: String,
     pub cwd: Option<String>,
@@ -2721,7 +2721,7 @@ pub struct CommandWithSummary {
     pub output: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtherSessionSummary {
     pub command: String,
     #[allow(dead_code)]
@@ -2799,7 +2799,7 @@ impl std::fmt::Display for ConversationResponseKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationExchange {
     pub query: String,
     pub response_type: ConversationResponseKind,

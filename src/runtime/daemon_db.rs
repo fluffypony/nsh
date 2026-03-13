@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use serde::de::DeserializeOwned;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
 use crate::db::{
@@ -441,20 +442,98 @@ fn memory_store_op(memory_type: MemoryType, data: serde_json::Value) -> anyhow::
 #[derive(Default)]
 pub struct DaemonDb;
 
+#[derive(Debug, serde::Deserialize)]
+struct ConversationsResponse {
+    conversations: Vec<ConversationExchange>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CommandsWithSummariesResponse {
+    commands: Vec<CommandWithSummary>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OtherSessionsSummariesResponse {
+    commands: Vec<OtherSessionSummary>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HistoryMatchesResponse {
+    results: Vec<HistoryMatch>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CommandEntityMatchesResponse {
+    results: Vec<CommandEntityMatch>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CommandsNeedingSummaryResponse {
+    commands: Vec<CommandForSummary>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateSummaryResponse {
+    updated: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PromptResponse {
+    prompt: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct IntIdResponse {
+    id: i64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StringIdResponse {
+    id: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SecretSearchMatch {
+    id: String,
+    entry_type: String,
+    caption: String,
+    sensitivity: Sensitivity,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct SecretSearchResponse {
+    results: Vec<SecretSearchMatch>,
+}
+
 impl DaemonDb {
     pub fn new() -> Self {
         Self
     }
 
-    fn request(&self, request: DaemonRequest) -> anyhow::Result<Option<serde_json::Value>> {
+    fn request_data<T: DeserializeOwned>(&self, request: DaemonRequest) -> anyhow::Result<T> {
         match crate::daemon_client::send_to_global(&request)? {
-            DaemonResponse::Ok { data } => Ok(data),
+            DaemonResponse::Ok { data: Some(data) } => serde_json::from_value(data).map_err(|e| {
+                anyhow!(
+                    "daemon returned invalid {} payload: {e}",
+                    std::any::type_name::<T>()
+                )
+            }),
+            DaemonResponse::Ok { data: None } => anyhow::bail!(
+                "daemon returned no payload for {}",
+                std::any::type_name::<T>()
+            ),
             DaemonResponse::Error { message } => Err(anyhow!(message)),
         }
     }
 
-    fn data_or_empty(data: Option<serde_json::Value>) -> serde_json::Value {
-        data.unwrap_or_else(|| serde_json::json!({}))
+    fn request_unit(&self, request: DaemonRequest) -> anyhow::Result<()> {
+        match crate::daemon_client::send_to_global(&request)? {
+            DaemonResponse::Ok { data: None } => Ok(()),
+            DaemonResponse::Ok { data: Some(_) } => {
+                anyhow::bail!("daemon returned unexpected payload for unit response")
+            }
+            DaemonResponse::Error { message } => Err(anyhow!(message)),
+        }
     }
 
     fn caller_context() -> crate::daemon::CallerContext {
@@ -474,52 +553,12 @@ impl DbAccess for DaemonDb {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<ConversationExchange>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::GetConversations {
+        let response: ConversationsResponse = self.request_data(DaemonRequest::GetConversations {
             session: session_id.to_string(),
             limit,
             caller: Self::caller_context(),
-        })?);
-        let arr = data
-            .get("conversations")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| ConversationExchange {
-                query: v
-                    .get("query")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                response_type: v
-                    .get("response_type")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .into(),
-                response: v
-                    .get("response")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                explanation: v
-                    .get("explanation")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-                result_exit_code: v
-                    .get("result_exit_code")
-                    .and_then(|x| x.as_i64())
-                    .map(|n| n as i32),
-                result_output_snippet: v
-                    .get("result_output_snippet")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-                created_at: v
-                    .get("created_at")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-            })
-            .collect())
+        })?;
+        Ok(response.conversations)
     }
 
     fn recent_commands_with_summaries(
@@ -527,43 +566,13 @@ impl DbAccess for DaemonDb {
         session_id: &str,
         limit: usize,
     ) -> anyhow::Result<Vec<CommandWithSummary>> {
-        let data =
-            Self::data_or_empty(self.request(DaemonRequest::RecentCommandsWithSummaries {
+        let response: CommandsWithSummariesResponse =
+            self.request_data(DaemonRequest::RecentCommandsWithSummaries {
                 session: session_id.to_string(),
                 limit,
                 caller: Self::caller_context(),
-            })?);
-        let arr = data
-            .get("commands")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| CommandWithSummary {
-                command: v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-                exit_code: v
-                    .get("exit_code")
-                    .and_then(|x| x.as_i64())
-                    .map(|n| n as i32),
-                started_at: v
-                    .get("started_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                duration_ms: v.get("duration_ms").and_then(|x| x.as_i64()),
-                summary: v
-                    .get("summary")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-                output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
-            })
-            .collect())
+            })?;
+        Ok(response.commands)
     }
 
     fn other_sessions_with_summaries(
@@ -572,109 +581,22 @@ impl DbAccess for DaemonDb {
         max_ttys: usize,
         summaries_per_tty: usize,
     ) -> anyhow::Result<Vec<OtherSessionSummary>> {
-        let data =
-            Self::data_or_empty(self.request(DaemonRequest::OtherSessionsWithSummaries {
+        let response: OtherSessionsSummariesResponse =
+            self.request_data(DaemonRequest::OtherSessionsWithSummaries {
                 session: session_id.to_string(),
                 max_ttys,
                 summaries_per_tty,
                 caller: Self::caller_context(),
-            })?);
-        let arr = data
-            .get("commands")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| OtherSessionSummary {
-                command: v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-                exit_code: v
-                    .get("exit_code")
-                    .and_then(|x| x.as_i64())
-                    .map(|n| n as i32),
-                started_at: v
-                    .get("started_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                summary: v
-                    .get("summary")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-                tty: v
-                    .get("tty")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                shell: v
-                    .get("shell")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                session_id: v
-                    .get("session_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-            .collect())
+            })?;
+        Ok(response.commands)
     }
 
     fn search_history(&self, query: &str, limit: usize) -> anyhow::Result<Vec<HistoryMatch>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistory {
+        let response: HistoryMatchesResponse = self.request_data(DaemonRequest::SearchHistory {
             query: query.to_string(),
             limit,
-        })?);
-        let arr = data
-            .get("results")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| HistoryMatch {
-                id: v.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
-                session_id: v
-                    .get("session_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                command: v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-                exit_code: v
-                    .get("exit_code")
-                    .and_then(|x| x.as_i64())
-                    .map(|n| n as i32),
-                started_at: v
-                    .get("started_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
-                summary: v
-                    .get("summary")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-                cmd_highlight: v
-                    .get("cmd_highlight")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                output_highlight: v
-                    .get("output_highlight")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-            })
-            .collect())
+        })?;
+        Ok(response.results)
     }
 
     fn search_history_advanced(
@@ -689,7 +611,8 @@ impl DbAccess for DaemonDb {
         current_session: Option<&str>,
         limit: usize,
     ) -> anyhow::Result<Vec<HistoryMatch>> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::SearchHistoryAdvanced {
+        let response: HistoryMatchesResponse =
+            self.request_data(DaemonRequest::SearchHistoryAdvanced {
             fts_query: fts_query.map(str::to_string),
             regex_pattern: regex_pattern.map(str::to_string),
             since: since.map(str::to_string),
@@ -699,52 +622,8 @@ impl DbAccess for DaemonDb {
             session_filter: session_filter.map(str::to_string),
             current_session: current_session.map(str::to_string),
             limit,
-        })?);
-        let arr = data
-            .get("results")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| HistoryMatch {
-                id: v.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
-                session_id: v
-                    .get("session_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                command: v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-                exit_code: v
-                    .get("exit_code")
-                    .and_then(|x| x.as_i64())
-                    .map(|n| n as i32),
-                started_at: v
-                    .get("started_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
-                summary: v
-                    .get("summary")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-                cmd_highlight: v
-                    .get("cmd_highlight")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                output_highlight: v
-                    .get("output_highlight")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
-            })
-            .collect())
+        })?;
+        Ok(response.results)
     }
 
     fn search_command_entities(
@@ -759,7 +638,8 @@ impl DbAccess for DaemonDb {
         limit: usize,
     ) -> anyhow::Result<Vec<CommandEntityMatch>> {
         let limit = limit.min(200);
-        let data = Self::data_or_empty(self.request(DaemonRequest::SearchCommandEntities {
+        let response: CommandEntityMatchesResponse =
+            self.request_data(DaemonRequest::SearchCommandEntities {
             executable: executable.map(str::to_string),
             entity: entity.map(str::to_string),
             entity_type: entity_type.map(str::to_string),
@@ -768,52 +648,8 @@ impl DbAccess for DaemonDb {
             session_filter: session_filter.map(str::to_string),
             current_session: current_session.map(str::to_string),
             limit,
-        })?);
-        let arr = data
-            .get("results")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| CommandEntityMatch {
-                command_id: v
-                    .get("command_id")
-                    .and_then(|x| x.as_i64())
-                    .unwrap_or_default(),
-                session_id: v
-                    .get("session_id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                command: v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-                started_at: v
-                    .get("started_at")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                executable: v
-                    .get("executable")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                entity: v
-                    .get("entity")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                entity_type: v
-                    .get("entity_type")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            })
-            .collect())
+        })?;
+        Ok(response.results)
     }
 
     fn insert_conversation(
@@ -826,7 +662,7 @@ impl DbAccess for DaemonDb {
         executed: bool,
         pending: bool,
     ) -> anyhow::Result<i64> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::InsertConversation {
+        let response: IntIdResponse = self.request_data(DaemonRequest::InsertConversation {
             session_id: session_id.to_string(),
             query: query.to_string(),
             response_type: response_type.into(),
@@ -834,75 +670,45 @@ impl DbAccess for DaemonDb {
             explanation: explanation.map(str::to_string),
             executed,
             pending,
-        })?);
-        Ok(data.get("id").and_then(|v| v.as_i64()).unwrap_or_default())
+        })?;
+        Ok(response.id)
     }
 
     fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()> {
-        self.request(DaemonRequest::ClearConversations {
+        self.request_unit(DaemonRequest::ClearConversations {
             session: session_id.to_string(),
-        })?;
-        Ok(())
+        })
     }
 
     fn commands_needing_llm_summary(&self, limit: usize) -> anyhow::Result<Vec<CommandForSummary>> {
-        let data =
-            Self::data_or_empty(self.request(DaemonRequest::CommandsNeedingLlmSummary { limit })?);
-        let arr = data
-            .get("commands")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        Ok(arr
-            .into_iter()
-            .map(|v| CommandForSummary {
-                id: v.get("id").and_then(|x| x.as_i64()).unwrap_or_default(),
-                command: v
-                    .get("command")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                cwd: v.get("cwd").and_then(|x| x.as_str()).map(str::to_string),
-                exit_code: v
-                    .get("exit_code")
-                    .and_then(|x| x.as_i64())
-                    .map(|n| n as i32),
-                output: v.get("output").and_then(|x| x.as_str()).map(str::to_string),
-            })
-            .collect())
+        let response: CommandsNeedingSummaryResponse =
+            self.request_data(DaemonRequest::CommandsNeedingLlmSummary { limit })?;
+        Ok(response.commands)
     }
 
     fn update_summary(&self, id: i64, summary: &str) -> anyhow::Result<bool> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::UpdateSummary {
+        let response: UpdateSummaryResponse = self.request_data(DaemonRequest::UpdateSummary {
             id,
             summary: summary.to_string(),
-        })?);
-        Ok(data
-            .get("updated")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false))
+        })?;
+        Ok(response.updated)
     }
 
     fn mark_summary_error(&self, id: i64, error: &str) -> anyhow::Result<()> {
-        self.request(DaemonRequest::MarkSummaryError {
+        self.request_unit(DaemonRequest::MarkSummaryError {
             id,
             error: error.to_string(),
-        })?;
-        Ok(())
+        })
     }
 
     fn memory_retrieve_prompt(
         &self,
         ctx: &crate::memory::types::MemoryQueryContext,
     ) -> anyhow::Result<String> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieve {
+        let response: PromptResponse = self.request_data(DaemonRequest::MemoryRetrieve {
             context_json: serde_json::to_string(ctx)?,
-        })?);
-        Ok(data
-            .get("prompt")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string())
+        })?;
+        Ok(response.prompt)
     }
 
     fn memory_search(
@@ -911,43 +717,37 @@ impl DbAccess for DaemonDb {
         memory_type: Option<MemoryType>,
         limit: usize,
     ) -> anyhow::Result<String> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::MemorySearch {
+        let data: serde_json::Value = self.request_data(DaemonRequest::MemorySearch {
             query: query.to_string(),
             memory_type,
             limit,
-        })?);
+        })?;
         Ok(serde_json::to_string(&data)?)
     }
 
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
-        self.request(DaemonRequest::MemoryCoreAppend {
+        self.request_unit(DaemonRequest::MemoryCoreAppend {
             label: label.to_string(),
             content: content.to_string(),
             caller: Self::caller_context(),
-        })?;
-        Ok(())
+        })
     }
 
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()> {
-        self.request(DaemonRequest::MemoryCoreRewrite {
+        self.request_unit(DaemonRequest::MemoryCoreRewrite {
             label: label.to_string(),
             content: content.to_string(),
             caller: Self::caller_context(),
-        })?;
-        Ok(())
+        })
     }
 
     fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryStore {
+        let response: StringIdResponse = self.request_data(DaemonRequest::MemoryStore {
             memory_type,
             data_json: data_json.to_string(),
             caller: Self::caller_context(),
-        })?);
-        Ok(data
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string())
+        })?;
+        Ok(response.id)
     }
 
     fn memory_retrieve_secret(
@@ -955,11 +755,11 @@ impl DbAccess for DaemonDb {
         caption_query: &str,
         explicit_user_request: Option<&str>,
     ) -> anyhow::Result<String> {
-        let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieveSecret {
+        let response: SecretSearchResponse = self.request_data(DaemonRequest::MemoryRetrieveSecret {
             caption_query: caption_query.to_string(),
             caller: Self::caller_context_with_request(explicit_user_request),
-        })?);
-        Ok(serde_json::to_string(&data)?)
+        })?;
+        Ok(serde_json::to_string(&response)?)
     }
 
     // memory_record_event removed from trait
@@ -1174,7 +974,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn get_conversations_maps_response_and_defaults_missing_fields() {
+    fn get_conversations_maps_typed_response() {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
         let _session_guard = EnvVarGuard::set("NSH_SESSION_ID", "caller-sess");
         let (request_rx, handle) = spawn_mock_global_daemon(
@@ -1191,7 +991,10 @@ mod tests {
                         "created_at": "2026-02-01T10:00:00Z"
                     },
                     {
-                        "query": "minimal"
+                        "query": "minimal",
+                        "response_type": "command",
+                        "response": "cargo test",
+                        "result_exit_code": 0
                     }
                 ]
             })),
@@ -1208,8 +1011,9 @@ mod tests {
         assert_eq!(rows[0].response, "check logs");
         assert_eq!(rows[0].result_exit_code, Some(2));
         assert_eq!(rows[1].query, "minimal");
-        assert_eq!(rows[1].response_type, "");
-        assert_eq!(rows[1].response, "");
+        assert_eq!(rows[1].response_type, "command");
+        assert_eq!(rows[1].response, "cargo test");
+        assert_eq!(rows[1].result_exit_code, Some(0));
 
         let request = request_rx.recv().expect("captured request");
         assert_eq!(request["type"], "get_conversations");
@@ -1217,6 +1021,38 @@ mod tests {
         assert_eq!(request["limit"], 5);
         assert_eq!(request["caller"]["session"], "caller-sess");
         assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn get_conversations_invalid_payload_surfaces_deserialize_error() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "conversations": [
+                    {
+                        "query": "broken",
+                        "response_type": 123,
+                        "response": "noop"
+                    }
+                ]
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let err = db
+            .get_conversations("sess-1", 5)
+            .expect_err("invalid payload should fail");
+
+        assert!(
+            err.to_string().contains("invalid"),
+            "unexpected error: {err}"
+        );
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "get_conversations");
         handle.join().expect("join daemon thread");
     }
 
