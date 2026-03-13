@@ -1,3 +1,4 @@
+pub mod access;
 pub mod core;
 pub mod episodic;
 pub mod knowledge;

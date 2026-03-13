@@ -1,3 +1,4 @@
+pub mod engine;
 pub mod prompt_builder;
 pub mod ranker;
 pub mod topic_extractor;

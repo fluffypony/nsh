@@ -3,6 +3,7 @@ pub mod decay;
 pub mod id;
 pub mod ingestion;
 pub mod llm_adapter;
+pub mod maintenance;
 pub mod privacy;
 pub mod reflection;
 pub mod retrieval;
@@ -71,45 +72,14 @@ impl MemorySystem {
     }
 
     pub fn record_event(&self, event: ShellEvent) {
-        if self.config.incognito || !self.config.enabled {
-            return;
-        }
-
-        // Check ignored paths
-        if let Some(ref cwd) = event.working_dir
-            && self.is_ignored_path(Path::new(cwd))
-        {
-            return;
-        }
-
-        // Skip password prompts
-        if let Some(ref output) = event.output {
-            if privacy::is_password_prompt(output) {
-                return;
-            }
-            if privacy::should_skip_output(output) {
-                return;
-            }
-        }
-
-        let mut buffer = self.ingestion_buffer.lock().unwrap();
-        let _should_flush = buffer.push(event);
-        // Auto-flush is handled by the caller (daemon) via flush_ingestion()
+        self.ingestion_pipeline().record_event(event);
     }
 
     pub async fn flush_ingestion(
         &self,
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<()> {
-        let events = {
-            let mut buffer = self.ingestion_buffer.lock().unwrap();
-            if buffer.is_empty() {
-                return Ok(());
-            }
-            buffer.flush()
-        };
-        self.ingest_batch(&events, llm).await?;
-        Ok(())
+        self.ingestion_pipeline().flush_ingestion(llm).await
     }
 
     pub async fn ingest_batch(
@@ -117,77 +87,7 @@ impl MemorySystem {
         events: &[ShellEvent],
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<Vec<MemoryOp>> {
-        let mut all_ops = Vec::new();
-
-        // Separate fast-path and complex events
-        let mut complex_events = Vec::new();
-
-        for event in events {
-            let decision = ingestion::router::route(event);
-            if ingestion::can_fast_path(event) && decision.only_episodic() {
-                let ep = ingestion::fast_path_episodic(event);
-                // Check for merge candidates
-                let merge_id = {
-                    let conn = self.db.lock().unwrap();
-                    ingestion::consolidator::find_merge_candidate(&conn, &ep.summary, 30)?
-                };
-                if let Some(id) = merge_id {
-                    {
-                        let conn = self.db.lock().unwrap();
-                        store::episodic::merge(
-                            &conn,
-                            &id,
-                            &ep.summary,
-                            ep.details.as_deref(),
-                            &ep.search_keywords,
-                        )?;
-                    }
-                    all_ops.push(MemoryOp::EpisodicMerge {
-                        target_id: id,
-                        combined_summary: ep.summary,
-                        additional_details: ep.details,
-                        search_keywords: ep.search_keywords,
-                    });
-                } else {
-                    let conn = self.db.lock().unwrap();
-                    store::episodic::insert(&conn, &ep)?;
-                    all_ops.push(MemoryOp::EpisodicInsert { event: ep });
-                }
-            } else {
-                complex_events.push(event.clone());
-            }
-        }
-
-        // Process complex events with LLM extraction
-        if !complex_events.is_empty() {
-            // Collect inputs while holding DB lock in a limited scope, then drop before await
-            let (core, recent, semantic, procedural) = {
-                let conn = self.db.lock().unwrap();
-                let core = store::core::get_all(&conn)?;
-                let recent = store::episodic::list_recent(&conn, 10, None, None)?;
-                let semantic = store::semantic::list_all(&conn)?;
-                let procedural = store::procedural::list_all(&conn)?;
-                (core, recent, semantic, procedural)
-            };
-
-            let ops = ingestion::extractor::extract_memory_ops(
-                &complex_events,
-                &core,
-                &recent,
-                &semantic,
-                &procedural,
-                llm,
-            )
-            .await?;
-
-            let conn = self.db.lock().unwrap();
-            for op in &ops {
-                self.apply_op(&conn, op)?;
-            }
-            all_ops.extend(ops);
-        }
-
-        Ok(all_ops)
+        self.ingestion_pipeline().ingest_batch(events, llm).await
     }
 
     pub async fn retrieve_for_query(
@@ -195,95 +95,16 @@ impl MemorySystem {
         ctx: &MemoryQueryContext,
         llm: Option<&dyn llm_adapter::MemoryLlmClient>,
     ) -> anyhow::Result<RetrievedMemories> {
-        // Parse temporal expression from query to constrain time range
-        let temporal_range =
-            crate::memory::temporal::parse_temporal_expression(&ctx.query, chrono::Utc::now());
-        // Use space separator to match SQLite's datetime() format: "YYYY-MM-DD HH:MM:SS"
-        let since_str =
-            temporal_range.map(|(start, _)| start.format("%Y-%m-%d %H:%M:%S").to_string());
-        let since_ref = since_str.as_deref();
-
-        // Get fade cutoff and core/recent data while holding the lock briefly
-        let (fade_cutoff, core, recent, top_semantic, cwd_resources) = {
-            let conn = self.db.lock().unwrap();
-            let cutoff = decay::get_fade_cutoff(&conn, self.config.fade_after_days)?;
-            let core = store::core::get_all(&conn)?;
-            let recent = store::episodic::list_recent(&conn, 10, Some(&cutoff), since_ref)?;
-            // MIRIX: always fetch high-access semantic items (user preferences)
-            let top_sem = store::semantic::list_top_accessed(&conn, 5).unwrap_or_default();
-            // MIRIX: always fetch CWD-relevant resources
-            let cwd_res = if let Some(ref cwd) = ctx.cwd {
-                store::resource::get_for_cwd(&conn, cwd, 3).unwrap_or_default()
-            } else {
-                vec![]
-            };
-            (cutoff, core, recent, top_sem, cwd_res)
-        };
-
-        // Extract topics without holding the lock (may call LLM)
-        let keywords = retrieval::topic_extractor::extract(ctx, llm).await;
-
-        // Re-acquire lock for searches
-        let conn = self.db.lock().unwrap();
-        let mut memories = RetrievedMemories {
-            keywords: keywords.clone(),
-            core,
-            recent_episodic: recent,
-            // MIRIX: seed with always-recalled semantic items and CWD resources
-            semantic: top_semantic,
-            resource: cwd_resources,
-            ..Default::default()
-        };
-
-        if retrieval::needs_full_retrieval(ctx.interaction_mode) && !keywords.is_empty() {
-            let query_str = keywords.join(" ");
-            memories.relevant_episodic =
-                store::episodic::search_bm25(&conn, &query_str, 10, Some(&fade_cutoff), since_ref)?;
-
-            // Merge BM25 semantic results with always-recalled top-accessed items
-            let bm25_semantic = store::semantic::search_bm25(&conn, &query_str, 10)?;
-            for item in bm25_semantic {
-                if !memories
-                    .semantic
-                    .iter()
-                    .any(|existing| existing.id == item.id)
-                {
-                    memories.semantic.push(item);
-                }
-            }
-
-            memories.procedural = store::procedural::search_bm25(&conn, &query_str, 5)?;
-
-            // Merge BM25 resource results with always-recalled CWD resources
-            let bm25_resources = store::resource::search_bm25(&conn, &query_str, 5)?;
-            for r in bm25_resources {
-                if !memories.resource.iter().any(|existing| existing.id == r.id) {
-                    memories.resource.push(r);
-                }
-            }
-
-            memories.knowledge =
-                store::knowledge::search_bm25(&conn, &query_str, 5, Sensitivity::Medium)?;
-        }
-
-        // Enforce budget first, then increment access counts only for
-        // items that survive truncation (MIRIX: track what's actually shown)
-        retrieval::ranker::enforce_budget(&mut memories, 4000);
-        for item in &memories.semantic {
-            let _ = store::semantic::increment_access(&conn, &item.id);
-        }
-
-        drop(conn);
-        Ok(memories)
+        self.retrieval_engine().retrieve_for_query(ctx, llm).await
     }
 
     pub fn build_memory_prompt(&self, memories: &RetrievedMemories) -> String {
-        retrieval::prompt_builder::build_memory_prompt(memories)
+        self.retrieval_engine().build_memory_prompt(memories)
     }
 
     pub fn get_core_memory(&self) -> anyhow::Result<Vec<CoreBlock>> {
         let conn = self.db.lock().unwrap();
-        store::core::get_all(&conn)
+        store::access::MemoryStoreAccess::new(&conn).get_core_memory()
     }
 
     pub fn update_core_block(
@@ -293,10 +114,7 @@ impl MemorySystem {
         content: &str,
     ) -> anyhow::Result<()> {
         let conn = self.db.lock().unwrap();
-        match op {
-            CoreOp::Append => store::core::append(&conn, label, content),
-            CoreOp::Rewrite => store::core::rewrite(&conn, label, content),
-        }
+        store::access::MemoryStoreAccess::new(&conn).update_core_block(label, op, content)
     }
 
     pub fn search(
@@ -306,229 +124,57 @@ impl MemorySystem {
         limit: usize,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let conn = self.db.lock().unwrap();
-        search::search_all(&conn, query, memory_type, limit)
+        store::access::MemoryStoreAccess::new(&conn).search(query, memory_type, limit)
     }
 
     pub fn delete_memory(&self, memory_type: MemoryType, id: &str) -> anyhow::Result<()> {
         let conn = self.db.lock().unwrap();
-        let ids = vec![id.to_string()];
-        match memory_type {
-            MemoryType::Core => anyhow::bail!("Cannot delete core memory blocks"),
-            MemoryType::Episodic => {
-                store::episodic::delete(&conn, &ids)?;
-            }
-            MemoryType::Semantic => {
-                store::semantic::delete(&conn, &ids)?;
-            }
-            MemoryType::Procedural => {
-                store::procedural::delete(&conn, &ids)?;
-            }
-            MemoryType::Resource => {
-                store::resource::delete(&conn, &ids)?;
-            }
-            MemoryType::Knowledge => {
-                store::knowledge::delete(&conn, &ids)?;
-            }
-        }
-        Ok(())
+        store::access::MemoryStoreAccess::new(&conn).delete_memory(memory_type, id)
     }
 
     pub fn export_all(&self) -> anyhow::Result<serde_json::Value> {
         let conn = self.db.lock().unwrap();
-        let core = store::core::get_all(&conn)?;
-        let episodic = store::episodic::list_all(&conn)?;
-        let semantic = store::semantic::list_all(&conn)?;
-        let procedural = store::procedural::list_all(&conn)?;
-        let resource = store::resource::list_all(&conn)?;
-        let knowledge = store::knowledge::list_all(&conn)?;
-
-        Ok(serde_json::json!({
-            "core": core,
-            "episodic": episodic,
-            "semantic": semantic,
-            "procedural": procedural,
-            "resource": resource,
-            "knowledge": knowledge,
-        }))
+        store::access::MemoryStoreAccess::new(&conn).export_all()
     }
 
     pub fn stats(&self) -> anyhow::Result<MemoryStats> {
         let conn = self.db.lock().unwrap();
-        Ok(MemoryStats {
-            core_count: 3,
-            episodic_count: store::episodic::count(&conn)?,
-            semantic_count: store::semantic::count(&conn)?,
-            procedural_count: store::procedural::count(&conn)?,
-            resource_count: store::resource::count(&conn)?,
-            knowledge_count: store::knowledge::count(&conn)?,
-        })
+        store::access::MemoryStoreAccess::new(&conn).stats()
     }
 
     pub fn run_decay(&self) -> anyhow::Result<DecayReport> {
-        let conn = self.db.lock().unwrap();
-        let report = decay::run_decay(
-            &conn,
-            self.config.fade_after_days,
-            self.config.expire_after_days,
-        )?;
-        decay::record_decay_run(&conn)?;
-        Ok(report)
+        self.maintenance().run_decay()
     }
 
     pub async fn run_reflection(
         &self,
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<ReflectionReport> {
-        // Phase 1: snapshot state under lock
-        let (unconsolidated, core, semantic, procedural) = {
-            let conn = self.db.lock().unwrap();
-            let uncon = crate::memory::store::episodic::list_unconsolidated(&conn, 100)?;
-            if uncon.is_empty() {
-                return Ok(ReflectionReport::default());
-            }
-            let core = crate::memory::store::core::get_all(&conn)?;
-            let semantic = crate::memory::store::semantic::list_all(&conn)?;
-            let procedural = crate::memory::store::procedural::list_all(&conn)?;
-            (uncon, core, semantic, procedural)
-        };
-
-        // Phase 2: LLM call without holding the DB lock
-        let prompt =
-            reflection::build_reflection_prompt(&unconsolidated, &core, &semantic, &procedural);
-        let response = llm.complete_json(&prompt).await?;
-        let ops = reflection::parse_reflection_response(&response);
-
-        // Phase 3: apply ops and mark consolidated under lock
-        let mut report = ReflectionReport::default();
-        let ids: Vec<String> = unconsolidated.iter().map(|e| e.id.clone()).collect();
-        let conn = self.db.lock().unwrap();
-        for op in &ops {
-            if self.apply_op(&conn, op).is_ok() {
-                report.ops_applied += 1;
-            }
-        }
-        crate::memory::store::episodic::mark_consolidated(&conn, &ids)?;
-        let _ = conn.execute(
-            "INSERT INTO memory_config(key, value) VALUES('last_reflection_at', datetime('now')) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![],
-        );
-        let _ = conn.execute(
-            "INSERT INTO memory_config(key, value) VALUES('reflection_runs', '1') \
-             ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1",
-            rusqlite::params![],
-        );
-        Ok(report)
+        self.maintenance().run_reflection(llm).await
     }
 
     pub async fn bootstrap_scan(
         &self,
         llm: &dyn llm_adapter::MemoryLlmClient,
     ) -> anyhow::Result<BootstrapReport> {
-        // Implement without holding the DB lock across awaits
-        let home = dirs::home_dir().unwrap_or_default();
-        let config_files = [
-            (".zshrc", "Zsh configuration"),
-            (".bashrc", "Bash configuration"),
-            (".bash_profile", "Bash profile"),
-            (".profile", "Shell profile"),
-            (".gitconfig", "Git configuration"),
-            (".ssh/config", "SSH configuration"),
-            (".cargo/config.toml", "Cargo configuration"),
-            (".npmrc", "npm configuration"),
-            (".docker/config.json", "Docker configuration"),
-        ];
-
-        let mut report = BootstrapReport::default();
-
-        for (filename, description) in &config_files {
-            let path = home.join(filename);
-            if !path.exists() {
-                continue;
-            }
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            if content.len() > 50_000 {
-                continue;
-            }
-            let (redacted, _) = crate::memory::privacy::redact_secrets_for_memory(&content);
-            let prompt = format!(
-                "Summarize this config file in 2-3 sentences. What tools, settings, and preferences does it reveal?\n\nFile: {filename} ({description})\n\n```\n{redacted}\n```\n\nAlso provide 5-10 search keywords as a space-separated string.\n\nRespond with JSON: {{\"summary\": \"...\", \"keywords\": \"...\"}}"
-            );
-
-            if let Ok(response) = llm.complete_json(&prompt).await {
-                let (summary, keywords) =
-                    crate::memory::bootstrap::parse_bootstrap_response(&response, description);
-                let path_str = path.to_string_lossy().to_string();
-                let hash = crate::memory::bootstrap::compute_hash(&content);
-                let conn = self.db.lock().unwrap();
-                crate::memory::store::resource::store(
-                    &conn,
-                    &crate::memory::store::resource::ResourceWrite {
-                        resource_type: "config",
-                        file_path: Some(&path_str),
-                        file_hash: Some(&hash),
-                        title: description,
-                        summary: &summary,
-                        content: None,
-                        search_keywords: &keywords,
-                    },
-                )?;
-                report.files_scanned += 1;
-            }
-        }
-
-        // Detect installed tools for Environment core block
-        let tools = crate::memory::bootstrap::detect_installed_tools();
-        if !tools.is_empty() {
-            let env_text = format!("Installed tools: {}", tools.join(", "));
-            let conn = self.db.lock().unwrap();
-            crate::memory::store::core::append(
-                &conn,
-                crate::memory::types::CoreLabel::Environment,
-                &env_text,
-            )?;
-        }
-
-        // Record bootstrap completion
-        let conn = self.db.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO memory_config (key, value) VALUES ('last_bootstrap_at', datetime('now'))",
-            [],
-        )?;
-
-        Ok(report)
+        self.maintenance().bootstrap_scan(llm).await
     }
 
     pub fn clear_all(&self) -> anyhow::Result<()> {
         let conn = self.db.lock().unwrap();
-        conn.execute_batch(
-            "DELETE FROM episodic_memory;
-             DELETE FROM semantic_memory;
-             DELETE FROM procedural_memory;
-             DELETE FROM resource_memory;
-             DELETE FROM knowledge_vault;
-             UPDATE core_memory SET value = '', updated_at = datetime('now');
-             DELETE FROM memory_config WHERE key IN ('last_decay_at', 'last_reflection_at', 'last_bootstrap_at');",
-        )?;
-        Ok(())
+        store::access::MemoryStoreAccess::new(&conn).clear_all()
     }
 
     pub fn has_bootstrapped(&self) -> bool {
-        let conn = self.db.lock().unwrap();
-        bootstrap::has_bootstrapped(&conn)
+        self.maintenance().has_bootstrapped()
     }
 
     pub fn should_run_reflection(&self) -> bool {
-        let conn = self.db.lock().unwrap();
-        reflection::should_run_reflection(&conn, self.config.consolidation_threshold)
+        self.maintenance().should_run_reflection()
     }
 
     pub fn should_run_decay(&self) -> bool {
-        let conn = self.db.lock().unwrap();
-        decay::should_run_decay(&conn)
+        self.maintenance().should_run_decay()
     }
 
     pub fn should_flush_ingestion(&self) -> bool {
@@ -548,174 +194,34 @@ impl MemorySystem {
     #[cfg(test)]
     pub fn set_config(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let conn = self.db.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO memory_config (key, value) VALUES (?, ?)",
-            rusqlite::params![key, value],
-        )?;
-        Ok(())
+        store::access::MemoryStoreAccess::new(&conn).set_config(key, value)
     }
 
     #[cfg(test)]
     pub fn resource_exists_with_hash(&self, path: &Path, hash: &str) -> anyhow::Result<bool> {
         let conn = self.db.lock().unwrap();
-        crate::memory::store::resource::exists_with_hash(&conn, &path.to_string_lossy(), hash)
+        store::access::MemoryStoreAccess::new(&conn).resource_exists_with_hash(path, hash)
     }
 
     fn apply_op(&self, conn: &Connection, op: &MemoryOp) -> anyhow::Result<()> {
-        match op {
-            MemoryOp::CoreAppend { label, content } => {
-                if let Some(l) = CoreLabel::from_str(label) {
-                    store::core::append(conn, l, content)?;
-                }
-            }
-            MemoryOp::CoreRewrite { label, content } => {
-                if let Some(l) = CoreLabel::from_str(label) {
-                    store::core::rewrite(conn, l, content)?;
-                }
-            }
-            MemoryOp::EpisodicInsert { event } => {
-                store::episodic::insert(conn, event)?;
-            }
-            MemoryOp::EpisodicMerge {
-                target_id,
-                combined_summary,
-                additional_details,
-                search_keywords,
-            } => {
-                store::episodic::merge(
-                    conn,
-                    target_id,
-                    combined_summary,
-                    additional_details.as_deref(),
-                    search_keywords,
-                )?;
-            }
-            MemoryOp::EpisodicDelete { ids } => {
-                store::episodic::delete(conn, ids)?;
-            }
-            MemoryOp::SemanticInsert {
-                name,
-                category,
-                summary,
-                details,
-                search_keywords,
-            } => {
-                store::semantic::store(
-                    conn,
-                    &store::semantic::SemanticWrite {
-                        name,
-                        category,
-                        summary,
-                        details: details.as_deref(),
-                        search_keywords,
-                    },
-                )?;
-            }
-            MemoryOp::SemanticUpdate {
-                id,
-                summary,
-                details,
-                search_keywords,
-            } => {
-                store::semantic::update(
-                    conn,
-                    id,
-                    &store::semantic::SemanticUpdate {
-                        summary,
-                        details: details.as_deref(),
-                        search_keywords,
-                    },
-                )?;
-            }
-            MemoryOp::SemanticDelete { ids } => {
-                store::semantic::delete(conn, ids)?;
-            }
-            MemoryOp::ProceduralInsert {
-                entry_type,
-                trigger_pattern,
-                summary,
-                steps,
-                search_keywords,
-            } => {
-                store::procedural::store(
-                    conn,
-                    &store::procedural::ProceduralWrite {
-                        entry_type,
-                        trigger_pattern,
-                        summary,
-                        steps,
-                        search_keywords,
-                    },
-                )?;
-            }
-            MemoryOp::ProceduralUpdate {
-                id,
-                summary,
-                steps,
-                search_keywords,
-            } => {
-                store::procedural::update(
-                    conn,
-                    id,
-                    &store::procedural::ProceduralUpdate {
-                        summary,
-                        steps,
-                        search_keywords,
-                    },
-                )?;
-            }
-            MemoryOp::ProceduralDelete { ids } => {
-                store::procedural::delete(conn, ids)?;
-            }
-            MemoryOp::ResourceInsert {
-                resource_type,
-                file_path,
-                file_hash,
-                title,
-                summary,
-                content,
-                search_keywords,
-            } => {
-                store::resource::store(
-                    conn,
-                    &store::resource::ResourceWrite {
-                        resource_type,
-                        file_path: file_path.as_deref(),
-                        file_hash: file_hash.as_deref(),
-                        title,
-                        summary,
-                        content: content.as_deref(),
-                        search_keywords,
-                    },
-                )?;
-            }
-            MemoryOp::ResourceDelete { ids } => {
-                store::resource::delete(conn, ids)?;
-            }
-            MemoryOp::KnowledgeInsert {
-                entry_type,
-                caption,
-                secret_value,
-                sensitivity,
-                search_keywords,
-            } => {
-                store::knowledge::store(
-                    conn,
-                    &store::knowledge::KnowledgeWrite {
-                        entry_type,
-                        caption,
-                        secret_value,
-                        sensitivity: *sensitivity,
-                        search_keywords,
-                    },
-                )?;
-            }
-            MemoryOp::KnowledgeDelete { ids } => {
-                store::knowledge::delete(conn, ids)?;
-            }
-            MemoryOp::NoOp { .. } => {}
-        }
-        Ok(())
+        store::access::MemoryStoreAccess::new(conn).apply_op(op)
+    }
+
+    fn ingestion_pipeline(&self) -> ingestion::pipeline::MemoryIngestionPipeline<'_> {
+        ingestion::pipeline::MemoryIngestionPipeline::new(
+            &self.db,
+            &self.config,
+            &self.ingestion_buffer,
+            &self.ignore_patterns,
+        )
+    }
+
+    fn retrieval_engine(&self) -> retrieval::engine::MemoryRetrievalEngine<'_> {
+        retrieval::engine::MemoryRetrievalEngine::new(&self.db, &self.config)
+    }
+
+    fn maintenance(&self) -> maintenance::MemoryMaintenance<'_> {
+        maintenance::MemoryMaintenance::new(&self.db, &self.config)
     }
 }
 

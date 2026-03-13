@@ -2,6 +2,7 @@ pub mod classifier;
 pub mod consolidator;
 pub mod extractor;
 pub mod output_truncator;
+pub mod pipeline;
 pub mod router;
 
 use std::time::{Duration, Instant};
@@ -155,9 +156,10 @@ fn generate_fast_path_keywords(event: &ShellEvent) -> String {
         if let Some(dir) = std::path::Path::new(trimmed)
             .file_name()
             .and_then(|n| n.to_str())
-            && !dir.is_empty() {
-                keywords.push(dir.to_string());
-            }
+            && !dir.is_empty()
+        {
+            keywords.push(dir.to_string());
+        }
     }
     keywords.dedup();
     keywords.join(" ")
