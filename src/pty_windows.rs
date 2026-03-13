@@ -1,6 +1,7 @@
 pub fn run_wrapped_shell(
     _shell: &str,
     _wrap_config: &crate::shim::ShimWrapConfig,
+    _parent_bootstrap: Option<fn()>,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
         "PTY wrapping is not supported on native Windows.\n\
@@ -28,7 +29,7 @@ mod tests {
 
     #[test]
     fn run_wrapped_shell_returns_actionable_error_message() {
-        let err = run_wrapped_shell("pwsh", &crate::shim::ShimWrapConfig::default())
+        let err = run_wrapped_shell("pwsh", &crate::shim::ShimWrapConfig::default(), None)
             .expect_err("run_wrapped_shell should fail on windows shim");
         let text = err.to_string();
         assert!(text.contains("not supported on native Windows"));
