@@ -1,92 +1,218 @@
 use crate::memory::types::{CoreUpdateDecision, RoutingDecision, ShellEvent, ShellEventType};
 
+#[derive(Clone, Copy)]
+enum PolicyControl {
+    Continue,
+    Stop,
+}
+
+struct RoutingPolicy {
+    apply: fn(&ShellEvent, &mut RoutingDecision) -> PolicyControl,
+}
+
+const ROUTING_POLICIES: &[RoutingPolicy] = &[
+    RoutingPolicy {
+        apply: apply_session_lifecycle_policy,
+    },
+    RoutingPolicy {
+        apply: apply_project_switch_policy,
+    },
+    RoutingPolicy {
+        apply: apply_user_instruction_policy,
+    },
+    RoutingPolicy {
+        apply: apply_secret_detection_policy,
+    },
+    RoutingPolicy {
+        apply: apply_project_info_policy,
+    },
+    RoutingPolicy {
+        apply: apply_environment_change_policy,
+    },
+    RoutingPolicy {
+        apply: apply_preference_policy,
+    },
+    RoutingPolicy {
+        apply: apply_config_file_policy,
+    },
+    RoutingPolicy {
+        apply: apply_significant_read_policy,
+    },
+    RoutingPolicy {
+        apply: apply_structured_output_policy,
+    },
+    RoutingPolicy {
+        apply: apply_error_learning_policy,
+    },
+];
+
 pub fn route(event: &ShellEvent) -> RoutingDecision {
     let mut decision = RoutingDecision {
         update_episodic: true, // almost always create an episodic record
         ..Default::default()
     };
 
+    for policy in ROUTING_POLICIES {
+        if matches!((policy.apply)(event, &mut decision), PolicyControl::Stop) {
+            return finalize_decision(decision);
+        }
+    }
+
+    finalize_decision(decision)
+}
+
+fn finalize_decision(mut decision: RoutingDecision) -> RoutingDecision {
+    if decision.reasoning.is_empty() {
+        decision.reasoning = "Standard command execution".into();
+    }
+    decision
+}
+
+fn apply_session_lifecycle_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
     match event.event_type {
         ShellEventType::SessionStart | ShellEventType::SessionEnd => {
             decision.reasoning = "Session lifecycle event".into();
-            return decision;
+            PolicyControl::Stop
         }
+        _ => PolicyControl::Continue,
+    }
+}
+
+fn apply_project_switch_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    match event.event_type {
         ShellEventType::ProjectSwitch => {
             decision.reasoning = "Project switch event".into();
-            return decision;
+            PolicyControl::Stop
         }
-        ShellEventType::UserInstruction => {
-            if let Some(ref text) = event.instruction
-                && is_explicit_memory_directive(text) {
-                    decision.update_core = Some(CoreUpdateDecision {
-                        label: "human".into(),
-                        op: "append".into(),
-                    });
-                    decision.reasoning = "Explicit memory directive detected".into();
-                    return decision;
-                }
-            decision.update_semantic = true;
-            decision.reasoning = "User instruction may contain useful facts".into();
-            return decision;
-        }
-        _ => {}
+        _ => PolicyControl::Continue,
     }
+}
 
+fn apply_user_instruction_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    if event.event_type != ShellEventType::UserInstruction {
+        return PolicyControl::Continue;
+    }
+    if let Some(text) = event.instruction.as_deref()
+        && is_explicit_memory_directive(text)
+    {
+        set_core_append(decision, "human", "Explicit memory directive detected");
+        return PolicyControl::Stop;
+    }
+    decision.update_semantic = true;
+    decision.reasoning = "User instruction may contain useful facts".into();
+    PolicyControl::Stop
+}
+
+fn apply_secret_detection_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
     let cmd = event.command.as_deref().unwrap_or("");
     let output = event.output.as_deref().unwrap_or("");
-
     if command_reveals_secrets(cmd) || output_contains_secrets(output) {
         decision.update_knowledge = true;
         decision.reasoning = "Potential secret detected".into();
     }
+    PolicyControl::Continue
+}
 
+fn apply_project_info_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    let cmd = event.command.as_deref().unwrap_or("");
     if command_reveals_project_info(cmd) {
         decision.update_semantic = true;
         decision.reasoning = "Project information revealed".into();
     }
+    PolicyControl::Continue
+}
 
+fn apply_environment_change_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    let cmd = event.command.as_deref().unwrap_or("");
     if is_environment_changing_command(cmd) {
-        decision.update_core = Some(CoreUpdateDecision {
-            label: "environment".into(),
-            op: "append".into(),
-        });
-        decision.reasoning = "Environment change detected".into();
+        set_core_append(decision, "environment", "Environment change detected");
     }
+    PolicyControl::Continue
+}
 
+fn apply_preference_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    let cmd = event.command.as_deref().unwrap_or("");
     if is_preference_revealing(cmd) {
-        decision.update_core = Some(CoreUpdateDecision {
-            label: "human".into(),
-            op: "append".into(),
-        });
-        decision.reasoning = "User preference detected".into();
+        set_core_append(decision, "human", "User preference detected");
     }
+    PolicyControl::Continue
+}
 
-    if let Some(ref path) = event.file_path
-        && is_config_file(path) {
-            decision.update_resource = true;
-            decision.reasoning = "Config file interaction".into();
-        }
+fn apply_config_file_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    if let Some(path) = event.file_path.as_deref()
+        && is_config_file(path)
+    {
+        decision.update_resource = true;
+        decision.reasoning = "Config file interaction".into();
+    }
+    PolicyControl::Continue
+}
 
+fn apply_significant_read_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    let cmd = event.command.as_deref().unwrap_or("");
     if reads_significant_file(cmd) {
         decision.update_resource = true;
         decision.reasoning = "Significant file read".into();
     }
+    PolicyControl::Continue
+}
 
+fn apply_structured_output_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
+    let output = event.output.as_deref().unwrap_or("");
     if looks_like_config_or_doc(output) && output.len() > 100 {
         decision.update_resource = true;
         decision.reasoning = "Structured config/doc output detected".into();
     }
+    PolicyControl::Continue
+}
 
+fn apply_error_learning_policy(
+    event: &ShellEvent,
+    decision: &mut RoutingDecision,
+) -> PolicyControl {
     if event.exit_code.is_some() && event.exit_code != Some(0) {
         decision.update_procedural = true;
         decision.reasoning = "Error may lead to procedural learning".into();
     }
+    PolicyControl::Continue
+}
 
-    if decision.reasoning.is_empty() {
-        decision.reasoning = "Standard command execution".into();
-    }
-
-    decision
+fn set_core_append(decision: &mut RoutingDecision, label: &str, reasoning: &str) {
+    decision.update_core = Some(CoreUpdateDecision {
+        label: label.into(),
+        op: "append".into(),
+    });
+    decision.reasoning = reasoning.into();
 }
 
 fn command_reveals_secrets(cmd: &str) -> bool {
