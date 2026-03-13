@@ -949,10 +949,15 @@ fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> {
                 let _ =
                     send_to_global_or_fallback(&crate::daemon::DaemonRequest::MemoryClearByType {
                         memory_type: parsed_type,
+                        confirmed: true,
+                        caller: crate::daemon::current_caller_context(),
                     });
                 eprintln!("{memory_type} memories cleared.");
             } else {
-                let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::MemoryClearAll);
+                let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::MemoryClearAll {
+                    confirmed: true,
+                    caller: crate::daemon::current_caller_context(),
+                });
                 eprintln!("All memories cleared.");
             }
         }
@@ -1226,6 +1231,7 @@ fn handle_export_command(format: Option<String>, session: Option<String>) -> any
     let request = crate::daemon::DaemonRequest::GetConversations {
         session: session_id.clone(),
         limit: 1000,
+        caller: crate::daemon::current_caller_context(),
     };
     let conversations = match send_to_global_or_fallback(&request)? {
         crate::daemon::DaemonResponse::Ok { data: Some(data) } => data
@@ -1291,6 +1297,7 @@ fn handle_status_command() -> anyhow::Result<()> {
         if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(data) }) =
             send_to_global_or_fallback(&crate::daemon::DaemonRequest::GetSessionLabel {
                 session: session_id.clone(),
+                caller: crate::daemon::current_caller_context(),
             })
         {
             data.get("label")

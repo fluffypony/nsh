@@ -134,8 +134,12 @@ pub fn execute_store_memory(
 }
 
 /// Execute a retrieve_secret tool call.
-pub fn execute_retrieve_secret(db: &dyn DbAccess, caption_query: &str) -> Result<String, String> {
-    db.memory_retrieve_secret(caption_query)
+pub fn execute_retrieve_secret(
+    db: &dyn DbAccess,
+    caption_query: &str,
+    explicit_user_request: Option<&str>,
+) -> Result<String, String> {
+    db.memory_retrieve_secret(caption_query, explicit_user_request)
         .map_err(|e| format!("Secret retrieval error: {e}"))
 }
 

@@ -81,7 +81,11 @@ pub trait DbAccess {
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()>;
     fn memory_store(&self, memory_type: MemoryType, data_json: &str) -> anyhow::Result<String>;
-    fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String>;
+    fn memory_retrieve_secret(
+        &self,
+        caption_query: &str,
+        explicit_user_request: Option<&str>,
+    ) -> anyhow::Result<String>;
     // Note: event recording is routed via daemon requests from query flow; no direct trait use required.
 }
 
@@ -336,7 +340,11 @@ impl DbAccess for Db {
         Ok(id_out)
     }
 
-    fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
+    fn memory_retrieve_secret(
+        &self,
+        caption_query: &str,
+        _explicit_user_request: Option<&str>,
+    ) -> anyhow::Result<String> {
         let results = self.search_knowledge_fts(caption_query, 3, &["low", "medium", "high"])?;
         Ok(serde_json::to_string(&results)?)
     }
@@ -448,6 +456,16 @@ impl DaemonDb {
     fn data_or_empty(data: Option<serde_json::Value>) -> serde_json::Value {
         data.unwrap_or_else(|| serde_json::json!({}))
     }
+
+    fn caller_context() -> crate::daemon::CallerContext {
+        crate::daemon::current_caller_context()
+    }
+
+    fn caller_context_with_request(
+        explicit_user_request: Option<&str>,
+    ) -> crate::daemon::CallerContext {
+        crate::daemon::current_caller_context_with_request(explicit_user_request)
+    }
 }
 
 impl DbAccess for DaemonDb {
@@ -459,6 +477,7 @@ impl DbAccess for DaemonDb {
         let data = Self::data_or_empty(self.request(DaemonRequest::GetConversations {
             session: session_id.to_string(),
             limit,
+            caller: Self::caller_context(),
         })?);
         let arr = data
             .get("conversations")
@@ -512,6 +531,7 @@ impl DbAccess for DaemonDb {
             Self::data_or_empty(self.request(DaemonRequest::RecentCommandsWithSummaries {
                 session: session_id.to_string(),
                 limit,
+                caller: Self::caller_context(),
             })?);
         let arr = data
             .get("commands")
@@ -557,6 +577,7 @@ impl DbAccess for DaemonDb {
                 session: session_id.to_string(),
                 max_ttys,
                 summaries_per_tty,
+                caller: Self::caller_context(),
             })?);
         let arr = data
             .get("commands")
@@ -902,6 +923,7 @@ impl DbAccess for DaemonDb {
         self.request(DaemonRequest::MemoryCoreAppend {
             label: label.to_string(),
             content: content.to_string(),
+            caller: Self::caller_context(),
         })?;
         Ok(())
     }
@@ -910,6 +932,7 @@ impl DbAccess for DaemonDb {
         self.request(DaemonRequest::MemoryCoreRewrite {
             label: label.to_string(),
             content: content.to_string(),
+            caller: Self::caller_context(),
         })?;
         Ok(())
     }
@@ -918,6 +941,7 @@ impl DbAccess for DaemonDb {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemoryStore {
             memory_type,
             data_json: data_json.to_string(),
+            caller: Self::caller_context(),
         })?);
         Ok(data
             .get("id")
@@ -926,9 +950,14 @@ impl DbAccess for DaemonDb {
             .to_string())
     }
 
-    fn memory_retrieve_secret(&self, caption_query: &str) -> anyhow::Result<String> {
+    fn memory_retrieve_secret(
+        &self,
+        caption_query: &str,
+        explicit_user_request: Option<&str>,
+    ) -> anyhow::Result<String> {
         let data = Self::data_or_empty(self.request(DaemonRequest::MemoryRetrieveSecret {
             caption_query: caption_query.to_string(),
+            caller: Self::caller_context_with_request(explicit_user_request),
         })?);
         Ok(serde_json::to_string(&data)?)
     }
@@ -1147,6 +1176,7 @@ mod tests {
     #[serial]
     fn get_conversations_maps_response_and_defaults_missing_fields() {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let _session_guard = EnvVarGuard::set("NSH_SESSION_ID", "caller-sess");
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
             DaemonResponse::ok_with_data(serde_json::json!({
@@ -1185,7 +1215,38 @@ mod tests {
         assert_eq!(request["type"], "get_conversations");
         assert_eq!(request["session_id"], "sess-1");
         assert_eq!(request["limit"], 5);
+        assert_eq!(request["caller"]["session"], "caller-sess");
         assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
+        handle.join().expect("join daemon thread");
+    }
+
+    #[test]
+    #[serial]
+    fn memory_retrieve_secret_forwards_explicit_user_request() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
+        let _session_guard = EnvVarGuard::set("NSH_SESSION_ID", "caller-sess");
+        let (request_rx, handle) = spawn_mock_global_daemon(
+            home.path(),
+            DaemonResponse::ok_with_data(serde_json::json!({
+                "results": []
+            })),
+        );
+
+        let db = DaemonDb::new();
+        let result = db
+            .memory_retrieve_secret("prod api", Some("show me the production api key"))
+            .expect("memory_retrieve_secret should succeed");
+
+        assert!(result.contains("results"));
+
+        let request = request_rx.recv().expect("captured request");
+        assert_eq!(request["type"], "memory_retrieve_secret");
+        assert_eq!(request["caption_query"], "prod api");
+        assert_eq!(request["caller"]["session"], "caller-sess");
+        assert_eq!(
+            request["caller"]["explicit_user_request"],
+            "show me the production api key"
+        );
         handle.join().expect("join daemon thread");
     }
 

@@ -30,6 +30,75 @@ fn parse_memory_json(input: &str) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("invalid memory tool JSON: {error}"))
 }
 
+fn caller_conversation(caller: &crate::daemon::CallerContext) -> Vec<crate::provider::Message> {
+    caller
+        .explicit_user_request
+        .as_ref()
+        .map(|text| {
+            vec![crate::provider::Message {
+                role: crate::provider::Role::User,
+                content: vec![crate::provider::ContentBlock::Text { text: text.clone() }],
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn authorize_memory_tool_request(
+    caller: &crate::daemon::CallerContext,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Result<(), String> {
+    crate::security::assess_memory_tool_call(tool_name, input, &caller_conversation(caller))
+}
+
+fn require_sensitive_memory_confirmation(action: &str, confirmed: bool) -> Result<(), String> {
+    if confirmed {
+        Ok(())
+    } else {
+        Err(format!("{action} requires explicit confirmation"))
+    }
+}
+
+fn sensitive_daemon_audit_fields(
+    caller: &crate::daemon::CallerContext,
+    action: &str,
+    details: &str,
+) -> (String, String, String) {
+    let query = caller.explicit_user_request.as_deref().unwrap_or(action);
+    (
+        caller
+            .session
+            .clone()
+            .unwrap_or_else(|| "global".to_string()),
+        query.to_string(),
+        details.to_string(),
+    )
+}
+
+fn audit_sensitive_daemon_action(
+    caller: &crate::daemon::CallerContext,
+    action: &str,
+    details: &str,
+) {
+    let (session, query, response) = sensitive_daemon_audit_fields(caller, action, details);
+    crate::audit::audit_log(&session, &query, action, &response, "high");
+}
+
+fn authorize_session_access(
+    db: &crate::db::Db,
+    caller: &crate::daemon::CallerContext,
+    target_session: &str,
+) -> Result<(), String> {
+    match db.session_visible_to_caller(caller.session.as_deref(), target_session) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "caller session {:?} cannot access session '{target_session}'",
+            caller.session
+        )),
+        Err(error) => Err(format!("session access check failed: {error}")),
+    }
+}
+
 type MemoryTaskSender = mpsc::Sender<MemoryTask>;
 type MemoryRuntimeParts = (
     crate::config::Config,
@@ -407,9 +476,9 @@ fn schedule_startup_memory_maintenance(
     if !memory.has_bootstrapped()
         && let Err(error) =
             enqueue_unique_memory_task(memory_tx, memory_queue_guards, MemoryTask::BootstrapScan)
-        {
-            tracing::debug!("bootstrap task enqueue failed at startup: {error}");
-        }
+    {
+        tracing::debug!("bootstrap task enqueue failed at startup: {error}");
+    }
     if memory.should_run_decay() {
         let _ = memory_tx.send(MemoryTask::FlushIngestion);
         let _ = send_memory_decay_once(memory);
@@ -417,9 +486,9 @@ fn schedule_startup_memory_maintenance(
     if memory.should_run_reflection()
         && let Err(error) =
             enqueue_unique_memory_task(memory_tx, memory_queue_guards, MemoryTask::RunReflection)
-        {
-            tracing::debug!("reflection task enqueue failed at startup: {error}");
-        }
+    {
+        tracing::debug!("reflection task enqueue failed at startup: {error}");
+    }
 }
 
 fn spawn_background_monitors(
@@ -448,25 +517,26 @@ fn spawn_system_monitor(restart_pending: Arc<AtomicBool>, active_sessions: Activ
                 if let Some(skills_dir) =
                     dirs::home_dir().map(|home| home.join(".nsh").join("skills"))
                     && skills_dir.is_dir()
-                        && let Ok(entries) = std::fs::read_dir(&skills_dir) {
-                            for entry in entries.flatten() {
-                                let path = entry.path();
-                                if path.join(".git").is_dir() {
-                                    let _ = std::process::Command::new("git")
-                                        .args([
-                                            "-C",
-                                            path.to_string_lossy().as_ref(),
-                                            "pull",
-                                            "--ff-only",
-                                            "-q",
-                                        ])
-                                        .stdin(std::process::Stdio::null())
-                                        .stdout(std::process::Stdio::null())
-                                        .stderr(std::process::Stdio::null())
-                                        .status();
-                                }
-                            }
+                    && let Ok(entries) = std::fs::read_dir(&skills_dir)
+                {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.join(".git").is_dir() {
+                            let _ = std::process::Command::new("git")
+                                .args([
+                                    "-C",
+                                    path.to_string_lossy().as_ref(),
+                                    "pull",
+                                    "--ff-only",
+                                    "-q",
+                                ])
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .status();
                         }
+                    }
+                }
             }
             if last_prune.elapsed() > std::time::Duration::from_secs(300) {
                 last_prune = std::time::Instant::now();
@@ -486,14 +556,13 @@ fn spawn_system_monitor(restart_pending: Arc<AtomicBool>, active_sessions: Activ
             }
             if let Some(ref path) = monitor_exe_path
                 && let Ok(metadata) = std::fs::metadata(path)
-                    && let Ok(mtime) = metadata.modified()
-                        && Some(mtime) != monitor_initial_mtime {
-                            tracing::info!(
-                                "nshd: binary updated on disk, scheduling graceful restart"
-                            );
-                            restart_pending.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                && let Ok(mtime) = metadata.modified()
+                && Some(mtime) != monitor_initial_mtime
+            {
+                tracing::info!("nshd: binary updated on disk, scheduling graceful restart");
+                restart_pending.store(true, Ordering::Relaxed);
+                break;
+            }
             std::thread::sleep(Duration::from_secs(10));
         }
     });
@@ -665,13 +734,15 @@ fn notify_sessions_about_hook_restart(active_sessions: &ActiveSessions) {
     if let Ok(guard) = active_sessions.read() {
         for (session_id, info) in guard.iter() {
             if let Some(pid) = info.pid
-                && !pid_alive(pid) {
-                    continue;
-                }
+                && !pid_alive(pid)
+            {
+                continue;
+            }
             if let Some(tty) = &info.tty
-                && !std::path::Path::new(tty).exists() {
-                    continue;
-                }
+                && !std::path::Path::new(tty).exists()
+            {
+                continue;
+            }
             let message = match info.shell.as_deref() {
                 Some("zsh") => "hooks_updated: zsh will auto-reload when idle\n",
                 Some("bash") => "hooks_updated: bash will refresh hooks on next prompt\n",
@@ -1350,45 +1421,75 @@ fn execute_write(
                 Err(e) => DaemonResponse::error(format!("invalid events JSON: {e}")),
             }
         }
-        DaemonRequest::MemoryCoreAppend { label, content } => {
+        DaemonRequest::MemoryCoreAppend {
+            label,
+            content,
+            caller,
+        } => {
             let op = crate::memory::types::CoreOp::Append;
             let lbl = crate::memory::types::CoreLabel::from_str(&label)
                 .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
             match lbl {
                 Err(e) => e,
-                Ok(l) => match memory.update_core_block(l, op, &content) {
-                    Ok(()) => DaemonResponse::ok(),
-                    Err(e) => DaemonResponse::error(format!("{e}")),
-                },
+                Ok(l) => {
+                    let input = serde_json::json!({
+                        "label": label,
+                        "content": content,
+                    });
+                    if let Err(error) =
+                        authorize_memory_tool_request(&caller, "core_memory_append", &input)
+                    {
+                        return DaemonResponse::error(format!("Security check failed: {error}"));
+                    }
+                    match memory.update_core_block(l, op, &content) {
+                        Ok(()) => DaemonResponse::ok(),
+                        Err(e) => DaemonResponse::error(format!("{e}")),
+                    }
+                }
             }
         }
-        DaemonRequest::MemoryCoreRewrite { label, content } => {
+        DaemonRequest::MemoryCoreRewrite {
+            label,
+            content,
+            caller,
+        } => {
             let op = crate::memory::types::CoreOp::Rewrite;
             let lbl = crate::memory::types::CoreLabel::from_str(&label)
                 .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
             match lbl {
                 Err(e) => e,
-                Ok(l) => match memory.update_core_block(l, op, &content) {
-                    Ok(()) => DaemonResponse::ok(),
-                    Err(e) => DaemonResponse::error(format!("{e}")),
-                },
+                Ok(l) => {
+                    let input = serde_json::json!({
+                        "label": label,
+                        "content": content,
+                    });
+                    if let Err(error) =
+                        authorize_memory_tool_request(&caller, "core_memory_rewrite", &input)
+                    {
+                        return DaemonResponse::error(format!("Security check failed: {error}"));
+                    }
+                    match memory.update_core_block(l, op, &content) {
+                        Ok(()) => DaemonResponse::ok(),
+                        Err(e) => DaemonResponse::error(format!("{e}")),
+                    }
+                }
             }
         }
         DaemonRequest::MemoryStore {
             memory_type,
             data_json,
+            caller,
         } => {
             let parsed_data = match parse_memory_json(&data_json) {
                 Ok(parsed_data) => parsed_data,
                 Err(error) => return DaemonResponse::error(error),
             };
-            let tool = "store_memory".to_string();
             let input = serde_json::json!({
                 "memory_type": memory_type.as_str(),
                 "data": parsed_data
             });
-            if let Err(e) = crate::security::assess_memory_tool_call(&tool, &input, &[]) {
-                return DaemonResponse::error(format!("Security check failed: {e}"));
+            if let Err(error) = authorize_memory_tool_request(&caller, "store_memory", &input) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
             }
             use crate::daemon_db::DbAccess;
             match DbAccess::memory_store(db, memory_type, &data_json) {
@@ -1396,7 +1497,20 @@ fn execute_write(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::MemoryDelete { memory_type, id } => {
+        DaemonRequest::MemoryDelete {
+            memory_type,
+            id,
+            confirmed,
+            caller,
+        } => {
+            if let Err(error) = require_sensitive_memory_confirmation("memory delete", confirmed) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
+            audit_sensitive_daemon_action(
+                &caller,
+                "memory_delete",
+                &format!("{}:{id}", memory_type.as_str()),
+            );
             match memory.delete_memory(memory_type, &id) {
                 Ok(()) => DaemonResponse::ok(),
                 Err(e) => DaemonResponse::error(format!("{e}")),
@@ -1414,12 +1528,10 @@ fn execute_write(
         },
         DaemonRequest::MemoryRunReflection => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::RunReflection) {
-                Ok(status) => {
-                    DaemonResponse::ok_with_data(serde_json::json!({
-                        "status": status.as_status(),
-                        "task": memory_task_tracker.task_snapshot(MemoryTaskKind::RunReflection),
-                    }))
-                }
+                Ok(status) => DaemonResponse::ok_with_data(serde_json::json!({
+                    "status": status.as_status(),
+                    "task": memory_task_tracker.task_snapshot(MemoryTaskKind::RunReflection),
+                })),
                 Err(e) => {
                     memory_task_tracker.mark_failed(MemoryTaskKind::RunReflection, e.to_string());
                     tracing::debug!("memory thread disconnected, reflection skipped: {e}");
@@ -1429,12 +1541,10 @@ fn execute_write(
         }
         DaemonRequest::MemoryBootstrapScan => {
             match enqueue_unique_memory_task(memory_tx, queue_guards, MemoryTask::BootstrapScan) {
-                Ok(status) => {
-                    DaemonResponse::ok_with_data(serde_json::json!({
-                        "status": status.as_status(),
-                        "task": memory_task_tracker.task_snapshot(MemoryTaskKind::BootstrapScan),
-                    }))
-                }
+                Ok(status) => DaemonResponse::ok_with_data(serde_json::json!({
+                    "status": status.as_status(),
+                    "task": memory_task_tracker.task_snapshot(MemoryTaskKind::BootstrapScan),
+                })),
                 Err(e) => {
                     memory_task_tracker.mark_failed(MemoryTaskKind::BootstrapScan, e.to_string());
                     tracing::debug!("memory thread disconnected, bootstrap skipped: {e}");
@@ -1442,11 +1552,28 @@ fn execute_write(
                 }
             }
         }
-        DaemonRequest::MemoryClearAll => match memory.clear_all() {
-            Ok(()) => DaemonResponse::ok(),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::MemoryClearByType { memory_type } => {
+        DaemonRequest::MemoryClearAll { confirmed, caller } => {
+            if let Err(error) = require_sensitive_memory_confirmation("memory clear-all", confirmed)
+            {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
+            audit_sensitive_daemon_action(&caller, "memory_clear_all", "all");
+            match memory.clear_all() {
+                Ok(()) => DaemonResponse::ok(),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::MemoryClearByType {
+            memory_type,
+            confirmed,
+            caller,
+        } => {
+            if let Err(error) =
+                require_sensitive_memory_confirmation("memory clear-by-type", confirmed)
+            {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
+            audit_sensitive_daemon_action(&caller, "memory_clear_by_type", memory_type.as_str());
             match db.clear_memories_by_type(memory_type) {
                 Ok(()) => DaemonResponse::ok(),
                 Err(e) => DaemonResponse::error(format!("{e}")),
@@ -1487,9 +1614,9 @@ fn enqueue_unique_memory_task(
         && flag
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
-        {
-            return Ok(MemoryQueueDecision::Busy);
-        }
+    {
+        return Ok(MemoryQueueDecision::Busy);
+    }
 
     if memory_tx.send(task).is_err() {
         if let Some(flag) = pending_flag {
@@ -1557,7 +1684,14 @@ fn execute_read(
             }
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
-        DaemonRequest::GetConversations { session, limit } => {
+        DaemonRequest::GetConversations {
+            session,
+            limit,
+            caller,
+        } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
             match db.get_conversations(&session, limit) {
                 Ok(convos) => {
                     let json: Vec<serde_json::Value> = convos
@@ -1577,7 +1711,10 @@ fn execute_read(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::FindPendingConversation { session } => {
+        DaemonRequest::FindPendingConversation { session, caller } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
             match db.find_pending_conversation(&session) {
                 Ok(Some((id, cmd))) => {
                     DaemonResponse::ok_with_data(serde_json::json!({"id": id, "command": cmd}))
@@ -1613,11 +1750,23 @@ fn execute_read(
             Ok(value) => DaemonResponse::ok_with_data(serde_json::json!({"value": value})),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
-        DaemonRequest::GetSessionLabel { session } => match db.get_session_label(&session) {
-            Ok(label) => DaemonResponse::ok_with_data(serde_json::json!({"label": label})),
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
-        DaemonRequest::RecentCommandsWithSummaries { session, limit } => {
+        DaemonRequest::GetSessionLabel { session, caller } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
+            match db.get_session_label(&session) {
+                Ok(label) => DaemonResponse::ok_with_data(serde_json::json!({"label": label})),
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
+        DaemonRequest::RecentCommandsWithSummaries {
+            session,
+            limit,
+            caller,
+        } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
             match db.recent_commands_with_summaries(&session, limit) {
                 Ok(cmds) => {
                     let json: Vec<serde_json::Value> = cmds.iter().map(|c| {
@@ -1636,22 +1785,28 @@ fn execute_read(
             session,
             max_ttys,
             summaries_per_tty,
-        } => match db.other_sessions_with_summaries(&session, max_ttys, summaries_per_tty) {
-            Ok(cmds) => {
-                let json: Vec<serde_json::Value> = cmds
-                    .iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "command": c.command, "cwd": c.cwd, "exit_code": c.exit_code,
-                            "started_at": c.started_at, "summary": c.summary,
-                            "tty": c.tty, "shell": c.shell, "session_id": c.session_id,
-                        })
-                    })
-                    .collect();
-                DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
+            caller,
+        } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
             }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+            match db.other_sessions_with_summaries(&session, max_ttys, summaries_per_tty) {
+                Ok(cmds) => {
+                    let json: Vec<serde_json::Value> = cmds
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "command": c.command, "cwd": c.cwd, "exit_code": c.exit_code,
+                                "started_at": c.started_at, "summary": c.summary,
+                                "tty": c.tty, "shell": c.shell, "session_id": c.session_id,
+                            })
+                        })
+                        .collect();
+                    DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
+                }
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::SearchHistoryAdvanced {
             fts_query,
             regex_pattern,
@@ -1847,12 +2002,15 @@ fn execute_read(
             }
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
-        DaemonRequest::MemoryRetrieveSecret { caption_query } => {
-            if caption_query.trim().is_empty() {
-                return DaemonResponse::error(
-                    "Security check failed: retrieve_secret requires a non-empty caption_query",
-                );
+        DaemonRequest::MemoryRetrieveSecret {
+            caption_query,
+            caller,
+        } => {
+            let input = serde_json::json!({ "caption_query": caption_query });
+            if let Err(error) = authorize_memory_tool_request(&caller, "retrieve_secret", &input) {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
             }
+            audit_sensitive_daemon_action(&caller, "retrieve_secret", &caption_query);
             match db.search_knowledge_fts(&caption_query, 3, &["low", "medium", "high"]) {
                 Ok(results) => {
                     let json: Vec<serde_json::Value> = results
@@ -2038,9 +2196,10 @@ fn handle_global_connection(
         }
         DaemonRequest::EndSession { session } => {
             if let Ok(mut guard) = active_sessions.write()
-                && let Some(info) = guard.remove(session) {
-                    cleanup_session_artifacts(session, &info);
-                }
+                && let Some(info) = guard.remove(session)
+            {
+                cleanup_session_artifacts(session, &info);
+            }
         }
         _ => {}
     }
@@ -2207,7 +2366,7 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::MemoryRunDecay
             | DaemonRequest::MemoryRunReflection
             | DaemonRequest::MemoryBootstrapScan
-            | DaemonRequest::MemoryClearAll
+            | DaemonRequest::MemoryClearAll { .. }
             | DaemonRequest::MemoryClearByType { .. }
     )
 }
@@ -2241,9 +2400,10 @@ fn detect_project_root_fast(cwd: &str) -> Option<String> {
         }
         // Stop at home directory or filesystem root
         if let Some(ref h) = home
-            && dir == h.as_path() {
-                return None;
-            }
+            && dir == h.as_path()
+        {
+            return None;
+        }
         match dir.parent() {
             Some(p) if p != dir => dir = p,
             _ => return None,
@@ -2283,6 +2443,7 @@ fn write_response(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::test_support::EnvVarGuard;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
@@ -2410,5 +2571,158 @@ mod tests {
     fn parse_memory_json_rejects_invalid_json() {
         let err = parse_memory_json("{not-json").expect_err("invalid JSON should fail");
         assert!(err.contains("invalid memory tool JSON"));
+    }
+
+    #[test]
+    fn execute_read_rejects_cross_tty_session_access() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        db.create_session("caller", "/dev/pts/0", "zsh", 1)
+            .expect("create caller");
+        db.create_session("target", "/dev/pts/1", "zsh", 2)
+            .expect("create target");
+        db.insert_conversation("target", "q", "chat", "r", None, false, false)
+            .expect("insert conversation");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+        let tracker = MemoryTaskTracker::default();
+
+        let response = execute_read(
+            &db,
+            &memory,
+            &tracker,
+            DaemonRequest::GetConversations {
+                session: "target".into(),
+                limit: 10,
+                caller: crate::daemon::CallerContext {
+                    session: Some("caller".into()),
+                    explicit_user_request: None,
+                },
+            },
+        );
+
+        match response {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("Security check failed"));
+                assert!(message.contains("cannot access session"));
+            }
+            other => panic!("expected access error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_read_requires_explicit_user_request_for_secret_lookup() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+        let tracker = MemoryTaskTracker::default();
+
+        let response = execute_read(
+            &db,
+            &memory,
+            &tracker,
+            DaemonRequest::MemoryRetrieveSecret {
+                caption_query: "prod api".into(),
+                caller: crate::daemon::CallerContext {
+                    session: Some("caller".into()),
+                    explicit_user_request: None,
+                },
+            },
+        );
+
+        match response {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("Security check failed"));
+                assert!(message.contains("explicitly requests"));
+            }
+            other => panic!("expected secret access error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn execute_read_audits_authorized_secret_lookup() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _home_guard = EnvVarGuard::set("HOME", home.path());
+        let _xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
+        let _xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
+        std::fs::create_dir_all(crate::config::Config::nsh_dir()).expect("create nsh dir");
+
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        db.store_knowledge_memory(
+            "token",
+            "Production API key",
+            "sk-prod-123",
+            crate::memory::types::Sensitivity::High,
+            "prod api key",
+        )
+        .expect("store knowledge");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+        let tracker = MemoryTaskTracker::default();
+
+        let response = execute_read(
+            &db,
+            &memory,
+            &tracker,
+            DaemonRequest::MemoryRetrieveSecret {
+                caption_query: "Production API".into(),
+                caller: crate::daemon::CallerContext {
+                    session: Some("caller".into()),
+                    explicit_user_request: Some("show me the production api key".into()),
+                },
+            },
+        );
+
+        match response {
+            DaemonResponse::Ok { data: Some(data) } => {
+                let results = data["results"].as_array().expect("results array");
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0]["caption"], "Production API key");
+            }
+            other => panic!("expected ok response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sensitive_daemon_audit_fields_use_caller_context() {
+        let caller = crate::daemon::CallerContext {
+            session: Some("caller".into()),
+            explicit_user_request: Some("show me the production api key".into()),
+        };
+
+        let (session, query, response) =
+            sensitive_daemon_audit_fields(&caller, "retrieve_secret", "Production API");
+
+        assert_eq!(session, "caller");
+        assert_eq!(query, "show me the production api key");
+        assert_eq!(response, "Production API");
+    }
+
+    #[test]
+    fn execute_write_requires_confirmation_for_memory_clear_all() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
+        let tracker = MemoryTaskTracker::default();
+        let (memory_tx, _memory_rx) = mpsc::channel();
+        let queue_guards = MemoryQueueGuards::new();
+        let mut session_project_roots = std::collections::HashMap::new();
+
+        let response = execute_write(
+            &db,
+            DaemonRequest::MemoryClearAll {
+                confirmed: false,
+                caller: crate::daemon::CallerContext::default(),
+            },
+            &memory,
+            &tracker,
+            &memory_tx,
+            &queue_guards,
+            &mut session_project_roots,
+        );
+
+        match response {
+            DaemonResponse::Error { message } => {
+                assert!(message.contains("Security check failed"));
+                assert!(message.contains("explicit confirmation"));
+            }
+            other => panic!("expected confirmation error, got {other:?}"),
+        }
     }
 }

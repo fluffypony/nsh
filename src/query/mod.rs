@@ -1524,6 +1524,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     match crate::tools::memory::execute_retrieve_secret(
                                         db,
                                         caption_query,
+                                        Some(original_query.as_str()),
                                     ) {
                                         Ok(secret) => (secret, false),
                                         Err(e) => (e, true),

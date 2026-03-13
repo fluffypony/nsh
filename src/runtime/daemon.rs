@@ -5,6 +5,32 @@ use std::sync::Mutex;
 
 pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallerContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_user_request: Option<String>,
+}
+
+pub fn current_caller_context() -> CallerContext {
+    current_caller_context_with_request(None)
+}
+
+pub fn current_caller_context_with_request(explicit_user_request: Option<&str>) -> CallerContext {
+    let session = std::env::var("NSH_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    CallerContext {
+        session,
+        explicit_user_request: explicit_user_request
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonRequest {
@@ -90,6 +116,8 @@ pub enum DaemonRequest {
         session: String,
         #[serde(default = "default_limit")]
         limit: usize,
+        #[serde(default)]
+        caller: CallerContext,
     },
     SearchHistory {
         query: String,
@@ -128,6 +156,8 @@ pub enum DaemonRequest {
     FindPendingConversation {
         #[serde(rename = "session_id", alias = "session")]
         session: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     GetMeta {
         key: String,
@@ -139,12 +169,16 @@ pub enum DaemonRequest {
     GetSessionLabel {
         #[serde(rename = "session_id", alias = "session")]
         session: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     RecentCommandsWithSummaries {
         #[serde(rename = "session_id", alias = "session")]
         session: String,
         #[serde(default = "default_limit")]
         limit: usize,
+        #[serde(default)]
+        caller: CallerContext,
     },
     OtherSessionsWithSummaries {
         #[serde(rename = "session_id", alias = "session")]
@@ -153,6 +187,8 @@ pub enum DaemonRequest {
         max_ttys: usize,
         #[serde(default = "default_summaries_per_tty")]
         summaries_per_tty: usize,
+        #[serde(default)]
+        caller: CallerContext,
     },
     SearchHistoryAdvanced {
         fts_query: Option<String>,
@@ -235,30 +271,51 @@ pub enum DaemonRequest {
     MemoryCoreAppend {
         label: String,
         content: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     MemoryCoreRewrite {
         label: String,
         content: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     MemoryStore {
         memory_type: MemoryType,
         data_json: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     MemoryDelete {
         memory_type: MemoryType,
         id: String,
+        #[serde(default)]
+        confirmed: bool,
+        #[serde(default)]
+        caller: CallerContext,
     },
     MemoryRetrieveSecret {
         caption_query: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     MemoryRunDecay,
     MemoryRunReflection,
     MemoryBootstrapScan,
     MemoryStats,
     MemoryExportAll,
-    MemoryClearAll,
+    MemoryClearAll {
+        #[serde(default)]
+        confirmed: bool,
+        #[serde(default)]
+        caller: CallerContext,
+    },
     MemoryClearByType {
         memory_type: MemoryType,
+        #[serde(default)]
+        confirmed: bool,
+        #[serde(default)]
+        caller: CallerContext,
     },
     // Sidecar management
     EnsureCLIProxyApi,
@@ -493,7 +550,7 @@ pub fn handle_daemon_request(
         | DaemonRequest::MemoryBootstrapScan
         | DaemonRequest::MemoryStats
         | DaemonRequest::MemoryExportAll
-        | DaemonRequest::MemoryClearAll
+        | DaemonRequest::MemoryClearAll { .. }
         | DaemonRequest::MemoryClearByType { .. } => {
             DaemonResponse::error("operation must be routed through global daemon")
         }

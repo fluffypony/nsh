@@ -486,6 +486,37 @@ impl Db {
             .or(Ok(None))
     }
 
+    pub fn session_visible_to_caller(
+        &self,
+        caller_session: Option<&str>,
+        target_session: &str,
+    ) -> rusqlite::Result<bool> {
+        let Some(caller_session) = caller_session.filter(|value| !value.trim().is_empty()) else {
+            return Ok(true);
+        };
+        if caller_session == target_session || target_session.starts_with("imported_") {
+            return Ok(true);
+        }
+
+        let caller_tty: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT tty FROM sessions WHERE id = ?",
+                params![caller_session],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(caller_tty) = caller_tty else {
+            return Ok(false);
+        };
+
+        self.conn.query_row(
+            "SELECT COUNT(*) > 0 FROM sessions WHERE id = ? AND tty = ?",
+            params![target_session, caller_tty],
+            |row| row.get(0),
+        )
+    }
+
     pub fn latest_cwd_for_tty(&self, tty: &str) -> rusqlite::Result<Option<String>> {
         self.conn
             .query_row(
