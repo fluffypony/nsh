@@ -413,16 +413,6 @@ pub fn pump_loop(
     let nsh_dir = crate::config::Config::nsh_dir();
     let _ = std::fs::create_dir_all(&nsh_dir);
 
-    let socket_path = nsh_dir.join(format!("scrollback_{session_id}.sock"));
-    let _ = std::fs::remove_file(&socket_path);
-    let listener = match std::os::unix::net::UnixListener::bind(&socket_path) {
-        Ok(l) => {
-            l.set_nonblocking(true).ok();
-            Some(l)
-        }
-        Err(_) => None,
-    };
-
     let daemon_socket_path = crate::daemon::daemon_socket_path(&session_id);
     let _ = std::fs::remove_file(&daemon_socket_path);
     let daemon_listener = match std::os::unix::net::UnixListener::bind(&daemon_socket_path) {
@@ -496,15 +486,6 @@ pub fn pump_loop(
             PollFd::new(&pty_master, pty_flags),
         ];
 
-        let legacy_idx = listener.as_ref().map(|l| {
-            let idx = poll_fds.len();
-            poll_fds.push(PollFd::from_borrowed_fd(
-                unsafe { BorrowedFd::borrow_raw(std::os::fd::AsRawFd::as_raw_fd(l)) },
-                PollFlags::IN,
-            ));
-            idx
-        });
-
         let daemon_idx = daemon_listener.as_ref().map(|l| {
             let idx = poll_fds.len();
             poll_fds.push(PollFd::from_borrowed_fd(
@@ -539,11 +520,6 @@ pub fn pump_loop(
                     break;
                 }
 
-                if let (Some(idx), Some(l)) = (legacy_idx, listener.as_ref())
-                    && poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_socket_connection(l, &capture);
-                    }
-
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref())
                     && poll_fds[idx].revents().contains(PollFlags::IN) {
                         handle_daemon_connection(
@@ -565,7 +541,6 @@ pub fn pump_loop(
     }
 
     signal_thread.close_and_join();
-    let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&daemon_socket_path);
     let _ = std::fs::remove_file(&pid_path);
     let _ = std::fs::remove_file(&scrollback_path);
@@ -669,25 +644,6 @@ fn handle_io(
     }
 
     false
-}
-
-#[cfg(unix)]
-fn handle_socket_connection(
-    listener: &std::os::unix::net::UnixListener,
-    capture: &Mutex<CaptureEngine>,
-) {
-    use std::io::Write;
-
-    if let Ok((mut stream, _)) = listener.accept() {
-        if !crate::util::check_peer_uid(&stream, true) {
-            return;
-        }
-        stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
-        if let Ok(eng) = capture.lock() {
-            let text = eng.get_lines(1000);
-            let _ = stream.write_all(text.as_bytes());
-        }
-    }
 }
 
 #[cfg(unix)]
@@ -2950,52 +2906,6 @@ mod tests {
         let cur: Vec<String> = vec!["c", "d", "e"].into_iter().map(String::from).collect();
         let scrolled = detect_scrolled_lines(&prev, &cur);
         assert_eq!(scrolled, vec!["a", "b"]);
-    }
-
-    #[test]
-    fn test_handle_socket_connection_via_unix_socket() {
-        use std::io::Read;
-        use std::os::unix::net::UnixListener;
-        use std::sync::{Arc, Mutex};
-
-        let dir = std::env::temp_dir().join(format!("nsh_test_{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let sock_path = dir.join("test.sock");
-        let _ = std::fs::remove_file(&sock_path);
-        let listener = UnixListener::bind(&sock_path).unwrap();
-        listener.set_nonblocking(false).ok();
-
-        let capture = Arc::new(Mutex::new(CaptureEngine::new(
-            24,
-            80,
-            0,
-            2,
-            10_000,
-            "vt100".into(),
-            "drop".into(),
-        )));
-        {
-            let mut eng = capture.lock().unwrap();
-            eng.process(b"socket test line\r\n");
-        }
-
-        let sock_path_clone = sock_path.clone();
-        let handle = std::thread::spawn(move || {
-            let mut stream = std::os::unix::net::UnixStream::connect(&sock_path_clone).unwrap();
-            let mut buf = String::new();
-            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-            let _ = stream.read_to_string(&mut buf);
-            buf
-        });
-
-        listener.set_nonblocking(false).ok();
-        handle_socket_connection(&listener, &capture);
-
-        let received = handle.join().unwrap();
-        assert!(received.contains("socket test line"));
-
-        let _ = std::fs::remove_file(&sock_path);
-        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
