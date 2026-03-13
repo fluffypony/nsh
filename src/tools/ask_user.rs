@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
 pub fn execute(
     question: &str,
@@ -70,24 +70,17 @@ fn read_user_input_inner<F>(stdin_is_terminal: bool, tty_opener: F) -> anyhow::R
 where
     F: FnOnce() -> io::Result<std::fs::File>,
 {
-    if stdin_is_terminal {
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        return Ok(input.trim().to_string());
-    }
-
-    // stdin is piped — try /dev/tty for interactive input
-    match tty_opener() {
-        Ok(tty) => {
-            let mut reader = io::BufReader::new(tty);
-            let mut input = String::new();
-            reader.read_line(&mut input)?;
-            Ok(input.trim().to_string())
-        }
-        Err(_) => anyhow::bail!(
-            "Cannot read user input: stdin is piped and /dev/tty is unavailable. Provide a default_response in autorun mode."
-        ),
-    }
+    crate::tools::read_terminal_line_with(stdin_is_terminal, tty_opener)
+        .map(|input| input.trim().to_string())
+        .map_err(|err| {
+            if stdin_is_terminal {
+                err.into()
+            } else {
+                anyhow::anyhow!(
+                    "Cannot read user input: stdin is piped and /dev/tty is unavailable. Provide a default_response in autorun mode."
+                )
+            }
+        })
 }
 
 fn resolve_option_selection(input: String, options: Option<&[String]>) -> String {

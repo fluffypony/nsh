@@ -164,38 +164,31 @@ fn confirm_command_request(
 ) -> anyhow::Result<Option<CommandExecutionOutcome>> {
     match &request.risk {
         RiskLevel::Dangerous => {
+            use std::io::IsTerminal;
+
             let reason_str = request
                 .risk_reason
                 .unwrap_or("potentially destructive command");
             eprintln!("\x1b[1;31m⚠ DANGEROUS: {reason_str}\x1b[0m");
             eprintln!("\x1b[1;31mCommand: {}\x1b[0m", request.command);
             eprint!("\x1b[1;31mType 'yes' to proceed: \x1b[0m");
-            let input_line = {
-                use std::io::{BufRead, IsTerminal};
-                if std::io::stdin().is_terminal() {
-                    let mut line = String::new();
-                    std::io::stdin().read_line(&mut line)?;
-                    line
-                } else {
-                    match std::fs::File::open("/dev/tty") {
-                        Ok(tty) => {
-                            let mut reader = std::io::BufReader::new(tty);
-                            let mut line = String::new();
-                            reader.read_line(&mut line)?;
-                            line
+            let stdin_is_terminal = std::io::stdin().is_terminal();
+            let input_line =
+                match crate::tools::read_terminal_line_with(stdin_is_terminal, || {
+                    std::fs::File::open("/dev/tty")
+                }) {
+                    Ok(line) => line,
+                    Err(err) => {
+                        if stdin_is_terminal {
+                            return Err(err.into());
                         }
-                        Err(_) => {
-                            eprintln!(
-                                "Cannot confirm — stdin is piped. Aborting dangerous command."
-                            );
-                            return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
-                                content: "DENIED: dangerous command not approved by user. Try a different approach.".into(),
-                                is_error: true,
-                            }));
-                        }
+                        eprintln!("Cannot confirm — stdin is piped. Aborting dangerous command.");
+                        return Ok(Some(CommandExecutionOutcome::ContinueWithResult {
+                            content: "DENIED: dangerous command not approved by user. Try a different approach.".into(),
+                            is_error: true,
+                        }));
                     }
-                }
-            };
+                };
             if input_line.trim() != "yes" {
                 eprintln!("Aborted.");
                 return Ok(Some(CommandExecutionOutcome::ContinueWithResult {

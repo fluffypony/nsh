@@ -17,31 +17,48 @@ fn print_confirmation_prompt(prompt: &str) -> std::io::Result<()> {
     std::io::stderr().flush()
 }
 
-pub fn read_tty_confirmation() -> bool {
-    use std::io::{BufRead, IsTerminal};
+fn read_line_from_reader<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<String> {
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    Ok(line)
+}
 
-    let line = if std::io::stdin().is_terminal() {
+pub(crate) fn read_terminal_line() -> std::io::Result<String> {
+    use std::io::IsTerminal;
+
+    read_terminal_line_with(std::io::stdin().is_terminal(), || {
+        std::fs::File::open("/dev/tty")
+    })
+}
+
+pub(crate) fn read_terminal_line_with<F>(
+    stdin_is_terminal: bool,
+    tty_opener: F,
+) -> std::io::Result<String>
+where
+    F: FnOnce() -> std::io::Result<std::fs::File>,
+{
+    if stdin_is_terminal {
         let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_ok() {
-            line
-        } else {
-            return false;
-        }
+        std::io::stdin().read_line(&mut line)?;
+        Ok(line)
     } else {
-        match std::fs::File::open("/dev/tty") {
-            Ok(tty) => {
-                let mut reader = std::io::BufReader::new(tty);
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_ok() {
-                    line
-                } else {
-                    return false;
-                }
-            }
-            Err(_) => return false,
-        }
-    };
-    is_confirmation_accepted(&line)
+        let tty = tty_opener()?;
+        let mut reader = std::io::BufReader::new(tty);
+        read_line_from_reader(&mut reader)
+    }
+}
+
+fn read_tty_line() -> std::io::Result<String> {
+    let tty = std::fs::File::open("/dev/tty")?;
+    let mut reader = std::io::BufReader::new(tty);
+    read_line_from_reader(&mut reader)
+}
+
+pub fn read_tty_confirmation() -> bool {
+    read_terminal_line()
+        .map(|line| is_confirmation_accepted(&line))
+        .unwrap_or(false)
 }
 
 pub fn prompt_tty_confirmation(prompt: &str) -> std::io::Result<bool> {
@@ -52,30 +69,9 @@ pub fn prompt_tty_confirmation(prompt: &str) -> std::io::Result<bool> {
 /// Strict confirmation that only accepts "yes".
 /// Used for dangerous actions requiring explicit typed acknowledgement.
 pub fn read_tty_yes_confirmation() -> bool {
-    use std::io::{BufRead, IsTerminal};
-
-    let line = if std::io::stdin().is_terminal() {
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_ok() {
-            line
-        } else {
-            return false;
-        }
-    } else {
-        match std::fs::File::open("/dev/tty") {
-            Ok(tty) => {
-                let mut reader = std::io::BufReader::new(tty);
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_ok() {
-                    line
-                } else {
-                    return false;
-                }
-            }
-            Err(_) => return false,
-        }
-    };
-    is_yes_confirmation_accepted(&line)
+    read_terminal_line()
+        .map(|line| is_yes_confirmation_accepted(&line))
+        .unwrap_or(false)
 }
 
 pub fn prompt_tty_yes_confirmation(prompt: &str) -> std::io::Result<bool> {
@@ -86,30 +82,9 @@ pub fn prompt_tty_yes_confirmation(prompt: &str) -> std::io::Result<bool> {
 /// Like read_tty_confirmation but defaults to "No" when a read error occurs.
 /// Useful for potentially dangerous defaults where we should not auto-approve.
 pub fn read_tty_confirmation_default_yes() -> bool {
-    use std::io::{BufRead, IsTerminal};
-
-    let line = if std::io::stdin().is_terminal() {
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line).is_ok() {
-            line
-        } else {
-            return false; // default to No on read error
-        }
-    } else {
-        match std::fs::File::open("/dev/tty") {
-            Ok(tty) => {
-                let mut reader = std::io::BufReader::new(tty);
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_ok() {
-                    line
-                } else {
-                    return false; // default to No on read error
-                }
-            }
-            Err(_) => return false,
-        }
-    };
-    is_default_yes_confirmation_accepted(&line)
+    read_terminal_line()
+        .map(|line| is_default_yes_confirmation_accepted(&line))
+        .unwrap_or(false)
 }
 
 pub fn prompt_tty_confirmation_default_yes(prompt: &str) -> std::io::Result<bool> {
@@ -121,20 +96,9 @@ pub fn prompt_tty_confirmation_default_yes(prompt: &str) -> std::io::Result<bool
 /// with child processes that inherit stdin. Returns true if user presses
 /// Enter or 'y'; false on 'n'/'no' or read failure.
 pub fn read_tty_confirmation_safe() -> bool {
-    match std::fs::File::open("/dev/tty") {
-        Ok(tty) => {
-            use std::io::BufRead;
-
-            let mut reader = std::io::BufReader::new(tty);
-            let mut line = String::new();
-            if reader.read_line(&mut line).is_ok() {
-                is_default_yes_confirmation_accepted(&line)
-            } else {
-                false
-            }
-        }
-        Err(_) => false,
-    }
+    read_tty_line()
+        .map(|line| is_default_yes_confirmation_accepted(&line))
+        .unwrap_or(false)
 }
 
 pub fn prompt_tty_confirmation_safe(prompt: &str) -> std::io::Result<bool> {
