@@ -1,18 +1,30 @@
 use crate::daemon_db::DbAccess;
 use crate::tools::{ToolInvocationContext, ToolInvocationResult};
+use std::io::Write;
 
 pub fn render_response(response: &str, json_output: bool) -> anyhow::Result<()> {
+    let mut stderr = std::io::stderr();
+    render_response_to(response, json_output, &mut stderr)
+}
+
+fn render_response_to(
+    response: &str,
+    json_output: bool,
+    output: &mut impl Write,
+) -> anyhow::Result<()> {
     if json_output {
         let event = serde_json::json!({
             "type": "chat",
             "response": response,
         });
-        eprintln!("{}", serde_json::to_string(&event)?);
+        writeln!(output, "{}", serde_json::to_string(&event)?)?;
     } else {
-        eprintln!();
-        let skin = termimad::MadSkin::default();
-        skin.write_text_on(&mut std::io::stderr(), response)?;
-        eprintln!();
+        writeln!(output)?;
+        write!(output, "{response}")?;
+        if !response.ends_with('\n') {
+            writeln!(output)?;
+        }
+        writeln!(output)?;
     }
 
     Ok(())
@@ -178,5 +190,25 @@ mod tests {
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
         assert_eq!(convos[0].response, "silent response");
+    }
+
+    #[test]
+    fn render_response_to_preserves_plain_text_without_termimad() {
+        let mut output = Vec::new();
+        render_response_to("line 1\nline 2", false, &mut output).expect("render plain text");
+
+        let rendered = String::from_utf8(output).expect("utf8");
+        assert!(rendered.contains("line 1\nline 2"));
+    }
+
+    #[test]
+    fn render_response_to_emits_json_event() {
+        let mut output = Vec::new();
+        render_response_to("hello", true, &mut output).expect("render json");
+
+        let rendered = String::from_utf8(output).expect("utf8");
+        let parsed: serde_json::Value = serde_json::from_str(rendered.trim()).expect("json");
+        assert_eq!(parsed["type"], "chat");
+        assert_eq!(parsed["response"], "hello");
     }
 }

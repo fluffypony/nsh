@@ -43,7 +43,6 @@ rusqlite = { version = "0.38", features = ["bundled", "modern_sqlite", "function
 
 # Terminal
 crossterm = "0.29"
-termimad = "0.34.1"
 
 # Config
 dirs = "6"
@@ -69,7 +68,6 @@ sha2 = "0.10"
 
 # Encryption (Knowledge Vault)
 aes-gcm = "0.10"
-rand = "0.10"
 hex = "0.4"
 
 # String similarity (episodic dedup)

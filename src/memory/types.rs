@@ -3,12 +3,13 @@ use serde::{Deserialize, Serialize};
 // ── ID Generation ──
 
 pub fn generate_id(prefix: &str) -> String {
-    use rand::{prelude::*, rng};
-    let mut rng = rng();
-    let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
-    let suffix: String = (0..8)
-        .map(|_| chars[rng.random_range(0..chars.len())])
-        .collect();
+    let suffix = uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_uppercase();
     format!("{prefix}_{suffix}")
 }
 

@@ -46,10 +46,10 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
         key.copy_from_slice(&bytes[..32]);
         Ok(key)
     } else {
-        use rand::{prelude::*, rng};
+        use aes_gcm::aead::rand_core::RngCore;
         let mut key = [0u8; 32];
-        let mut r = rng();
-        r.fill(&mut key);
+        let mut rng = OsRng;
+        rng.fill_bytes(&mut key);
         #[cfg(unix)]
         {
             use std::io::Write;
