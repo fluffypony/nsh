@@ -211,6 +211,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
     let max_iterations = config.execution.effective_max_tool_iterations();
     let mut modified_files = HashSet::<String>::new();
     let mut last_text = String::new();
+    let display = crate::streaming::StreamDisplay::new(&config.display, false);
 
     for step in 1..=max_iterations {
         if cancelled.load(Ordering::SeqCst) {
@@ -268,7 +269,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
                 break;
             }
         };
-        let response = match crate::streaming::consume_stream(&mut rx, cancelled).await {
+        let response = match display.consume_stream(&mut rx, cancelled).await {
             Ok(r) => r,
             Err(e) => {
                 if e.to_string().contains("interrupted") {

@@ -1,8 +1,8 @@
 use crate::daemon_db::DbAccess;
 use crate::tools::{ToolInvocationContext, ToolInvocationResult};
 
-pub fn render_response(response: &str) -> anyhow::Result<()> {
-    if crate::streaming::json_output_enabled() {
+pub fn render_response(response: &str, json_output: bool) -> anyhow::Result<()> {
+    if json_output {
         let event = serde_json::json!({
             "type": "chat",
             "response": response,
@@ -32,6 +32,7 @@ pub fn invoke(
         ctx.private,
         ctx.config,
         ctx.render_output,
+        ctx.json_output,
     )?;
     Ok(ToolInvocationResult::success("Message displayed."))
 }
@@ -44,11 +45,12 @@ fn execute(
     private: bool,
     config: &crate::config::Config,
     render_output: bool,
+    json_output: bool,
 ) -> anyhow::Result<()> {
     let response = input["response"].as_str().unwrap_or("");
 
     if render_output {
-        render_response(response)?;
+        render_response(response, json_output)?;
     }
 
     crate::tools::record_tool_conversation(
@@ -86,7 +88,7 @@ mod tests {
 
         let input = serde_json::json!({"response": "hello world"});
         let config = Config::default();
-        execute(&input, "test query", &db, "s1", true, &config, true).unwrap();
+        execute(&input, "test query", &db, "s1", true, &config, true, false).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert!(
@@ -102,7 +104,7 @@ mod tests {
 
         let input = serde_json::json!({"response": "some response"});
         let config = Config::default();
-        execute(&input, "my query", &db, "s1", false, &config, true).unwrap();
+        execute(&input, "my query", &db, "s1", false, &config, true, false).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
@@ -118,7 +120,7 @@ mod tests {
 
         let input = serde_json::json!({"response": ""});
         let config = Config::default();
-        execute(&input, "query", &db, "s1", false, &config, true).unwrap();
+        execute(&input, "query", &db, "s1", false, &config, true, false).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
@@ -132,7 +134,7 @@ mod tests {
 
         let input = serde_json::json!({});
         let config = Config::default();
-        execute(&input, "query", &db, "s1", false, &config, true).unwrap();
+        execute(&input, "query", &db, "s1", false, &config, true, false).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
@@ -147,7 +149,17 @@ mod tests {
         let md = "# Title\n\n**bold** and *italic*\n\n```rust\nfn main() {}\n```\n";
         let input = serde_json::json!({"response": md});
         let config = Config::default();
-        execute(&input, "explain code", &db, "s1", false, &config, true).unwrap();
+        execute(
+            &input,
+            "explain code",
+            &db,
+            "s1",
+            false,
+            &config,
+            true,
+            false,
+        )
+        .unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);
@@ -161,7 +173,7 @@ mod tests {
 
         let input = serde_json::json!({"response": "silent response"});
         let config = Config::default();
-        execute(&input, "query", &db, "s1", false, &config, false).unwrap();
+        execute(&input, "query", &db, "s1", false, &config, false, false).unwrap();
 
         let convos = db.get_conversations("s1", 10).unwrap();
         assert_eq!(convos.len(), 1);

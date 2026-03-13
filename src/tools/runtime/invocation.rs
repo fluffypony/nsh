@@ -10,6 +10,7 @@ pub struct ToolInvocationContext<'a> {
     pub config: &'a Config,
     pub force_autorun: bool,
     pub render_output: bool,
+    pub json_output: bool,
 }
 
 impl<'a> ToolInvocationContext<'a> {
@@ -29,6 +30,7 @@ impl<'a> ToolInvocationContext<'a> {
             config,
             force_autorun,
             render_output: false,
+            json_output: false,
         }
     }
 
@@ -41,11 +43,17 @@ impl<'a> ToolInvocationContext<'a> {
             config,
             force_autorun,
             render_output: false,
+            json_output: false,
         }
     }
 
     pub fn with_render_output(mut self, render_output: bool) -> Self {
         self.render_output = render_output;
+        self
+    }
+
+    pub fn with_json_output(mut self, json_output: bool) -> Self {
+        self.json_output = json_output;
         self
     }
 
@@ -141,5 +149,13 @@ mod tests {
                 true,
             )
         );
+    }
+
+    #[test]
+    fn with_json_output_overrides_default() {
+        let config = Config::default();
+        let ctx = ToolInvocationContext::standalone(&config, false).with_json_output(true);
+
+        assert!(ctx.json_output);
     }
 }

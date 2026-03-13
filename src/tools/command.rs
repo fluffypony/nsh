@@ -58,6 +58,7 @@ pub fn invoke(
         ctx.private,
         ctx.config,
         ctx.force_autorun,
+        ctx.json_output,
     )
     .map(ToolInvocationResult::from)
 }
@@ -70,6 +71,7 @@ fn execute(
     private: bool,
     config: &crate::config::Config,
     force_autorun: bool,
+    json_output: bool,
 ) -> anyhow::Result<CommandExecutionOutcome> {
     clear_stale_pending_files(session_id);
     let request = build_command_request(input, original_query, db, session_id);
@@ -88,13 +90,10 @@ fn execute(
         return Ok(outcome);
     }
 
-    emit_command_preview(&request)?;
+    emit_command_preview(&request, json_output)?;
     let plan = plan_command_execution(&request, config, force_autorun);
 
-    if matches!(request.risk, RiskLevel::Safe)
-        && plan.auto_execute_pending
-        && !crate::streaming::json_output_enabled()
-    {
+    if matches!(request.risk, RiskLevel::Safe) && plan.auto_execute_pending && !json_output {
         eprintln!("\x1b[2m  $ {}\x1b[0m", request.command);
     }
 
@@ -103,7 +102,7 @@ fn execute(
         eprintln!(
             "\x1b[2m  ⟳ intermediate step — nsh will continue automatically after this finishes\x1b[0m"
         );
-        let result = execute_pending_command(input, &request.command, config);
+        let result = execute_pending_command(input, &request.command, config, json_output);
         if !private {
             record_command_execution(
                 db,
@@ -240,8 +239,8 @@ fn confirm_command_request(
     Ok(None)
 }
 
-fn emit_command_preview(request: &CommandRequest) -> anyhow::Result<()> {
-    if crate::streaming::json_output_enabled() {
+fn emit_command_preview(request: &CommandRequest, json_output: bool) -> anyhow::Result<()> {
+    if json_output {
         let event = serde_json::json!({
             "type": "command",
             "command": request.command,
@@ -314,6 +313,7 @@ fn execute_pending_command(
     input: &serde_json::Value,
     command: &str,
     config: &crate::config::Config,
+    json_output: bool,
 ) -> ImmediateCommandResult {
     let mut expected_secs = input["expected_timeout_seconds"]
         .as_u64()
@@ -338,11 +338,10 @@ fn execute_pending_command(
 
     match child {
         Ok(child) => {
-            let json_mode = crate::streaming::json_output_enabled();
             let mut pumped = crate::tools::process_pump::attach_output_pumps(
                 child,
                 &config.redaction,
-                !json_mode,
+                !json_output,
             );
             let mut start = std::time::Instant::now();
             let mut has_prompted_once = false;
@@ -1176,7 +1175,17 @@ mod tests {
             "explanation": "no-op command",
             "pending": false,
         });
-        let outcome = execute(&input, "test query", &db, session, false, &config, true).unwrap();
+        let outcome = execute(
+            &input,
+            "test query",
+            &db,
+            session,
+            false,
+            &config,
+            true,
+            false,
+        )
+        .unwrap();
         assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
     }
 
@@ -1190,7 +1199,17 @@ mod tests {
             "explanation": "private command",
             "pending": false,
         });
-        let outcome = execute(&input, "secret query", &db, session, true, &config, true).unwrap();
+        let outcome = execute(
+            &input,
+            "secret query",
+            &db,
+            session,
+            true,
+            &config,
+            true,
+            false,
+        )
+        .unwrap();
         assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
     }
 
@@ -1204,7 +1223,17 @@ mod tests {
             "explanation": "intermediate step",
             "pending": true,
         });
-        let outcome = execute(&input, "test query", &db, session, false, &config, true).unwrap();
+        let outcome = execute(
+            &input,
+            "test query",
+            &db,
+            session,
+            false,
+            &config,
+            true,
+            false,
+        )
+        .unwrap();
         match outcome {
             CommandExecutionOutcome::ContinueWithResult { content, is_error } => {
                 assert!(!is_error);
@@ -1228,7 +1257,8 @@ mod tests {
             "pending": false,
         });
 
-        let outcome = execute(&input, "cd /tmp", &db, session, false, &config, true).unwrap();
+        let outcome =
+            execute(&input, "cd /tmp", &db, session, false, &config, true, false).unwrap();
         assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
 
         let nsh_dir = crate::config::Config::nsh_dir();
@@ -1254,7 +1284,17 @@ mod tests {
             "explanation": "greeting",
             "pending": true,
         });
-        execute(&input, "test query", &db, session, false, &config, false).unwrap();
+        execute(
+            &input,
+            "test query",
+            &db,
+            session,
+            false,
+            &config,
+            false,
+            false,
+        )
+        .unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
         let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
         let flag_file = nsh_dir.join(format!("pending_flag_{session}"));
@@ -1283,7 +1323,17 @@ mod tests {
             "explanation": "final command",
             "pending": false,
         });
-        execute(&input, "test query", &db, session, false, &config, false).unwrap();
+        execute(
+            &input,
+            "test query",
+            &db,
+            session,
+            false,
+            &config,
+            false,
+            false,
+        )
+        .unwrap();
         assert!(!flag_file.exists());
         let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
         let _ = std::fs::remove_file(&cmd_file);
@@ -1297,7 +1347,7 @@ mod tests {
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();
         let input = serde_json::json!({});
-        execute(&input, "", &db, session, false, &config, false).unwrap();
+        execute(&input, "", &db, session, false, &config, false, false).unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
         let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
         assert!(!cmd_file.exists());
@@ -1313,7 +1363,17 @@ mod tests {
             "explanation": "recorded command",
             "pending": false,
         });
-        execute(&input, "query for db", &db, session, false, &config, true).unwrap();
+        execute(
+            &input,
+            "query for db",
+            &db,
+            session,
+            false,
+            &config,
+            true,
+            false,
+        )
+        .unwrap();
         let convos = db.get_conversations(session, 10).unwrap();
         assert_eq!(convos.len(), 1);
         assert_eq!(convos[0].response, "true");
@@ -1418,6 +1478,7 @@ mod tests {
             session,
             false,
             &config,
+            false,
             false,
         )
         .unwrap();
