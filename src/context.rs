@@ -195,7 +195,7 @@ impl StaticSystemInfoFile {
     }
 }
 
-pub(crate) fn get_static_info() -> StaticSystemInfo {
+pub(crate) fn load_or_refresh_static_info() -> StaticSystemInfo {
     let mut cache = STATIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cached) = *cache
         && cached.cached_at.elapsed() < STATIC_TTL {
@@ -240,11 +240,11 @@ pub(crate) fn get_static_info() -> StaticSystemInfo {
 }
 
 #[allow(dead_code)]
-fn get_cached_system_info() -> StaticSystemInfo {
-    get_static_info()
+fn load_or_refresh_static_info_for_tests() -> StaticSystemInfo {
+    load_or_refresh_static_info()
 }
 
-pub(crate) fn get_semi_dynamic_info() -> SemiDynamicInfo {
+pub(crate) fn load_or_refresh_semi_dynamic_info() -> SemiDynamicInfo {
     let mut cache = SEMI_DYNAMIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cached) = *cache
         && cached.cached_at.elapsed() < SEMI_DYNAMIC_TTL {
@@ -261,7 +261,7 @@ pub(crate) fn get_semi_dynamic_info() -> SemiDynamicInfo {
     result
 }
 
-pub(crate) fn sample_volatile_info() -> (String, MemoryUsage, String) {
+pub(crate) fn load_or_sample_volatile_info() -> (String, MemoryUsage, String) {
     let mut cache = VOLATILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
 
     let needs_sample = match &*cache {
@@ -398,9 +398,9 @@ pub fn build_context(
                 daemon_data.load_average,
             ),
             Err(_) => {
-                let s = get_static_info();
-                let sd = get_semi_dynamic_info();
-                let (cpu_s, mem, load) = sample_volatile_info();
+                let s = load_or_refresh_static_info();
+                let sd = load_or_refresh_semi_dynamic_info();
+                let (cpu_s, mem, load) = load_or_sample_volatile_info();
                 (s, sd, cpu_s, mem, load)
             }
         };
@@ -2949,7 +2949,7 @@ mod tests {
 
     #[test]
     fn test_get_cached_system_info_returns_valid_data() {
-        let info = get_cached_system_info();
+        let info = load_or_refresh_static_info_for_tests();
         assert!(!info.os_info.is_empty());
         assert!(!info.hostname.is_empty());
         assert!(!info.machine_details.arch.is_empty());
@@ -2959,8 +2959,8 @@ mod tests {
 
     #[test]
     fn test_get_cached_system_info_caching() {
-        let info1 = get_cached_system_info();
-        let info2 = get_cached_system_info();
+        let info1 = load_or_refresh_static_info_for_tests();
+        let info2 = load_or_refresh_static_info_for_tests();
         assert_eq!(info1.os_info, info2.os_info);
         assert_eq!(info1.hostname, info2.hostname);
         assert_eq!(info1.machine_details.arch, info2.machine_details.arch);
@@ -2992,7 +2992,7 @@ mod tests {
                     v.last_sampled = Instant::now() - VOLATILE_TTL;
                 }
             }
-            let _ = sample_volatile_info();
+            let _ = load_or_sample_volatile_info();
         }
 
         let cache = VOLATILE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -3743,8 +3743,8 @@ mod tests {
 
     #[test]
     fn test_get_cached_system_info_all_fields_consistent() {
-        let info1 = get_cached_system_info();
-        let info2 = get_cached_system_info();
+        let info1 = load_or_refresh_static_info_for_tests();
+        let info2 = load_or_refresh_static_info_for_tests();
         assert_eq!(info1.os_info, info2.os_info);
         assert_eq!(info1.hostname, info2.hostname);
         assert_eq!(info1.machine_details.arch, info2.machine_details.arch);

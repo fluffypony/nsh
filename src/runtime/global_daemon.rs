@@ -543,8 +543,8 @@ fn spawn_system_monitor(restart_pending: Arc<AtomicBool>, active_sessions: Activ
         let mut last_skill_pull = std::time::Instant::now();
         let mut last_prune = std::time::Instant::now();
         loop {
-            let _ = crate::context::sample_volatile_info();
-            let _ = crate::context::get_semi_dynamic_info();
+            let _ = crate::context::load_or_sample_volatile_info();
+            let _ = crate::context::load_or_refresh_semi_dynamic_info();
             if last_skill_pull.elapsed() > std::time::Duration::from_secs(3600) {
                 last_skill_pull = std::time::Instant::now();
                 if let Some(skills_dir) =
@@ -2040,9 +2040,10 @@ fn execute_read(
             wrapper_protocol_version: None,
         }),
         DaemonRequest::GetSystemInfo => {
-            let static_info = crate::context::get_static_info();
-            let semi_dynamic = crate::context::get_semi_dynamic_info();
-            let (cpu_samples, memory_usage, load_average) = crate::context::sample_volatile_info();
+            let static_info = crate::context::load_or_refresh_static_info();
+            let semi_dynamic = crate::context::load_or_refresh_semi_dynamic_info();
+            let (cpu_samples, memory_usage, load_average) =
+                crate::context::load_or_sample_volatile_info();
             let bundle = crate::context::SystemInfoBundle {
                 static_info: static_info.to_snapshot(),
                 semi_dynamic: semi_dynamic.to_snapshot(),
