@@ -111,14 +111,14 @@ pub fn run_wrapped_shell(
 
     let ws = termios::tcgetwinsize(real_stdin).ok();
     let (rows, cols) = ws.map(|w| (w.ws_row, w.ws_col)).unwrap_or((24, 80));
-    let capture = Arc::new(Mutex::new(CaptureEngine::new(
+    let capture = Arc::new(Mutex::new(CaptureEngine::from_modes(
         rows,
         cols,
         wrap_config.scrollback_rate_limit_bps,
         wrap_config.scrollback_pause_seconds,
         wrap_config.scrollback_lines.max(1000),
-        wrap_config.capture_mode.clone(),
-        wrap_config.alt_screen_mode.clone(),
+        wrap_config.capture_mode,
+        wrap_config.alt_screen_mode,
     )));
 
     let basename = shell.rsplit('/').next().unwrap_or(shell);

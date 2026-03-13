@@ -28,8 +28,8 @@ pub struct CaptureEngine {
     prev_visible: Vec<String>,
     mark_state: Option<(usize, Vec<String>)>,
     #[allow(dead_code)]
-    capture_mode: String,
-    alt_screen_mode: String,
+    capture_mode: crate::config::CaptureMode,
+    alt_screen_mode: crate::config::AltScreenMode,
 }
 
 impl CaptureEngine {
@@ -41,6 +41,26 @@ impl CaptureEngine {
         max_scrollback_lines: usize,
         capture_mode: String,
         alt_screen_mode: String,
+    ) -> Self {
+        Self::from_modes(
+            rows,
+            cols,
+            rate_limit_bps,
+            pause_seconds,
+            max_scrollback_lines,
+            capture_mode.into(),
+            alt_screen_mode.into(),
+        )
+    }
+
+    pub fn from_modes(
+        rows: u16,
+        cols: u16,
+        rate_limit_bps: usize,
+        pause_seconds: u64,
+        max_scrollback_lines: usize,
+        capture_mode: crate::config::CaptureMode,
+        alt_screen_mode: crate::config::AltScreenMode,
     ) -> Self {
         Self {
             parser: vt100::Parser::new(rows, cols, max_scrollback_lines),
@@ -124,7 +144,7 @@ impl CaptureEngine {
             return;
         } else if self.in_alternate_screen {
             self.in_alternate_screen = false;
-            if self.alt_screen_mode != "snapshot" {
+            if self.alt_screen_mode != crate::config::AltScreenMode::Snapshot {
                 self.prev_visible.clear();
             }
         }
