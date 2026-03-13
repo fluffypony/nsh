@@ -1,5 +1,6 @@
 use crate::tools::ToolInvocationOutcome;
 use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 static BPE: OnceLock<tiktoken_rs::CoreBPE> = OnceLock::new();
@@ -20,240 +21,235 @@ const AUTO_FULL_LINE_THRESHOLD: usize = 200;
 /// Beyond this, we use byte-based token estimation and refuse full reads.
 const MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 
-#[cfg(unix)]
-fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+struct ReadRequest {
+    path: PathBuf,
+    full_requested: bool,
+    range: Option<LineRange>,
 }
 
-#[cfg(not(unix))]
-fn open_for_read(path: &std::path::Path) -> std::io::Result<std::fs::File> {
-    std::fs::File::open(path)
+struct LineRange {
+    start_line: usize,
+    end_line: Option<usize>,
 }
 
 #[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    execute_with_access(input, "block")
+    crate::tools::execute_file_tool_content(input, "block", handle)
 }
 
 pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
-    crate::tools::outcome_to_content(execute_outcome_with_access(input, sensitive_file_access))
+    crate::tools::execute_file_tool_content(input, sensitive_file_access, handle)
 }
 
 pub fn execute_outcome_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<ToolInvocationOutcome> {
-    let raw_path = input["path"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("path is required"))?;
+    handle(input, sensitive_file_access)
+}
 
-    let path = match crate::tools::validate_read_path_tool_outcome(raw_path, sensitive_file_access)
-    {
-        Ok(path) => path,
+fn handle(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<ToolInvocationOutcome> {
+    let request = match parse_request(input, sensitive_file_access)? {
+        Ok(request) => request,
         Err(outcome) => return Ok(outcome),
     };
 
-    let full_requested = input["full"].as_bool().unwrap_or(false);
-    let has_start = !input["start_line"].is_null();
-    let has_end = !input["end_line"].is_null();
-    let range_requested = has_start || has_end;
-
-    // --- Check file size before reading into memory ---
-    let file_size = match std::fs::metadata(&path) {
-        Ok(m) => m.len(),
-        Err(e) => {
-            return Ok(ToolInvocationOutcome::failure(format!(
-                "Error reading '{}': {e}",
-                path.display()
-            )));
-        }
+    let file_size = match read_file_size(&request.path) {
+        Ok(file_size) => file_size,
+        Err(outcome) => return Ok(outcome),
     };
 
     if file_size > MAX_READ_BYTES {
-        let estimated_lines = estimate_line_count(&path);
-        let estimated_tokens = file_size as usize / 4; // rough cl100k_base estimate
-        return Ok(ToolInvocationOutcome::success(format!(
-            "File: {path}\n\
-             Size: {size_mb:.1} MB\n\
-             Estimated lines: ~{estimated_lines}\n\
-             Estimated tokens: ~{estimated_tokens} (byte-based estimate, file too large for exact count)\n\
-             \n\
-             This file exceeds the {max_mb} MB safety limit for full reads. \
-             Use start_line/end_line to read specific sections.",
-            path = path.display(),
-            size_mb = file_size as f64 / (1024.0 * 1024.0),
-            max_mb = MAX_READ_BYTES / (1024 * 1024),
-        )));
+        return Ok(oversized_file_outcome(&request.path, file_size));
     }
 
-    // Guard against non-regular files that can block
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        if let Ok(meta) = std::fs::symlink_metadata(&path) {
-            let ft = meta.file_type();
-            if ft.is_block_device() || ft.is_char_device() || ft.is_fifo() || ft.is_socket() {
-                return Ok(ToolInvocationOutcome::failure(format!(
-                    "Cannot read '{}': not a regular file (special device/pipe/socket). \
-                     Use run_command with 'cat' or 'head' instead.",
-                    path.display()
-                )));
-            }
-        }
+    if let Some(outcome) = maybe_read_pseudo_file(&request.path, file_size) {
+        return Ok(outcome);
     }
 
-    // Guard against /proc and /sys pseudo-filesystems
+    if let Some(outcome) = probe_binary_file(&request.path) {
+        return Ok(outcome);
+    }
+
+    let lines = match read_text_lines(&request.path) {
+        Ok(lines) => lines,
+        Err(outcome) => return Ok(outcome),
+    };
+
+    Ok(render_read_response(&request, &lines))
+}
+
+fn parse_request(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<Result<ReadRequest, ToolInvocationOutcome>> {
+    let path = match crate::tools::required_read_path(input, "path", sensitive_file_access)? {
+        Ok(path) => path,
+        Err(outcome) => return Ok(Err(outcome)),
+    };
+
+    Ok(Ok(ReadRequest {
+        path,
+        full_requested: input["full"].as_bool().unwrap_or(false),
+        range: parse_line_range(input),
+    }))
+}
+
+fn parse_line_range(input: &serde_json::Value) -> Option<LineRange> {
+    let has_start = !input["start_line"].is_null();
+    let has_end = !input["end_line"].is_null();
+    if !has_start && !has_end {
+        return None;
+    }
+
+    Some(LineRange {
+        start_line: (input["start_line"].as_u64().unwrap_or(1) as usize).max(1),
+        end_line: input["end_line"].as_u64().map(|value| value as usize),
+    })
+}
+
+fn read_file_size(path: &Path) -> Result<u64, ToolInvocationOutcome> {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .map_err(|error| crate::tools::read_failure(path, error))
+}
+
+fn oversized_file_outcome(path: &Path, file_size: u64) -> ToolInvocationOutcome {
+    let estimated_lines = estimate_line_count(path);
+    let estimated_tokens = file_size as usize / 4;
+    ToolInvocationOutcome::success(format!(
+        "File: {path}\n\
+         Size: {size_mb:.1} MB\n\
+         Estimated lines: ~{estimated_lines}\n\
+         Estimated tokens: ~{estimated_tokens} (byte-based estimate, file too large for exact count)\n\
+         \n\
+         This file exceeds the {max_mb} MB safety limit for full reads. \
+         Use start_line/end_line to read specific sections.",
+        path = path.display(),
+        size_mb = file_size as f64 / (1024.0 * 1024.0),
+        max_mb = MAX_READ_BYTES / (1024 * 1024),
+    ))
+}
+
+fn maybe_read_pseudo_file(path: &Path, file_size: u64) -> Option<ToolInvocationOutcome> {
     let path_str = path.to_string_lossy();
-    if (path_str.starts_with("/proc/") || path_str.starts_with("/sys/")) && file_size == 0 {
-        let mut file = open_for_read(&path)?;
-        let mut buf = vec![0u8; 65536]; // 64KB max for pseudo-fs
-        let n = std::io::Read::read(&mut file, &mut buf)
-            .map_err(|e| anyhow::anyhow!("Error reading {}: {e}", path.display()))?;
-        let content = String::from_utf8_lossy(&buf[..n]);
-        return Ok(ToolInvocationOutcome::success(format!(
-            "{}\n\n[pseudo-filesystem file, read {} bytes]",
-            content.trim(),
-            n
-        )));
+    if !(path_str.starts_with("/proc/") || path_str.starts_with("/sys/")) || file_size != 0 {
+        return None;
     }
 
-    // --- Binary check on first bytes ---
-    let mut probe_file = match open_for_read(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Ok(ToolInvocationOutcome::failure(format!(
-                "Error reading '{}': {e}",
-                path.display()
-            )));
-        }
+    let mut file = match crate::tools::open_for_read(path) {
+        Ok(file) => file,
+        Err(error) => return Some(crate::tools::read_failure(path, error)),
+    };
+    let mut buf = vec![0u8; 65536];
+    let bytes_read = match file.read(&mut buf) {
+        Ok(bytes_read) => bytes_read,
+        Err(error) => return Some(crate::tools::read_failure(path, error)),
+    };
+    let content = String::from_utf8_lossy(&buf[..bytes_read]);
+
+    Some(ToolInvocationOutcome::success(format!(
+        "{}\n\n[pseudo-filesystem file, read {} bytes]",
+        content.trim(),
+        bytes_read
+    )))
+}
+
+fn probe_binary_file(path: &Path) -> Option<ToolInvocationOutcome> {
+    let mut file = match crate::tools::open_regular_read_file(path, special_file_message) {
+        Ok(file) => file,
+        Err(outcome) => return Some(outcome),
     };
     let mut prefix = [0_u8; 8192];
-    let bytes_read = match probe_file.read(&mut prefix) {
-        Ok(n) => n,
-        Err(e) => {
-            return Ok(ToolInvocationOutcome::failure(format!(
-                "Error reading '{}': {e}",
-                path.display()
-            )));
-        }
+    let bytes_read = match file.read(&mut prefix) {
+        Ok(bytes_read) => bytes_read,
+        Err(error) => return Some(crate::tools::read_failure(path, error)),
     };
+
     if prefix[..bytes_read].contains(&0) {
-        return Ok(ToolInvocationOutcome::failure(
+        return Some(ToolInvocationOutcome::failure(
             "Binary file, cannot display",
         ));
     }
-    drop(probe_file);
 
-    // --- Read the entire file into memory ---
-    let file = match open_for_read(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            return Ok(ToolInvocationOutcome::failure(format!(
-                "Error reading '{}': {e}",
-                path.display()
-            )));
-        }
-    };
+    None
+}
+
+fn read_text_lines(path: &Path) -> Result<Vec<String>, ToolInvocationOutcome> {
+    let file = crate::tools::open_regular_read_file(path, special_file_message)?;
     let mut reader = BufReader::new(file);
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines = Vec::new();
     let mut line_buf = Vec::new();
+
     loop {
         line_buf.clear();
-        let n = match reader.read_until(b'\n', &mut line_buf) {
-            Ok(n) => n,
-            Err(e) => {
-                return Ok(ToolInvocationOutcome::failure(format!(
-                    "Error reading '{}': {e}",
-                    path.display()
-                )));
-            }
+        let bytes_read = match reader.read_until(b'\n', &mut line_buf) {
+            Ok(bytes_read) => bytes_read,
+            Err(error) => return Err(crate::tools::read_failure(path, error)),
         };
-        if n == 0 {
+        if bytes_read == 0 {
             break;
         }
         if line_buf.contains(&0) {
-            return Ok(ToolInvocationOutcome::failure(
+            return Err(ToolInvocationOutcome::failure(
                 "Binary file, cannot display",
             ));
         }
+
         let line = match String::from_utf8(line_buf.clone()) {
-            Ok(s) => s,
+            Ok(line) => line,
             Err(_) => {
-                return Ok(ToolInvocationOutcome::failure(
+                return Err(ToolInvocationOutcome::failure(
                     "Binary file, cannot display",
                 ));
             }
         };
-        let trimmed = line.trim_end_matches(['\n', '\r']).to_string();
-        lines.push(trimmed);
+        lines.push(line.trim_end_matches(['\n', '\r']).to_string());
     }
 
+    Ok(lines)
+}
+
+fn render_read_response(request: &ReadRequest, lines: &[String]) -> ToolInvocationOutcome {
     let total_lines = lines.len();
-    let full_text: String = lines.join("\n");
+    let full_text = lines.join("\n");
     let token_count = count_tokens(&full_text);
 
-    // --- Full mode takes priority: explicitly requested via full=true ---
-    if full_requested {
-        return Ok(ToolInvocationOutcome::success(format_full_file(
-            &path,
-            &lines,
+    if request.full_requested {
+        return ToolInvocationOutcome::success(format_full_file(
+            &request.path,
+            lines,
             total_lines,
             token_count,
-        )));
-    }
-
-    // --- Range mode: start_line / end_line explicitly specified ---
-    if range_requested {
-        let start_line = (input["start_line"].as_u64().unwrap_or(1) as usize).max(1);
-        let end_line = input["end_line"].as_u64().unwrap_or(total_lines as u64) as usize;
-        let end_line = end_line.min(total_lines);
-
-        if start_line > total_lines {
-            return Ok(ToolInvocationOutcome::success(format!(
-                "\n[{}: {total_lines} total lines, ~{token_count} tokens (cl100k_base)]\n",
-                path.display()
-            )));
-        }
-
-        let mut result = String::new();
-        for (i, line) in lines.iter().enumerate() {
-            let line_no = i + 1;
-            if line_no < start_line {
-                continue;
-            }
-            if line_no > end_line {
-                break;
-            }
-            result.push_str(&format!("{line_no:>4}: {line}\n"));
-        }
-
-        result.push_str(&format!(
-            "\n[{}: {total_lines} total lines, ~{token_count} tokens (cl100k_base)]\n",
-            path.display()
         ));
-        return Ok(ToolInvocationOutcome::success(result));
     }
 
-    // --- Default mode: auto-return small files, metadata for large ones ---
-    if total_lines <= AUTO_FULL_LINE_THRESHOLD {
-        return Ok(ToolInvocationOutcome::success(format_full_file(
-            &path,
-            &lines,
+    if let Some(range) = &request.range {
+        return ToolInvocationOutcome::success(format_line_range(
+            &request.path,
+            lines,
+            range,
             total_lines,
             token_count,
-        )));
+        ));
     }
 
-    // Large file: return metadata and let the model decide
-    Ok(ToolInvocationOutcome::success(format!(
+    if total_lines <= AUTO_FULL_LINE_THRESHOLD {
+        return ToolInvocationOutcome::success(format_full_file(
+            &request.path,
+            lines,
+            total_lines,
+            token_count,
+        ));
+    }
+
+    ToolInvocationOutcome::success(format!(
         "File: {path}\n\
          Lines: {total_lines}\n\
          Estimated tokens: ~{token_count} (cl100k_base)\n\
@@ -265,13 +261,55 @@ pub fn execute_outcome_with_access(
          \n\
          Call read_file with full=true to read the entire file, \
          or specify start_line/end_line for a specific range.",
-        path = path.display(),
-    )))
+        path = request.path.display(),
+    ))
+}
+
+fn format_line_range(
+    path: &Path,
+    lines: &[String],
+    range: &LineRange,
+    total_lines: usize,
+    token_count: usize,
+) -> String {
+    if range.start_line > total_lines {
+        return format!(
+            "\n[{}: {total_lines} total lines, ~{token_count} tokens (cl100k_base)]\n",
+            path.display()
+        );
+    }
+
+    let end_line = range.end_line.unwrap_or(total_lines).min(total_lines);
+    let mut result = String::new();
+    for (index, line) in lines.iter().enumerate() {
+        let line_no = index + 1;
+        if line_no < range.start_line {
+            continue;
+        }
+        if line_no > end_line {
+            break;
+        }
+        result.push_str(&format!("{line_no:>4}: {line}\n"));
+    }
+
+    result.push_str(&format!(
+        "\n[{}: {total_lines} total lines, ~{token_count} tokens (cl100k_base)]\n",
+        path.display()
+    ));
+    result
+}
+
+fn special_file_message(path: &Path) -> String {
+    format!(
+        "Cannot read '{}': not a regular file (special device/pipe/socket). \
+         Use run_command with 'cat' or 'head' instead.",
+        path.display()
+    )
 }
 
 /// Fast line count via streaming without loading entire file into memory.
 fn estimate_line_count(path: &std::path::Path) -> usize {
-    let file = match open_for_read(path) {
+    let file = match crate::tools::open_for_read(path) {
         Ok(f) => f,
         Err(_) => return 0,
     };

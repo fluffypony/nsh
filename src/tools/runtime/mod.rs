@@ -1,3 +1,4 @@
+pub(crate) mod file_tools;
 pub(crate) mod invocation;
 pub(crate) mod outcome;
 pub(crate) mod path_access;

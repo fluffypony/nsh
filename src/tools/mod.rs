@@ -27,6 +27,10 @@ pub use runtime::path_access::{
     normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_tool_outcome,
     validate_read_path_with_access,
 };
+pub(crate) use runtime::file_tools::{
+    default_read_path, ensure_directory, execute_file_tool_content, execute_file_tool_result,
+    open_for_read, open_regular_read_file, read_failure, required_read_path,
+};
 pub(crate) use runtime::process_pump;
 pub use runtime::registry::{ToolDefinition, all_tool_definitions};
 pub(crate) use runtime::side_effects::{ToolConversationRecord, record_tool_conversation};

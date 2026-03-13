@@ -7,7 +7,7 @@ pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
-    crate::tools::outcome_to_result(execute_outcome_with_access(input, sensitive_file_access))
+    crate::tools::execute_file_tool_result(input, sensitive_file_access, handle)
 }
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
@@ -22,6 +22,13 @@ pub fn execute_outcome_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<ToolInvocationOutcome> {
+    handle(input, sensitive_file_access)
+}
+
+fn handle(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<ToolInvocationOutcome> {
     let pattern_str = input["pattern"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("pattern is required"))?;
@@ -31,18 +38,18 @@ pub fn execute_outcome_with_access(
         .map(|n| n.clamp(1, 5000) as usize)
         .unwrap_or(200);
 
-    let root = crate::tools::validate_read_path_with_access(root_raw, sensitive_file_access)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    if !root.exists() {
-        return Ok(ToolInvocationOutcome::failure(format!(
-            "path does not exist: {root_raw}"
-        )));
-    }
-    if !root.is_dir() {
-        return Ok(ToolInvocationOutcome::failure(format!(
-            "path is not a directory: {root_raw}"
-        )));
-    }
+    let root = match crate::tools::default_read_path(input, "path", ".", sensitive_file_access) {
+        Ok(path) => path,
+        Err(outcome) => return Ok(outcome),
+    };
+    let root = match crate::tools::ensure_directory(
+        root,
+        format!("path does not exist: {root_raw}"),
+        format!("path is not a directory: {root_raw}"),
+    ) {
+        Ok(path) => path,
+        Err(outcome) => return Ok(outcome),
+    };
 
     let pattern = match Pattern::new(pattern_str) {
         Ok(p) => p,

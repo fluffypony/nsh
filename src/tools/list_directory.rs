@@ -4,17 +4,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    execute_with_access(input, "block")
+    crate::tools::execute_file_tool_content(input, "block", handle)
 }
 
 pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<String> {
-    crate::tools::outcome_to_content(execute_outcome_with_access(input, sensitive_file_access))
+    crate::tools::execute_file_tool_content(input, sensitive_file_access, handle)
 }
 
 pub fn execute_outcome_with_access(
+    input: &serde_json::Value,
+    sensitive_file_access: &str,
+) -> anyhow::Result<ToolInvocationOutcome> {
+    handle(input, sensitive_file_access)
+}
+
+fn handle(
     input: &serde_json::Value,
     sensitive_file_access: &str,
 ) -> anyhow::Result<ToolInvocationOutcome> {
@@ -26,22 +33,18 @@ pub fn execute_outcome_with_access(
         .map(|v| v.clamp(1, 1000) as usize)
         .unwrap_or(100);
 
-    let path = match crate::tools::validate_read_path_tool_outcome(path_str, sensitive_file_access)
-    {
+    let path = match crate::tools::default_read_path(input, "path", ".", sensitive_file_access) {
         Ok(path) => path,
         Err(outcome) => return Ok(outcome),
     };
-
-    if !path.exists() {
-        return Ok(ToolInvocationOutcome::failure(format!(
-            "Path does not exist: {path_str}"
-        )));
-    }
-    if !path.is_dir() {
-        return Ok(ToolInvocationOutcome::failure(format!(
-            "Not a directory: {path_str}"
-        )));
-    }
+    let path = match crate::tools::ensure_directory(
+        path,
+        format!("Path does not exist: {path_str}"),
+        format!("Not a directory: {path_str}"),
+    ) {
+        Ok(path) => path,
+        Err(outcome) => return Ok(outcome),
+    };
 
     let entries = match collect_entries(path.as_path(), show_hidden, recursive, max_entries) {
         Ok(entries) => entries,
