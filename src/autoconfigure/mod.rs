@@ -3,12 +3,11 @@ mod options;
 mod persist;
 
 use anyhow::Result;
-use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
 
 use detect::{DetectedKey, detect_api_keys, mask_key};
 use options::{ProviderKind, ProviderOption, build_provider_options, models_for_provider};
-use persist::{save_config, save_config_routing};
+use persist::save_config_routing;
 
 fn run_interactive_flow(
     options: &[ProviderOption],
@@ -36,8 +35,10 @@ fn run_interactive_flow(
             return Ok((chosen, String::new()));
         }
 
-        let provider_keys: Vec<&DetectedKey> =
-            keys.iter().filter(|key| key.provider == chosen.id).collect();
+        let provider_keys: Vec<&DetectedKey> = keys
+            .iter()
+            .filter(|key| key.provider == chosen.id)
+            .collect();
         if chosen.kind == ProviderKind::Subscription && provider_keys.is_empty() {
             if !crate::cliproxyapi::is_installed() {
                 eprintln!(
@@ -115,52 +116,12 @@ fn run_noninteractive_pick(options: &[ProviderOption]) -> Option<(ProviderOption
     None
 }
 
-fn legacy_noninteractive_flow(keys: Vec<DetectedKey>) -> Result<()> {
-    if keys.is_empty() {
-        eprintln!("\x1b[33mNo API keys found.\x1b[0m\n");
-        eprintln!(
-            "You can set one of these environment variables:\n  export OPENROUTER_API_KEY=...\n  export ANTHROPIC_API_KEY=...\n  export OPENAI_API_KEY=...\n"
-        );
-        eprintln!("Or edit the config manually: \x1b[1mnsh config edit\x1b[0m");
-        return Ok(());
-    }
-
-    let mut by_provider: BTreeMap<String, Vec<&DetectedKey>> = BTreeMap::new();
-    for key in &keys {
-        by_provider.entry(key.provider.clone()).or_default().push(key);
-    }
-
-    let (provider, provider_keys) = if by_provider.len() == 1 {
-        by_provider.into_iter().next().unwrap()
-    } else {
-        let providers: Vec<String> = by_provider.keys().cloned().collect();
-        eprintln!("Choose a provider:");
-        for (index, provider) in providers.iter().enumerate() {
-            eprintln!("  \x1b[1m{}\x1b[0m) {}", index + 1, provider);
-        }
-        let choice = prompt_choice("Select", providers.len(), Some(0))?;
-        let provider = providers[choice].clone();
-        (provider, by_provider[providers[choice].as_str()].clone())
-    };
-
-    let chosen_key = if provider_keys.len() == 1 {
-        provider_keys[0].key.clone()
-    } else {
-        eprintln!("Multiple keys found for {provider}. Choose one:");
-        for (index, key) in provider_keys.iter().enumerate() {
-            eprintln!(
-                "  \x1b[1m{}\x1b[0m) {} (from {})",
-                index + 1,
-                mask_key(&key.key),
-                key.source
-            );
-        }
-        let choice = prompt_choice("Select key", provider_keys.len(), Some(0))?;
-        provider_keys[choice].key.clone()
-    };
-
-    let models = models_for_provider(&provider);
-    save_config(&provider, &chosen_key, &models, "prefill")
+fn print_no_keys_guidance() {
+    eprintln!("\x1b[33mNo API keys found.\x1b[0m\n");
+    eprintln!(
+        "You can set one of these environment variables:\n  export OPENROUTER_API_KEY=...\n  export ANTHROPIC_API_KEY=...\n  export OPENAI_API_KEY=...\n"
+    );
+    eprintln!("Or edit the config manually: \x1b[1mnsh config edit\x1b[0m");
 }
 
 fn read_line_from_tty() -> Result<String> {
@@ -234,7 +195,10 @@ pub fn run_autoconfigure(interactive: bool) -> Result<()> {
             eprintln!("  Model: \x1b[1m{}\x1b[0m", models.default_model);
             Ok(())
         }
-        None => legacy_noninteractive_flow(keys),
+        None => {
+            print_no_keys_guidance();
+            Ok(())
+        }
     }
 }
 

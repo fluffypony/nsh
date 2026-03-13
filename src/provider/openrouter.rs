@@ -13,6 +13,7 @@ pub fn build_openrouter_compat_config(
             .base_url
             .clone()
             .unwrap_or_else(|| "https://openrouter.ai/api/v1".into()),
+        strip_provider_prefix: false,
         fallback_model: provider.fallback_model.clone(),
         extra_headers: vec![
             (

@@ -9,6 +9,7 @@ pub struct OpenAICompatProvider {
     client: Client,
     api_key: Zeroizing<String>,
     base_url: String,
+    strip_provider_prefix: bool,
     fallback_model: Option<String>,
     extra_headers: Vec<(String, String)>,
     debug_provider_name: String,
@@ -17,6 +18,7 @@ pub struct OpenAICompatProvider {
 pub struct OpenAICompatProviderConfig {
     pub api_key: Zeroizing<String>,
     pub base_url: String,
+    pub strip_provider_prefix: bool,
     pub fallback_model: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     pub timeout_seconds: u64,
@@ -36,6 +38,7 @@ impl OpenAICompatProvider {
                 .build()?,
             api_key: config.api_key,
             base_url: config.base_url,
+            strip_provider_prefix: config.strip_provider_prefix,
             fallback_model: config.fallback_model,
             extra_headers: config.extra_headers,
             debug_provider_name: config.debug_provider_name,
@@ -45,7 +48,7 @@ impl OpenAICompatProvider {
     fn build_request_body(&self, request: &ChatRequest) -> serde_json::Value {
         let model = crate::provider::routing::model_name_for_transport(
             request.model.as_str(),
-            &self.base_url,
+            self.strip_provider_prefix,
         );
         let anthropic = is_anthropic_model(&model);
 
@@ -71,10 +74,9 @@ impl OpenAICompatProvider {
         }
 
         if !tools.is_empty() {
-            if anthropic
-                && let Some(last) = tools.last_mut() {
-                    last["cache_control"] = json!({"type": "ephemeral"});
-                }
+            if anthropic && let Some(last) = tools.last_mut() {
+                last["cache_control"] = json!({"type": "ephemeral"});
+            }
             body["tools"] = json!(tools);
         }
 
@@ -102,12 +104,11 @@ impl OpenAICompatProvider {
         }
 
         // Optional native web search tool hint for OpenAI endpoints (non-critical)
-        if self.base_url.contains("api.openai.com")
-            && caps.supports_web_search {
-                // Provide a hint via extra_body if caller passed a tools array; noop otherwise
-                // This is intentionally non-fatal and may be ignored by endpoints that don't support it.
-                // body["tools"] may already exist; do not mutate structure significantly here.
-            }
+        if self.base_url.contains("api.openai.com") && caps.supports_web_search {
+            // Provide a hint via extra_body if caller passed a tools array; noop otherwise
+            // This is intentionally non-fatal and may be ignored by endpoints that don't support it.
+            // body["tools"] may already exist; do not mutate structure significantly here.
+        }
 
         if let Some(serde_json::Value::Object(map)) = &request.extra_body {
             for (k, v) in map {
@@ -176,26 +177,29 @@ impl OpenAICompatProvider {
         }
 
         if is_retryable(status)
-            && let Some(fallback) = &self.fallback_model {
-                tracing::warn!("Primary failed ({status}), {fallback_log_label}: {fallback}");
-                let fallback_model =
-                    crate::provider::routing::model_name_for_transport(fallback, &self.base_url);
-                let mut fallback_body = body.clone();
-                fallback_body["model"] = json!(&fallback_model);
-                let fallback_response = self
-                    .build_http_request(&fallback_body, &fallback_model)
-                    .send()
-                    .await?;
-                if fallback_response.status().is_success() {
-                    return Ok(OpenAITransportResponse {
-                        response: fallback_response,
-                        debug_path,
-                    });
-                }
-                return Err(self
-                    .record_error_response(fallback_response, "fallback", debug_path.as_deref())
-                    .await);
+            && let Some(fallback) = &self.fallback_model
+        {
+            tracing::warn!("Primary failed ({status}), {fallback_log_label}: {fallback}");
+            let fallback_model = crate::provider::routing::model_name_for_transport(
+                fallback,
+                self.strip_provider_prefix,
+            );
+            let mut fallback_body = body.clone();
+            fallback_body["model"] = json!(&fallback_model);
+            let fallback_response = self
+                .build_http_request(&fallback_body, &fallback_model)
+                .send()
+                .await?;
+            if fallback_response.status().is_success() {
+                return Ok(OpenAITransportResponse {
+                    response: fallback_response,
+                    debug_path,
+                });
             }
+            return Err(self
+                .record_error_response(fallback_response, "fallback", debug_path.as_deref())
+                .await);
+        }
 
         Err(self
             .record_error_response(response, "primary", debug_path.as_deref())
@@ -212,11 +216,6 @@ impl OpenAICompatProvider {
             );
         }
     }
-}
-
-/// Read the CLIProxyAPI sidecar's local base URL or fall back to 8317.
-pub fn cliproxyapi_base_url() -> String {
-    crate::cliproxyapi::base_url().unwrap_or_else(|| "http://127.0.0.1:8317/v1".to_string())
 }
 
 fn is_retryable(status: reqwest::StatusCode) -> bool {
@@ -754,6 +753,7 @@ mod tests {
         OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("test-key".into()),
             base_url: "https://api.example.com".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![],
             timeout_seconds: 30,
@@ -948,7 +948,8 @@ mod tests {
     fn build_request_body_normalizes_model_for_sidecar_transport() {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("test-key".into()),
-            base_url: crate::provider::openai_compat::cliproxyapi_base_url(),
+            base_url: crate::provider_bootstrap::cliproxy_base_url(),
+            strip_provider_prefix: true,
             fallback_model: None,
             extra_headers: vec![],
             timeout_seconds: 30,
@@ -1367,6 +1368,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("key".into()),
             base_url: "https://api.example.com".into(),
+            strip_provider_prefix: false,
             fallback_model: Some("fallback-model".into()),
             extra_headers: vec![("X-Custom".into(), "val".into())],
             timeout_seconds: 60,
@@ -1380,6 +1382,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("key".into()),
             base_url: "http://localhost".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![],
             timeout_seconds: 0,
@@ -1671,6 +1674,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("sk-test".into()),
             base_url: "https://openrouter.ai/api/v1".into(),
+            strip_provider_prefix: false,
             fallback_model: Some("gpt-3.5-turbo".into()),
             extra_headers: vec![
                 ("X-Title".into(), "MyApp".into()),
@@ -1764,6 +1768,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("test-api-key".into()),
             base_url: "https://api.example.com".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![("X-Custom".into(), "custom-val".into())],
             timeout_seconds: 30,
@@ -1787,6 +1792,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("key".into()),
             base_url: "https://openrouter.ai/api/v1".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![],
             timeout_seconds: 30,
@@ -1807,6 +1813,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("key".into()),
             base_url: "https://api.anthropic.com".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![],
             timeout_seconds: 30,
@@ -1824,6 +1831,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("key".into()),
             base_url: "https://openrouter.ai/api/v1".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![],
             timeout_seconds: 30,
@@ -1841,6 +1849,7 @@ mod tests {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("key".into()),
             base_url: "https://api.example.com".into(),
+            strip_provider_prefix: false,
             fallback_model: None,
             extra_headers: vec![
                 ("X-First".into(), "one".into()),
@@ -2135,16 +2144,18 @@ pub fn spawn_openai_stream(
             }
 
             if generation_id.is_none()
-                && let Some(id) = chunk["id"].as_str() {
-                    let _ = tx.send(StreamEvent::GenerationId(id.to_string())).await;
-                    generation_id = Some(id.to_string());
-                }
+                && let Some(id) = chunk["id"].as_str()
+            {
+                let _ = tx.send(StreamEvent::GenerationId(id.to_string())).await;
+                generation_id = Some(id.to_string());
+            }
 
             let delta = &chunk["choices"][0]["delta"];
             if let Some(content) = delta["content"].as_str()
-                && !content.is_empty() {
-                    let _ = tx.send(StreamEvent::TextDelta(content.to_string())).await;
-                }
+                && !content.is_empty()
+            {
+                let _ = tx.send(StreamEvent::TextDelta(content.to_string())).await;
+            }
             if let Some(tool_calls) = delta["tool_calls"].as_array() {
                 for tc in tool_calls {
                     let idx = tc["index"].as_u64().unwrap_or(0) as usize;
@@ -2160,9 +2171,10 @@ pub fn spawn_openai_stream(
                         }
                     }
                     if let Some(args) = tc["function"]["arguments"].as_str()
-                        && !args.is_empty() {
-                            let _ = tx.send(StreamEvent::ToolUseDelta(args.to_string())).await;
-                        }
+                        && !args.is_empty()
+                    {
+                        let _ = tx.send(StreamEvent::ToolUseDelta(args.to_string())).await;
+                    }
                 }
             }
             if chunk["choices"][0]["finish_reason"].as_str().is_some() {

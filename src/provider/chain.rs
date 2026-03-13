@@ -19,12 +19,39 @@ pub fn is_retryable_error(e: &anyhow::Error) -> bool {
         || msg.contains("timed out")
 }
 
+fn push_chain_failure(
+    failures: &mut Vec<String>,
+    model: &str,
+    attempt: usize,
+    error: &anyhow::Error,
+) {
+    failures.push(format!("{model} attempt {}: {error}", attempt + 1));
+}
+
+fn exhausted_chain_error(chain: &[String], failures: Vec<String>) -> anyhow::Error {
+    let attempted_models = if chain.is_empty() {
+        "no models configured".to_string()
+    } else {
+        format!("attempted models: {}", chain.join(", "))
+    };
+
+    if failures.is_empty() {
+        anyhow::anyhow!("All models in chain exhausted ({attempted_models})")
+    } else {
+        anyhow::anyhow!(
+            "All models in chain exhausted ({attempted_models}). Failures: {}",
+            failures.join(" | ")
+        )
+    }
+}
+
 #[allow(dead_code)]
 pub async fn call_with_chain(
     provider: &dyn LlmProvider,
     request: ChatRequest,
     chain: &[String],
 ) -> anyhow::Result<(mpsc::Receiver<StreamEvent>, String)> {
+    let mut failures = Vec::new();
     for (i, model) in chain.iter().enumerate() {
         let mut req = request.clone();
         req.model = effective_model_name_for_request(model, &request);
@@ -32,22 +59,27 @@ pub async fn call_with_chain(
             match provider.stream(req.clone()).await {
                 Ok(rx) => return Ok((rx, model.clone())),
                 Err(e) if is_retryable_error(&e) && attempt == 0 => {
-                    tracing::warn!("Model {model} attempt {attempt}: {e}, retrying...");
+                    push_chain_failure(&mut failures, model, attempt, &e);
+                    tracing::warn!("Model {model} attempt {}: {e}, retrying...", attempt + 1);
                     tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
                     continue;
                 }
                 Err(e) if i < chain.len() - 1 => {
+                    push_chain_failure(&mut failures, model, attempt, &e);
                     tracing::warn!(
                         "Model {model} failed: {e}, falling back to {}",
                         chain[i + 1]
                     );
                     break;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    push_chain_failure(&mut failures, model, attempt, &e);
+                    return Err(exhausted_chain_error(chain, failures));
+                }
             }
         }
     }
-    anyhow::bail!("All models in chain exhausted")
+    Err(exhausted_chain_error(chain, failures))
 }
 
 pub async fn stream_with_complete_fallback(
@@ -101,6 +133,7 @@ pub async fn call_chain_with_fallback_think(
     chain: &[String],
     think: bool,
 ) -> anyhow::Result<(mpsc::Receiver<StreamEvent>, String)> {
+    let mut failures = Vec::new();
     for (i, model) in chain.iter().enumerate() {
         let mut req = request.clone();
         let base = effective_model_name_for_request(model, &request);
@@ -114,32 +147,38 @@ pub async fn call_chain_with_fallback_think(
             match stream_with_complete_fallback(provider, req.clone()).await {
                 Ok(rx) => return Ok((rx, model.clone())),
                 Err(e) if is_retryable_error(&e) && attempt == 0 => {
-                    tracing::warn!("Model {model} attempt {attempt}: {e}, retrying...");
+                    push_chain_failure(&mut failures, model, attempt, &e);
+                    tracing::warn!("Model {model} attempt {}: {e}, retrying...", attempt + 1);
                     tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
                     continue;
                 }
                 Err(e) if i < chain.len() - 1 => {
+                    push_chain_failure(&mut failures, model, attempt, &e);
                     tracing::warn!(
                         "Model {model} failed: {e}, falling back to {}",
                         chain[i + 1]
                     );
                     break;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    push_chain_failure(&mut failures, model, attempt, &e);
+                    return Err(exhausted_chain_error(chain, failures));
+                }
             }
         }
     }
-    anyhow::bail!("All models in chain exhausted")
+    Err(exhausted_chain_error(chain, failures))
 }
 
 fn effective_model_name_for_request(model: &str, request: &ChatRequest) -> String {
     let Some(serde_json::Value::Object(extra)) = &request.extra_body else {
         return model.to_string();
     };
-    let Some(base_url) = extra.get("_transport_base_url").and_then(|v| v.as_str()) else {
-        return model.to_string();
-    };
-    super::routing::model_name_for_transport(model, base_url)
+    let strip_provider_prefix = extra
+        .get("_transport_strip_provider_prefix")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    super::routing::model_name_for_transport(model, strip_provider_prefix)
 }
 
 #[cfg(test)]
@@ -401,6 +440,7 @@ mod tests {
             call_chain_with_fallback_think(&provider, dummy_request(), &chain, false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("model-a attempt 1"));
         assert!(err_msg.contains("also nope") || err_msg.contains("nope"));
     }
 
@@ -549,6 +589,8 @@ mod tests {
         let chain = vec!["a".to_string()];
         let result = call_with_chain(&provider, dummy_request(), &chain).await;
         assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("a attempt 1: nope"));
     }
 
     #[tokio::test]
@@ -932,7 +974,8 @@ mod tests {
             max_tokens: 1,
             stream: false,
             extra_body: Some(json!({
-                "_transport_base_url": crate::provider::openai_compat::cliproxyapi_base_url()
+                "_transport_base_url": crate::provider_bootstrap::cliproxy_base_url(),
+                "_transport_strip_provider_prefix": true
             })),
         };
 
@@ -966,7 +1009,8 @@ mod tests {
         let chain = vec!["model-only".to_string()];
         let result = call_with_chain(&provider, dummy_request(), &chain).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("429"));
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("model-only attempt 2: 429"));
     }
 
     #[test]

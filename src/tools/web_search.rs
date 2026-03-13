@@ -17,17 +17,9 @@ async fn execute(query: &str, config: &Config) -> anyhow::Result<String> {
     execute_with_provider_factory(query, config, provider::create_provider).await
 }
 
-async fn execute_with_provider_factory<F>(
-    query: &str,
-    config: &Config,
-    provider_factory: F,
-) -> anyhow::Result<String>
-where
-    F: Fn(&str, &provider::ProviderFactoryConfig) -> anyhow::Result<Box<dyn provider::LlmProvider>>,
-{
+fn build_request(query: &str, config: &Config) -> anyhow::Result<ChatRequest> {
     let ws_provider_name = &config.web_search.provider;
     let ws_model = &config.web_search.model;
-    let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
     let model_caps = crate::config::model_capabilities(ws_provider_name, ws_model);
     if !model_caps.supports_web_search {
         if ws_provider_name == "ollama" {
@@ -43,18 +35,8 @@ where
             ws_model
         );
     }
-    // Transport metadata is only a routing hint for compat providers.
-    // If auth/config for that provider is incomplete, let the provider factory
-    // surface the real error instead of failing test and stub call paths early.
-    let transport_base_url =
-        provider::routing::resolve_openai_compat_config(ws_provider_name, &provider_cfg)
-            .ok()
-            .flatten()
-            .map(|cfg| cfg.base_url);
-    let provider = provider_factory(ws_provider_name, &provider_cfg)?;
-    let provider = provider::ActiveProvider::new(provider, transport_base_url);
 
-    let request = ChatRequest {
+    Ok(ChatRequest {
         model: ws_model.clone(),
         system:
             "Provide a concise factual answer with sources. If web retrieval is available, use it and cite URLs."
@@ -69,18 +51,12 @@ where
         tool_choice: ToolChoice::None,
         max_tokens: 1024,
         stream: false,
-        extra_body: if model_caps.supports_web_search {
-            // Enable provider-native web retrieval when the selected provider/model
-            // supports it (for example OpenAI web-search-capable models).
-            Some(json!({ "web_search_options": {} }))
-        } else {
-            None
-        },
-    };
+        extra_body: Some(json!({ "web_search_options": {} })),
+    })
+}
 
-    let response = provider.complete(request).await?;
-
-    let text = response
+fn response_text(response: &Message) -> String {
+    response
         .content
         .iter()
         .filter_map(|b| {
@@ -91,13 +67,59 @@ where
             }
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+async fn execute_request(
+    request: ChatRequest,
+    provider: &provider::ActiveProvider,
+) -> anyhow::Result<String> {
+    let response = provider.complete(request).await?;
+    let text = response_text(&response);
 
     if text.is_empty() {
         Ok("No results returned.".into())
     } else {
         Ok(text)
     }
+}
+
+async fn execute_with_provider_builder<F>(
+    query: &str,
+    config: &Config,
+    build_provider: F,
+) -> anyhow::Result<String>
+where
+    F: FnOnce() -> anyhow::Result<provider::ActiveProvider>,
+{
+    let request = build_request(query, config)?;
+    let provider = build_provider()?;
+    execute_request(request, &provider).await
+}
+
+async fn execute_with_active_provider(
+    query: &str,
+    config: &Config,
+    provider: &provider::ActiveProvider,
+) -> anyhow::Result<String> {
+    let request = build_request(query, config)?;
+    execute_request(request, provider).await
+}
+
+async fn execute_with_provider_factory<F>(
+    query: &str,
+    config: &Config,
+    provider_factory: F,
+) -> anyhow::Result<String>
+where
+    F: Fn(&str, &provider::ProviderFactoryConfig) -> anyhow::Result<Box<dyn provider::LlmProvider>>,
+{
+    let ws_provider_name = &config.web_search.provider;
+    let provider_cfg = crate::provider_bootstrap::provider_factory_config(config);
+    execute_with_provider_builder(query, config, || {
+        provider::ActiveProvider::from_factory(ws_provider_name, &provider_cfg, provider_factory)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -152,10 +174,8 @@ mod tests {
         config.web_search.model = "gpt-5.2".into();
         let captured_request: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
         let captured_request_for_provider = Arc::clone(&captured_request);
-
-        let output = execute_with_provider_factory("find docs", &config, |provider_name, _cfg| {
-            assert_eq!(provider_name, "openai");
-            Ok(Box::new(StubProvider {
+        let provider = provider::ActiveProvider::new(
+            Box::new(StubProvider {
                 captured_request: Some(Arc::clone(&captured_request_for_provider)),
                 message: Message {
                     role: Role::Assistant,
@@ -173,10 +193,13 @@ mod tests {
                         },
                     ],
                 },
-            }))
-        })
-        .await
-        .expect("execute should succeed");
+            }),
+            None,
+        );
+
+        let output = execute_with_active_provider("find docs", &config, &provider)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output, "line 1\nline 2");
         let request = captured_request
@@ -210,24 +233,22 @@ mod tests {
         config.web_search.model = "gpt-5.2".into();
         let captured_request: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
         let captured_request_for_provider = Arc::clone(&captured_request);
+        let provider = provider::ActiveProvider::new(
+            Box::new(StubProvider {
+                captured_request: Some(Arc::clone(&captured_request_for_provider)),
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: "result".into(),
+                    }],
+                },
+            }),
+            None,
+        );
 
-        let _ = execute_with_provider_factory(
-            "latest rust release",
-            &config,
-            |_provider_name, _cfg| {
-                Ok(Box::new(StubProvider {
-                    captured_request: Some(Arc::clone(&captured_request_for_provider)),
-                    message: Message {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::Text {
-                            text: "result".into(),
-                        }],
-                    },
-                }))
-            },
-        )
-        .await
-        .expect("execute should succeed");
+        let _ = execute_with_active_provider("latest rust release", &config, &provider)
+            .await
+            .expect("execute should succeed");
 
         let request = captured_request
             .lock()
@@ -245,8 +266,8 @@ mod tests {
         let mut config = Config::default();
         config.web_search.provider = "openai".into();
         config.web_search.model = "gpt-5.2".into();
-        let output = execute_with_provider_factory("find docs", &config, |_name, _cfg| {
-            Ok(Box::new(StubProvider {
+        let provider = provider::ActiveProvider::new(
+            Box::new(StubProvider {
                 captured_request: None,
                 message: Message {
                     role: Role::Assistant,
@@ -256,10 +277,12 @@ mod tests {
                         input: serde_json::json!({}),
                     }],
                 },
-            }))
-        })
-        .await
-        .expect("execute should succeed");
+            }),
+            None,
+        );
+        let output = execute_with_active_provider("find docs", &config, &provider)
+            .await
+            .expect("execute should succeed");
 
         assert_eq!(output, "No results returned.");
     }
@@ -270,7 +293,7 @@ mod tests {
         config.web_search.provider = "openai".into();
         config.web_search.model = "gpt-5.2".into();
 
-        let err = execute_with_provider_factory("find docs", &config, |_name, _cfg| {
+        let err = execute_with_provider_builder("find docs", &config, || {
             anyhow::bail!("provider init failed")
         })
         .await

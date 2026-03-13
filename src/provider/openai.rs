@@ -14,6 +14,7 @@ pub fn build_openai_compat_config(
             .base_url
             .clone()
             .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+        strip_provider_prefix: false,
         fallback_model: provider.fallback_model.clone(),
         extra_headers: vec![],
         timeout_seconds: provider.timeout_seconds,

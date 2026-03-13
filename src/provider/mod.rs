@@ -121,27 +121,24 @@ pub trait LlmProvider: Send + Sync {
 pub struct ProviderFactoryConfig {
     pub default: String,
     pub provider: crate::config::ProviderConfig,
-}
-
-impl ProviderFactoryConfig {
-    pub fn from_config(config: &crate::config::Config) -> Self {
-        Self {
-            default: config.provider.default.clone(),
-            provider: config.provider.clone(),
-        }
-    }
+    pub cliproxy_base_url: String,
 }
 
 pub struct ActiveProvider {
     provider: Box<dyn LlmProvider>,
-    transport_base_url: Option<String>,
+    transport: Option<routing::TransportHint>,
+}
+
+struct ProviderBootstrap {
+    provider: Box<dyn LlmProvider>,
+    transport: Option<routing::TransportHint>,
 }
 
 impl ActiveProvider {
-    pub fn new(provider: Box<dyn LlmProvider>, transport_base_url: Option<String>) -> Self {
+    pub fn new(provider: Box<dyn LlmProvider>, transport: Option<routing::TransportHint>) -> Self {
         Self {
             provider,
-            transport_base_url,
+            transport,
         }
     }
 
@@ -153,36 +150,34 @@ impl ActiveProvider {
     where
         F: Fn(&str, &ProviderFactoryConfig) -> anyhow::Result<Box<dyn LlmProvider>>,
     {
-        let provider = provider_factory(provider_name, config)?;
-        let transport_base_url = routing::resolve_openai_compat_config(provider_name, config)?
-            .map(|cfg| cfg.base_url);
-        Ok(Self::new(provider, transport_base_url))
+        let bootstrap = build_provider_bootstrap(provider_name, config, provider_factory)?;
+        Ok(Self::new(bootstrap.provider, bootstrap.transport))
     }
 
     pub fn from_config(
         provider_name: &str,
         config: &crate::config::Config,
     ) -> anyhow::Result<Self> {
-        let provider_cfg = ProviderFactoryConfig::from_config(config);
+        let provider_cfg = crate::provider_bootstrap::provider_factory_config(config);
         Self::from_factory(provider_name, &provider_cfg, create_provider)
     }
 
     pub fn default_from_config(config: &crate::config::Config) -> anyhow::Result<Self> {
-        let provider_cfg = ProviderFactoryConfig::from_config(config);
+        let provider_cfg = crate::provider_bootstrap::provider_factory_config(config);
         Self::from_factory(&provider_cfg.default, &provider_cfg, create_provider)
     }
 
     pub fn prepare_request(&self, request: ChatRequest) -> ChatRequest {
-        if let Some(base_url) = self.transport_base_url.as_deref() {
-            with_transport_base_url(&request, base_url)
+        if let Some(transport) = self.transport.as_ref() {
+            with_transport_hint(&request, transport)
         } else {
             request
         }
     }
 
     pub fn effective_model_name(&self, model: &str) -> String {
-        if let Some(base_url) = self.transport_base_url.as_deref() {
-            routing::model_name_for_transport(model, base_url)
+        if let Some(transport) = self.transport.as_ref() {
+            routing::model_name_for_transport(model, transport.strip_provider_prefix)
         } else {
             model.to_string()
         }
@@ -209,12 +204,13 @@ pub fn create_provider(
     provider_name: &str,
     config: &ProviderFactoryConfig,
 ) -> anyhow::Result<Box<dyn LlmProvider>> {
-    if let Some(openai_cfg) = routing::resolve_openai_compat_config(provider_name, config)? {
-        return Ok(Box::new(openai_compat::OpenAICompatProvider::new(
-            openai_cfg,
-        )?));
-    }
+    Ok(build_provider_bootstrap(provider_name, config, create_base_provider)?.provider)
+}
 
+fn create_base_provider(
+    provider_name: &str,
+    config: &ProviderFactoryConfig,
+) -> anyhow::Result<Box<dyn LlmProvider>> {
     match provider_name {
         "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(
             &config.provider,
@@ -223,7 +219,32 @@ pub fn create_provider(
     }
 }
 
-pub fn with_transport_base_url(request: &ChatRequest, base_url: &str) -> ChatRequest {
+fn build_provider_bootstrap<F>(
+    provider_name: &str,
+    config: &ProviderFactoryConfig,
+    provider_factory: F,
+) -> anyhow::Result<ProviderBootstrap>
+where
+    F: Fn(&str, &ProviderFactoryConfig) -> anyhow::Result<Box<dyn LlmProvider>>,
+{
+    if let Some(openai_cfg) = routing::resolve_openai_compat_config(provider_name, config)? {
+        let transport = routing::transport_hint_from_openai_config(&openai_cfg);
+        return Ok(ProviderBootstrap {
+            provider: Box::new(openai_compat::OpenAICompatProvider::new(openai_cfg)?),
+            transport: Some(transport),
+        });
+    }
+
+    Ok(ProviderBootstrap {
+        provider: provider_factory(provider_name, config)?,
+        transport: None,
+    })
+}
+
+pub fn with_transport_hint(
+    request: &ChatRequest,
+    transport: &routing::TransportHint,
+) -> ChatRequest {
     let mut out = request.clone();
     let mut extra = out
         .extra_body
@@ -232,7 +253,11 @@ pub fn with_transport_base_url(request: &ChatRequest, base_url: &str) -> ChatReq
     if let serde_json::Value::Object(map) = &mut extra {
         map.insert(
             "_transport_base_url".to_string(),
-            serde_json::Value::String(base_url.to_string()),
+            serde_json::Value::String(transport.base_url.clone()),
+        );
+        map.insert(
+            "_transport_strip_provider_prefix".to_string(),
+            serde_json::Value::Bool(transport.strip_provider_prefix),
         );
         out.extra_body = Some(extra);
     }
@@ -250,11 +275,12 @@ pub fn parse_openai_response(json: &serde_json::Value) -> anyhow::Result<Message
 
     // Text content
     if let Some(text) = msg["content"].as_str()
-        && !text.is_empty() {
-            content.push(ContentBlock::Text {
-                text: text.to_string(),
-            });
-        }
+        && !text.is_empty()
+    {
+        content.push(ContentBlock::Text {
+            text: text.to_string(),
+        });
+    }
 
     // Tool calls
     if let Some(tool_calls) = msg["tool_calls"].as_array() {
@@ -488,7 +514,8 @@ mod tests {
 
     #[test]
     fn create_provider_unknown_name_returns_error() {
-        let config = ProviderFactoryConfig::from_config(&crate::config::Config::default());
+        let config =
+            crate::provider_bootstrap::provider_factory_config(&crate::config::Config::default());
         let result = create_provider("nonexistent", &config);
         let err = result.err().expect("should be an error");
         assert!(err.to_string().contains("Unknown provider"));
@@ -502,7 +529,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("openrouter", &provider_config);
         assert!(result.is_ok());
     }
@@ -515,7 +542,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("anthropic", &provider_config);
         assert!(result.is_ok());
     }
@@ -528,7 +555,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("openai", &provider_config);
         assert!(result.is_ok());
     }
@@ -537,7 +564,7 @@ mod tests {
     fn create_provider_gemini_without_config_returns_error() {
         let mut config = crate::config::Config::default();
         config.provider.gemini = None;
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("gemini", &provider_config);
         let err = result.err().expect("should be an error");
         assert!(err.to_string().contains("Gemini not configured"));
@@ -547,7 +574,7 @@ mod tests {
     fn create_provider_ollama_without_config_uses_defaults() {
         let mut config = crate::config::Config::default();
         config.provider.ollama = None;
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("ollama", &provider_config);
         assert!(result.is_ok());
     }
@@ -560,7 +587,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("gemini", &provider_config);
         assert!(result.is_ok());
     }
@@ -568,13 +595,13 @@ mod tests {
     #[test]
     fn create_provider_sidecar_provider_uses_openai_compat_path() {
         let config = crate::config::Config::default();
-        let provider_config = ProviderFactoryConfig::from_config(&config);
+        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
         let result = create_provider("copilot", &provider_config);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn with_transport_base_url_adds_marker_without_removing_existing_extra_body() {
+    fn with_transport_hint_adds_markers_without_removing_existing_extra_body() {
         let request = ChatRequest {
             model: "m".into(),
             system: "s".into(),
@@ -586,11 +613,21 @@ mod tests {
             extra_body: Some(json!({"existing": true})),
         };
 
-        let out = with_transport_base_url(&request, "http://127.0.0.1:8317/v1");
+        let out = with_transport_hint(
+            &request,
+            &routing::TransportHint {
+                base_url: "http://127.0.0.1:8317/v1".into(),
+                strip_provider_prefix: true,
+            },
+        );
         assert_eq!(out.extra_body.as_ref().unwrap()["existing"], json!(true));
         assert_eq!(
             out.extra_body.as_ref().unwrap()["_transport_base_url"],
             json!("http://127.0.0.1:8317/v1")
+        );
+        assert_eq!(
+            out.extra_body.as_ref().unwrap()["_transport_strip_provider_prefix"],
+            json!(true)
         );
     }
 

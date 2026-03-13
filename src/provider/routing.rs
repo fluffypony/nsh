@@ -1,13 +1,24 @@
 use super::openai_compat::OpenAICompatProviderConfig;
 use crate::config::ProviderAuth;
 
-pub fn model_name_for_transport(original_model: &str, base_url: &str) -> String {
-    let sidecar_base_url = super::openai_compat::cliproxyapi_base_url();
-    if base_url == sidecar_base_url
-        && let Some((_, plain)) = original_model.split_once('/') {
-            return plain.to_string();
-        }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportHint {
+    pub base_url: String,
+    pub strip_provider_prefix: bool,
+}
+
+pub fn model_name_for_transport(original_model: &str, strip_provider_prefix: bool) -> String {
+    if strip_provider_prefix && let Some((_, plain)) = original_model.split_once('/') {
+        return plain.to_string();
+    }
     original_model.to_string()
+}
+
+pub fn transport_hint_from_openai_config(config: &OpenAICompatProviderConfig) -> TransportHint {
+    TransportHint {
+        base_url: config.base_url.clone(),
+        strip_provider_prefix: config.strip_provider_prefix,
+    }
 }
 
 pub fn resolve_openai_compat_config(
@@ -34,6 +45,7 @@ pub fn resolve_openai_compat_config(
             OpenAICompatProviderConfig {
                 api_key: auth.resolve_api_key("gemini")?,
                 base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+                strip_provider_prefix: false,
                 fallback_model: None,
                 extra_headers: vec![],
                 timeout_seconds: config.provider.timeout_seconds,
@@ -51,6 +63,7 @@ pub fn resolve_openai_compat_config(
             OpenAICompatProviderConfig {
                 api_key,
                 base_url,
+                strip_provider_prefix: false,
                 fallback_model: config.provider.fallback_model.clone(),
                 extra_headers: vec![],
                 timeout_seconds: config.provider.timeout_seconds,
@@ -58,10 +71,10 @@ pub fn resolve_openai_compat_config(
             }
         }
         "copilot" | "kiro" | "qwen" | "iflow" | "claude_sub" | "codex_sub" | "gemini_sub" => {
-            let port = crate::cliproxyapi::get_port().unwrap_or(8317);
             OpenAICompatProviderConfig {
                 api_key: zeroize::Zeroizing::new("nsh-internal".into()),
-                base_url: format!("http://127.0.0.1:{port}/v1"),
+                base_url: config.cliproxy_base_url.clone(),
+                strip_provider_prefix: true,
                 fallback_model: config.provider.fallback_model.clone(),
                 extra_headers: vec![],
                 timeout_seconds: config.provider.timeout_seconds,
@@ -70,10 +83,12 @@ pub fn resolve_openai_compat_config(
         }
         "z_ai" | "minimax" | "kimi" | "deepseek" => {
             let auth = provider_auth(provider_name, &config.provider);
-            let (base_url, api_key) = resolve_byok_or_sidecar(provider_name, auth)?;
+            let (transport, api_key) =
+                resolve_byok_or_sidecar(provider_name, auth, &config.cliproxy_base_url)?;
             OpenAICompatProviderConfig {
                 api_key,
-                base_url,
+                base_url: transport.base_url,
+                strip_provider_prefix: transport.strip_provider_prefix,
                 fallback_model: config.provider.fallback_model.clone(),
                 extra_headers: vec![],
                 timeout_seconds: config.provider.timeout_seconds,
@@ -102,7 +117,8 @@ fn provider_auth<'a>(
 fn resolve_byok_or_sidecar(
     provider_name: &str,
     auth: Option<&ProviderAuth>,
-) -> anyhow::Result<(String, zeroize::Zeroizing<String>)> {
+    cliproxy_base_url: &str,
+) -> anyhow::Result<(TransportHint, zeroize::Zeroizing<String>)> {
     if let Some(a) = auth {
         let k = a.resolve_api_key(provider_name)?;
         let url = a.base_url.clone().unwrap_or_else(|| match provider_name {
@@ -112,10 +128,19 @@ fn resolve_byok_or_sidecar(
             "deepseek" => "https://api.deepseek.com/v1".into(),
             _ => "https://api.openai.com/v1".into(),
         });
-        return Ok((url, k));
+        return Ok((
+            TransportHint {
+                base_url: url,
+                strip_provider_prefix: false,
+            },
+            k,
+        ));
     }
     Ok((
-        super::openai_compat::cliproxyapi_base_url(),
+        TransportHint {
+            base_url: cliproxy_base_url.to_string(),
+            strip_provider_prefix: true,
+        },
         zeroize::Zeroizing::new("nsh-internal".into()),
     ))
 }
@@ -125,7 +150,7 @@ mod tests {
     use super::*;
 
     fn cfg_from(config: crate::config::Config) -> crate::provider::ProviderFactoryConfig {
-        crate::provider::ProviderFactoryConfig::from_config(&config)
+        crate::provider_bootstrap::provider_factory_config(&config)
     }
 
     #[test]
@@ -176,10 +201,8 @@ mod tests {
         let resolved = resolve_openai_compat_config("deepseek", &cfg)
             .expect("resolve should succeed")
             .expect("config should resolve");
-        assert_eq!(
-            resolved.base_url,
-            super::super::openai_compat::cliproxyapi_base_url()
-        );
+        assert_eq!(resolved.base_url, cfg.cliproxy_base_url);
+        assert!(resolved.strip_provider_prefix);
     }
 
     #[test]
@@ -206,9 +229,8 @@ mod tests {
 
     #[test]
     fn model_name_for_transport_strips_prefix_for_sidecar() {
-        let sidecar = super::super::openai_compat::cliproxyapi_base_url();
         assert_eq!(
-            model_name_for_transport("anthropic/claude-sonnet-4.6", &sidecar),
+            model_name_for_transport("anthropic/claude-sonnet-4.6", true),
             "claude-sonnet-4.6"
         );
     }
@@ -216,10 +238,7 @@ mod tests {
     #[test]
     fn model_name_for_transport_keeps_model_for_non_sidecar_base() {
         assert_eq!(
-            model_name_for_transport(
-                "anthropic/claude-sonnet-4.6",
-                "https://api.openrouter.ai/v1"
-            ),
+            model_name_for_transport("anthropic/claude-sonnet-4.6", false),
             "anthropic/claude-sonnet-4.6"
         );
     }

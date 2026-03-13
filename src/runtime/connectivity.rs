@@ -19,10 +19,9 @@ fn connectivity_probe_url(config: &crate::config::Config) -> String {
         "openai" => "https://api.openai.com/v1/models".into(),
         "anthropic" => "https://api.anthropic.com/v1/messages".into(),
         "ollama" => "http://127.0.0.1:11434/api/tags".into(),
-        _ if p.ends_with("_sub") => format!(
-            "{}/models",
-            crate::provider::openai_compat::cliproxyapi_base_url()
-        ),
+        _ if p.ends_with("_sub") => {
+            format!("{}/models", crate::provider_bootstrap::cliproxy_base_url())
+        }
         _ => "https://openrouter.ai/api/v1/models".into(),
     }
 }
@@ -44,45 +43,47 @@ fn probe_once(url: &str) -> bool {
 
 fn probe_once_inner(url: &str) -> bool {
     if let Ok(u) = Url::parse(url)
-        && let Some(host) = u.host_str() {
-            let port = u.port_or_known_default().unwrap_or(80);
-            if let Ok(addr) = format!("{}:{}", host, port).parse::<std::net::SocketAddr>()
-                && std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
-                    return true;
-                }
+        && let Some(host) = u.host_str()
+    {
+        let port = u.port_or_known_default().unwrap_or(80);
+        if let Ok(addr) = format!("{}:{}", host, port).parse::<std::net::SocketAddr>()
+            && std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
+        {
+            return true;
+        }
 
-            // Resolve with explicit timeout to avoid blocking this monitoring thread
-            // on slow or wedged system DNS resolvers.
-            let resolved: Vec<std::net::SocketAddr> =
-                match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt.block_on(async move {
-                        use hickory_resolver::Resolver;
-                        let resolver = match Resolver::builder_tokio() {
-                            Ok(builder) => builder.build(),
-                            Err(_) => return Vec::new(),
-                        };
-                        match tokio::time::timeout(Duration::from_secs(3), resolver.lookup_ip(host))
-                            .await
-                        {
-                            Ok(Ok(lookup)) => lookup
-                                .iter()
-                                .map(|ip| std::net::SocketAddr::new(ip, port))
-                                .collect(),
-                            _ => Vec::new(),
-                        }
-                    }),
-                    Err(_) => Vec::new(),
-                };
+        // Resolve with explicit timeout to avoid blocking this monitoring thread
+        // on slow or wedged system DNS resolvers.
+        let resolved: Vec<std::net::SocketAddr> =
+            match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt.block_on(async move {
+                    use hickory_resolver::Resolver;
+                    let resolver = match Resolver::builder_tokio() {
+                        Ok(builder) => builder.build(),
+                        Err(_) => return Vec::new(),
+                    };
+                    match tokio::time::timeout(Duration::from_secs(3), resolver.lookup_ip(host))
+                        .await
+                    {
+                        Ok(Ok(lookup)) => lookup
+                            .iter()
+                            .map(|ip| std::net::SocketAddr::new(ip, port))
+                            .collect(),
+                        _ => Vec::new(),
+                    }
+                }),
+                Err(_) => Vec::new(),
+            };
 
-            for addr in resolved {
-                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
-                    return true;
-                }
+        for addr in resolved {
+            if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+                return true;
             }
         }
+    }
     false
 }
 

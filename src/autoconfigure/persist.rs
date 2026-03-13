@@ -52,15 +52,18 @@ pub(crate) fn save_config_routing(
         doc["provider"][chosen_provider] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     if via_sidecar {
-        let base_url = crate::provider::openai_compat::cliproxyapi_base_url();
+        let base_url = crate::provider_bootstrap::cliproxy_base_url();
         doc["provider"][chosen_provider]["base_url"] = toml_edit::value(base_url);
         doc["provider"][chosen_provider]["api_key"] = toml_edit::value("nsh-internal");
     } else if !chosen_key.is_empty() {
         doc["provider"][chosen_provider]["api_key"] = toml_edit::value(chosen_key);
-        if let Some(option) = all_options.iter().find(|option| option.id == chosen_provider)
-            && let Some(url) = &option.native_base_url {
-                doc["provider"][chosen_provider]["base_url"] = toml_edit::value(url.as_str());
-            }
+        if let Some(option) = all_options
+            .iter()
+            .find(|option| option.id == chosen_provider)
+            && let Some(url) = &option.native_base_url
+        {
+            doc["provider"][chosen_provider]["base_url"] = toml_edit::value(url.as_str());
+        }
     }
 
     let mut configured = vec![chosen_provider.to_string()];
@@ -76,7 +79,7 @@ pub(crate) fn save_config_routing(
             doc["provider"][&option.id] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         if option.requires_cliproxyapi {
-            let base_url = crate::provider::openai_compat::cliproxyapi_base_url();
+            let base_url = crate::provider_bootstrap::cliproxy_base_url();
             doc["provider"][&option.id]["base_url"] = toml_edit::value(base_url);
             doc["provider"][&option.id]["api_key"] = toml_edit::value("nsh-internal");
         } else if let Some(key) = &option.detected_key {
@@ -123,95 +126,9 @@ pub(crate) fn to_toml_array(items: &[String]) -> toml_edit::Array {
     array
 }
 
-pub(crate) fn save_config(
-    provider: &str,
-    api_key: &str,
-    models: &ProviderModels,
-    execution_mode: &str,
-) -> Result<()> {
-    let config_path = crate::config::Config::path();
-
-    let content = if config_path.exists() {
-        std::fs::read_to_string(&config_path)?
-    } else {
-        String::new()
-    };
-
-    let mut doc: toml_edit::DocumentMut = if content.is_empty() {
-        toml_edit::DocumentMut::new()
-    } else {
-        content.parse::<toml_edit::DocumentMut>()?
-    };
-
-    ensure_table(&mut doc, "provider");
-    doc["provider"]["default"] = toml_edit::value(provider);
-    doc["provider"]["model"] = toml_edit::value(&models.default_model);
-
-    if doc["provider"].get(provider).is_none() {
-        doc["provider"][provider] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    doc["provider"][provider]["api_key"] = toml_edit::value(api_key);
-
-    match provider {
-        "openrouter" => {
-            doc["provider"][provider]["base_url"] =
-                toml_edit::value("https://openrouter.ai/api/v1");
-        }
-        "anthropic" => {
-            doc["provider"][provider]["base_url"] = toml_edit::value("https://api.anthropic.com");
-        }
-        "openai" => {
-            doc["provider"][provider]["base_url"] = toml_edit::value("https://api.openai.com/v1");
-        }
-        "gemini" => {
-            doc["provider"][provider]["base_url"] =
-                toml_edit::value("https://generativelanguage.googleapis.com/v1beta");
-        }
-        _ => {}
-    }
-
-    ensure_table(&mut doc, "models");
-    doc["models"]["main"] = toml_edit::value(to_toml_array(&models.main));
-    doc["models"]["fast"] = toml_edit::value(to_toml_array(&models.fast));
-    doc["models"]["coding"] = toml_edit::value(to_toml_array(&models.coding));
-
-    ensure_table(&mut doc, "execution");
-    doc["execution"]["mode"] = toml_edit::value(execution_mode);
-
-    let should_seed_memory = match doc.get("memory") {
-        None => true,
-        Some(item) => !item.is_table() && !item.is_table_like(),
-    };
-    if should_seed_memory {
-        doc.remove("memory");
-        ensure_table(&mut doc, "memory");
-        doc["memory"]["enabled"] = toml_edit::value(true);
-        doc["memory"]["fade_after_days"] = toml_edit::value(30i64);
-        doc["memory"]["expire_after_days"] = toml_edit::value(90i64);
-        doc["memory"]["max_retrieval_per_type"] = toml_edit::value(10i64);
-        doc["memory"]["reflection_interval_hours"] = toml_edit::value(24i64);
-        doc["memory"]["incognito"] = toml_edit::value(false);
-    }
-
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let tmp_path = config_path.with_extension("tmp");
-    std::fs::write(&tmp_path, doc.to_string())?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
-    }
-
-    std::fs::rename(&tmp_path, &config_path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::options::build_provider_options;
     use super::*;
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
@@ -237,7 +154,13 @@ mod tests {
     fn to_toml_array_preserves_order() {
         let array = to_toml_array(&["a".into(), "b".into(), "c".into()]);
 
-        assert_eq!(array.iter().map(|v| v.as_str().unwrap()).collect::<Vec<_>>(), vec!["a", "b", "c"]);
+        assert_eq!(
+            array
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
     }
 
     #[test]
@@ -245,12 +168,14 @@ mod tests {
     fn save_config_writes_provider_and_models() {
         let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
         let models = crate::autoconfigure::options::models_for_provider("openrouter");
+        let options = build_provider_options(&[]);
 
-        save_config("openrouter", "test-key", &models, "normal").unwrap();
+        save_config_routing("openrouter", "test-key", &models, "normal", &[], &options).unwrap();
 
         let content = std::fs::read_to_string(crate::config::Config::path()).unwrap();
         assert!(content.contains("default = \"openrouter\""));
         assert!(content.contains("api_key = \"test-key\""));
         assert!(content.contains("mode = \"normal\""));
+        assert!(content.contains("provider_routing"));
     }
 }
