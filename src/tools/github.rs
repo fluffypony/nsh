@@ -126,15 +126,6 @@ pub async fn execute(input: &serde_json::Value, config: &Config) -> anyhow::Resu
     }
 }
 
-pub async fn execute_with_context(
-    input: &serde_json::Value,
-    ctx: &crate::tools::ToolHandlerContext,
-) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
-    Ok(crate::tools::ToolInvocationOutcome::from_result(
-        execute(input, &ctx.config).await,
-    ))
-}
-
 // ─── fetch_readme ────────────────────────────────────────────────────
 
 async fn fetch_readme(
@@ -184,11 +175,7 @@ async fn process_readme_content(
     }
 
     // Feed through fast LLM to extract only goal-relevant information
-    let provider_cfg = provider::ProviderFactoryConfig::from_config(config);
-    let provider = provider::create_provider(&provider_cfg.default, &provider_cfg)?;
-    let transport_base_url =
-        provider::routing::resolve_openai_compat_config(&provider_cfg.default, &provider_cfg)?
-            .map(|cfg| cfg.base_url);
+    let provider = provider::ActiveProvider::default_from_config(config)?;
     let model = config
         .models
         .fast
@@ -219,11 +206,6 @@ async fn process_readme_content(
         max_tokens: 2000,
         stream: false,
         extra_body: None,
-    };
-    let request = if let Some(base_url) = transport_base_url.as_deref() {
-        provider::with_transport_base_url(&request, base_url)
-    } else {
-        request
     };
 
     let response = provider.complete(request).await?;

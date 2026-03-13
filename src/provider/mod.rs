@@ -132,6 +132,78 @@ impl ProviderFactoryConfig {
     }
 }
 
+pub struct ActiveProvider {
+    provider: Box<dyn LlmProvider>,
+    transport_base_url: Option<String>,
+}
+
+impl ActiveProvider {
+    pub fn new(provider: Box<dyn LlmProvider>, transport_base_url: Option<String>) -> Self {
+        Self {
+            provider,
+            transport_base_url,
+        }
+    }
+
+    pub fn from_factory<F>(
+        provider_name: &str,
+        config: &ProviderFactoryConfig,
+        provider_factory: F,
+    ) -> anyhow::Result<Self>
+    where
+        F: Fn(&str, &ProviderFactoryConfig) -> anyhow::Result<Box<dyn LlmProvider>>,
+    {
+        let provider = provider_factory(provider_name, config)?;
+        let transport_base_url = routing::resolve_openai_compat_config(provider_name, config)?
+            .map(|cfg| cfg.base_url);
+        Ok(Self::new(provider, transport_base_url))
+    }
+
+    pub fn from_config(
+        provider_name: &str,
+        config: &crate::config::Config,
+    ) -> anyhow::Result<Self> {
+        let provider_cfg = ProviderFactoryConfig::from_config(config);
+        Self::from_factory(provider_name, &provider_cfg, create_provider)
+    }
+
+    pub fn default_from_config(config: &crate::config::Config) -> anyhow::Result<Self> {
+        let provider_cfg = ProviderFactoryConfig::from_config(config);
+        Self::from_factory(&provider_cfg.default, &provider_cfg, create_provider)
+    }
+
+    pub fn prepare_request(&self, request: ChatRequest) -> ChatRequest {
+        if let Some(base_url) = self.transport_base_url.as_deref() {
+            with_transport_base_url(&request, base_url)
+        } else {
+            request
+        }
+    }
+
+    pub fn effective_model_name(&self, model: &str) -> String {
+        if let Some(base_url) = self.transport_base_url.as_deref() {
+            routing::model_name_for_transport(model, base_url)
+        } else {
+            model.to_string()
+        }
+    }
+
+    pub fn provider(&self) -> &dyn LlmProvider {
+        self.provider.as_ref()
+    }
+
+    pub async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
+        self.provider.complete(self.prepare_request(request)).await
+    }
+
+    pub async fn stream(
+        &self,
+        request: ChatRequest,
+    ) -> anyhow::Result<tokio::sync::mpsc::Receiver<StreamEvent>> {
+        self.provider.stream(self.prepare_request(request)).await
+    }
+}
+
 /// Factory: create a provider by name.
 pub fn create_provider(
     provider_name: &str,

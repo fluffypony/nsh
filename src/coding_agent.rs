@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::config::Config;
 use crate::daemon_db::DbAccess;
 use crate::provider::chain;
-use crate::provider::{ChatRequest, ContentBlock, Message, Role, ToolChoice, create_provider};
+use crate::provider::{ActiveProvider, ChatRequest, ContentBlock, Message, Role, ToolChoice};
 use crate::tools::ToolDefinition;
 use crate::tools::patch_file::apply_patch_with_access;
 use crate::tools::write_file::{
@@ -156,13 +156,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
         cancelled,
         force_autorun,
     } = request;
-    let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
-    let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
-    let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
-        &provider_cfg.default,
-        &provider_cfg,
-    )?
-    .map(|cfg| cfg.base_url);
+    let provider = ActiveProvider::default_from_config(config)?;
     let model_chain = if config.models.coding.is_empty() {
         if config.models.main.is_empty() {
             vec![config.provider.model.clone()]
@@ -236,11 +230,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
             stream: true,
             extra_body: None,
         };
-        let request = if let Some(base_url) = transport_base_url.as_deref() {
-            crate::provider::with_transport_base_url(&request, base_url)
-        } else {
-            request
-        };
+        let request = provider.prepare_request(request);
 
         let debug_path = crate::debug_io::begin_named(
             &format!("code-step{step}"),
@@ -261,7 +251,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
         );
 
         let (mut rx, _used_model) = match chain::call_chain_with_fallback_think(
-            provider.as_ref(),
+            provider.provider(),
             request,
             &model_chain,
             true,

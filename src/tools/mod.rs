@@ -21,7 +21,6 @@ pub mod write_file;
 
 mod runtime;
 
-pub use runtime::context::ToolHandlerContext;
 pub use runtime::outcome::ToolInvocationOutcome;
 pub use runtime::path_access::{
     normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_with_access,

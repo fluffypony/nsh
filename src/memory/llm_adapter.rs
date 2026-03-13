@@ -27,13 +27,7 @@ impl ProviderLlmClient {
 #[async_trait::async_trait]
 impl MemoryLlmClient for ProviderLlmClient {
     async fn complete_json(&self, prompt: &str) -> anyhow::Result<serde_json::Value> {
-        let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(&self.config);
-        let provider = crate::provider::create_provider(&provider_cfg.default, &provider_cfg)?;
-        let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
-            &provider_cfg.default,
-            &provider_cfg,
-        )?
-        .map(|cfg| cfg.base_url);
+        let provider = crate::provider::ActiveProvider::default_from_config(&self.config)?;
         let model = self.fast_model();
         let request = crate::provider::ChatRequest {
             model,
@@ -50,12 +44,6 @@ impl MemoryLlmClient for ProviderLlmClient {
             stream: false,
             extra_body: None,
         };
-        let request = if let Some(base_url) = transport_base_url.as_deref() {
-            crate::provider::with_transport_base_url(&request, base_url)
-        } else {
-            request
-        };
-
         let response = provider.complete(request).await?;
         let mut text = String::new();
         for block in &response.content {

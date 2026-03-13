@@ -40,13 +40,7 @@ pub async fn generate_llm_summary(
     config: &crate::config::Config,
 ) -> anyhow::Result<String> {
     let prompt = build_summary_prompt(cmd);
-    let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
-    let provider = crate::provider::create_provider(&provider_cfg.default, &provider_cfg)?;
-    let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
-        &provider_cfg.default,
-        &provider_cfg,
-    )?
-    .map(|cfg| cfg.base_url);
+    let provider = crate::provider::ActiveProvider::default_from_config(config)?;
     let model = config
         .models
         .fast
@@ -65,11 +59,6 @@ pub async fn generate_llm_summary(
         max_tokens: 256,
         stream: false,
         extra_body: None,
-    };
-    let request = if let Some(base_url) = transport_base_url.as_deref() {
-        crate::provider::with_transport_base_url(&request, base_url)
-    } else {
-        request
     };
     let response = provider.complete(request).await?;
     let text = crate::provider::message_text_content(&response);

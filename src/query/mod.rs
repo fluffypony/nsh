@@ -108,27 +108,38 @@ pub struct QueryOptions {
     pub json_output: bool,
 }
 
-struct QuerySessionSetup<'a> {
-    config: &'a Config,
-    db: &'a dyn DbAccess,
-    session_id: &'a str,
-    opts: QueryOptions,
+struct QueryPromptState {
     query: String,
     original_query: String,
     boundary: String,
-    cancelled: Arc<AtomicBool>,
-    provider: Box<dyn LlmProvider>,
-    transport_base_url: Option<String>,
-    chain: Vec<String>,
+    xml_context: String,
+    system: String,
+    messages: Vec<Message>,
+}
+
+struct QueryToolRuntime {
     skills: Vec<crate::skills::Skill>,
     mcp_client: Arc<tokio::sync::Mutex<crate::mcp::McpClient>>,
     tool_defs: Vec<tools::ToolDefinition>,
     class_tools: HashMap<String, Vec<tools::ToolDefinition>>,
     loaded_classes: HashSet<String>,
     mcp_tool_names: HashSet<String>,
-    xml_context: String,
-    system: String,
-    messages: Vec<Message>,
+}
+
+struct QueryLlmRuntime {
+    cancelled: Arc<AtomicBool>,
+    provider: ActiveProvider,
+    chain: Vec<String>,
+}
+
+struct QuerySession<'a> {
+    config: &'a Config,
+    db: &'a dyn DbAccess,
+    session_id: &'a str,
+    opts: QueryOptions,
+    prompt: QueryPromptState,
+    llm: QueryLlmRuntime,
+    tools: QueryToolRuntime,
 }
 
 fn normalize_query_input(query: &str) -> String {
@@ -165,7 +176,7 @@ async fn initialize_query_session<'a>(
     db: &'a dyn DbAccess,
     session_id: &'a str,
     opts: QueryOptions,
-) -> anyhow::Result<QuerySessionSetup<'a>> {
+) -> anyhow::Result<QuerySession<'a>> {
     crate::streaming::configure_display(&config.display);
     crate::streaming::set_json_output(opts.json_output);
 
@@ -177,13 +188,7 @@ async fn initialize_query_session<'a>(
     let query = normalize_query_input(query);
     let original_query = query.clone();
 
-    let provider_cfg = crate::provider::ProviderFactoryConfig::from_config(config);
-    let provider = create_provider(&provider_cfg.default, &provider_cfg)?;
-    let transport_base_url = crate::provider::routing::resolve_openai_compat_config(
-        &provider_cfg.default,
-        &provider_cfg,
-    )?
-    .map(|cfg| cfg.base_url);
+    let provider = ActiveProvider::default_from_config(config)?;
     let chain = if config.models.main.is_empty() {
         vec![config.provider.model.clone()]
     } else {
@@ -352,32 +357,37 @@ async fn initialize_query_session<'a>(
         }],
     });
 
-    Ok(QuerySessionSetup {
+    Ok(QuerySession {
         config,
         db,
         session_id,
         opts,
-        query,
-        original_query,
-        boundary,
-        cancelled,
-        provider,
-        transport_base_url,
-        chain,
-        skills,
-        mcp_client,
-        tool_defs,
-        class_tools,
-        loaded_classes,
-        mcp_tool_names,
-        xml_context,
-        system,
-        messages,
+        prompt: QueryPromptState {
+            query,
+            original_query,
+            boundary,
+            xml_context,
+            system,
+            messages,
+        },
+        llm: QueryLlmRuntime {
+            cancelled,
+            provider,
+            chain,
+        },
+        tools: QueryToolRuntime {
+            skills,
+            mcp_client,
+            tool_defs,
+            class_tools,
+            loaded_classes,
+            mcp_tool_names,
+        },
     })
 }
 
-async fn finalize_query_session(session: QuerySessionSetup<'_>) {
-    session.mcp_client.lock().await.shutdown().await;
+async fn finalize_query_session(session: QuerySession<'_>) {
+    session.tools.mcp_client.lock().await.shutdown().await;
 
     let config_clone = session.config.clone();
     let session_clone = session.session_id.to_string();
@@ -401,27 +411,27 @@ pub async fn handle_query(
     result
 }
 
-async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Result<()> {
+async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<()> {
     let config = session.config;
     let db = session.db;
     let session_id = session.session_id;
     let opts = session.opts;
-    let query = session.query.as_str();
-    let original_query = session.original_query.as_str();
-    let boundary = session.boundary.as_str();
-    let cancelled = Arc::clone(&session.cancelled);
-    let provider = session.provider.as_ref();
-    let transport_base_url = session.transport_base_url.as_deref();
-    let chain = &session.chain;
-    let skills = &session.skills;
-    let mcp_client = Arc::clone(&session.mcp_client);
-    let tool_defs = &mut session.tool_defs;
-    let class_tools = &session.class_tools;
-    let loaded_classes = &mut session.loaded_classes;
-    let mcp_tool_names = &session.mcp_tool_names;
-    let xml_context = session.xml_context.as_str();
-    let system = &session.system;
-    let messages = &mut session.messages;
+    let query = session.prompt.query.as_str();
+    let original_query = session.prompt.original_query.as_str();
+    let boundary = session.prompt.boundary.as_str();
+    let cancelled = Arc::clone(&session.llm.cancelled);
+    let llm = &session.llm.provider;
+    let provider = llm.provider();
+    let chain = &session.llm.chain;
+    let skills = &session.tools.skills;
+    let mcp_client = Arc::clone(&session.tools.mcp_client);
+    let tool_defs = &mut session.tools.tool_defs;
+    let class_tools = &session.tools.class_tools;
+    let loaded_classes = &mut session.tools.loaded_classes;
+    let mcp_tool_names = &session.tools.mcp_tool_names;
+    let xml_context = session.prompt.xml_context.as_str();
+    let system = &session.prompt.system;
+    let messages = &mut session.prompt.messages;
 
     // Tool health tracker for enriching error messages and tracking consecutive failures
     let mut tool_health = crate::tool_health::ToolHealthTracker::new();
@@ -521,11 +531,7 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
             stream: true,
             extra_body,
         };
-        let request = if let Some(base_url) = transport_base_url {
-            crate::provider::with_transport_base_url(&request, base_url)
-        } else {
-            request
-        };
+        let request = llm.prepare_request(request);
 
         let _spinner = if opts.json_output {
             None
@@ -699,11 +705,7 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
                     .first()
                     .cloned()
                     .unwrap_or_else(|| config.provider.model.clone());
-                let model_name = if let Some(base_url) = transport_base_url {
-                    crate::provider::routing::model_name_for_transport(&model_name, base_url)
-                } else {
-                    model_name
-                };
+                let model_name = llm.effective_model_name(&model_name);
                 let retry_request = crate::provider::ChatRequest {
                     model: model_name,
                     system: system.clone(),
@@ -718,11 +720,7 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
                         None
                     },
                 };
-                let retry_request = if let Some(base_url) = transport_base_url {
-                    crate::provider::with_transport_base_url(&retry_request, base_url)
-                } else {
-                    retry_request
-                };
+                let retry_request = llm.prepare_request(retry_request);
                 if let Ok(json) = crate::json_extract::extract_with_retry(
                     provider,
                     retry_request,
@@ -1316,7 +1314,6 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
         if !parallel_calls.is_empty() {
             let mut futs: Vec<ToolFuture> = Vec::new();
             let mut input_map: HashMap<String, serde_json::Value> = HashMap::new();
-            let tool_ctx = tools::ToolHandlerContext::new(config);
 
             for (id, name, input) in parallel_calls {
                 input_map.insert(id.clone(), input.clone());
@@ -1344,7 +1341,7 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
                     }
                     "web_search" => {
                         let q = input["query"].as_str().unwrap_or("").to_string();
-                        let ws_ctx = tool_ctx.clone();
+                        let ws_config = config.clone();
                         let timeout = input
                             .get("expected_timeout_seconds")
                             .and_then(|v| v.as_u64())
@@ -1352,7 +1349,13 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
-                            let fut = tools::web_search::execute_with_context(&q, &ws_ctx);
+                            let fut = async {
+                                Ok::<crate::tools::ToolInvocationOutcome, anyhow::Error>(
+                                    crate::tools::ToolInvocationOutcome::from_result(
+                                    tools::web_search::execute(&q, &ws_config).await,
+                                    ),
+                                )
+                            };
                             let result = match execute_with_timeout(
                                 fut,
                                 "web_search",
@@ -1371,7 +1374,7 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
                     }
                     "github" => {
                         let input_clone = input.clone();
-                        let github_ctx = tool_ctx.clone();
+                        let github_config = config.clone();
                         let timeout = input_clone
                             .get("expected_timeout_seconds")
                             .and_then(|v| v.as_u64())
@@ -1379,10 +1382,14 @@ async fn run_agent_tool_loop(session: &mut QuerySessionSetup<'_>) -> anyhow::Res
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
-                            let fut = crate::tools::github::execute_with_context(
-                                &input_clone,
-                                &github_ctx,
-                            );
+                            let fut = async {
+                                Ok::<crate::tools::ToolInvocationOutcome, anyhow::Error>(
+                                    crate::tools::ToolInvocationOutcome::from_result(
+                                    crate::tools::github::execute(&input_clone, &github_config)
+                                        .await,
+                                    ),
+                                )
+                            };
                             let result = match execute_with_timeout(
                                 fut,
                                 "github",

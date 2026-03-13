@@ -6,15 +6,6 @@ pub async fn execute(query: &str, config: &Config) -> anyhow::Result<String> {
     execute_with_provider_factory(query, config, provider::create_provider).await
 }
 
-pub async fn execute_with_context(
-    query: &str,
-    ctx: &crate::tools::ToolHandlerContext,
-) -> anyhow::Result<crate::tools::ToolInvocationOutcome> {
-    Ok(crate::tools::ToolInvocationOutcome::from_result(
-        execute(query, &ctx.config).await,
-    ))
-}
-
 async fn execute_with_provider_factory<F>(
     query: &str,
     config: &Config,
@@ -35,7 +26,6 @@ where
             .ok()
             .flatten()
             .map(|cfg| cfg.base_url);
-
     let provider = match provider_factory(ws_provider_name, &provider_cfg) {
         Ok(p) => p,
         Err(e) => {
@@ -48,6 +38,7 @@ where
             return Err(e);
         }
     };
+    let provider = provider::ActiveProvider::new(provider, transport_base_url);
 
     let request = ChatRequest {
         model: ws_model.clone(),
@@ -71,11 +62,6 @@ where
         } else {
             None
         },
-    };
-    let request = if let Some(base_url) = transport_base_url.as_deref() {
-        provider::with_transport_base_url(&request, base_url)
-    } else {
-        request
     };
 
     let response = provider.complete(request).await?;
