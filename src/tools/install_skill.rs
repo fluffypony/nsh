@@ -1,15 +1,75 @@
 use std::io::{self, Write};
 
+#[derive(Debug, PartialEq)]
+enum InstallSkillRequest {
+    Repo(RepoInstallRequest),
+    Manual(ManualSkillRequest),
+}
+
+#[derive(Debug, PartialEq)]
+struct RepoInstallRequest {
+    repo_url: String,
+}
+
+#[derive(Debug, PartialEq)]
+struct ManualSkillRequest {
+    name: String,
+    description: String,
+    definition: ManualSkillDefinition,
+    timeout_seconds: u64,
+    terminal: bool,
+    parameters: Vec<(String, SkillParameterDefinition)>,
+    docs: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+enum ManualSkillDefinition {
+    Command(String),
+    Script { runtime: String, script: String },
+    DocsOnly,
+}
+
+#[derive(Debug, PartialEq)]
+struct SkillParameterDefinition {
+    param_type: String,
+    description: String,
+}
+
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    // Repo install mode: clone a git repo into ~/.nsh/skills/<repo-name>
-    // Check repo, url, and also detect URLs passed in the name field as a fallback
-    let repo_val = input
+    match parse_request(input)? {
+        InstallSkillRequest::Repo(request) => install_repo_skill(&request),
+        InstallSkillRequest::Manual(request) => install_manual_skill(&request),
+    }
+}
+
+fn parse_request(input: &serde_json::Value) -> anyhow::Result<InstallSkillRequest> {
+    match input.get("action").and_then(|value| value.as_str()) {
+        Some("repo") => Ok(InstallSkillRequest::Repo(RepoInstallRequest {
+            repo_url: detect_repo_url(input).ok_or_else(|| {
+                anyhow::anyhow!("install_skill: 'repo' or 'url' is required when action='repo'")
+            })?,
+        })),
+        Some("manual") => parse_manual_request(input).map(InstallSkillRequest::Manual),
+        Some(other) => {
+            anyhow::bail!("install_skill: unknown action '{other}'. Use 'repo' or 'manual'.")
+        }
+        None => {
+            if let Some(repo_url) = detect_repo_url(input) {
+                Ok(InstallSkillRequest::Repo(RepoInstallRequest { repo_url }))
+            } else {
+                parse_manual_request(input).map(InstallSkillRequest::Manual)
+            }
+        }
+    }
+}
+
+fn detect_repo_url(input: &serde_json::Value) -> Option<String> {
+    input
         .get("repo")
         .or_else(|| input.get("url"))
         .and_then(|v| v.as_str())
         .map(String::from)
         .or_else(|| {
-            // Fallback: if name looks like a URL, treat it as a repo
             let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("");
             if name.contains("github.com")
                 || name.contains("gitlab.com")
@@ -21,142 +81,27 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             } else {
                 None
             }
-        });
-    if let Some(repo_url) = repo_val.as_deref() {
-        let skills_dir = crate::config::Config::nsh_dir().join("skills");
-        let repo_name = repo_url
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or("skill");
-        let folder = repo_name.trim_end_matches(".git");
-        let dest = skills_dir.join(folder);
+        })
+}
 
-        let bold_yellow = "\x1b[1;33m";
-        let green = "\x1b[32m";
-        let dim = "\x1b[2m";
-        let reset = "\x1b[0m";
-
-        let already_existed = dest.exists();
-        eprintln!("{bold_yellow}Install skill from repo:{reset} {repo_url}");
-        eprintln!("{dim}Destination: {}{reset}", dest.display());
-        if already_existed {
-            eprintln!(
-                "{bold_yellow}Warning: skill repo '{folder}' already exists and will be updated.{reset}"
-            );
-        }
-
-        eprintln!();
-        eprint!("{bold_yellow}Install? [y/N]{reset} ");
-        io::stderr().flush()?;
-
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-            eprintln!("{dim}skill installation declined{reset}");
-            return Ok("Config change declined".to_string());
-        }
-
-        std::fs::create_dir_all(&skills_dir)?;
-        if already_existed {
-            // Pull updates
-            eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
-            let status = std::process::Command::new("git")
-                .args([
-                    "-C",
-                    dest.to_string_lossy().as_ref(),
-                    "pull",
-                    "--ff-only",
-                    "-q",
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .stdin(std::process::Stdio::null())
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("git pull failed for {}", dest.display());
-            }
-        } else {
-            eprintln!("{dim}Cloning {repo_url} into {}...{reset}", dest.display());
-            let status = std::process::Command::new("git")
-                .args([
-                    "clone",
-                    "--depth",
-                    "1",
-                    repo_url,
-                    dest.to_string_lossy().as_ref(),
-                ])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("git clone failed: {}", repo_url);
-            }
-        }
-
-        // Scan for detected skill files and report
-        let mut detected = Vec::new();
-        for fname in [
-            "SKILL.md",
-            "skill.md",
-            "skill.toml",
-            "nsh.toml",
-            "README.md",
-            "readme.md",
-        ] {
-            if dest.join(fname).exists() {
-                detected.push(fname);
-            }
-        }
-
-        let action = if already_existed {
-            "updated"
-        } else {
-            "installed"
-        };
-
-        let detected_str = if detected.is_empty() {
-            "No skill documents detected".to_string()
-        } else {
-            format!("Detected: {}", detected.join(", "))
-        };
-        eprintln!(
-            "{green}✓ skill repo '{folder}' {action} at {}{reset}",
-            dest.display()
-        );
-        eprintln!("{dim}  {detected_str}{reset}");
-
-        return Ok(format!(
-            "Skill repo {action} at {}. {detected_str}. \
-             The skill is now loaded automatically from its SKILL.md/README.md.",
-            dest.display()
-        ));
-    }
-
-    let name = input["name"].as_str().unwrap_or("");
-    let description = input["description"].as_str().unwrap_or("");
-    let command = input["command"].as_str().unwrap_or("");
-    let runtime = input["runtime"].as_str();
-    let script = input["script"].as_str();
-    let timeout = input["timeout_seconds"].as_u64().unwrap_or(30);
-    let terminal = input["terminal"].as_bool().unwrap_or(false);
-    let parameters = input.get("parameters");
-    let docs = input["docs"].as_str();
+fn parse_manual_request(input: &serde_json::Value) -> anyhow::Result<ManualSkillRequest> {
+    let name = input["name"].as_str().unwrap_or("").trim();
+    let description = input["description"].as_str().unwrap_or("").trim();
+    let command = input["command"].as_str().map(str::trim).unwrap_or("");
+    let runtime = input["runtime"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let script = input["script"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let docs = input["docs"].as_str().map(str::to_string);
 
     if name.is_empty() || description.is_empty() {
         anyhow::bail!(
             "install_skill: 'name' and 'description' are required for manual skills. \
              To install from a Git repo, pass repo=URL instead (e.g. repo=\"https://github.com/user/skill\")"
-        );
-    }
-    let has_command = !command.trim().is_empty();
-    let has_code = runtime.map(|s| !s.trim().is_empty()).unwrap_or(false)
-        && script.map(|s| !s.trim().is_empty()).unwrap_or(false);
-    // Doc-only mode: allow installing a skill with only docs if provided.
-    if !has_command && !has_code && docs.is_none() {
-        // Maintain error text the tests expect ('required')
-        anyhow::bail!(
-            "install_skill: required field missing — provide either 'command' OR both 'runtime' and 'script' or 'docs'"
         );
     }
 
@@ -166,48 +111,196 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         );
     }
 
-    // Build TOML content. For non-programmatic skills (README-only, Skill.md), the model
-    // should convert usage instructions into either a command template or a small code
-    // wrapper (runtime+script) that invokes the documented steps verbatim. We persist
-    // exactly what the model provides here, with a human preview and confirmation.
-    let mut toml_content = String::new();
-    toml_content.push_str(&format!(
-        "name = {}\ndescription = {}\n",
-        toml::Value::String(name.into()),
-        toml::Value::String(description.into()),
-    ));
-    if has_command {
-        toml_content.push_str(&format!(
-            "command = {}\n",
-            toml::Value::String(command.into())
-        ));
-    } else if let (Some(rt), Some(sc)) = (runtime, script) {
-        toml_content.push_str(&format!(
-            "runtime = {}\nscript = {}\n",
-            toml::Value::String(rt.into()),
-            toml::Value::String(sc.into())
-        ));
-    }
-    toml_content.push_str(&format!(
-        "timeout_seconds = {timeout}
-terminal = {terminal}
-"
-    ));
+    let definition = if !command.is_empty() {
+        ManualSkillDefinition::Command(command.to_string())
+    } else if let (Some(runtime), Some(script)) = (runtime, script) {
+        ManualSkillDefinition::Script {
+            runtime: runtime.to_string(),
+            script: script.to_string(),
+        }
+    } else if docs.is_some() {
+        ManualSkillDefinition::DocsOnly
+    } else {
+        anyhow::bail!(
+            "install_skill: required field missing — provide either 'command' OR both 'runtime' and 'script' or 'docs'"
+        );
+    };
 
-    if let Some(serde_json::Value::Object(params)) = parameters {
-        for (param_name, param_def) in params {
-            let ptype = param_def["type"].as_str().unwrap_or("string");
-            let pdesc = param_def["description"].as_str().unwrap_or("");
-            toml_content.push_str(&format!(
-                "\n[parameters.{param_name}]\ntype = {}\ndescription = {}\n",
-                toml::Value::String(ptype.into()),
-                toml::Value::String(pdesc.into()),
-            ));
+    let parameters = match input.get("parameters") {
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(name, definition)| {
+                Ok((
+                    name.clone(),
+                    SkillParameterDefinition {
+                        param_type: definition["type"].as_str().unwrap_or("string").to_string(),
+                        description: definition["description"].as_str().unwrap_or("").to_string(),
+                    },
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        Some(_) => anyhow::bail!("install_skill: 'parameters' must be an object when provided"),
+        None => Vec::new(),
+    };
+
+    Ok(ManualSkillRequest {
+        name: name.to_string(),
+        description: description.to_string(),
+        definition,
+        timeout_seconds: input["timeout_seconds"].as_u64().unwrap_or(30),
+        terminal: input["terminal"].as_bool().unwrap_or(false),
+        parameters,
+        docs,
+    })
+}
+
+fn install_repo_skill(request: &RepoInstallRequest) -> anyhow::Result<String> {
+    let repo_url = request.repo_url.as_str();
+    let skills_dir = crate::config::Config::nsh_dir().join("skills");
+    let repo_name = repo_url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("skill");
+    let folder = repo_name.trim_end_matches(".git");
+    let dest = skills_dir.join(folder);
+
+    let bold_yellow = "\x1b[1;33m";
+    let green = "\x1b[32m";
+    let dim = "\x1b[2m";
+    let reset = "\x1b[0m";
+
+    let already_existed = dest.exists();
+    eprintln!("{bold_yellow}Install skill from repo:{reset} {repo_url}");
+    eprintln!("{dim}Destination: {}{reset}", dest.display());
+    if already_existed {
+        eprintln!(
+            "{bold_yellow}Warning: skill repo '{folder}' already exists and will be updated.{reset}"
+        );
+    }
+
+    eprintln!();
+    eprint!("{bold_yellow}Install? [y/N]{reset} ");
+    io::stderr().flush()?;
+
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        eprintln!("{dim}skill installation declined{reset}");
+        return Ok("Config change declined".to_string());
+    }
+
+    std::fs::create_dir_all(&skills_dir)?;
+    if already_existed {
+        eprintln!("{dim}Updating skill repo at {}...{reset}", dest.display());
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                dest.to_string_lossy().as_ref(),
+                "pull",
+                "--ff-only",
+                "-q",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("git pull failed for {}", dest.display());
+        }
+    } else {
+        eprintln!("{dim}Cloning {repo_url} into {}...{reset}", dest.display());
+        let status = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--depth",
+                "1",
+                repo_url,
+                dest.to_string_lossy().as_ref(),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("git clone failed: {}", repo_url);
         }
     }
 
+    let mut detected = Vec::new();
+    for fname in [
+        "SKILL.md",
+        "skill.md",
+        "skill.toml",
+        "nsh.toml",
+        "README.md",
+        "readme.md",
+    ] {
+        if dest.join(fname).exists() {
+            detected.push(fname);
+        }
+    }
+
+    let action = if already_existed {
+        "updated"
+    } else {
+        "installed"
+    };
+    let detected_str = if detected.is_empty() {
+        "No skill documents detected".to_string()
+    } else {
+        format!("Detected: {}", detected.join(", "))
+    };
+    eprintln!(
+        "{green}✓ skill repo '{folder}' {action} at {}{reset}",
+        dest.display()
+    );
+    eprintln!("{dim}  {detected_str}{reset}");
+
+    Ok(format!(
+        "Skill repo {action} at {}. {detected_str}. \
+         The skill is now loaded automatically from its SKILL.md/README.md.",
+        dest.display()
+    ))
+}
+
+fn install_manual_skill(request: &ManualSkillRequest) -> anyhow::Result<String> {
+    let mut toml_content = String::new();
+    toml_content.push_str(&format!(
+        "name = {}\ndescription = {}\n",
+        toml::Value::String(request.name.clone()),
+        toml::Value::String(request.description.clone()),
+    ));
+    match &request.definition {
+        ManualSkillDefinition::Command(command) => {
+            toml_content.push_str(&format!(
+                "command = {}\n",
+                toml::Value::String(command.clone())
+            ));
+        }
+        ManualSkillDefinition::Script { runtime, script } => {
+            toml_content.push_str(&format!(
+                "runtime = {}\nscript = {}\n",
+                toml::Value::String(runtime.clone()),
+                toml::Value::String(script.clone())
+            ));
+        }
+        ManualSkillDefinition::DocsOnly => {}
+    }
+    toml_content.push_str(&format!(
+        "timeout_seconds = {}\nterminal = {}\n",
+        request.timeout_seconds, request.terminal
+    ));
+
+    for (param_name, param_def) in &request.parameters {
+        toml_content.push_str(&format!(
+            "\n[parameters.{param_name}]\ntype = {}\ndescription = {}\n",
+            toml::Value::String(param_def.param_type.clone()),
+            toml::Value::String(param_def.description.clone()),
+        ));
+    }
+
     let skills_dir = crate::config::Config::nsh_dir().join("skills");
-    let skill_path = skills_dir.join(format!("{name}.toml"));
+    let skill_path = skills_dir.join(format!("{}.toml", request.name));
 
     let bold_yellow = "\x1b[1;33m";
     let cyan = "\x1b[36m";
@@ -215,14 +308,15 @@ terminal = {terminal}
     let dim = "\x1b[2m";
     let reset = "\x1b[0m";
 
-    eprintln!("{bold_yellow}Install skill:{reset} {name}");
+    eprintln!("{bold_yellow}Install skill:{reset} {}", request.name);
     eprintln!("{dim}Path: {}{reset}", skill_path.display());
     eprintln!();
     eprintln!("{cyan}{toml_content}{reset}");
 
     if skill_path.exists() {
         eprintln!(
-            "{bold_yellow}Warning: skill '{name}' already exists and will be overwritten.{reset}"
+            "{bold_yellow}Warning: skill '{}' already exists and will be overwritten.{reset}",
+            request.name
         );
     }
 
@@ -239,17 +333,17 @@ terminal = {terminal}
 
     std::fs::create_dir_all(&skills_dir)?;
     std::fs::write(&skill_path, &toml_content)?;
-    // If docs provided, write them alongside the TOML for reference.
-    if let Some(d) = docs {
-        let doc_path = skills_dir.join(format!("{name}.md"));
-        std::fs::write(&doc_path, d)?;
+    if let Some(docs) = request.docs.as_deref() {
+        let doc_path = skills_dir.join(format!("{}.md", request.name));
+        std::fs::write(&doc_path, docs)?;
     }
     eprintln!(
-        "{green}✓ skill '{name}' installed at {}{reset}",
+        "{green}✓ skill '{}' installed at {}{reset}",
+        request.name,
         skill_path.display()
     );
 
-    Ok(format!("Successfully installed skill '{name}'"))
+    Ok(format!("Successfully installed skill '{}'", request.name))
 }
 
 #[cfg(test)]

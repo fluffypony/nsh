@@ -1,13 +1,20 @@
 use std::io::{self, Write};
 
-pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    let action = input["action"].as_str().unwrap_or("set");
-    let key = input["key"].as_str().unwrap_or("");
-    let value = input.get("value");
+enum ManageConfigRequest {
+    Set {
+        key: String,
+        value: serde_json::Value,
+    },
+    Remove {
+        key: String,
+    },
+}
 
-    if key.is_empty() {
-        anyhow::bail!("manage_config: 'key' is required");
-    }
+pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
+    let request = parse_request(input)?;
+    let key = match &request {
+        ManageConfigRequest::Set { key, .. } | ManageConfigRequest::Remove { key } => key.as_str(),
+    };
 
     if crate::config::is_setting_protected(key) {
         eprintln!(
@@ -36,14 +43,12 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let bold_yellow = "\x1b[1;33m";
     let reset = "\x1b[0m";
 
-    match action {
-        "set" => {
-            let value = value
-                .ok_or_else(|| anyhow::anyhow!("manage_config: 'value' is required for set"))?;
-            let toml_value = json_to_toml_edit(value);
-            let old_value = get_toml_value(&doc, key);
+    match request {
+        ManageConfigRequest::Set { key, value } => {
+            let toml_value = json_to_toml_edit(&value)?;
+            let old_value = get_toml_value(&doc, &key);
 
-            set_toml_value(&mut doc, key, toml_value.clone())?;
+            set_toml_value(&mut doc, &key, toml_value.clone())?;
             let new_content = doc.to_string();
 
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
@@ -76,8 +81,8 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             eprintln!("{green}✓ config updated: {key}{reset}");
             Ok(format!("Successfully applied config change: set {key}"))
         }
-        "remove" => {
-            if !remove_toml_value(&mut doc, key)? {
+        ManageConfigRequest::Remove { key } => {
+            if !remove_toml_value(&mut doc, &key)? {
                 eprintln!("Key not found: {key}");
                 return Ok("Config change declined".to_string());
             }
@@ -108,9 +113,28 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             eprintln!("{green}✓ config key removed: {key}{reset}");
             Ok(format!("Successfully removed config key: {key}"))
         }
-        _ => {
-            anyhow::bail!("manage_config: unknown action '{action}'. Use 'set' or 'remove'.");
-        }
+    }
+}
+
+fn parse_request(input: &serde_json::Value) -> anyhow::Result<ManageConfigRequest> {
+    let action = input["action"].as_str().unwrap_or("set");
+    let key = input["key"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("manage_config: 'key' is required"))?;
+
+    match action {
+        "set" => Ok(ManageConfigRequest::Set {
+            key: key.to_string(),
+            value: input
+                .get("value")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("manage_config: 'value' is required for set"))?,
+        }),
+        "remove" => Ok(ManageConfigRequest::Remove {
+            key: key.to_string(),
+        }),
+        _ => anyhow::bail!("manage_config: unknown action '{action}'. Use 'set' or 'remove'."),
     }
 }
 
@@ -135,19 +159,19 @@ fn write_config(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn json_to_toml_edit(v: &serde_json::Value) -> toml_edit::Item {
+fn json_to_toml_edit(v: &serde_json::Value) -> anyhow::Result<toml_edit::Item> {
     match v {
-        serde_json::Value::String(s) => toml_edit::value(s.as_str()),
+        serde_json::Value::String(s) => Ok(toml_edit::value(s.as_str())),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                toml_edit::value(i)
+                Ok(toml_edit::value(i))
             } else if let Some(f) = n.as_f64() {
-                toml_edit::value(f)
+                Ok(toml_edit::value(f))
             } else {
-                toml_edit::value(n.to_string())
+                anyhow::bail!("manage_config: unsupported numeric value '{n}'")
             }
         }
-        serde_json::Value::Bool(b) => toml_edit::value(*b),
+        serde_json::Value::Bool(b) => Ok(toml_edit::value(*b)),
         serde_json::Value::Array(arr) => {
             let mut a = toml_edit::Array::new();
             for item in arr {
@@ -158,22 +182,33 @@ fn json_to_toml_edit(v: &serde_json::Value) -> toml_edit::Item {
                             a.push(i);
                         } else if let Some(f) = n.as_f64() {
                             a.push(f);
+                        } else {
+                            anyhow::bail!("manage_config: unsupported numeric value '{n}'");
                         }
                     }
                     serde_json::Value::Bool(b) => a.push(*b),
-                    _ => a.push(item.to_string()),
+                    serde_json::Value::Null => {
+                        anyhow::bail!(
+                            "manage_config: null values are not supported in arrays; remove the key instead"
+                        );
+                    }
+                    _ => anyhow::bail!(
+                        "manage_config: arrays may contain only strings, numbers, or booleans"
+                    ),
                 }
             }
-            toml_edit::value(a)
+            Ok(toml_edit::value(a))
         }
         serde_json::Value::Object(map) => {
             let mut table = toml_edit::Table::new();
             for (k, val) in map {
-                table.insert(k, json_to_toml_edit(val));
+                table.insert(k, json_to_toml_edit(val)?);
             }
-            toml_edit::Item::Table(table)
+            Ok(toml_edit::Item::Table(table))
         }
-        serde_json::Value::Null => toml_edit::value(""),
+        serde_json::Value::Null => {
+            anyhow::bail!("manage_config: null values are not supported; remove the key instead")
+        }
     }
 }
 
@@ -239,7 +274,7 @@ mod tests {
     #[test]
     fn test_json_to_toml_edit_string() {
         let v = json!("hello");
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         assert!(t.is_value());
         assert_eq!(t.as_str(), Some("hello"));
     }
@@ -247,7 +282,7 @@ mod tests {
     #[test]
     fn test_json_to_toml_edit_integer() {
         let v = json!(42);
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         assert!(t.is_value());
         assert_eq!(t.as_integer(), Some(42));
     }
@@ -255,7 +290,7 @@ mod tests {
     #[test]
     fn test_json_to_toml_edit_float() {
         let v = json!(2.5);
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         assert!(t.is_value());
         if let Some(f) = t.as_float() {
             assert!((f - 2.5).abs() < 0.001);
@@ -266,16 +301,16 @@ mod tests {
 
     #[test]
     fn test_json_to_toml_edit_bool() {
-        let t = json_to_toml_edit(&json!(true));
+        let t = json_to_toml_edit(&json!(true)).unwrap();
         assert_eq!(t.as_bool(), Some(true));
-        let f = json_to_toml_edit(&json!(false));
+        let f = json_to_toml_edit(&json!(false)).unwrap();
         assert_eq!(f.as_bool(), Some(false));
     }
 
     #[test]
     fn test_json_to_toml_edit_array() {
         let v = json!(["a", "b"]);
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         assert!(t.is_value());
         let arr = t.as_value().unwrap().as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -284,7 +319,7 @@ mod tests {
     #[test]
     fn test_json_to_toml_edit_object() {
         let v = json!({"key": "value"});
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         assert!(t.is_table());
         let table = t.as_table().unwrap();
         assert_eq!(table.get("key").unwrap().as_str(), Some("value"));
@@ -293,8 +328,8 @@ mod tests {
     #[test]
     fn test_json_to_toml_edit_null() {
         let v = json!(null);
-        let t = json_to_toml_edit(&v);
-        assert_eq!(t.as_str(), Some(""));
+        let err = json_to_toml_edit(&v).unwrap_err();
+        assert!(err.to_string().contains("null values are not supported"));
     }
 
     #[test]
@@ -427,7 +462,7 @@ c = 42
     #[test]
     fn test_json_to_toml_edit_nested_object() {
         let v = json!({"outer": {"inner": "deep", "num": 7}});
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         assert!(t.is_table());
         let outer = t.as_table().unwrap().get("outer").unwrap();
         assert!(outer.is_table());
@@ -439,7 +474,7 @@ c = 42
     #[test]
     fn test_json_to_toml_edit_array_of_numbers() {
         let v = json!([1, 2, 3]);
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         let arr = t.as_value().unwrap().as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr.get(0).unwrap().as_integer(), Some(1));
@@ -449,7 +484,7 @@ c = 42
     #[test]
     fn test_json_to_toml_edit_array_of_bools() {
         let v = json!([true, false, true]);
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         let arr = t.as_value().unwrap().as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr.get(0).unwrap().as_bool(), Some(true));
@@ -459,7 +494,7 @@ c = 42
     #[test]
     fn test_json_to_toml_edit_array_mixed() {
         let v = json!(["hello", 42, true]);
-        let t = json_to_toml_edit(&v);
+        let t = json_to_toml_edit(&v).unwrap();
         let arr = t.as_value().unwrap().as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr.get(0).unwrap().as_str(), Some("hello"));
