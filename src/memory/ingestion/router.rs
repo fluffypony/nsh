@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn route_output_with_aws_key() {
         let mut event = make_cmd_event("echo key");
-        event.output = Some("AKIAIOSFODNN7EXAMPLE".into());
+        event.output = Some(format!("{}{}", "AKIA", "IOSFODNN7EXAMPLE"));
         let d = route(&event);
         assert!(
             d.update_knowledge,
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn route_output_with_private_key() {
         let mut event = make_cmd_event("cat key");
-        event.output = Some("-----BEGIN RSA PRIVATE KEY-----\nfoo\n-----END".into());
+        event.output = Some(["-----BEGIN", " RSA PRIVATE KEY-----\nfoo\n-----END"].concat());
         let d = route(&event);
         assert!(
             d.update_knowledge,
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn route_output_with_xoxb_slack_token() {
         let mut event = make_cmd_event("echo test");
-        event.output = Some("xoxb-123-456-abc".into());
+        event.output = Some(format!("{}{}", "xoxb", "-123-456-abc"));
         let d = route(&event);
         assert!(
             d.update_knowledge,

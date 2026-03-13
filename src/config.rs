@@ -1862,7 +1862,7 @@ model = "claude-3"
 web_search_model = "perplexity/sonar-pro"
 
 [provider.openrouter]
-api_key = "sk-test"
+api_key_cmd = "printf openrouter-test-key"
 
 [context]
 history_limit = 50
@@ -1981,7 +1981,7 @@ history_limit = 50
 model = "custom-model"
 
 [provider.openrouter]
-api_key = "secret-key"
+api_key_cmd = "printf project-openrouter-key"
 base_url = "https://custom.url"
 
 [tools]
@@ -2072,7 +2072,7 @@ model = "claude-3"
 timeout_seconds = 60
 
 [provider.anthropic]
-api_key = "sk-test-key"
+api_key_cmd = "printf anthropic-test-key"
 base_url = "https://custom.api.example.com"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
@@ -2080,7 +2080,11 @@ base_url = "https://custom.api.example.com"
         assert_eq!(config.provider.model, "claude-3");
         assert_eq!(config.provider.timeout_seconds, 60);
         let anthropic = config.provider.anthropic.unwrap();
-        assert_eq!(anthropic.api_key.as_deref(), Some("sk-test-key"));
+        assert!(anthropic.api_key.is_none());
+        assert_eq!(
+            anthropic.api_key_cmd.as_deref(),
+            Some("printf anthropic-test-key")
+        );
         assert_eq!(
             anthropic.base_url.as_deref(),
             Some("https://custom.api.example.com")
@@ -2434,29 +2438,41 @@ default = "anthropic"
 model = "claude-3"
 
 [provider.openrouter]
-api_key = "or-key"
+api_key_cmd = "printf openrouter-provider-key"
 base_url = "https://or.example.com"
 
 [provider.anthropic]
-api_key = "ant-key"
+api_key_cmd = "printf anthropic-provider-key"
 
 [provider.openai]
-api_key = "oai-key"
+api_key_cmd = "printf openai-provider-key"
 base_url = "https://oai.example.com"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.provider.default, "anthropic");
 
         let or = config.provider.openrouter.unwrap();
-        assert_eq!(or.api_key.as_deref(), Some("or-key"));
+        assert!(or.api_key.is_none());
+        assert_eq!(
+            or.api_key_cmd.as_deref(),
+            Some("printf openrouter-provider-key")
+        );
         assert_eq!(or.base_url.as_deref(), Some("https://or.example.com"));
 
         let ant = config.provider.anthropic.unwrap();
-        assert_eq!(ant.api_key.as_deref(), Some("ant-key"));
+        assert!(ant.api_key.is_none());
+        assert_eq!(
+            ant.api_key_cmd.as_deref(),
+            Some("printf anthropic-provider-key")
+        );
         assert!(ant.base_url.is_none());
 
         let oai = config.provider.openai.unwrap();
-        assert_eq!(oai.api_key.as_deref(), Some("oai-key"));
+        assert!(oai.api_key.is_none());
+        assert_eq!(
+            oai.api_key_cmd.as_deref(),
+            Some("printf openai-provider-key")
+        );
         assert_eq!(oai.base_url.as_deref(), Some("https://oai.example.com"));
 
         assert!(config.provider.ollama.is_none());
@@ -2511,7 +2527,7 @@ default = "openrouter"
 model = "original"
 
 [provider.openrouter]
-api_key = "base-key"
+api_key_cmd = "printf base-provider-key"
 base_url = "https://base.example.com"
 "#,
         )
@@ -2522,7 +2538,7 @@ base_url = "https://base.example.com"
 model = "overridden"
 
 [provider.openrouter]
-api_key = "overlay-key"
+api_key_cmd = "printf overlay-provider-key"
 "#,
         )
         .unwrap();
@@ -2531,7 +2547,11 @@ api_key = "overlay-key"
         assert_eq!(config.provider.default, "openrouter");
         assert_eq!(config.provider.model, "overridden");
         let or = config.provider.openrouter.unwrap();
-        assert_eq!(or.api_key.as_deref(), Some("overlay-key"));
+        assert!(or.api_key.is_none());
+        assert_eq!(
+            or.api_key_cmd.as_deref(),
+            Some("printf overlay-provider-key")
+        );
         assert_eq!(or.base_url.as_deref(), Some("https://base.example.com"));
     }
 
@@ -2607,7 +2627,7 @@ custom_instructions = "be concise"
 default = "anthropic"
 
 [provider.anthropic]
-api_key = "secret"
+api_key_cmd = "printf sanitized-provider-key"
 "#,
         )
         .unwrap();
@@ -2728,7 +2748,7 @@ model = "gpt-4"
 timeout_seconds = 30
 
 [provider.openai]
-api_key = "sk-test"
+api_key_cmd = "printf openai-test-key"
 
 [context]
 scrollback_lines = 500
@@ -3359,7 +3379,7 @@ web_search_model = "perplexity/sonar-pro"
 timeout_seconds = 60
 
 [provider.gemini]
-api_key = "test-key"
+api_key_cmd = "printf gemini-test-key"
 base_url = "https://custom.endpoint"
 
 [context]
@@ -3421,7 +3441,11 @@ timeout_seconds = 45
         );
         assert_eq!(config.provider.timeout_seconds, 60);
         let gemini_auth = config.provider.gemini.as_ref().unwrap();
-        assert_eq!(gemini_auth.api_key.as_deref(), Some("test-key"));
+        assert!(gemini_auth.api_key.is_none());
+        assert_eq!(
+            gemini_auth.api_key_cmd.as_deref(),
+            Some("printf gemini-test-key")
+        );
         assert_eq!(
             gemini_auth.base_url.as_deref(),
             Some("https://custom.endpoint")
