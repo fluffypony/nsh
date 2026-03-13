@@ -308,17 +308,22 @@ pub fn execute(
     write_nofollow(&path, content)?;
     eprintln!("  Written: {}", path.display());
 
-    if !private {
-        db.insert_conversation(
+    let written_path = path.to_string_lossy().into_owned();
+    crate::tools::record_tool_conversation(
+        db,
+        config,
+        private,
+        crate::tools::ToolConversationRecord {
             session_id,
             original_query,
-            "write_file",
-            &path.to_string_lossy(),
-            Some(reason),
-            true,
-            false,
-        )?;
-    }
+            response_type: "write_file",
+            response: &written_path,
+            explanation: Some(reason),
+            executed: true,
+            pending: false,
+            audit_risk: None,
+        },
+    )?;
 
     Ok(())
 }

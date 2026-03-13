@@ -537,29 +537,22 @@ fn record_command_execution(
     executed: bool,
     pending: bool,
 ) -> anyhow::Result<()> {
-    let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
-    let redacted_response = crate::redact::redact_secrets(&request.command, &config.redaction);
-    let redacted_explanation = Some(crate::redact::redact_secrets(
-        &request.explanation,
-        &config.redaction,
-    ));
-    db.insert_conversation(
-        session_id,
-        &redacted_query,
-        "command",
-        &redacted_response,
-        redacted_explanation.as_deref(),
-        executed,
-        pending,
-    )?;
-    crate::audit::audit_log(
-        session_id,
-        original_query,
-        "command",
-        &request.command,
-        &request.risk.to_string(),
-    );
-    Ok(())
+    let risk = request.risk.to_string();
+    crate::tools::record_tool_conversation(
+        db,
+        config,
+        false,
+        crate::tools::ToolConversationRecord {
+            session_id,
+            original_query,
+            response_type: "command",
+            response: &request.command,
+            explanation: Some(&request.explanation),
+            executed,
+            pending,
+            audit_risk: Some(risk.as_str()),
+        },
+    )
 }
 
 fn format_execution_output(

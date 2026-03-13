@@ -144,17 +144,22 @@ pub fn execute(
             "{bold_yellow}Apply this patch? [y/N]{reset} "
         ))? {
             eprintln!("{dim}patch declined{reset}");
-            if !private {
-                db.insert_conversation(
+            let declined = format!("declined: {}", path.display());
+            crate::tools::record_tool_conversation(
+                db,
+                config,
+                private,
+                crate::tools::ToolConversationRecord {
                     session_id,
                     original_query,
-                    "patch_file",
-                    &format!("declined: {}", path.display()),
-                    Some(reason),
-                    false,
-                    false,
-                )?;
-            }
+                    response_type: "patch_file",
+                    response: &declined,
+                    explanation: Some(reason),
+                    executed: false,
+                    pending: false,
+                    audit_risk: None,
+                },
+            )?;
             return Ok(None);
         }
     }
@@ -171,17 +176,22 @@ pub fn execute(
     write_nofollow(&path, &modified)?;
     eprintln!("{green}✓ patched {}{reset}", path.display());
 
-    if !private {
-        db.insert_conversation(
+    let patched = format!("patched: {}", path.display());
+    crate::tools::record_tool_conversation(
+        db,
+        config,
+        private,
+        crate::tools::ToolConversationRecord {
             session_id,
             original_query,
-            "patch_file",
-            &format!("patched: {}", path.display()),
-            Some(reason),
-            true,
-            false,
-        )?;
-    }
+            response_type: "patch_file",
+            response: &patched,
+            explanation: Some(reason),
+            executed: true,
+            pending: false,
+            audit_risk: None,
+        },
+    )?;
 
     Ok(None)
 }

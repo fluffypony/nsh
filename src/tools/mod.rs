@@ -27,6 +27,7 @@ pub use runtime::path_access::{
     validate_read_path_with_access,
 };
 pub(crate) use runtime::process_pump;
+pub(crate) use runtime::side_effects::{ToolConversationRecord, record_tool_conversation};
 pub(crate) use runtime::tty_prompts::read_terminal_line_with;
 pub use runtime::registry::{ToolDefinition, all_tool_definitions};
 pub use runtime::timeout_policy::default_timeout_for_tool;

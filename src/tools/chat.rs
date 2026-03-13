@@ -33,20 +33,21 @@ pub fn execute(
         render_response(response)?;
     }
 
-    if !private {
-        crate::audit::audit_log(session_id, original_query, "chat", response, "safe");
-        let redacted_query = crate::redact::redact_secrets(original_query, &config.redaction);
-        let redacted_response = crate::redact::redact_secrets(response, &config.redaction);
-        db.insert_conversation(
+    crate::tools::record_tool_conversation(
+        db,
+        config,
+        private,
+        crate::tools::ToolConversationRecord {
             session_id,
-            &redacted_query,
-            "chat",
-            &redacted_response,
-            None,
-            false,
-            false,
-        )?;
-    }
+            original_query,
+            response_type: "chat",
+            response,
+            explanation: None,
+            executed: false,
+            pending: false,
+            audit_risk: Some("safe"),
+        },
+    )?;
 
     Ok(())
 }
