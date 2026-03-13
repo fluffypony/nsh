@@ -1,4 +1,5 @@
 use reqwest::Url;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
@@ -11,6 +12,15 @@ struct ConnectivityMonitor {
 }
 
 static MONITOR: OnceLock<ConnectivityMonitor> = OnceLock::new();
+static STATUS: AtomicU8 = AtomicU8::new(ConnectivityStatus::Unknown as u8);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ConnectivityStatus {
+    Unknown = 0,
+    Online = 1,
+    Offline = 2,
+}
 
 fn connectivity_probe_url(config: &crate::config::Config) -> String {
     let p = config.provider.default.as_str();
@@ -88,13 +98,20 @@ fn probe_once_inner(url: &str) -> bool {
 }
 
 pub fn is_online() -> bool {
-    ONLINE.load(Ordering::SeqCst)
+    matches!(status(), ConnectivityStatus::Online)
+}
+
+pub fn status() -> ConnectivityStatus {
+    match STATUS.load(Ordering::SeqCst) {
+        1 => ConnectivityStatus::Online,
+        2 => ConnectivityStatus::Offline,
+        _ => ConnectivityStatus::Unknown,
+    }
 }
 
 pub fn trigger_immediate_check() {
-    if let Some(monitor) = MONITOR.get() {
-        let _ = monitor.trigger_tx.send(());
-    }
+    let monitor = monitor();
+    let _ = monitor.trigger_tx.send(());
 }
 
 fn monitor() -> &'static ConnectivityMonitor {
@@ -113,13 +130,20 @@ fn monitor() -> &'static ConnectivityMonitor {
                         .lock()
                         .map(|url| url.clone())
                         .unwrap_or_default();
-                    let ok = if current_url.is_empty() {
-                        true
+                    let current_status = if current_url.is_empty() {
+                        ConnectivityStatus::Unknown
+                    } else if probe_once(&current_url) {
+                        ConnectivityStatus::Online
                     } else {
-                        probe_once(&current_url)
+                        ConnectivityStatus::Offline
                     };
+                    let ok = matches!(current_status, ConnectivityStatus::Online);
+                    STATUS.store(current_status as u8, Ordering::SeqCst);
                     ONLINE.store(ok, Ordering::SeqCst);
-                    if ok {
+                    if matches!(
+                        current_status,
+                        ConnectivityStatus::Online | ConnectivityStatus::Unknown
+                    ) {
                         attempt = 0;
                     } else if !signaled {
                         attempt = attempt.saturating_add(1);
@@ -149,6 +173,8 @@ pub fn start(config: &crate::config::Config) {
     if let Ok(mut probe_url) = monitor.probe_url.lock() {
         *probe_url = connectivity_probe_url(config);
     }
+    STATUS.store(ConnectivityStatus::Unknown as u8, Ordering::SeqCst);
+    ONLINE.store(false, Ordering::SeqCst);
     let _ = monitor.trigger_tx.send(());
 }
 
@@ -183,5 +209,14 @@ mod tests {
             current_probe_url().as_deref(),
             Some("https://api.openai.com/v1/models")
         );
+    }
+
+    #[test]
+    fn test_status_defaults_to_unknown_before_start() {
+        STATUS.store(ConnectivityStatus::Unknown as u8, Ordering::SeqCst);
+        ONLINE.store(false, Ordering::SeqCst);
+
+        assert_eq!(status(), ConnectivityStatus::Unknown);
+        assert!(!is_online());
     }
 }
