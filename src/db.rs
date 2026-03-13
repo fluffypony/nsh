@@ -801,8 +801,7 @@ impl Db {
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })?
-            .filter_map(|r| r.ok())
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         let now = chrono::Utc::now().to_rfc3339();
         let mut cleaned = 0usize;
@@ -5872,6 +5871,31 @@ mod tests {
 
         let cleaned = db.cleanup_orphaned_sessions().unwrap();
         assert_eq!(cleaned, 0);
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_sessions_surfaces_row_decode_errors() {
+        let db = test_db();
+        db.conn
+            .execute(
+                "INSERT INTO sessions (id, tty, shell, pid, started_at) \
+                 VALUES ('bad_pid', '/dev/pts/0', 'zsh', 'oops', '2025-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        let err = db
+            .cleanup_orphaned_sessions()
+            .expect_err("invalid pid row should not be silently dropped");
+
+        assert!(
+            matches!(
+                err,
+                rusqlite::Error::InvalidColumnType(..)
+                    | rusqlite::Error::FromSqlConversionFailure(..)
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
