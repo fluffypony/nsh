@@ -128,13 +128,15 @@ mod tests {
         )
         .unwrap();
 
-        crate::memory::store::semantic::insert_or_update(
+        crate::memory::store::semantic::store(
             &conn,
-            "Rust toolchain",
-            "knowledge",
-            "Uses cargo for building Rust projects",
-            None,
-            "cargo rust build toolchain",
+            &crate::memory::store::semantic::SemanticWrite {
+                name: "Rust toolchain",
+                category: "knowledge",
+                summary: "Uses cargo for building Rust projects",
+                details: None,
+                search_keywords: "cargo rust build toolchain",
+            },
         )
         .unwrap();
 
@@ -154,13 +156,15 @@ mod tests {
         let conn = setup();
 
         for i in 0..5 {
-            crate::memory::store::semantic::insert_or_update(
+            crate::memory::store::semantic::store(
                 &conn,
-                &format!("fact_{i}"),
-                "general",
-                &format!("A rust programming fact number {i}"),
-                None,
-                "rust programming",
+                &crate::memory::store::semantic::SemanticWrite {
+                    name: &format!("fact_{i}"),
+                    category: "general",
+                    summary: &format!("A rust programming fact number {i}"),
+                    details: None,
+                    search_keywords: "rust programming",
+                },
             )
             .unwrap();
         }
@@ -185,13 +189,15 @@ mod tests {
     fn search_all_includes_knowledge() {
         let conn = setup();
 
-        crate::memory::store::knowledge::insert(
+        crate::memory::store::knowledge::store(
             &conn,
-            "api_key",
-            "GitHub personal access token",
-            "ghp_test123",
-            Sensitivity::Low,
-            "github token api",
+            &crate::memory::store::knowledge::KnowledgeWrite {
+                entry_type: "api_key",
+                caption: "GitHub personal access token",
+                secret_value: "ghp_test123",
+                sensitivity: Sensitivity::Low,
+                search_keywords: "github token api",
+            },
         )
         .unwrap();
 
@@ -209,13 +215,15 @@ mod tests {
     fn search_all_includes_procedural() {
         let conn = setup();
 
-        crate::memory::store::procedural::insert(
+        crate::memory::store::procedural::store(
             &conn,
-            "workflow",
-            "deploy",
-            "Deploy application to production server",
-            r#"["build", "test", "deploy"]"#,
-            "deploy production workflow",
+            &crate::memory::store::procedural::ProceduralWrite {
+                entry_type: "workflow",
+                trigger_pattern: "deploy",
+                summary: "Deploy application to production server",
+                steps: r#"["build", "test", "deploy"]"#,
+                search_keywords: "deploy production workflow",
+            },
         )
         .unwrap();
 
@@ -230,7 +238,7 @@ mod tests {
     fn search_all_includes_resource() {
         let conn = setup();
 
-        crate::memory::store::resource::insert(
+        crate::memory::store::resource::store(
             &conn,
             &crate::memory::store::resource::ResourceWrite {
                 resource_type: "config",
@@ -270,13 +278,15 @@ mod tests {
             },
         )
         .unwrap();
-        crate::memory::store::semantic::insert_or_update(
+        crate::memory::store::semantic::store(
             &conn,
-            "testing preference",
-            "workflow",
-            "Prefers cargo test before commit",
-            None,
-            "cargo test",
+            &crate::memory::store::semantic::SemanticWrite {
+                name: "testing preference",
+                category: "workflow",
+                summary: "Prefers cargo test before commit",
+                details: None,
+                search_keywords: "cargo test",
+            },
         )
         .unwrap();
 

@@ -2,9 +2,28 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{KnowledgeEntry, Sensitivity, generate_id};
 
+pub struct KnowledgeWrite<'a> {
+    pub entry_type: &'a str,
+    pub caption: &'a str,
+    pub secret_value: &'a str,
+    pub sensitivity: Sensitivity,
+    pub search_keywords: &'a str,
+}
+
 // removed unused test-only row_to_entry helper
 
-pub fn insert(
+pub fn store(conn: &Connection, write: &KnowledgeWrite<'_>) -> anyhow::Result<String> {
+    insert(
+        conn,
+        write.entry_type,
+        write.caption,
+        write.secret_value,
+        write.sensitivity,
+        write.search_keywords,
+    )
+}
+
+fn insert(
     conn: &Connection,
     entry_type: &str,
     caption: &str,

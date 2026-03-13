@@ -77,9 +77,10 @@ impl MemorySystem {
 
         // Check ignored paths
         if let Some(ref cwd) = event.working_dir
-            && self.is_ignored_path(Path::new(cwd)) {
-                return;
-            }
+            && self.is_ignored_path(Path::new(cwd))
+        {
+            return;
+        }
 
         // Skip password prompts
         if let Some(ref output) = event.output {
@@ -463,7 +464,7 @@ impl MemorySystem {
                 let path_str = path.to_string_lossy().to_string();
                 let hash = crate::memory::bootstrap::compute_hash(&content);
                 let conn = self.db.lock().unwrap();
-                crate::memory::store::resource::upsert_by_path(
+                crate::memory::store::resource::store(
                     &conn,
                     &crate::memory::store::resource::ResourceWrite {
                         resource_type: "config",
@@ -599,13 +600,15 @@ impl MemorySystem {
                 details,
                 search_keywords,
             } => {
-                store::semantic::insert_or_update(
+                store::semantic::store(
                     conn,
-                    name,
-                    category,
-                    summary,
-                    details.as_deref(),
-                    search_keywords,
+                    &store::semantic::SemanticWrite {
+                        name,
+                        category,
+                        summary,
+                        details: details.as_deref(),
+                        search_keywords,
+                    },
                 )?;
             }
             MemoryOp::SemanticUpdate {
@@ -614,12 +617,14 @@ impl MemorySystem {
                 details,
                 search_keywords,
             } => {
-                store::semantic::update_by_id(
+                store::semantic::update(
                     conn,
                     id,
-                    summary,
-                    details.as_deref(),
-                    search_keywords,
+                    &store::semantic::SemanticUpdate {
+                        summary,
+                        details: details.as_deref(),
+                        search_keywords,
+                    },
                 )?;
             }
             MemoryOp::SemanticDelete { ids } => {
@@ -632,13 +637,15 @@ impl MemorySystem {
                 steps,
                 search_keywords,
             } => {
-                store::procedural::insert(
+                store::procedural::store(
                     conn,
-                    entry_type,
-                    trigger_pattern,
-                    summary,
-                    steps,
-                    search_keywords,
+                    &store::procedural::ProceduralWrite {
+                        entry_type,
+                        trigger_pattern,
+                        summary,
+                        steps,
+                        search_keywords,
+                    },
                 )?;
             }
             MemoryOp::ProceduralUpdate {
@@ -647,7 +654,15 @@ impl MemorySystem {
                 steps,
                 search_keywords,
             } => {
-                store::procedural::update(conn, id, summary, steps, search_keywords)?;
+                store::procedural::update(
+                    conn,
+                    id,
+                    &store::procedural::ProceduralUpdate {
+                        summary,
+                        steps,
+                        search_keywords,
+                    },
+                )?;
             }
             MemoryOp::ProceduralDelete { ids } => {
                 store::procedural::delete(conn, ids)?;
@@ -661,7 +676,7 @@ impl MemorySystem {
                 content,
                 search_keywords,
             } => {
-                store::resource::insert(
+                store::resource::store(
                     conn,
                     &store::resource::ResourceWrite {
                         resource_type,
@@ -684,13 +699,15 @@ impl MemorySystem {
                 sensitivity,
                 search_keywords,
             } => {
-                store::knowledge::insert(
+                store::knowledge::store(
                     conn,
-                    entry_type,
-                    caption,
-                    secret_value,
-                    *sensitivity,
-                    search_keywords,
+                    &store::knowledge::KnowledgeWrite {
+                        entry_type,
+                        caption,
+                        secret_value,
+                        sensitivity: *sensitivity,
+                        search_keywords,
+                    },
                 )?;
             }
             MemoryOp::KnowledgeDelete { ids } => {
@@ -868,13 +885,15 @@ mod tests {
         // Insert a semantic item directly
         {
             let conn = mem.db.lock().unwrap();
-            crate::memory::store::semantic::insert_or_update(
+            crate::memory::store::semantic::store(
                 &conn,
-                "Rust toolchain",
-                "tools",
-                "Uses cargo for building",
-                None,
-                "rust cargo build",
+                &crate::memory::store::semantic::SemanticWrite {
+                    name: "Rust toolchain",
+                    category: "tools",
+                    summary: "Uses cargo for building",
+                    details: None,
+                    search_keywords: "rust cargo build",
+                },
             )
             .unwrap();
         }
@@ -888,8 +907,15 @@ mod tests {
         let mem = MemorySystem::open_in_memory().unwrap();
         let id = {
             let conn = mem.db.lock().unwrap();
-            crate::memory::store::semantic::insert_or_update(
-                &conn, "fact", "general", "test", None, "test",
+            crate::memory::store::semantic::store(
+                &conn,
+                &crate::memory::store::semantic::SemanticWrite {
+                    name: "fact",
+                    category: "general",
+                    summary: "test",
+                    details: None,
+                    search_keywords: "test",
+                },
             )
             .unwrap()
         };
@@ -1035,8 +1061,15 @@ mod tests {
         // Add data to multiple types
         {
             let conn = mem.db.lock().unwrap();
-            crate::memory::store::semantic::insert_or_update(
-                &conn, "fact", "general", "test", None, "test",
+            crate::memory::store::semantic::store(
+                &conn,
+                &crate::memory::store::semantic::SemanticWrite {
+                    name: "fact",
+                    category: "general",
+                    summary: "test",
+                    details: None,
+                    search_keywords: "test",
+                },
             )
             .unwrap();
             crate::memory::store::episodic::insert(
@@ -1072,7 +1105,7 @@ mod tests {
         let mem = MemorySystem::open_in_memory().unwrap();
         {
             let conn = mem.db.lock().unwrap();
-            crate::memory::store::resource::insert(
+            crate::memory::store::resource::store(
                 &conn,
                 &crate::memory::store::resource::ResourceWrite {
                     resource_type: "file",

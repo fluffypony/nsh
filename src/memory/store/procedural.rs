@@ -2,6 +2,20 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{ProceduralItem, generate_id};
 
+pub struct ProceduralWrite<'a> {
+    pub entry_type: &'a str,
+    pub trigger_pattern: &'a str,
+    pub summary: &'a str,
+    pub steps: &'a str,
+    pub search_keywords: &'a str,
+}
+
+pub struct ProceduralUpdate<'a> {
+    pub summary: &'a str,
+    pub steps: &'a str,
+    pub search_keywords: &'a str,
+}
+
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProceduralItem> {
     Ok(ProceduralItem {
         id: row.get(0)?,
@@ -17,7 +31,18 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProceduralItem> {
     })
 }
 
-pub fn insert(
+pub fn store(conn: &Connection, write: &ProceduralWrite<'_>) -> anyhow::Result<String> {
+    insert(
+        conn,
+        write.entry_type,
+        write.trigger_pattern,
+        write.summary,
+        write.steps,
+        write.search_keywords,
+    )
+}
+
+fn insert(
     conn: &Connection,
     entry_type: &str,
     trigger_pattern: &str,
@@ -34,17 +59,11 @@ pub fn insert(
     Ok(id)
 }
 
-pub fn update(
-    conn: &Connection,
-    id: &str,
-    summary: &str,
-    steps: &str,
-    search_keywords: &str,
-) -> anyhow::Result<()> {
+pub fn update(conn: &Connection, id: &str, change: &ProceduralUpdate<'_>) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE procedural_memory SET summary = ?, steps = ?, search_keywords = ?, updated_at = datetime('now')
          WHERE id = ?",
-        params![summary, steps, search_keywords, id],
+        params![change.summary, change.steps, change.search_keywords, id],
     )?;
     Ok(())
 }
@@ -135,7 +154,16 @@ mod tests {
     fn update_modifies_fields() {
         let conn = setup();
         let id = insert(&conn, "workflow", "", "old", "[]", "old").unwrap();
-        update(&conn, &id, "new summary", r#"["step1"]"#, "new keywords").unwrap();
+        update(
+            &conn,
+            &id,
+            &ProceduralUpdate {
+                summary: "new summary",
+                steps: r#"["step1"]"#,
+                search_keywords: "new keywords",
+            },
+        )
+        .unwrap();
 
         let items = list_all(&conn).unwrap();
         assert_eq!(items[0].summary, "new summary");
@@ -220,9 +248,11 @@ mod tests {
         update(
             &conn,
             &id,
-            "fix missing import with use statement",
-            r#"["add use crate::foo"]"#,
-            "fix import",
+            &ProceduralUpdate {
+                summary: "fix missing import with use statement",
+                steps: r#"["add use crate::foo"]"#,
+                search_keywords: "fix import",
+            },
         )
         .unwrap();
 

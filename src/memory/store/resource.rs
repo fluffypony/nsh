@@ -27,7 +27,27 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceItem> {
     })
 }
 
-pub fn insert(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
+pub fn store(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
+    if let Some(file_path) = resource.file_path
+        && let Some(file_hash) = resource.file_hash.map(str::trim).filter(|value| !value.is_empty())
+    {
+        return upsert_by_path(
+            conn,
+            &ResourceWrite {
+                resource_type: resource.resource_type,
+                file_path: Some(file_path),
+                file_hash: Some(file_hash),
+                title: resource.title,
+                summary: resource.summary,
+                content: resource.content,
+                search_keywords: resource.search_keywords,
+            },
+        );
+    }
+    insert(conn, resource)
+}
+
+fn insert(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
     let id = generate_id("res");
     conn.execute(
         "INSERT INTO resource_memory (id, resource_type, file_path, file_hash, title, summary, content, search_keywords)
@@ -46,7 +66,7 @@ pub fn insert(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result
     Ok(id)
 }
 
-pub fn upsert_by_path(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
+fn upsert_by_path(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
     let file_path = resource
         .file_path
         .ok_or_else(|| anyhow::anyhow!("upsert_by_path requires file_path"))?;

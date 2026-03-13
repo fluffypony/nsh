@@ -2,6 +2,20 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{SemanticItem, generate_id};
 
+pub struct SemanticWrite<'a> {
+    pub name: &'a str,
+    pub category: &'a str,
+    pub summary: &'a str,
+    pub details: Option<&'a str>,
+    pub search_keywords: &'a str,
+}
+
+pub struct SemanticUpdate<'a> {
+    pub summary: &'a str,
+    pub details: Option<&'a str>,
+    pub search_keywords: &'a str,
+}
+
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<SemanticItem> {
     Ok(SemanticItem {
         id: row.get(0)?,
@@ -17,7 +31,18 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<SemanticItem> {
     })
 }
 
-pub fn insert_or_update(
+pub fn store(conn: &Connection, write: &SemanticWrite<'_>) -> anyhow::Result<String> {
+    insert_or_update(
+        conn,
+        write.name,
+        write.category,
+        write.summary,
+        write.details,
+        write.search_keywords,
+    )
+}
+
+fn insert_or_update(
     conn: &Connection,
     name: &str,
     category: &str,
@@ -109,7 +134,17 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<SemanticItem>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-pub fn update_by_id(
+pub fn update(conn: &Connection, id: &str, change: &SemanticUpdate<'_>) -> anyhow::Result<()> {
+    update_by_id(
+        conn,
+        id,
+        change.summary,
+        change.details,
+        change.search_keywords,
+    )
+}
+
+fn update_by_id(
     conn: &Connection,
     id: &str,
     summary: &str,

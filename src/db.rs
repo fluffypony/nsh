@@ -938,13 +938,15 @@ impl Db {
         details: Option<&str>,
         search_keywords: &str,
     ) -> anyhow::Result<String> {
-        crate::memory::store::semantic::insert_or_update(
+        crate::memory::store::semantic::store(
             &self.conn,
-            name,
-            category,
-            summary,
-            details,
-            search_keywords,
+            &crate::memory::store::semantic::SemanticWrite {
+                name,
+                category,
+                summary,
+                details,
+                search_keywords,
+            },
         )
     }
 
@@ -956,13 +958,15 @@ impl Db {
         steps: &str,
         search_keywords: &str,
     ) -> anyhow::Result<String> {
-        crate::memory::store::procedural::insert(
+        crate::memory::store::procedural::store(
             &self.conn,
-            entry_type,
-            trigger_pattern,
-            summary,
-            steps,
-            search_keywords,
+            &crate::memory::store::procedural::ProceduralWrite {
+                entry_type,
+                trigger_pattern,
+                summary,
+                steps,
+                search_keywords,
+            },
         )
     }
 
@@ -970,42 +974,33 @@ impl Db {
         &self,
         resource: &ResourceMemoryWrite<'_>,
     ) -> anyhow::Result<String> {
-        if let Some(path) = resource.file_path {
-            let hash = resource
-                .file_hash
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "store_resource_memory requires non-empty file_hash when file_path is set"
-                    )
-                })?;
-            crate::memory::store::resource::upsert_by_path(
-                &self.conn,
-                &crate::memory::store::resource::ResourceWrite {
-                    resource_type: resource.resource_type,
-                    file_path: Some(path),
-                    file_hash: Some(hash),
-                    title: resource.title,
-                    summary: resource.summary,
-                    content: resource.content,
-                    search_keywords: resource.search_keywords,
-                },
+        let normalized_hash = if resource.file_path.is_some() {
+            Some(
+                resource
+                    .file_hash
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "store_resource_memory requires non-empty file_hash when file_path is set"
+                        )
+                    })?,
             )
         } else {
-            crate::memory::store::resource::insert(
-                &self.conn,
-                &crate::memory::store::resource::ResourceWrite {
-                    resource_type: resource.resource_type,
-                    file_path: None,
-                    file_hash: resource.file_hash,
-                    title: resource.title,
-                    summary: resource.summary,
-                    content: resource.content,
-                    search_keywords: resource.search_keywords,
-                },
-            )
-        }
+            resource.file_hash
+        };
+        crate::memory::store::resource::store(
+            &self.conn,
+            &crate::memory::store::resource::ResourceWrite {
+                resource_type: resource.resource_type,
+                file_path: resource.file_path,
+                file_hash: normalized_hash,
+                title: resource.title,
+                summary: resource.summary,
+                content: resource.content,
+                search_keywords: resource.search_keywords,
+            },
+        )
     }
 
     pub fn store_knowledge_memory(
@@ -1016,13 +1011,15 @@ impl Db {
         sensitivity: crate::memory::types::Sensitivity,
         search_keywords: &str,
     ) -> anyhow::Result<String> {
-        crate::memory::store::knowledge::insert(
+        crate::memory::store::knowledge::store(
             &self.conn,
-            entry_type,
-            caption,
-            secret_value,
-            sensitivity,
-            search_keywords,
+            &crate::memory::store::knowledge::KnowledgeWrite {
+                entry_type,
+                caption,
+                secret_value,
+                sensitivity,
+                search_keywords,
+            },
         )
     }
 
