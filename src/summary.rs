@@ -68,8 +68,6 @@ pub async fn generate_llm_summary(
     Ok(text.trim().to_string())
 }
 
-// removed: extract_package_association (legacy heuristic no longer used)
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +376,4 @@ mod tests {
         assert!(prompt.contains(&long_line));
     }
 
-    // removed: extract_package_association tests
 }

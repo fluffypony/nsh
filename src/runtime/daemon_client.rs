@@ -98,8 +98,6 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
     let json_val: serde_json::Value = serde_json::from_str(&response_line)
         .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
 
-    // Wrapper version notifications are obsolete with shim/core split; no restart or update markers
-
     log_daemon_client(
         "client.send_request.response",
         &format!("session={session_id}\nresponse={response_line}"),

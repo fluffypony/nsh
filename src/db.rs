@@ -10906,14 +10906,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_memories_respects_limit_ordering() {
-        let _db = test_db();
-        // removed legacy memory limit/ordering test
-    }
-
-    // legacy placeholder test removed
-
-    #[test]
     fn test_find_pending_conversation_returns_latest_command() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
@@ -11584,8 +11576,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
-
-        // removed legacy table verification
 
         conn.execute(
             "INSERT INTO sessions (id, tty, shell, pid, started_at) VALUES ('migr_s', '/dev/pts/0', 'zsh', 1, '2025-01-01T00:00:00Z')",

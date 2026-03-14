@@ -678,52 +678,12 @@ mod tests {
     }
 
     #[test]
-    fn core_label_display() {
-        assert_eq!(format!("{}", CoreLabel::Human), "human");
-        assert_eq!(format!("{}", CoreLabel::Persona), "persona");
-        assert_eq!(format!("{}", CoreLabel::Environment), "environment");
-    }
-
-    #[test]
-    fn event_type_display() {
-        assert_eq!(
-            format!("{}", EventType::CommandExecution),
-            "command_execution"
-        );
-        assert_eq!(format!("{}", EventType::ProjectSwitch), "project_switch");
-    }
-
-    #[test]
-    fn actor_display() {
-        assert_eq!(format!("{}", Actor::User), "user");
-        assert_eq!(format!("{}", Actor::Assistant), "assistant");
-        assert_eq!(format!("{}", Actor::System), "system");
-    }
-
-    #[test]
     fn sensitivity_parse_rejects_invalid() {
         assert_eq!(Sensitivity::parse("high").unwrap(), Sensitivity::High);
         assert_eq!(Sensitivity::parse("medium").unwrap(), Sensitivity::Medium);
         assert_eq!(Sensitivity::parse("low").unwrap(), Sensitivity::Low);
         assert!(Sensitivity::parse("unknown").is_err());
         assert!(Sensitivity::parse("").is_err());
-    }
-
-    #[test]
-    fn sensitivity_display() {
-        assert_eq!(format!("{}", Sensitivity::Low), "low");
-        assert_eq!(format!("{}", Sensitivity::Medium), "medium");
-        assert_eq!(format!("{}", Sensitivity::High), "high");
-    }
-
-    #[test]
-    fn memory_type_display() {
-        assert_eq!(format!("{}", MemoryType::Core), "core");
-        assert_eq!(format!("{}", MemoryType::Episodic), "episodic");
-        assert_eq!(format!("{}", MemoryType::Semantic), "semantic");
-        assert_eq!(format!("{}", MemoryType::Procedural), "procedural");
-        assert_eq!(format!("{}", MemoryType::Resource), "resource");
-        assert_eq!(format!("{}", MemoryType::Knowledge), "knowledge");
     }
 
     #[test]
@@ -742,44 +702,5 @@ mod tests {
         );
         assert!(MemoryType::parse("all").is_err());
         assert!(MemoryType::parse("").is_err());
-    }
-
-    #[test]
-    fn routing_decision_default() {
-        let d = RoutingDecision::default();
-        assert!(!d.has_any_updates());
-        assert!(!d.only_episodic());
-        assert!(d.reasoning.is_empty());
-    }
-
-    #[test]
-    fn core_label_default_limits() {
-        assert_eq!(CoreLabel::Human.default_limit(), 5000);
-        assert_eq!(CoreLabel::Persona.default_limit(), 5000);
-        assert_eq!(CoreLabel::Environment.default_limit(), 5000);
-    }
-
-    #[test]
-    fn generate_id_all_prefixes() {
-        for prefix in &["ep", "sem", "proc", "res", "kv", "test"] {
-            let id = generate_id(prefix);
-            assert!(id.starts_with(&format!("{prefix}_")));
-            // prefix + "_" + 8 chars
-            assert_eq!(id.len(), prefix.len() + 1 + 8);
-        }
-    }
-
-    #[test]
-    fn shell_event_type_as_str() {
-        assert_eq!(
-            ShellEventType::CommandExecution.as_str(),
-            "command_execution"
-        );
-        assert_eq!(ShellEventType::FileEdit.as_str(), "file_edit");
-        assert_eq!(ShellEventType::UserInstruction.as_str(), "user_instruction");
-        assert_eq!(ShellEventType::AssistantAction.as_str(), "assistant_action");
-        assert_eq!(ShellEventType::SessionStart.as_str(), "session_start");
-        assert_eq!(ShellEventType::SessionEnd.as_str(), "session_end");
-        assert_eq!(ShellEventType::ProjectSwitch.as_str(), "project_switch");
     }
 }

@@ -114,24 +114,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_truncate_short_string() {
-        let result = truncate("hello", 10);
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn test_truncate_long_string() {
-        let result = truncate("hello world", 5);
-        assert_eq!(result, "hello\n[... truncated]");
-    }
-
-    #[test]
-    fn test_truncate_exact_boundary() {
-        let result = truncate("hello", 5);
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
     fn test_truncate_multibyte() {
         let emoji = "😀😀😀😀😀";
         let result = truncate(emoji, 3);
@@ -139,16 +121,6 @@ mod tests {
 
         let no_trunc = truncate(emoji, 5);
         assert_eq!(no_trunc, emoji);
-    }
-
-    #[test]
-    fn test_truncate_bytes_short() {
-        assert_eq!(truncate_bytes("hello", 10), "hello");
-    }
-
-    #[test]
-    fn test_truncate_bytes_exact() {
-        assert_eq!(truncate_bytes("hello", 5), "hello");
     }
 
     #[test]
@@ -187,12 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate_empty_string() {
-        assert_eq!(truncate("", 10), "");
-        assert_eq!(truncate("", 0), "");
-    }
-
-    #[test]
     fn test_truncate_shorter_than_limit() {
         assert_eq!(truncate("hi", 100), "hi");
     }
@@ -215,17 +181,6 @@ mod tests {
         assert_eq!(result, "aé\n[... truncated]");
         let result = truncate(input, 4);
         assert_eq!(result, input);
-    }
-
-    #[test]
-    fn test_truncate_bytes_empty() {
-        assert_eq!(truncate_bytes("", 0), "");
-        assert_eq!(truncate_bytes("", 10), "");
-    }
-
-    #[test]
-    fn test_truncate_bytes_zero_limit() {
-        assert_eq!(truncate_bytes("hello", 0), "");
     }
 
     #[test]

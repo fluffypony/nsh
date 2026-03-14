@@ -754,7 +754,6 @@ fn handle_daemon_connection_inner(
                     "daemon: client protocol version {client_version} > server {}",
                     crate::daemon::DAEMON_PROTOCOL_VERSION
                 );
-                // Obsolete: wrapper is stable with shim/core split; no restart-needed flags
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
                 Ok(request) => {

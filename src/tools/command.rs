@@ -623,8 +623,6 @@ fn format_execution_output(
     }
 }
 
-// Deprecated local variant; use crate::tools::read_tty_confirmation_default_yes instead.
-
 pub(crate) fn reject_reason_for_generated_command(
     command: &str,
     original_query: &str,
