@@ -63,9 +63,10 @@ fn build_client() -> anyhow::Result<reqwest::Client> {
     // Opportunistically use GITHUB_TOKEN if available (raises rate limit to 5000/hr)
     if let Ok(token) = std::env::var("GITHUB_TOKEN")
         && !token.is_empty()
-            && let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}")) {
-                headers.insert(reqwest::header::AUTHORIZATION, val);
-            }
+        && let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+    {
+        headers.insert(reqwest::header::AUTHORIZATION, val);
+    }
 
     Ok(reqwest::Client::builder()
         .default_headers(headers)
@@ -77,14 +78,15 @@ fn build_client() -> anyhow::Result<reqwest::Client> {
 fn check_rate_limit(headers: &reqwest::header::HeaderMap) {
     if let Some(remaining) = headers.get("x-ratelimit-remaining")
         && let Ok(s) = remaining.to_str()
-            && let Ok(n) = s.parse::<u32>()
-                && n <= 5 {
-                    let th = crate::tui::theme::current_theme();
-                    eprintln!(
-                        "  {}⚠ GitHub API rate limit nearly exhausted ({} remaining){}",
-                        th.warning, n, th.reset
-                    );
-                }
+        && let Ok(n) = s.parse::<u32>()
+        && n <= 5
+    {
+        let th = crate::tui::theme::current_theme();
+        eprintln!(
+            "  {}⚠ GitHub API rate limit nearly exhausted ({} remaining){}",
+            th.warning, n, th.reset
+        );
+    }
 }
 
 /// Main tool entry point — dispatches on `action`.
@@ -346,10 +348,8 @@ mod tests {
 
     #[test]
     fn parse_repo_spec_accepts_blob_url_with_path() {
-        let (owner, repo, path) = parse_repo_spec(
-            "https://github.com/openai/openai-rust/blob/main/README.md",
-        )
-        .unwrap();
+        let (owner, repo, path) =
+            parse_repo_spec("https://github.com/openai/openai-rust/blob/main/README.md").unwrap();
 
         assert_eq!(owner, "openai");
         assert_eq!(repo, "openai-rust");

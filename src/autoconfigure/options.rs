@@ -43,7 +43,10 @@ pub(crate) const CLIPROXY_BACKED: &[&str] = &[
 pub(crate) fn build_provider_options(detected_keys: &[DetectedKey]) -> Vec<ProviderOption> {
     let mut by_provider: BTreeMap<String, Vec<&DetectedKey>> = BTreeMap::new();
     for key in detected_keys {
-        by_provider.entry(key.provider.clone()).or_default().push(key);
+        by_provider
+            .entry(key.provider.clone())
+            .or_default()
+            .push(key);
     }
 
     let mut options = vec![
@@ -93,9 +96,7 @@ pub(crate) fn build_provider_options(detected_keys: &[DetectedKey]) -> Vec<Provi
                 .cloned()
                 .cloned(),
             requires_cliproxyapi: false,
-            native_base_url: Some(
-                "https://generativelanguage.googleapis.com/v1beta/openai".into(),
-            ),
+            native_base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai".into()),
         },
         ProviderOption {
             id: "manual".into(),
@@ -219,6 +220,9 @@ mod tests {
         assert!(!models.main.is_empty());
         assert!(!models.fast.is_empty());
         assert!(!models.coding.is_empty());
-        assert_eq!(models.default_model, crate::model_defaults::provider_models("openrouter").default_model);
+        assert_eq!(
+            models.default_model,
+            crate::model_defaults::provider_models("openrouter").default_model
+        );
     }
 }

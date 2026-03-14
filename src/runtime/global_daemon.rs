@@ -1104,7 +1104,7 @@ fn execute_write(
         memory_tx,
         queue_guards,
         session_project_roots,
-)
+    )
     .unwrap_or_else(|error| DaemonResponse::error(format!("{error:#}")))
 }
 
@@ -1136,8 +1136,9 @@ fn try_execute_write(
         DaemonRequest::Restart => {
             // Handled in accept loop via marker file; acknowledge
             let marker = crate::config::Config::nsh_dir().join("nshd_restart_pending");
-            std::fs::write(&marker, "")
-                .with_context(|| format!("failed to write restart marker at {}", marker.display()))?;
+            std::fs::write(&marker, "").with_context(|| {
+                format!("failed to write restart marker at {}", marker.display())
+            })?;
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::Record {
@@ -1154,17 +1155,17 @@ fn try_execute_write(
         } => {
             let id = db
                 .insert_command(
-                &session,
-                &command,
-                &cwd,
-                Some(exit_code),
-                &started_at,
-                duration_ms,
-                output.as_deref(),
-                &tty,
-                &shell,
-                pid,
-            )
+                    &session,
+                    &command,
+                    &cwd,
+                    Some(exit_code),
+                    &started_at,
+                    duration_ms,
+                    output.as_deref(),
+                    &tty,
+                    &shell,
+                    pid,
+                )
                 .with_context(|| {
                     format!("failed to record command `{command}` for session `{session}`")
                 })?;
@@ -1366,8 +1367,9 @@ fn try_execute_write(
             ))
         }
         DaemonRequest::ClearConversations { session } => {
-            db.clear_conversations(&session)
-                .with_context(|| format!("failed to clear conversations for session `{session}`"))?;
+            db.clear_conversations(&session).with_context(|| {
+                format!("failed to clear conversations for session `{session}`")
+            })?;
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::InsertConversation {
@@ -1381,14 +1383,14 @@ fn try_execute_write(
         } => {
             let id = db
                 .insert_conversation(
-                &session_id,
-                &query,
-                response_type.as_str(),
-                &response,
-                explanation.as_deref(),
-                executed,
-                pending,
-            )
+                    &session_id,
+                    &query,
+                    response_type.as_str(),
+                    &response,
+                    explanation.as_deref(),
+                    executed,
+                    pending,
+                )
                 .with_context(|| {
                     format!("failed to insert conversation for session `{session_id}`")
                 })?;
@@ -1406,15 +1408,15 @@ fn try_execute_write(
         } => {
             let id = db
                 .insert_usage(
-                &session_id,
-                query_text.as_deref(),
-                &model,
-                &provider,
-                input_tokens,
-                output_tokens,
-                cost_usd,
-                generation_id.as_deref(),
-            )
+                    &session_id,
+                    query_text.as_deref(),
+                    &model,
+                    &provider,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    generation_id.as_deref(),
+                )
                 .with_context(|| format!("failed to insert usage for session `{session_id}`"))?;
             Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
         }
@@ -1434,9 +1436,9 @@ fn try_execute_write(
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::Prune { retention_days } => {
-            let count = db
-                .prune(retention_days)
-                .with_context(|| format!("failed to prune records older than {retention_days} days"))?;
+            let count = db.prune(retention_days).with_context(|| {
+                format!("failed to prune records older than {retention_days} days")
+            })?;
             Ok(DaemonResponse::ok_with_data(
                 serde_json::json!({"pruned": count}),
             ))
@@ -1583,9 +1585,9 @@ fn try_execute_write(
                             "Security check failed: {error}"
                         )));
                     }
-                    memory
-                        .update_core_block(l, op, &content)
-                        .with_context(|| format!("failed to rewrite core memory block `{label}`"))?;
+                    memory.update_core_block(l, op, &content).with_context(|| {
+                        format!("failed to rewrite core memory block `{label}`")
+                    })?;
                     Ok(DaemonResponse::ok())
                 }
             }
@@ -1715,12 +1717,12 @@ fn enqueue_unique_memory_task(
     task: MemoryTask,
 ) -> anyhow::Result<MemoryQueueDecision> {
     let pending_flag = match task {
+        MemoryTask::RunDecay => Some(&queue_guards.decay_pending),
         MemoryTask::RunReflection => Some(&queue_guards.reflection_pending),
         MemoryTask::BootstrapScan => Some(&queue_guards.bootstrap_pending),
         _ => None,
     };
 
-        MemoryTask::RunDecay => Some(&queue_guards.decay_pending),
     if let Some(flag) = pending_flag
         && flag
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -1739,11 +1741,6 @@ fn enqueue_unique_memory_task(
     Ok(MemoryQueueDecision::Enqueued)
 }
 
-fn run_read_thread(
-    db: crate::db::Db,
-    rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>,
-    memory: Arc<crate::memory::MemorySystem>,
-    memory_task_tracker: MemoryTaskTracker,
 fn queue_memory_task(
     memory_tx: &MemoryTaskSender,
     queue_guards: &MemoryQueueGuards,
@@ -1779,6 +1776,11 @@ fn queue_memory_task_response(
     }
 }
 
+fn run_read_thread(
+    db: crate::db::Db,
+    rx: Arc<Mutex<mpsc::Receiver<ReadCommand>>>,
+    memory: Arc<crate::memory::MemorySystem>,
+    memory_task_tracker: MemoryTaskTracker,
 ) {
     loop {
         let cmd = loop {
@@ -1806,15 +1808,17 @@ fn execute_read(
     let req_dbg = format!("{request:?}");
     log_daemon("server.execute_read.request", &req_dbg);
     match request {
-        DaemonRequest::GetVersion => DaemonResponse::ok_with_payload(crate::daemon::DaemonStatusPayload {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            build_version: env!("NSH_BUILD_VERSION").to_string(),
-            build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
-            pid: None,
-            daemon_type: None,
-            protocol_version: Some(crate::daemon::DAEMON_PROTOCOL_VERSION),
-            wrapper_protocol_version: None,
-        }),
+        DaemonRequest::GetVersion => {
+            DaemonResponse::ok_with_payload(crate::daemon::DaemonStatusPayload {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                build_version: env!("NSH_BUILD_VERSION").to_string(),
+                build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
+                pid: None,
+                daemon_type: None,
+                protocol_version: Some(crate::daemon::DAEMON_PROTOCOL_VERSION),
+                wrapper_protocol_version: None,
+            })
+        }
         DaemonRequest::SearchHistory { query, limit } => match db.search_history(&query, limit) {
             Ok(results) => {
                 DaemonResponse::ok_with_payload(crate::daemon::HistorySearchPayload { results })
@@ -1830,9 +1834,11 @@ fn execute_read(
                 return DaemonResponse::error(format!("Security check failed: {error}"));
             }
             match db.get_conversations(&session, limit) {
-                Ok(conversations) => DaemonResponse::ok_with_payload(
-                    crate::daemon::ConversationsPayload { conversations },
-                ),
+                Ok(conversations) => {
+                    DaemonResponse::ok_with_payload(crate::daemon::ConversationsPayload {
+                        conversations,
+                    })
+                }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -1849,9 +1855,7 @@ fn execute_read(
             }
         }
         DaemonRequest::LatestCwdForTty { tty } => match db.latest_cwd_for_tty(&tty) {
-            Ok(cwd) => {
-                DaemonResponse::ok_with_payload(crate::daemon::LatestCwdPayload { cwd })
-            }
+            Ok(cwd) => DaemonResponse::ok_with_payload(crate::daemon::LatestCwdPayload { cwd }),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::GetUsageStats { period } => {
@@ -1867,17 +1871,15 @@ fn execute_read(
                     let payload = crate::daemon::UsageStatsPayload {
                         stats: stats
                             .into_iter()
-                            .map(
-                                |(model, calls, input_tokens, output_tokens, cost_usd)| {
-                                    crate::daemon::UsageStatsEntry {
-                                        model,
-                                        calls,
-                                        input_tokens,
-                                        output_tokens,
-                                        cost_usd,
-                                    }
-                                },
-                            )
+                            .map(|(model, calls, input_tokens, output_tokens, cost_usd)| {
+                                crate::daemon::UsageStatsEntry {
+                                    model,
+                                    calls,
+                                    input_tokens,
+                                    output_tokens,
+                                    cost_usd,
+                                }
+                            })
                             .collect(),
                     };
                     DaemonResponse::ok_with_payload(payload)
@@ -2048,15 +2050,17 @@ fn execute_read(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::Status => DaemonResponse::ok_with_payload(crate::daemon::DaemonStatusPayload {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            build_version: env!("NSH_BUILD_VERSION").to_string(),
-            build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
-            pid: Some(std::process::id()),
-            daemon_type: Some("global".to_string()),
-            protocol_version: None,
-            wrapper_protocol_version: None,
-        }),
+        DaemonRequest::Status => {
+            DaemonResponse::ok_with_payload(crate::daemon::DaemonStatusPayload {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                build_version: env!("NSH_BUILD_VERSION").to_string(),
+                build_fingerprint: env!("NSH_BUILD_FINGERPRINT").to_string(),
+                pid: Some(std::process::id()),
+                daemon_type: Some("global".to_string()),
+                protocol_version: None,
+                wrapper_protocol_version: None,
+            })
+        }
         DaemonRequest::GetSystemInfo => {
             let static_info = crate::context::load_or_refresh_static_info();
             let semi_dynamic = crate::context::load_or_refresh_semi_dynamic_info();
@@ -2269,6 +2273,7 @@ mod tests_memory_stats {
                     d["last_reflection_at"].as_str(),
                     Some("2026-02-20 08:10:11")
                 );
+                assert_eq!(d["background_tasks"]["run_decay"]["state"].as_str(), Some("idle"));
                 assert_eq!(
                     d["background_tasks"]["run_reflection"]["state"].as_str(),
                     Some("idle")
@@ -2276,7 +2281,6 @@ mod tests_memory_stats {
             }
             other => panic!("unexpected response: {other:?}"),
         }
-                assert_eq!(d["background_tasks"]["run_decay"]["state"].as_str(), Some("idle"));
     }
 }
 #[cfg(unix)]
@@ -2848,10 +2852,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_write_requires_confirmation_for_memory_clear_all() {
-        let db = crate::db::Db::open_in_memory().expect("open db");
-        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
-    #[test]
     fn audit_sensitive_daemon_action_surfaces_audit_failures() {
         let caller = crate::daemon::CallerContext {
             session: Some("caller".into()),
@@ -2875,6 +2875,10 @@ mod tests {
         assert!(format!("{error:#}").contains("disk full"));
     }
 
+    #[test]
+    fn execute_write_requires_confirmation_for_memory_clear_all() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        let memory = crate::memory::MemorySystem::open_in_memory().expect("open memory");
         let tracker = MemoryTaskTracker::default();
         let (memory_tx, _memory_rx) = mpsc::channel();
         let queue_guards = MemoryQueueGuards::new();
@@ -2902,13 +2906,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execute_write_rolls_back_record_when_summary_side_effect_fails() {
-        let db = crate::db::Db::open_in_memory().expect("open db");
-        db.conn_execute_batch(
-            "
-            CREATE TRIGGER fail_summary_update
-            BEFORE UPDATE OF summary ON commands
     #[test]
     fn enqueue_unique_memory_task_deduplicates_decay() {
         let (memory_tx, memory_rx) = mpsc::channel();
@@ -2962,6 +2959,13 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn execute_write_rolls_back_record_when_summary_side_effect_fails() {
+        let db = crate::db::Db::open_in_memory().expect("open db");
+        db.conn_execute_batch(
+            "
+            CREATE TRIGGER fail_summary_update
+            BEFORE UPDATE OF summary ON commands
             BEGIN
                 SELECT RAISE(ABORT, 'summary write blocked');
             END;

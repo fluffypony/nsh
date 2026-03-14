@@ -388,9 +388,10 @@ fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
         }
         "mv" => {
             if let Some(last) = rest.last()
-                && is_dangerous_target(last) {
-                    return (RiskLevel::Elevated, Some("move to critical path"));
-                }
+                && is_dangerous_target(last)
+            {
+                return (RiskLevel::Elevated, Some("move to critical path"));
+            }
             (RiskLevel::Safe, None)
         }
         _ => (RiskLevel::Safe, None),

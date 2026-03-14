@@ -1,9 +1,9 @@
 use crate::daemon_db::DbAccess;
+#[cfg(test)]
+use crate::tools::write_file::trash_dir;
 use crate::tools::write_file::{
     backup_to_trash, expand_tilde, validate_path_with_access, write_nofollow,
 };
-#[cfg(test)]
-use crate::tools::write_file::trash_dir;
 #[cfg(test)]
 use std::io::Write;
 #[cfg(test)]

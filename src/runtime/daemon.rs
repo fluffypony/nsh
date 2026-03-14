@@ -463,14 +463,14 @@ impl DaemonResponse {
 
     pub fn into_optional_payload<T: DeserializeOwned>(self) -> anyhow::Result<Option<T>> {
         match self {
-            Self::Ok { data: Some(data) } => serde_json::from_value(data)
-                .map(Some)
-                .map_err(|error| {
+            Self::Ok { data: Some(data) } => {
+                serde_json::from_value(data).map(Some).map_err(|error| {
                     anyhow::anyhow!(
                         "daemon returned invalid {} payload: {error}",
                         std::any::type_name::<T>()
                     )
-                }),
+                })
+            }
             Self::Ok { data: None } => Ok(None),
             Self::Error { message } => Err(anyhow::anyhow!(message)),
         }
@@ -489,9 +489,7 @@ impl DaemonResponse {
 #[cfg(test)]
 fn db_round_trip<T>(
     db_tx: &std::sync::mpsc::Sender<DbCommand>,
-    build: impl FnOnce(
-        std::sync::mpsc::Sender<anyhow::Result<T>>,
-    ) -> (DbCommand, Option<DbCommand>),
+    build: impl FnOnce(std::sync::mpsc::Sender<anyhow::Result<T>>) -> (DbCommand, Option<DbCommand>),
     on_success: impl FnOnce(T) -> DaemonResponse,
 ) -> DaemonResponse {
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
@@ -633,18 +631,16 @@ pub fn handle_daemon_request(
             )
         }
 
-        DaemonRequest::Heartbeat { session } => {
-            db_round_trip(
-                db_tx,
-                |reply| {
-                    (
-                        DbCommand::Heartbeat { session, reply },
-                        Some(DbCommand::GenerateSummaries),
-                    )
-                },
-                |_| DaemonResponse::ok(),
-            )
-        }
+        DaemonRequest::Heartbeat { session } => db_round_trip(
+            db_tx,
+            |reply| {
+                (
+                    DbCommand::Heartbeat { session, reply },
+                    Some(DbCommand::GenerateSummaries),
+                )
+            },
+            |_| DaemonResponse::ok(),
+        ),
 
         DaemonRequest::Scrollback { max_lines } => match capture.lock() {
             Ok(eng) => {

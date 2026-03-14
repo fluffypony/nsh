@@ -32,9 +32,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
         return Ok(format!("No skill files found for '{name}'"));
     }
 
-    if !crate::tools::prompt_tty_confirmation(&format!(
-        "{bold_yellow}Proceed? [y/N]{reset} "
-    ))? {
+    if !crate::tools::prompt_tty_confirmation(&format!("{bold_yellow}Proceed? [y/N]{reset} "))? {
         return Ok("Uninstall declined".into());
     }
 

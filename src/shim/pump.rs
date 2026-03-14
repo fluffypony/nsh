@@ -479,9 +479,10 @@ pub fn pump_loop(
         if winch_pending.swap(false, Ordering::Relaxed) {
             let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
             if unsafe { libc::ioctl(stdin_raw, libc::TIOCGWINSZ, &mut ws) } == 0
-                && let Ok(mut eng) = capture.lock() {
-                    eng.set_size(ws.ws_row, ws.ws_col);
-                }
+                && let Ok(mut eng) = capture.lock()
+            {
+                eng.set_size(ws.ws_row, ws.ws_col);
+            }
         }
 
         let idle = last_activity.elapsed() > Duration::from_secs(5);
@@ -541,15 +542,16 @@ pub fn pump_loop(
                 }
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref())
-                    && poll_fds[idx].revents().contains(PollFlags::IN) {
-                        handle_daemon_connection(
-                            l,
-                            &capture,
-                            max_output_bytes,
-                            &active_conns,
-                            &session_id,
-                        );
-                    }
+                    && poll_fds[idx].revents().contains(PollFlags::IN)
+                {
+                    handle_daemon_connection(
+                        l,
+                        &capture,
+                        max_output_bytes,
+                        &active_conns,
+                        &session_id,
+                    );
+                }
             }
             Err(e) => {
                 if e == rustix::io::Errno::INTR {
@@ -629,18 +631,17 @@ fn handle_io(
                 let _ = write_all(real_stdout, &buf[..n]);
                 *last_activity = Instant::now();
                 let redacting = redact_active_path.exists();
-                if !redacting
-                    && let Ok(mut eng) = capture.lock() {
-                        eng.process(&buf[..n]);
-                        if last_flush.elapsed() >= Duration::from_secs(2) {
-                            let text = eng.get_lines(1000);
-                            let tmp = scrollback_path.with_extension("tmp");
-                            if let Ok(()) = std::fs::write(&tmp, &text) {
-                                let _ = std::fs::rename(&tmp, scrollback_path);
-                            }
-                            *last_flush = Instant::now();
+                if !redacting && let Ok(mut eng) = capture.lock() {
+                    eng.process(&buf[..n]);
+                    if last_flush.elapsed() >= Duration::from_secs(2) {
+                        let text = eng.get_lines(1000);
+                        let tmp = scrollback_path.with_extension("tmp");
+                        if let Ok(()) = std::fs::write(&tmp, &text) {
+                            let _ = std::fs::rename(&tmp, scrollback_path);
                         }
+                        *last_flush = Instant::now();
                     }
+                }
             }
             Err(e) if e == rustix::io::Errno::INTR || e == rustix::io::Errno::AGAIN => {}
             Err(_) => return true,

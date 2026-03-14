@@ -151,11 +151,12 @@ pub fn is_global_daemon_running() -> bool {
     }
     if let Ok(pid_str) = std::fs::read_to_string(crate::daemon::global_daemon_pid_path())
         && let Ok(pid) = pid_str.trim().parse::<i32>()
-            && unsafe { libc::kill(pid, 0) } != 0 {
-                let _ = std::fs::remove_file(&socket_path);
-                let _ = std::fs::remove_file(crate::daemon::global_daemon_pid_path());
-                return false;
-            }
+        && unsafe { libc::kill(pid, 0) } != 0
+    {
+        let _ = std::fs::remove_file(&socket_path);
+        let _ = std::fs::remove_file(crate::daemon::global_daemon_pid_path());
+        return false;
+    }
     UnixStream::connect(&socket_path)
         .and_then(|s| {
             s.set_write_timeout(Some(Duration::from_millis(100)))?;
@@ -235,17 +236,18 @@ pub fn stop_global_daemon() -> bool {
     {
         let pid_path = crate::daemon::global_daemon_pid_path();
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
-            && let Ok(pid) = pid_str.trim().parse::<i32>() {
-                unsafe { libc::kill(pid, libc::SIGTERM) };
-                for _ in 0..20 {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    if unsafe { libc::kill(pid, 0) } != 0 {
-                        return true;
-                    }
+            && let Ok(pid) = pid_str.trim().parse::<i32>()
+        {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    return true;
                 }
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-                return true;
             }
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            return true;
+        }
     }
     false
 }
@@ -329,20 +331,21 @@ pub fn signal_daemon_restart() -> bool {
         let lockfile = crate::config::Config::nsh_dir().join("restart.lock");
         if let Ok(meta) = std::fs::metadata(&lockfile)
             && let Ok(modified) = meta.modified()
-                && modified
-                    .elapsed()
-                    .map(|d| d.as_secs() < 10)
-                    .unwrap_or(false)
-                {
-                    tracing::debug!("restart.lock fresh; skipping SIGHUP");
-                    return false;
-                }
+            && modified
+                .elapsed()
+                .map(|d| d.as_secs() < 10)
+                .unwrap_or(false)
+        {
+            tracing::debug!("restart.lock fresh; skipping SIGHUP");
+            return false;
+        }
         let _ = std::fs::write(&lockfile, format!("{}", std::process::id()));
         let pid_path = crate::daemon::global_daemon_pid_path();
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
-            && let Ok(pid) = pid_str.trim().parse::<i32>() {
-                return unsafe { libc::kill(pid, libc::SIGHUP) } == 0;
-            }
+            && let Ok(pid) = pid_str.trim().parse::<i32>()
+        {
+            return unsafe { libc::kill(pid, libc::SIGHUP) } == 0;
+        }
         false
     }
     #[cfg(not(unix))]

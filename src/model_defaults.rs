@@ -119,6 +119,9 @@ mod tests {
     fn to_vec_copies_model_identifiers() {
         let values = to_vec(&["alpha", "beta", "gamma"]);
 
-        assert_eq!(values, vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]);
+        assert_eq!(
+            values,
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
     }
 }

@@ -75,16 +75,17 @@ fn check_keychain(keys: &mut Vec<DetectedKey>, service: &str, provider: &str) {
         .args(["find-generic-password", "-s", service, "-w"])
         .stderr(std::process::Stdio::null())
         .output()
-        && output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !value.is_empty() && value.len() > 5 {
-                keys.push(DetectedKey {
-                    provider: provider.to_string(),
-                    key: value,
-                    source: format!("keychain:{service}"),
-                });
-            }
+        && output.status.success()
+    {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !value.is_empty() && value.len() > 5 {
+            keys.push(DetectedKey {
+                provider: provider.to_string(),
+                key: value,
+                source: format!("keychain:{service}"),
+            });
         }
+    }
 }
 
 fn check_1password(keys: &mut Vec<DetectedKey>, item_name: &str, provider: &str) {
@@ -95,16 +96,17 @@ fn check_1password(keys: &mut Vec<DetectedKey>, item_name: &str, provider: &str)
         .args(["item", "get", item_name, "--fields", "credential"])
         .stderr(std::process::Stdio::null())
         .output()
-        && output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !value.is_empty() && value.len() > 5 {
-                keys.push(DetectedKey {
-                    provider: provider.to_string(),
-                    key: value,
-                    source: format!("1password:{item_name}"),
-                });
-            }
+        && output.status.success()
+    {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !value.is_empty() && value.len() > 5 {
+            keys.push(DetectedKey {
+                provider: provider.to_string(),
+                key: value,
+                source: format!("1password:{item_name}"),
+            });
         }
+    }
 }
 
 fn check_pass(keys: &mut Vec<DetectedKey>, pass_path: &str, provider: &str) {
@@ -115,21 +117,22 @@ fn check_pass(keys: &mut Vec<DetectedKey>, pass_path: &str, provider: &str) {
         .args(["show", pass_path])
         .stderr(std::process::Stdio::null())
         .output()
-        && output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !value.is_empty() && value.len() > 5 {
-                keys.push(DetectedKey {
-                    provider: provider.to_string(),
-                    key: value,
-                    source: format!("pass:{pass_path}"),
-                });
-            }
+        && output.status.success()
+    {
+        let value = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !value.is_empty() && value.len() > 5 {
+            keys.push(DetectedKey {
+                provider: provider.to_string(),
+                key: value,
+                source: format!("pass:{pass_path}"),
+            });
         }
+    }
 }
 
 pub(crate) fn detect_api_keys() -> Vec<DetectedKey> {
@@ -236,24 +239,27 @@ pub(crate) fn detect_api_keys() -> Vec<DetectedKey> {
     let config_path = crate::config::Config::path();
     if config_path.exists()
         && let Ok(content) = std::fs::read_to_string(&config_path)
-            && let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-                let provider_names = ["openrouter", "anthropic", "openai", "gemini"];
-                for provider_name in &provider_names {
-                    if let Some(key) = doc
-                        .get("provider")
-                        .and_then(|provider| provider.get(*provider_name))
-                        .and_then(|table| table.as_table())
-                        .and_then(|table| table.get("api_key"))
-                        .and_then(|key| key.as_str())
-                        && !key.is_empty() && key.len() > 5 {
-                            keys.push(DetectedKey {
-                                provider: provider_name.to_string(),
-                                key: key.to_string(),
-                                source: "existing nsh config".to_string(),
-                            });
-                        }
-                }
+        && let Ok(doc) = content.parse::<toml_edit::DocumentMut>()
+    {
+        let provider_names = ["openrouter", "anthropic", "openai", "gemini"];
+        for provider_name in &provider_names {
+            if let Some(key) = doc
+                .get("provider")
+                .and_then(|provider| provider.get(*provider_name))
+                .and_then(|table| table.as_table())
+                .and_then(|table| table.get("api_key"))
+                .and_then(|key| key.as_str())
+                && !key.is_empty()
+                && key.len() > 5
+            {
+                keys.push(DetectedKey {
+                    provider: provider_name.to_string(),
+                    key: key.to_string(),
+                    source: "existing nsh config".to_string(),
+                });
             }
+        }
+    }
 
     let copilot_paths = [
         home.join(".config/github-copilot/hosts.json"),
@@ -307,16 +313,17 @@ pub(crate) fn detect_api_keys() -> Vec<DetectedKey> {
 
     let zai_key = home.join(".config/zai/key");
     if zai_key.exists()
-        && let Ok(content) = std::fs::read_to_string(&zai_key) {
-            let value = content.trim().to_string();
-            if !value.is_empty() && value.len() > 5 {
-                keys.push(DetectedKey {
-                    provider: "z_ai".into(),
-                    key: value,
-                    source: format!("{}", zai_key.display()),
-                });
-            }
+        && let Ok(content) = std::fs::read_to_string(&zai_key)
+    {
+        let value = content.trim().to_string();
+        if !value.is_empty() && value.len() > 5 {
+            keys.push(DetectedKey {
+                provider: "z_ai".into(),
+                key: value,
+                source: format!("{}", zai_key.display()),
+            });
         }
+    }
 
     let claude_configs = [
         home.join(".claude/config.json"),
@@ -325,17 +332,19 @@ pub(crate) fn detect_api_keys() -> Vec<DetectedKey> {
     for path in &claude_configs {
         if let Ok(content) = std::fs::read_to_string(path)
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
-                && let Some(key) = json
-                    .get("apiKey")
-                    .or(json.get("api_key"))
-                    .and_then(|key| key.as_str())
-                    && !key.is_empty() && key.len() > 5 {
-                        keys.push(DetectedKey {
-                            provider: "anthropic".to_string(),
-                            key: key.to_string(),
-                            source: format!("file:{}", path.display()),
-                        });
-                    }
+            && let Some(key) = json
+                .get("apiKey")
+                .or(json.get("api_key"))
+                .and_then(|key| key.as_str())
+            && !key.is_empty()
+            && key.len() > 5
+        {
+            keys.push(DetectedKey {
+                provider: "anthropic".to_string(),
+                key: key.to_string(),
+                source: format!("file:{}", path.display()),
+            });
+        }
     }
 
     keys.sort_by(|a, b| a.provider.cmp(&b.provider).then(a.key.cmp(&b.key)));

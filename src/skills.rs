@@ -111,9 +111,10 @@ fn load_repo_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<
 
         // Skip .git and hidden directories
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.starts_with('.') {
-                continue;
-            }
+            && name.starts_with('.')
+        {
+            continue;
+        }
 
         // 1. Check for TOML-based skills (skill.toml / nsh.toml)
         let mut found_toml = false;
@@ -121,17 +122,18 @@ fn load_repo_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<
             let candidate = path.join(fname);
             if candidate.exists() {
                 if let Ok(content) = std::fs::read_to_string(&candidate)
-                    && let Ok(skill_file) = toml::from_str::<SkillFile>(&content) {
-                        let mut skill: Skill = skill_file.into();
-                        skill.is_project = is_project;
-                        skill.source_dir = Some(path.clone());
-                        // If TOML skill has no docs, try loading from adjacent SKILL.md
-                        if skill.docs.is_none() {
-                            skill.docs = load_skill_docs_from_dir(&path);
-                        }
-                        skills.insert(skill.name.clone(), skill);
-                        found_toml = true;
+                    && let Ok(skill_file) = toml::from_str::<SkillFile>(&content)
+                {
+                    let mut skill: Skill = skill_file.into();
+                    skill.is_project = is_project;
+                    skill.source_dir = Some(path.clone());
+                    // If TOML skill has no docs, try loading from adjacent SKILL.md
+                    if skill.docs.is_none() {
+                        skill.docs = load_skill_docs_from_dir(&path);
                     }
+                    skills.insert(skill.name.clone(), skill);
+                    found_toml = true;
+                }
                 break;
             }
         }
@@ -152,9 +154,10 @@ fn load_skill_docs_from_dir(dir: &Path) -> Option<String> {
         let candidate = dir.join(fname);
         if candidate.exists()
             && let Ok(content) = std::fs::read_to_string(&candidate)
-                && !content.trim().is_empty() {
-                    return Some(content);
-                }
+            && !content.trim().is_empty()
+        {
+            return Some(content);
+        }
     }
     None
 }
@@ -369,11 +372,13 @@ fn load_skills_from_dir(dir: &Path, is_project: bool, skills: &mut HashMap<Strin
 
         // Load companion .md docs if not already inline
         let mut docs = skill_file.docs;
-        if docs.is_none() && has_companion_docs
+        if docs.is_none()
+            && has_companion_docs
             && let Ok(md_content) = std::fs::read_to_string(&companion_md)
-                && !md_content.trim().is_empty() {
-                    docs = Some(md_content);
-                }
+            && !md_content.trim().is_empty()
+        {
+            docs = Some(md_content);
+        }
 
         skills.insert(
             skill_file.name.clone(),

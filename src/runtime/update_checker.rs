@@ -57,9 +57,10 @@ impl GitHubReleaseChecker {
             return Ok(None);
         }
         if let Some(cur) = &self.current_version
-            && cur.trim() == tag.trim() {
-                return Ok(None);
-            }
+            && cur.trim() == tag.trim()
+        {
+            return Ok(None);
+        }
         let empty: Vec<serde_json::Value> = Vec::new();
         let assets = resp["assets"].as_array().unwrap_or(&empty);
         if let Some(fragment) = &self.platform_asset_fragment {
@@ -131,6 +132,9 @@ mod tests {
 
         assert_eq!(checker.repo, "owner/repo");
         assert_eq!(checker.current_version.as_deref(), Some("v1.2.3"));
-        assert_eq!(checker.platform_asset_fragment.as_deref(), Some("linux-amd64"));
+        assert_eq!(
+            checker.platform_asset_fragment.as_deref(),
+            Some("linux-amd64")
+        );
     }
 }

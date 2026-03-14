@@ -823,15 +823,16 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             .parameters
             .get_mut("properties")
             .and_then(|properties| properties.as_object_mut())
-            && !props.contains_key("expected_timeout_seconds") {
-                props.insert(
+            && !props.contains_key("expected_timeout_seconds")
+        {
+            props.insert(
                     "expected_timeout_seconds".to_string(),
                     serde_json::json!({
                         "type": "integer",
                         "description": "Expected maximum duration in seconds. If exceeded, the user will be asked whether to continue waiting. Default varies by tool."
                     }),
                 );
-            }
+        }
     }
 
     defs

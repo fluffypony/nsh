@@ -255,18 +255,19 @@ pub fn start_sidecar(port: u16) -> Result<Child> {
 
 pub fn stop_sidecar() -> Result<()> {
     if let Ok(pid_str) = std::fs::read_to_string(pid_file())
-        && let Ok(pid) = pid_str.trim().parse::<i32>() {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-            #[cfg(windows)]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/F"])
-                    .output();
-            }
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
         }
+        #[cfg(windows)]
+        {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .output();
+        }
+    }
     let _ = std::fs::remove_file(pid_file());
     let _ = std::fs::remove_file(port_file());
     Ok(())
@@ -274,24 +275,26 @@ pub fn stop_sidecar() -> Result<()> {
 
 pub fn is_sidecar_running() -> bool {
     if let Ok(pid_str) = std::fs::read_to_string(pid_file())
-        && let Ok(pid) = pid_str.trim().parse::<i32>() {
-            #[cfg(unix)]
-            unsafe {
-                return libc::kill(pid, 0) == 0;
-            }
-            #[cfg(not(unix))]
-            {
-                return port_file().exists();
-            }
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        #[cfg(unix)]
+        unsafe {
+            return libc::kill(pid, 0) == 0;
         }
+        #[cfg(not(unix))]
+        {
+            return port_file().exists();
+        }
+    }
     false
 }
 
 pub fn ensure_running() -> Result<u16> {
     if is_sidecar_running()
-        && let Some(p) = get_port() {
-            return Ok(p);
-        }
+        && let Some(p) = get_port()
+    {
+        return Ok(p);
+    }
     let port = pick_random_port()?;
     let _ = start_sidecar(port)?;
     Ok(port)
@@ -385,34 +388,35 @@ pub fn detect_existing_oauth_tokens() -> Vec<DetectedOAuthProvider> {
         home.join(".config/cliproxyapi"),
     ] {
         if dir.is_dir()
-            && let Ok(rd) = std::fs::read_dir(&dir) {
-                for ent in rd.flatten() {
-                    let name = ent.file_name().to_string_lossy().to_string();
-                    if !name.ends_with(".json") {
-                        continue;
-                    }
-                    let provider = if name.starts_with("codex-") || name.starts_with("copilot-") {
-                        "copilot"
-                    } else if name.starts_with("claude-") {
-                        "claude_sub"
-                    } else if name.starts_with("gemini-") {
-                        "gemini_sub"
-                    } else if name.starts_with("qwen-") {
-                        "qwen"
-                    } else if name.starts_with("iflow-") {
-                        "iflow"
-                    } else if name.starts_with("kiro-") {
-                        "kiro"
-                    } else {
-                        continue;
-                    };
-                    found.push(DetectedOAuthProvider {
-                        provider: provider.to_string(),
-                        source: format!("{}", dir.join(&name).display()),
-                        authenticated: true,
-                    });
+            && let Ok(rd) = std::fs::read_dir(&dir)
+        {
+            for ent in rd.flatten() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".json") {
+                    continue;
                 }
+                let provider = if name.starts_with("codex-") || name.starts_with("copilot-") {
+                    "copilot"
+                } else if name.starts_with("claude-") {
+                    "claude_sub"
+                } else if name.starts_with("gemini-") {
+                    "gemini_sub"
+                } else if name.starts_with("qwen-") {
+                    "qwen"
+                } else if name.starts_with("iflow-") {
+                    "iflow"
+                } else if name.starts_with("kiro-") {
+                    "kiro"
+                } else {
+                    continue;
+                };
+                found.push(DetectedOAuthProvider {
+                    provider: provider.to_string(),
+                    source: format!("{}", dir.join(&name).display()),
+                    authenticated: true,
+                });
             }
+        }
     }
 
     // Copilot
@@ -474,12 +478,21 @@ mod tests {
         assert_eq!(port_file(), expected_nsh_dir.join("cliproxyapi.port"));
         assert_eq!(pid_file(), expected_nsh_dir.join("cliproxyapi.pid"));
         assert_eq!(version_file(), expected_nsh_dir.join("cliproxyapi.version"));
-        assert_eq!(config_file(), expected_nsh_dir.join("cliproxyapi-config.yaml"));
+        assert_eq!(
+            config_file(),
+            expected_nsh_dir.join("cliproxyapi-config.yaml")
+        );
         assert_eq!(auth_dir(), expected_nsh_dir.join("cliproxyapi-auth"));
-        assert_eq!(last_check_file(), expected_nsh_dir.join("cliproxyapi-last-check"));
+        assert_eq!(
+            last_check_file(),
+            expected_nsh_dir.join("cliproxyapi-last-check")
+        );
 
         let log_path = log_file();
-        assert_eq!(log_path, expected_nsh_dir.join("logs").join("cliproxyapi.log"));
+        assert_eq!(
+            log_path,
+            expected_nsh_dir.join("logs").join("cliproxyapi.log")
+        );
         assert!(expected_nsh_dir.join("logs").is_dir());
 
         let path = generate_config(8317).unwrap();
@@ -513,8 +526,14 @@ mod tests {
 
     #[test]
     fn login_flag_for_provider_returns_expected_mappings() {
-        assert_eq!(login_flag_for_provider("copilot"), Some("--github-copilot-login"));
-        assert_eq!(login_flag_for_provider("claude_sub"), Some("--claude-login"));
+        assert_eq!(
+            login_flag_for_provider("copilot"),
+            Some("--github-copilot-login")
+        );
+        assert_eq!(
+            login_flag_for_provider("claude_sub"),
+            Some("--claude-login")
+        );
         assert_eq!(login_flag_for_provider("codex_sub"), Some("--codex-login"));
         assert_eq!(login_flag_for_provider("gemini_sub"), Some("--login"));
         assert_eq!(login_flag_for_provider("unknown"), None);

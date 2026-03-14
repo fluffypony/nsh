@@ -189,9 +189,7 @@ fn install_repo_skill(request: &RepoInstallRequest) -> anyhow::Result<String> {
     }
 
     eprintln!();
-    if !crate::tools::prompt_tty_confirmation(&format!(
-        "{bold_yellow}Install? [y/N]{reset} "
-    ))? {
+    if !crate::tools::prompt_tty_confirmation(&format!("{bold_yellow}Install? [y/N]{reset} "))? {
         eprintln!("{dim}skill installation declined{reset}");
         return Ok("Config change declined".to_string());
     }
@@ -327,9 +325,7 @@ fn install_manual_skill(request: &ManualSkillRequest) -> anyhow::Result<String> 
     }
 
     eprintln!();
-    if !crate::tools::prompt_tty_confirmation(&format!(
-        "{bold_yellow}Install? [y/N]{reset} "
-    ))? {
+    if !crate::tools::prompt_tty_confirmation(&format!("{bold_yellow}Install? [y/N]{reset} "))? {
         eprintln!("{dim}skill installation declined{reset}");
         return Ok("Config change declined".to_string());
     }

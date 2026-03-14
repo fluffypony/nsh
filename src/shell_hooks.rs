@@ -26,9 +26,10 @@ pub fn cleanup_pending_files(session_id: &str) {
     // Clean up per-TTY CWD file (only if this process owns the session)
     if let Ok(env_session) = std::env::var("NSH_SESSION_ID")
         && env_session == session_id
-            && let Ok(tty) = std::env::var("NSH_TTY") {
-                crate::fast_cwd::remove_tty_cwd(&tty);
-            }
+        && let Ok(tty) = std::env::var("NSH_TTY")
+    {
+        crate::fast_cwd::remove_tty_cwd(&tty);
+    }
 }
 
 #[cfg(test)]

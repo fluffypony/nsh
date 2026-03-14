@@ -198,9 +198,10 @@ impl StaticSystemInfoFile {
 pub(crate) fn load_or_refresh_static_info() -> StaticSystemInfo {
     let mut cache = STATIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cached) = *cache
-        && cached.cached_at.elapsed() < STATIC_TTL {
-            return cached.clone();
-        }
+        && cached.cached_at.elapsed() < STATIC_TTL
+    {
+        return cached.clone();
+    }
 
     let cache_path = crate::config::Config::nsh_dir()
         .join("cache")
@@ -247,9 +248,10 @@ fn load_or_refresh_static_info_for_tests() -> StaticSystemInfo {
 pub(crate) fn load_or_refresh_semi_dynamic_info() -> SemiDynamicInfo {
     let mut cache = SEMI_DYNAMIC_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref cached) = *cache
-        && cached.cached_at.elapsed() < SEMI_DYNAMIC_TTL {
-            return cached.clone();
-        }
+        && cached.cached_at.elapsed() < SEMI_DYNAMIC_TTL
+    {
+        return cached.clone();
+    }
     let fresh = SemiDynamicInfo {
         disk_info: detect_disk_info(),
         network_info: detect_network_info(),
@@ -699,15 +701,16 @@ pub fn build_xml_context(ctx: &QueryContext, config: &Config) -> String {
                 )),
             ));
             if let Some(ref output) = cmd.output
-                && !output.trim().is_empty() {
-                    let truncated =
-                        crate::util::truncate(output, config.context.max_output_context_chars);
-                    let redacted = crate::redact::redact_secrets(&truncated, &config.redaction);
-                    xml.push_str(&format!(
-                        "      <output>{}</output>\n",
-                        xml_escape(&redacted),
-                    ));
-                }
+                && !output.trim().is_empty()
+            {
+                let truncated =
+                    crate::util::truncate(output, config.context.max_output_context_chars);
+                let redacted = crate::redact::redact_secrets(&truncated, &config.redaction);
+                xml.push_str(&format!(
+                    "      <output>{}</output>\n",
+                    xml_escape(&redacted),
+                ));
+            }
             if let Some(ref summary) = cmd.summary {
                 let redacted = crate::redact::redact_secrets(summary, &config.redaction);
                 xml.push_str(&format!(
@@ -2349,9 +2352,10 @@ fn detect_container() -> Option<String> {
         return Some("<container type=\"docker\" />".into());
     }
     if let Ok(cgroup) = std::fs::read_to_string("/proc/1/cgroup")
-        && (cgroup.contains("docker") || cgroup.contains("containerd")) {
-            return Some("<container type=\"docker\" />".into());
-        }
+        && (cgroup.contains("docker") || cgroup.contains("containerd"))
+    {
+        return Some("<container type=\"docker\" />".into());
+    }
     None
 }
 
@@ -2396,27 +2400,31 @@ pub fn detect_project_name(cwd: &str) -> Option<String> {
             .find(|l| l.trim().starts_with("name"))
             .and_then(|l| l.split('=').nth(1))
             .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
-            && !name.is_empty() {
-                return Some(name);
-            }
+        && !name.is_empty()
+    {
+        return Some(name);
+    }
 
     // package.json
     if let Ok(content) = std::fs::read_to_string(path.join("package.json"))
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content)
-            && let Some(name) = parsed["name"].as_str()
-                && !name.is_empty() {
-                    return Some(name.to_string());
-                }
+        && let Some(name) = parsed["name"].as_str()
+        && !name.is_empty()
+    {
+        return Some(name.to_string());
+    }
 
     // go.mod
     if let Ok(content) = std::fs::read_to_string(path.join("go.mod"))
-        && let Some(line) = content.lines().find(|l| l.starts_with("module ")) {
-            let module_path = line.trim_start_matches("module ").trim();
-            if let Some(last) = module_path.rsplit('/').next()
-                && !last.is_empty() {
-                    return Some(last.to_string());
-                }
+        && let Some(line) = content.lines().find(|l| l.starts_with("module "))
+    {
+        let module_path = line.trim_start_matches("module ").trim();
+        if let Some(last) = module_path.rsplit('/').next()
+            && !last.is_empty()
+        {
+            return Some(last.to_string());
         }
+    }
 
     // pyproject.toml
     if let Ok(content) = std::fs::read_to_string(path.join("pyproject.toml"))
@@ -2425,15 +2433,17 @@ pub fn detect_project_name(cwd: &str) -> Option<String> {
             .find(|l| l.trim().starts_with("name"))
             .and_then(|l| l.split('=').nth(1))
             .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
-            && !name.is_empty() {
-                return Some(name);
-            }
+        && !name.is_empty()
+    {
+        return Some(name);
+    }
 
     // Fall back to directory name if inside a git repo
     if path.join(".git").exists()
-        && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            return Some(name.to_string());
-        }
+        && let Some(name) = path.file_name().and_then(|n| n.to_str())
+    {
+        return Some(name.to_string());
+    }
 
     None
 }

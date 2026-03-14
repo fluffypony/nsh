@@ -8,12 +8,12 @@
 //! Dependencies: pty.rs, pump.rs — these are also part of the stable boundary.
 
 mod config;
-pub mod pump;
 #[cfg(unix)]
 pub mod pty;
 #[cfg(windows)]
 #[path = "../pty_windows.rs"]
 pub mod pty;
+pub mod pump;
 mod wrap;
 
 pub use config::{ShimWrapConfig, seed_wrap_contract_env_from_config};

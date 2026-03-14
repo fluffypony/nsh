@@ -141,9 +141,10 @@ impl McpServer {
 
                 // Capture session ID
                 if let Some(sid) = resp.headers().get("mcp-session-id")
-                    && let Ok(s) = sid.to_str() {
-                        *session_id = Some(s.to_string());
-                    }
+                    && let Ok(s) = sid.to_str()
+                {
+                    *session_id = Some(s.to_string());
+                }
 
                 let content_type = resp
                     .headers()
@@ -182,18 +183,19 @@ impl McpServer {
                                         }
                                         if let Ok(resp) =
                                             serde_json::from_str::<JsonRpcResponse>(data)
-                                            && resp.id.is_some() {
-                                                if let Some(err) = resp.error {
-                                                    anyhow::bail!(
-                                                        "MCP error {}: {}",
-                                                        err.code,
-                                                        err.message
-                                                    );
-                                                }
-                                                return Ok(resp
-                                                    .result
-                                                    .unwrap_or(serde_json::Value::Null));
+                                            && resp.id.is_some()
+                                        {
+                                            if let Some(err) = resp.error {
+                                                anyhow::bail!(
+                                                    "MCP error {}: {}",
+                                                    err.code,
+                                                    err.message
+                                                );
                                             }
+                                            return Ok(resp
+                                                .result
+                                                .unwrap_or(serde_json::Value::Null));
+                                        }
                                     }
                                 }
                             }
@@ -270,9 +272,10 @@ async fn read_stdio_response(
             continue;
         }
         if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed)
-            && resp.id == Some(expected_id) {
-                return Ok(resp);
-            }
+            && resp.id == Some(expected_id)
+        {
+            return Ok(resp);
+        }
     }
 }
 
@@ -436,10 +439,11 @@ impl McpClient {
                 let (mut disabled, mut rename): (Vec<String>, HashMap<String, String>) =
                     (Vec::new(), HashMap::new());
                 if let Some(cfg) = crate::config::Config::load().ok().map(|c| c.mcp.servers)
-                    && let Some(sc) = cfg.get(server_name) {
-                        disabled = sc.disable_tools.clone();
-                        rename = sc.rename_tools.clone();
-                    }
+                    && let Some(sc) = cfg.get(server_name)
+                {
+                    disabled = sc.disable_tools.clone();
+                    rename = sc.rename_tools.clone();
+                }
                 if disabled.iter().any(|s| {
                     if s.is_empty() {
                         return false;

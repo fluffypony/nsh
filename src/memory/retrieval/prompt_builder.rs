@@ -44,9 +44,10 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
                 line.push_str(&format!(" (cmd: {cmd})"));
             }
             if let Some(exit) = ep.exit_code
-                && exit != 0 {
-                    line.push_str(&format!(" [exit {exit}]"));
-                }
+                && exit != 0
+            {
+                line.push_str(&format!(" [exit {exit}]"));
+            }
             parts.push(line);
         }
         parts.push("</episodic_memory>".into());

@@ -72,7 +72,10 @@ pub fn execute(
         }
         server.insert("env", toml_edit::Item::Table(env_table));
     }
-    server.insert("timeout_seconds", toml_edit::value(request.timeout_seconds as i64));
+    server.insert(
+        "timeout_seconds",
+        toml_edit::value(request.timeout_seconds as i64),
+    );
 
     // Ensure mcp.servers table exists
     if doc.get("mcp").is_none() {
@@ -145,9 +148,9 @@ fn parse_request(input: &serde_json::Value) -> anyhow::Result<InstallMcpRequest>
     let transport = input
         .get("transport")
         .map(|value| {
-            value.as_str().ok_or_else(|| {
-                anyhow::anyhow!("install_mcp_server: 'transport' must be a string")
-            })
+            value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("install_mcp_server: 'transport' must be a string"))
         })
         .transpose()?
         .unwrap_or("stdio");
@@ -196,10 +199,7 @@ fn parse_request(input: &serde_json::Value) -> anyhow::Result<InstallMcpRequest>
     })
 }
 
-fn parse_string_array_field(
-    input: &serde_json::Value,
-    field: &str,
-) -> anyhow::Result<Vec<String>> {
+fn parse_string_array_field(input: &serde_json::Value, field: &str) -> anyhow::Result<Vec<String>> {
     let Some(value) = input.get(field) else {
         return Ok(Vec::new());
     };
@@ -210,13 +210,9 @@ fn parse_string_array_field(
         .iter()
         .enumerate()
         .map(|(index, item)| {
-            item.as_str()
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "install_mcp_server: '{field}[{index}]' must be a string"
-                    )
-                })
+            item.as_str().map(str::to_string).ok_or_else(|| {
+                anyhow::anyhow!("install_mcp_server: '{field}[{index}]' must be a string")
+            })
         })
         .collect()
 }
@@ -234,9 +230,12 @@ fn parse_string_map_field(
     object
         .iter()
         .map(|(key, value)| {
-            value.as_str().map(|value| (key.clone(), value.to_string())).ok_or_else(
-                || anyhow::anyhow!("install_mcp_server: '{field}.{key}' must be a string"),
-            )
+            value
+                .as_str()
+                .map(|value| (key.clone(), value.to_string()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("install_mcp_server: '{field}.{key}' must be a string")
+                })
         })
         .collect()
 }

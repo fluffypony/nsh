@@ -11,30 +11,34 @@ pub fn extract_json(input: &str) -> Option<serde_json::Value> {
     }
     // 3. Extract from code fences
     if let Some(json_str) = extract_from_code_fence(trimmed)
-        && let Ok(val) = serde_json::from_str(json_str.trim()) {
-            return Some(val);
-        }
+        && let Ok(val) = serde_json::from_str(json_str.trim())
+    {
+        return Some(val);
+    }
     // 4. Find outermost { ... } (try progressively shorter tails)
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
-        && start < end {
-            // Try from outermost first
-            if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
+        && start < end
+    {
+        // Try from outermost first
+        if let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
+            return Some(val);
+        }
+        // Try progressively smaller substrings (handle trailing junk)
+        for scan_end in (start + 1..=end).rev() {
+            if trimmed.as_bytes()[scan_end] == b'}'
+                && let Ok(val) = serde_json::from_str(&trimmed[start..=scan_end])
+            {
                 return Some(val);
             }
-            // Try progressively smaller substrings (handle trailing junk)
-            for scan_end in (start + 1..=end).rev() {
-                if trimmed.as_bytes()[scan_end] == b'}'
-                    && let Ok(val) = serde_json::from_str(&trimmed[start..=scan_end]) {
-                        return Some(val);
-                    }
-            }
         }
+    }
     // 5. Same for arrays
     if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.rfind(']'))
         && start < end
-            && let Ok(val) = serde_json::from_str(&trimmed[start..=end]) {
-                return Some(val);
-            }
+        && let Ok(val) = serde_json::from_str(&trimmed[start..=end])
+    {
+        return Some(val);
+    }
     None
 }
 

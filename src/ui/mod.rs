@@ -8,8 +8,8 @@
 pub mod display;
 pub mod json_display;
 pub mod stream_consumer;
-pub mod theme;
 pub mod streaming;
+pub mod theme;
 
 pub mod style {
     pub const RESET: &str = "\x1b[0m";

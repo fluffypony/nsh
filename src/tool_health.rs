@@ -70,13 +70,10 @@ impl ToolHealthTracker {
             "run_command" | "command" => {
                 if let Some(cmd) = input["command"].as_str() {
                     let first = cmd.split_whitespace().next().unwrap_or("");
-                    if !first.is_empty()
-                        && which::which(first).is_err() {
-                            parts.push(format!("DIAGNOSTIC: '{}' not found in PATH.", first));
-                            parts.push(
-                                "SUGGESTION: Install it first, or use a different tool.".into(),
-                            );
-                        }
+                    if !first.is_empty() && which::which(first).is_err() {
+                        parts.push(format!("DIAGNOSTIC: '{}' not found in PATH.", first));
+                        parts.push("SUGGESTION: Install it first, or use a different tool.".into());
+                    }
                 }
             }
             "web_search" | "github" => {

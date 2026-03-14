@@ -111,7 +111,10 @@ pub fn seed_wrap_contract_env_from_config(config: &crate::config::Config) {
             config.context.scrollback_pause_seconds.to_string(),
         );
         std::env::set_var("NSH_WRAP_CAPTURE_MODE", config.capture.mode.as_str());
-        std::env::set_var("NSH_WRAP_ALT_SCREEN_MODE", config.capture.alt_screen.as_str());
+        std::env::set_var(
+            "NSH_WRAP_ALT_SCREEN_MODE",
+            config.capture.alt_screen.as_str(),
+        );
     }
 }
 
@@ -198,15 +201,21 @@ mod tests {
             Some("1000")
         );
         assert_eq!(
-            std::env::var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES").ok().as_deref(),
+            std::env::var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES")
+                .ok()
+                .as_deref(),
             Some("11111")
         );
         assert_eq!(
-            std::env::var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS").ok().as_deref(),
+            std::env::var("NSH_WRAP_SCROLLBACK_RATE_LIMIT_BPS")
+                .ok()
+                .as_deref(),
             Some("22222")
         );
         assert_eq!(
-            std::env::var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS").ok().as_deref(),
+            std::env::var("NSH_WRAP_SCROLLBACK_PAUSE_SECONDS")
+                .ok()
+                .as_deref(),
             Some("7")
         );
         assert_eq!(

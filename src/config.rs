@@ -85,7 +85,6 @@ pub enum ExecutionMode {
     Autorun,
 }
 
-
 impl ExecutionMode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -134,7 +133,6 @@ pub enum SensitiveFileAccess {
     Block,
 }
 
-
 impl SensitiveFileAccess {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -182,7 +180,6 @@ pub enum CaptureMode {
     Vt100,
 }
 
-
 impl CaptureMode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -228,7 +225,6 @@ pub enum AltScreenMode {
     Drop,
     Snapshot,
 }
-
 
 impl AltScreenMode {
     pub fn as_str(self) -> &'static str {
@@ -276,7 +272,6 @@ pub enum McpTransportKind {
     #[default]
     Stdio,
 }
-
 
 impl McpTransportKind {
     pub fn as_str(self) -> &'static str {
@@ -473,9 +468,10 @@ pub struct ProviderAuth {
 impl ProviderAuth {
     pub fn resolve_api_key(&self, provider_name: &str) -> anyhow::Result<Zeroizing<String>> {
         if let Some(key) = &self.api_key
-            && !key.is_empty() {
-                return Ok(Zeroizing::new(key.clone()));
-            }
+            && !key.is_empty()
+        {
+            return Ok(Zeroizing::new(key.clone()));
+        }
         if let Some(cmd) = &self.api_key_cmd {
             #[cfg(unix)]
             let output = Command::new("sh").arg("-c").arg(cmd).output()?;
@@ -508,9 +504,10 @@ impl ProviderAuth {
         };
         if !env_var.is_empty()
             && let Ok(key) = std::env::var(env_var)
-                && !key.is_empty() {
-                    return Ok(Zeroizing::new(key));
-                }
+            && !key.is_empty()
+        {
+            return Ok(Zeroizing::new(key));
+        }
         anyhow::bail!("No API key for {provider_name} (tried config, api_key_cmd, ${env_var})")
     }
 }
@@ -1127,13 +1124,14 @@ impl Config {
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = std::fs::metadata(&path)
-                    && meta.permissions().mode() & 0o077 != 0 {
-                        eprintln!(
-                            "nsh: warning: {} is readable by other users. Consider: chmod 600 {}",
-                            path.display(),
-                            path.display()
-                        );
-                    }
+                    && meta.permissions().mode() & 0o077 != 0
+                {
+                    eprintln!(
+                        "nsh: warning: {} is readable by other users. Consider: chmod 600 {}",
+                        path.display(),
+                        path.display()
+                    );
+                }
             }
             let content = std::fs::read_to_string(&path)?;
             toml::from_str(&content)?

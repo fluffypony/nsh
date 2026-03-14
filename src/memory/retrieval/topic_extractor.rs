@@ -11,9 +11,10 @@ pub async fn extract(ctx: &MemoryQueryContext, llm: Option<&dyn MemoryLlmClient>
     // LLM fallback for complex NL queries
     if let Some(llm) = llm
         && let Ok(keywords) = extract_with_llm(&ctx.query, llm).await
-            && !keywords.is_empty() {
-                return keywords;
-            }
+        && !keywords.is_empty()
+    {
+        return keywords;
+    }
 
     // Last resort: basic keyword extraction
     extract_keywords_basic(&ctx.query)
@@ -44,9 +45,10 @@ fn extract_fast(ctx: &MemoryQueryContext) -> Vec<String> {
 
     // Project detection from CWD
     if let Some(ref cwd) = ctx.cwd
-        && let Some(project) = detect_project_from_cwd(cwd) {
-            keywords.push(project);
-        }
+        && let Some(project) = detect_project_from_cwd(cwd)
+    {
+        keywords.push(project);
+    }
 
     // Direct noun extraction for short queries
     if ctx.query.split_whitespace().count() <= 5 {

@@ -53,10 +53,7 @@ pub(crate) fn human_size(bytes: u64) -> String {
 }
 
 #[cfg(unix)]
-pub(crate) fn check_peer_uid(
-    stream: &std::os::unix::net::UnixStream,
-    log_rejection: bool,
-) -> bool {
+pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_rejection: bool) -> bool {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;

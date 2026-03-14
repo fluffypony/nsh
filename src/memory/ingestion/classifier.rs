@@ -17,9 +17,11 @@ pub fn is_rapid_repeat(
     now: i64,
 ) -> bool {
     if let (Some(last_cmd), Some(last_ts)) = (last_command, last_timestamp)
-        && last_cmd == command && (now - last_ts) < 5 {
-            return true;
-        }
+        && last_cmd == command
+        && (now - last_ts) < 5
+    {
+        return true;
+    }
     false
 }
 

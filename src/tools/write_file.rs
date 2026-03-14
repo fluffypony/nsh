@@ -1,7 +1,7 @@
 use crate::daemon_db::DbAccess;
-use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn trash_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -92,10 +92,8 @@ pub(crate) fn validate_path_with_access(
                         "\x1b[1;33m⚠ '{}' is in a sensitive directory\x1b[0m",
                         path.display()
                     );
-                    if crate::tools::prompt_tty_confirmation(
-                        "\x1b[1;33mAllow write? [y/N]\x1b[0m ",
-                    )
-                    .unwrap_or(false)
+                    if crate::tools::prompt_tty_confirmation("\x1b[1;33mAllow write? [y/N]\x1b[0m ")
+                        .unwrap_or(false)
                     {
                         break;
                     }
