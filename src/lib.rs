@@ -47,7 +47,6 @@ pub use runtime::update_checker;
 pub(crate) use shim::pty;
 pub(crate) use shim::pump;
 pub(crate) use ui as tui;
-pub(crate) use ui::display;
 pub(crate) use ui::json_display;
 pub(crate) use ui::stream_consumer;
 pub(crate) use ui::streaming;

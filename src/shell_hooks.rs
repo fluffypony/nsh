@@ -19,7 +19,6 @@ pub fn cleanup_pending_files(session_id: &str) {
     let _ = std::fs::remove_file(dir.join(format!("daemon_{session_id}.pid")));
     let _ = std::fs::remove_file(dir.join(format!("redact_next_{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("redact_active_{session_id}")));
-    // Obsolete markers under shim/core split removed
     let _ = std::fs::remove_file(dir.join(format!("nsh_msg_{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("last_update_notice_{session_id}")));
 

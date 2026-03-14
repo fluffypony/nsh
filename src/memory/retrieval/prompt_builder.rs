@@ -141,8 +141,6 @@ pub fn build_memory_prompt(memories: &RetrievedMemories) -> String {
     parts.join("\n")
 }
 
-// removed unused test-only helper compile_core_memory()
-
 #[cfg(test)]
 mod tests {
     use super::*;

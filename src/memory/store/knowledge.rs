@@ -10,8 +10,6 @@ pub struct KnowledgeWrite<'a> {
     pub search_keywords: &'a str,
 }
 
-// removed unused test-only row_to_entry helper
-
 pub fn store(conn: &Connection, write: &KnowledgeWrite<'_>) -> anyhow::Result<String> {
     insert(
         conn,

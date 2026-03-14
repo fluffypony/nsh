@@ -7,7 +7,6 @@ pub(super) async fn handle_chat_command() -> anyhow::Result<()> {
         return Ok(());
     }
     let config = crate::config::Config::load()?;
-    crate::streaming::configure_display(&config.display);
     let db = crate::daemon_db::DaemonDb::new();
     let session_id =
         std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
