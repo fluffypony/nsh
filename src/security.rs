@@ -1,6 +1,43 @@
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use serde::Serialize;
+
+/// Directories considered sensitive for both read and write access checks.
+///
+/// The first slice contains cross-platform entries (relative to `home`).
+/// The second slice contains Windows-specific absolute paths.
+/// Callers that only need cross-platform entries can ignore the second slice.
+const SENSITIVE_DIR_SUFFIXES: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".gpg",
+    ".aws",
+    ".config/gcloud",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".nsh",
+];
+
+const SENSITIVE_DIR_SUFFIXES_WINDOWS: &[&str] = &["AppData/Roaming/gnupg"];
+
+const SENSITIVE_DIRS_ABSOLUTE_WINDOWS: &[&str] = &[r"C:\Windows", r"C:\Windows\System32"];
+
+/// Return the full list of sensitive directories for the given `home`.
+///
+/// Includes Windows-specific absolute paths so write-side validation stays
+/// complete on all platforms.
+pub fn sensitive_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = SENSITIVE_DIR_SUFFIXES.iter().map(|s| home.join(s)).collect();
+    for s in SENSITIVE_DIR_SUFFIXES_WINDOWS {
+        dirs.push(home.join(s));
+    }
+    for p in SENSITIVE_DIRS_ABSOLUTE_WINDOWS {
+        dirs.push(PathBuf::from(p));
+    }
+    dirs
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum RiskLevel {

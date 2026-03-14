@@ -331,19 +331,6 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
     Ok(())
 }
 
-#[allow(dead_code)]
-pub async fn with_db<F, T>(f: F) -> anyhow::Result<T>
-where
-    F: FnOnce(&Db) -> anyhow::Result<T> + Send + 'static,
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let db = Db::open()?;
-        f(&db)
-    })
-    .await?
-}
-
 pub enum UsagePeriod {
     Today,
     Week,
@@ -366,7 +353,6 @@ pub struct ResourceMemoryWrite<'a> {
     pub search_keywords: &'a str,
 }
 
-#[allow(dead_code)]
 impl Db {
     fn to_fts_literal_query(query: &str) -> String {
         let terms: Vec<String> = query
@@ -771,19 +757,6 @@ impl Db {
         Ok(deleted)
     }
 
-    /// Deletes all imported history sessions and their commands.
-    /// FTS cleanup is handled by existing delete triggers; CASCADE handles command_entities.
-    #[allow(dead_code)]
-    pub fn cleanup_imported_history(&self) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM commands WHERE session_id LIKE 'imported_%'",
-            [],
-        )?;
-        self.conn
-            .execute("DELETE FROM sessions WHERE id LIKE 'imported_%'", [])?;
-        Ok(())
-    }
-
     pub fn update_heartbeat(&self, session_id: &str) -> rusqlite::Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
@@ -1023,15 +996,6 @@ impl Db {
         )
     }
 
-    pub fn search_episodic_fts(
-        &self,
-        query: &str,
-        limit: usize,
-        fade_cutoff: Option<&str>,
-    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
-        self.search_episodic_fts_since(query, limit, fade_cutoff, None)
-    }
-
     pub fn search_episodic_fts_since(
         &self,
         query: &str,
@@ -1061,43 +1025,6 @@ impl Db {
         let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             Self::row_to_episodic(row)
         })?;
-        rows.collect()
-    }
-
-    pub fn list_recent_episodic(
-        &self,
-        limit: usize,
-        fade_cutoff: Option<&str>,
-    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
-        let sql = if let Some(cutoff) = fade_cutoff {
-            format!(
-                "SELECT id, event_type, actor, summary, details, command, exit_code, \
-                 working_dir, project_context, search_keywords, occurred_at, is_consolidated \
-                 FROM episodic_memory WHERE occurred_at >= '{cutoff}' \
-                 ORDER BY occurred_at DESC LIMIT ?1"
-            )
-        } else {
-            "SELECT id, event_type, actor, summary, details, command, exit_code, \
-             working_dir, project_context, search_keywords, occurred_at, is_consolidated \
-             FROM episodic_memory ORDER BY occurred_at DESC LIMIT ?1"
-                .to_string()
-        };
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit as i64], Self::row_to_episodic)?;
-        rows.collect()
-    }
-
-    pub fn get_unconsolidated_episodic(
-        &self,
-        limit: usize,
-    ) -> rusqlite::Result<Vec<crate::memory::types::EpisodicEvent>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, event_type, actor, summary, details, command, exit_code, \
-             working_dir, project_context, search_keywords, occurred_at, is_consolidated \
-             FROM episodic_memory WHERE is_consolidated = 0 \
-             ORDER BY occurred_at ASC LIMIT ?",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], Self::row_to_episodic)?;
         rows.collect()
     }
 
@@ -1161,6 +1088,7 @@ impl Db {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn list_all_semantic(&self) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, category, summary, details, search_keywords, \
@@ -1216,6 +1144,7 @@ impl Db {
         rows.collect()
     }
 
+    #[allow(dead_code)]
     pub fn list_all_procedural(
         &self,
     ) -> rusqlite::Result<Vec<crate::memory::types::ProceduralItem>> {
@@ -1260,34 +1189,6 @@ impl Db {
             Self::row_to_resource(row)
         })?;
         rows.collect()
-    }
-
-    pub fn get_resources_for_cwd(
-        &self,
-        cwd: &str,
-        limit: usize,
-    ) -> rusqlite::Result<Vec<crate::memory::types::ResourceItem>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, resource_type, file_path, file_hash, title, summary, \
-             content, search_keywords, created_at, updated_at \
-             FROM resource_memory WHERE file_path LIKE ?1 \
-             ORDER BY updated_at DESC LIMIT ?2",
-        )?;
-        let pattern = format!("{cwd}%");
-        let rows = stmt.query_map(params![pattern, limit as i64], |row| {
-            Self::row_to_resource(row)
-        })?;
-        rows.collect()
-    }
-
-    pub fn resource_exists_with_hash(&self, path: &str, hash: &str) -> rusqlite::Result<bool> {
-        self.conn
-            .query_row(
-                "SELECT COUNT(*) > 0 FROM resource_memory WHERE file_path = ? AND file_hash = ?",
-                params![path, hash],
-                |row| row.get(0),
-            )
-            .or(Ok(false))
     }
 
     pub fn search_knowledge_fts(
@@ -1357,6 +1258,7 @@ impl Db {
             .optional()
     }
 
+    #[allow(dead_code)]
     pub fn set_memory_config(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO memory_config(key, value) VALUES (?, ?)",
@@ -1407,19 +1309,6 @@ impl Db {
         None
     }
 
-    pub fn clear_all_memories(&self) -> rusqlite::Result<()> {
-        self.conn.execute_batch(
-            "DELETE FROM episodic_memory;
-             DELETE FROM semantic_memory;
-             DELETE FROM procedural_memory;
-             DELETE FROM resource_memory;
-             DELETE FROM knowledge_vault;
-             UPDATE core_memory SET value = '', updated_at = datetime('now');
-             DELETE FROM memory_config WHERE key IN ('last_decay_at', 'last_reflection_at', 'last_bootstrap_at');",
-        )?;
-        Ok(())
-    }
-
     pub fn clear_memories_by_type(
         &self,
         memory_type: crate::memory::types::MemoryType,
@@ -1445,65 +1334,6 @@ impl Db {
             )?,
         }
         Ok(())
-    }
-
-    pub fn delete_memory_by_type_and_id(&self, table: &str, id: &str) -> rusqlite::Result<()> {
-        let valid_tables = [
-            "episodic_memory",
-            "semantic_memory",
-            "procedural_memory",
-            "resource_memory",
-            "knowledge_vault",
-        ];
-        if !valid_tables.contains(&table) {
-            return Err(rusqlite::Error::InvalidParameterName(format!(
-                "invalid memory table: {table}"
-            )));
-        }
-        self.conn
-            .execute(&format!("DELETE FROM {table} WHERE id = ?"), params![id])?;
-        Ok(())
-    }
-
-    pub fn run_memory_decay(
-        &self,
-        _fade_days: u32,
-        expire_days: u32,
-    ) -> rusqlite::Result<crate::memory::types::DecayReport> {
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(expire_days as i64);
-        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S").to_string();
-
-        let ep_del = self.conn.execute(
-            "DELETE FROM episodic_memory WHERE occurred_at < ?",
-            params![cutoff_str],
-        )?;
-        let sem_del = self.conn.execute(
-            "DELETE FROM semantic_memory WHERE updated_at < ? AND access_count < 3",
-            params![cutoff_str],
-        )?;
-        let proc_del = self.conn.execute(
-            "DELETE FROM procedural_memory WHERE updated_at < ? AND access_count < 2",
-            params![cutoff_str],
-        )?;
-        let res_del = self.conn.execute(
-            "DELETE FROM resource_memory WHERE updated_at < ?",
-            params![cutoff_str],
-        )?;
-        let kv_del = self.conn.execute(
-            "DELETE FROM knowledge_vault WHERE updated_at < ?",
-            params![cutoff_str],
-        )?;
-
-        let now = chrono::Utc::now().to_rfc3339();
-        let _ = self.set_memory_config("last_decay_at", &now);
-
-        Ok(crate::memory::types::DecayReport {
-            episodic_deleted: ep_del,
-            semantic_deleted: sem_del,
-            procedural_deleted: proc_del,
-            resource_deleted: res_del,
-            knowledge_deleted: kv_del,
-        })
     }
 
     fn row_to_episodic(
@@ -1560,7 +1390,6 @@ impl Db {
         })
     }
 
-    #[allow(dead_code)]
     pub fn command_count(&self) -> rusqlite::Result<usize> {
         self.conn
             .query_row("SELECT COUNT(*) FROM commands", [], |row| {
@@ -1719,7 +1548,6 @@ impl Db {
 
     // memory system removed
 
-    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub fn insert_usage(
         &self,
@@ -1752,7 +1580,6 @@ impl Db {
         Ok(self.conn.last_insert_rowid())
     }
 
-    #[allow(dead_code)]
     pub fn update_usage_cost(&self, generation_id: &str, cost_usd: f64) -> rusqlite::Result<bool> {
         let updated = self.conn.execute(
             "UPDATE usage SET cost_usd = ? WHERE generation_id = ?",
@@ -2656,6 +2483,7 @@ impl Db {
         tx.commit()
     }
 
+    #[allow(dead_code)]
     pub fn conn_execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
         self.conn.execute_batch(sql)
     }
@@ -2679,7 +2507,6 @@ pub struct HistoryMatch {
     pub output_highlight: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandEntityMatch {
     pub command_id: i64,

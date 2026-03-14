@@ -50,7 +50,7 @@ impl CoreLabel {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn default_limit(&self) -> usize {
         match self {
             CoreLabel::Human => 5000,
@@ -473,6 +473,7 @@ pub enum MemoryOp {
 
 // ── Context Budget ──
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct ContextBudget {
     pub total_tokens: usize,
@@ -480,8 +481,8 @@ pub struct ContextBudget {
     pub conversation_tokens: usize,
 }
 
+#[cfg(test)]
 impl ContextBudget {
-    #[allow(dead_code)]
     pub fn memory_budget(&self) -> usize {
         let used = self.system_prompt_tokens + self.conversation_tokens;
         if self.total_tokens > used {

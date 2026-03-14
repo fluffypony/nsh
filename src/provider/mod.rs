@@ -74,7 +74,6 @@ pub struct ChatRequest {
     pub extra_body: Option<serde_json::Value>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ToolChoice {
     Auto,
@@ -91,16 +90,13 @@ pub enum StreamEvent {
     },
     ToolUseDelta(String),
     ToolUseEnd,
-    #[allow(dead_code)]
     GenerationId(String),
-    #[allow(dead_code)]
     Done {
         usage: Option<Usage>,
     },
     Error(String),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Usage {
     pub input_tokens: u32,

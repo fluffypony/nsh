@@ -70,20 +70,7 @@ pub(crate) fn validate_path_with_access(
         std::env::current_dir()?.join(path)
     };
 
-    let sensitive_dirs = [
-        home.join(".ssh"),
-        home.join(".gnupg"),
-        home.join(".gpg"),
-        home.join(".aws"),
-        home.join(".config/gcloud"),
-        home.join(".azure"),
-        home.join(".kube"),
-        home.join(".docker"),
-        home.join(".nsh"),
-        home.join("AppData").join("Roaming").join("gnupg"),
-        std::path::PathBuf::from(r"C:\Windows"),
-        std::path::PathBuf::from(r"C:\Windows\System32"),
-    ];
+    let sensitive_dirs = crate::security::sensitive_dirs(&home);
     if sensitive_file_access != "allow" {
         for dir in &sensitive_dirs {
             if canonical_target.starts_with(dir) {

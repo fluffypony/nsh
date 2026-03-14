@@ -73,17 +73,7 @@ pub fn validate_read_path_with_access(
             return Ok(canonical);
         }
 
-        let sensitive_dirs = [
-            home.join(".ssh"),
-            home.join(".gnupg"),
-            home.join(".gpg"),
-            home.join(".aws"),
-            home.join(".config/gcloud"),
-            home.join(".azure"),
-            home.join(".kube"),
-            home.join(".docker"),
-            home.join(".nsh"),
-        ];
+        let sensitive_dirs = crate::security::sensitive_dirs(&home);
 
         for dir in &sensitive_dirs {
             let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
