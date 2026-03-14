@@ -631,39 +631,6 @@ impl Db {
         rows.collect()
     }
 
-    // ── Cross-TTY context ──────────────────────────────────────────
-
-    #[allow(dead_code)]
-    pub fn recent_commands_other_sessions(
-        &self,
-        current_session: &str,
-        limit: usize,
-    ) -> rusqlite::Result<Vec<OtherSessionCommand>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT c.command, c.cwd, c.exit_code, c.started_at,
-                    s.tty, c.session_id
-             FROM commands c
-             JOIN sessions s ON s.id = c.session_id
-             WHERE c.session_id != ?
-               AND s.ended_at IS NULL
-               AND (s.last_heartbeat IS NULL
-                    OR s.last_heartbeat > datetime('now', '-5 minutes'))
-             ORDER BY c.started_at DESC
-             LIMIT ?",
-        )?;
-        let rows = stmt.query_map(params![current_session, limit as i64], |row| {
-            Ok(OtherSessionCommand {
-                command: row.get(0)?,
-                cwd: row.get(1)?,
-                exit_code: row.get(2)?,
-                started_at: row.get(3)?,
-                tty: row.get(4)?,
-                session_id: row.get(5)?,
-            })
-        })?;
-        rows.collect()
-    }
-
     // ── Conversation history ───────────────────────────────────────
 
     #[allow(clippy::too_many_arguments)]
@@ -821,7 +788,6 @@ impl Db {
             .execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')")
     }
 
-    #[allow(dead_code)]
     pub fn prune_if_due(&self, retention_days: u32) -> rusqlite::Result<()> {
         let should_prune: bool = self
             .conn
@@ -1088,7 +1054,6 @@ impl Db {
         rows.collect()
     }
 
-    #[allow(dead_code)]
     pub fn list_all_semantic(&self) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, category, summary, details, search_keywords, \
@@ -1144,7 +1109,6 @@ impl Db {
         rows.collect()
     }
 
-    #[allow(dead_code)]
     pub fn list_all_procedural(
         &self,
     ) -> rusqlite::Result<Vec<crate::memory::types::ProceduralItem>> {
@@ -1258,7 +1222,6 @@ impl Db {
             .optional()
     }
 
-    #[allow(dead_code)]
     pub fn set_memory_config(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO memory_config(key, value) VALUES (?, ?)",
@@ -1620,7 +1583,6 @@ impl Db {
         rows.collect()
     }
 
-    #[allow(dead_code)]
     pub fn get_pending_generation_ids(&self) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT generation_id FROM usage \
@@ -2034,7 +1996,6 @@ impl Db {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn update_command(
         &self,
         id: i64,
@@ -2483,7 +2444,6 @@ impl Db {
         tx.commit()
     }
 
-    #[allow(dead_code)]
     pub fn conn_execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
         self.conn.execute_batch(sql)
     }
@@ -2493,9 +2453,7 @@ impl Db {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMatch {
-    #[allow(dead_code)]
     pub id: i64,
-    #[allow(dead_code)]
     pub session_id: String,
     pub command: String,
     pub cwd: Option<String>,
@@ -2517,17 +2475,6 @@ pub struct CommandEntityMatch {
     pub executable: String,
     pub entity: String,
     pub entity_type: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct OtherSessionCommand {
-    pub command: String,
-    pub cwd: Option<String>,
-    pub exit_code: Option<i32>,
-    pub started_at: String,
-    pub tty: String,
-    pub session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2553,14 +2500,12 @@ pub struct CommandWithSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtherSessionSummary {
     pub command: String,
-    #[allow(dead_code)]
     pub cwd: Option<String>,
     pub exit_code: Option<i32>,
     pub started_at: String,
     pub summary: Option<String>,
     pub tty: String,
     pub shell: String,
-    #[allow(dead_code)]
     pub session_id: String,
 }
 
@@ -3264,45 +3209,6 @@ mod tests {
         assert_eq!(results.len(), 1);
         let old = db.search_history("old", 10).unwrap();
         assert!(old.is_empty());
-    }
-
-    #[test]
-    fn test_recent_commands_other_sessions() {
-        let db = test_db();
-        db.create_session("s1", "/dev/pts/0", "zsh", 100).unwrap();
-        db.create_session("s2", "/dev/pts/1", "bash", 200).unwrap();
-
-        db.insert_command(
-            "s1",
-            "cmd_in_s1",
-            "/tmp",
-            Some(0),
-            "2025-01-01T00:00:00Z",
-            None,
-            None,
-            "/dev/pts/0",
-            "zsh",
-            100,
-        )
-        .unwrap();
-        db.insert_command(
-            "s2",
-            "cmd_in_s2",
-            "/home",
-            Some(0),
-            "2025-01-01T00:00:01Z",
-            None,
-            None,
-            "/dev/pts/1",
-            "bash",
-            200,
-        )
-        .unwrap();
-
-        let other = db.recent_commands_other_sessions("s1", 10).unwrap();
-        assert_eq!(other.len(), 1);
-        assert_eq!(other[0].command, "cmd_in_s2");
-        assert_eq!(other[0].tty, "/dev/pts/1");
     }
 
     #[test]
@@ -6770,27 +6676,6 @@ mod tests {
     fn test_end_session_nonexistent() {
         let db = test_db();
         db.end_session("no_such_session").unwrap();
-    }
-
-    #[test]
-    fn test_recent_commands_other_sessions_none() {
-        let db = test_db();
-        db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
-        db.insert_command(
-            "s1",
-            "my cmd",
-            "/tmp",
-            Some(0),
-            "2025-06-01T00:00:00Z",
-            None,
-            None,
-            "/dev/pts/0",
-            "zsh",
-            1234,
-        )
-        .unwrap();
-        let others = db.recent_commands_other_sessions("s1", 10).unwrap();
-        assert!(others.is_empty());
     }
 
     #[test]

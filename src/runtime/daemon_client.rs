@@ -119,7 +119,6 @@ pub fn try_send_request(session_id: &str, request: &DaemonRequest) -> Option<Dae
     send_request(session_id, request).ok()
 }
 
-#[allow(dead_code)]
 pub fn is_daemon_running(session_id: &str) -> bool {
     #[cfg(not(unix))]
     {
