@@ -14,7 +14,6 @@ pub(crate) mod fast_cwd;
 pub(crate) mod history_import;
 pub(crate) mod init;
 pub(crate) mod json_extract;
-#[allow(dead_code)]
 pub(crate) mod mcp;
 pub(crate) mod memory;
 pub(crate) mod model_defaults;

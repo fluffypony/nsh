@@ -73,7 +73,7 @@ pub fn validate_read_path_with_access(
             return Ok(canonical);
         }
 
-        let sensitive_dirs = crate::security::sensitive_dirs(&home);
+        let sensitive_dirs = crate::security::sensitive_dirs_read(&home);
 
         for dir in &sensitive_dirs {
             let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());

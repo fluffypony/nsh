@@ -70,7 +70,7 @@ pub(crate) fn validate_path_with_access(
         std::env::current_dir()?.join(path)
     };
 
-    let sensitive_dirs = crate::security::sensitive_dirs(&home);
+    let sensitive_dirs = crate::security::sensitive_dirs_write(&home);
     if sensitive_file_access != "allow" {
         for dir in &sensitive_dirs {
             if canonical_target.starts_with(dir) {

@@ -24,11 +24,19 @@ const SENSITIVE_DIR_SUFFIXES_WINDOWS: &[&str] = &["AppData/Roaming/gnupg"];
 
 const SENSITIVE_DIRS_ABSOLUTE_WINDOWS: &[&str] = &[r"C:\Windows", r"C:\Windows\System32"];
 
+/// Return cross-platform sensitive directories for the given `home`.
+///
+/// Used by read-path validation. Does not include Windows-specific paths
+/// since read access to system directories is not blocked on Windows.
+pub fn sensitive_dirs_read(home: &std::path::Path) -> Vec<PathBuf> {
+    SENSITIVE_DIR_SUFFIXES.iter().map(|s| home.join(s)).collect()
+}
+
 /// Return the full list of sensitive directories for the given `home`.
 ///
 /// Includes Windows-specific absolute paths so write-side validation stays
 /// complete on all platforms.
-pub fn sensitive_dirs(home: &std::path::Path) -> Vec<PathBuf> {
+pub fn sensitive_dirs_write(home: &std::path::Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = SENSITIVE_DIR_SUFFIXES.iter().map(|s| home.join(s)).collect();
     for s in SENSITIVE_DIR_SUFFIXES_WINDOWS {
         dirs.push(home.join(s));
