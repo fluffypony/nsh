@@ -35,15 +35,9 @@ pub mod style {
     // 256-colour palette for richer theming
     pub const BRIGHT_RED: &str = "\x1b[1;38;5;196m";
     pub const ORANGE: &str = "\x1b[1;38;5;214m";
-    pub const PURPLE: &str = "\x1b[38;5;99m";
-    pub const BRIGHT_CYAN: &str = "\x1b[38;5;14m";
     pub const SOFT_BLUE: &str = "\x1b[1;38;5;39m";
     pub const PINK: &str = "\x1b[1;38;5;212m";
     pub const LIGHT_GRAY: &str = "\x1b[38;5;244m";
-    pub const OFF_WHITE: &str = "\x1b[38;5;253m";
-
-    pub const CYAN_ITALIC: &str = "\x1b[3;36m";
-    pub const DIM_CYAN: &str = "\x1b[2;36m";
 }
 
 // ─── Terminal Helpers ────────────────────────────────────────────────
