@@ -1029,12 +1029,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     "patch_file" => {
                         let (content, is_error) = match tools::patch_file::execute(
                             input,
-                            query,
-                            db,
-                            session_id,
-                            opts.private,
-                            config,
-                            opts.force_autorun,
+                            &public_tool_ctx,
                         ) {
                             Ok(outcome) => outcome.into_parts(),
                             Err(e) => {

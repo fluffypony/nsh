@@ -66,13 +66,13 @@ pub(crate) fn apply_patch_with_access(
 
 pub fn execute(
     input: &serde_json::Value,
-    original_query: &str,
-    db: &dyn DbAccess,
-    session_id: &str,
-    private: bool,
-    config: &crate::config::Config,
-    force_autorun: bool,
+    ctx: &crate::tools::ToolInvocationContext<'_>,
 ) -> anyhow::Result<ToolInvocationOutcome> {
+    let (db, session_id) = ctx.conversation_state()?;
+    let original_query = ctx.original_query;
+    let private = ctx.private;
+    let config = ctx.config;
+    let force_autorun = ctx.force_autorun;
     let raw_path = input["path"].as_str().unwrap_or("");
     let search = input["search"].as_str().unwrap_or("");
     let replace = input["replace"].as_str().unwrap_or("");
@@ -539,7 +539,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "search text contains redaction markers");
     }
 
@@ -552,7 +555,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "replacement text contains redaction markers");
     }
 
@@ -565,7 +571,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "path is required");
     }
 
@@ -577,7 +586,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "path is required");
     }
 
@@ -590,7 +602,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "search is required");
     }
 
@@ -603,7 +618,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "path traversal");
     }
 
@@ -616,7 +634,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "cannot read");
     }
 
@@ -633,7 +654,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "search text not found");
     }
 
@@ -647,7 +671,10 @@ mod tests {
             "search": "[REDACTED:some_token-123]",
             "replace": "x",
         });
-        let result = execute(&input, "q", &db, "s", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("q", &db, "s", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "search text contains redaction markers");
 
         let input = serde_json::json!({
@@ -655,7 +682,10 @@ mod tests {
             "search": "ok",
             "replace": "[REDACTED:A]",
         });
-        let result = execute(&input, "q", &db, "s", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("q", &db, "s", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "replacement text contains redaction markers");
     }
 
@@ -670,7 +700,10 @@ mod tests {
         });
         let db = test_db();
         let config = test_config();
-        let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
+        let result = {
+            let ctx = crate::tools::ToolInvocationContext::query("query", &db, "sess", false, &config, false);
+            execute(&input, &ctx)
+        }.unwrap();
         assert_failure_contains(result, "blocked");
     }
 }
