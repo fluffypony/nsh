@@ -58,9 +58,15 @@ impl<'a> MemoryMaintenance<'a> {
         for op in &ops {
             if store.apply_op(op).is_ok() {
                 report.ops_applied += 1;
+            } else {
+                report.ops_failed += 1;
             }
         }
-        crate::memory::store::episodic::mark_consolidated(&conn, &ids)?;
+        // Only mark events as consolidated when all ops succeeded (or LLM
+        // returned no ops, meaning nothing needed consolidation).
+        if report.ops_failed == 0 {
+            crate::memory::store::episodic::mark_consolidated(&conn, &ids)?;
+        }
         let _ = conn.execute(
             "INSERT INTO memory_config(key, value) VALUES('last_reflection_at', datetime('now')) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -165,5 +171,124 @@ impl<'a> MemoryMaintenance<'a> {
     pub fn should_run_decay(&self) -> bool {
         let conn = self.db.lock().unwrap();
         crate::memory::decay::should_run_decay(&conn)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct MockLlm {
+        response: serde_json::Value,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryLlmClient for MockLlm {
+        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
+            Ok(self.response.clone())
+        }
+    }
+
+    fn setup_memory() -> (Arc<Mutex<Connection>>, crate::config::MemoryConfig) {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::memory::schema::create_memory_tables(&conn).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let config = crate::config::MemoryConfig::default();
+        (db, config)
+    }
+
+    fn insert_unconsolidated_event(conn: &Connection) -> String {
+        let event = crate::memory::types::EpisodicEventCreate {
+            event_type: crate::memory::types::EventType::CommandExecution,
+            actor: crate::memory::types::Actor::User,
+            summary: "ran cargo test".into(),
+            details: None,
+            command: Some("cargo test".into()),
+            exit_code: Some(0),
+            working_dir: Some("/tmp".into()),
+            project_context: None,
+            search_keywords: "cargo test".into(),
+        };
+        let lock = conn;
+        crate::memory::store::episodic::insert(lock, &event).unwrap()
+    }
+
+    #[tokio::test]
+    async fn reflection_no_consolidation_on_partial_failure() {
+        let (db, config) = setup_memory();
+        let id = {
+            let conn = db.lock().unwrap();
+            insert_unconsolidated_event(&conn)
+        };
+
+        // Add a trigger that blocks all semantic inserts to force write failures
+        {
+            let conn = db.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER block_semantic_insert BEFORE INSERT ON semantic_memory \
+                 BEGIN SELECT RAISE(ABORT, 'blocked by test trigger'); END;"
+            ).unwrap();
+        }
+
+        // LLM returns a SemanticInsert which will fail due to the trigger
+        let llm = MockLlm {
+            response: serde_json::json!([
+                {
+                    "op": "SemanticInsert",
+                    "name": "fact",
+                    "category": "general",
+                    "summary": "a fact",
+                    "search_keywords": "test"
+                }
+            ]),
+        };
+
+        let maintenance = MemoryMaintenance::new(&db, &config);
+        let report = maintenance.run_reflection(&llm).await.unwrap();
+
+        assert!(
+            report.ops_failed > 0,
+            "expected at least one failed op, got applied={} failed={}",
+            report.ops_applied,
+            report.ops_failed,
+        );
+
+        // Event should NOT be marked as consolidated since the op failed
+        let conn = db.lock().unwrap();
+        let unconsolidated =
+            crate::memory::store::episodic::list_unconsolidated(&conn, 100).unwrap();
+        assert!(
+            unconsolidated.iter().any(|e| e.id == id),
+            "event should remain unconsolidated after partial failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflection_consolidates_when_no_ops_returned() {
+        let (db, config) = setup_memory();
+        let id = {
+            let conn = db.lock().unwrap();
+            insert_unconsolidated_event(&conn)
+        };
+
+        // LLM returns no operations — nothing to consolidate
+        let llm = MockLlm {
+            response: serde_json::json!({ "operations": [] }),
+        };
+
+        let maintenance = MemoryMaintenance::new(&db, &config);
+        let report = maintenance.run_reflection(&llm).await.unwrap();
+
+        assert_eq!(report.ops_applied, 0);
+        assert_eq!(report.ops_failed, 0);
+
+        // Event should be marked consolidated since nothing failed
+        let conn = db.lock().unwrap();
+        let unconsolidated =
+            crate::memory::store::episodic::list_unconsolidated(&conn, 100).unwrap();
+        assert!(
+            !unconsolidated.iter().any(|e| e.id == id),
+            "event should be marked consolidated when no ops fail"
+        );
     }
 }

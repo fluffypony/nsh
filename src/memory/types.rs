@@ -585,6 +585,7 @@ pub struct DecayReport {
 #[derive(Debug, Clone, Default)]
 pub struct ReflectionReport {
     pub ops_applied: usize,
+    pub ops_failed: usize,
 }
 
 #[derive(Debug, Clone, Default)]
