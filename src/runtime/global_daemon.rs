@@ -1454,10 +1454,18 @@ fn try_execute_write(
             output_snippet,
             caller,
         } => {
-            if let Ok(Some(session_id)) = db.conversation_session_id(conv_id) {
-                if let Err(error) = authorize_session_access(db, &caller, &session_id) {
+            match db.conversation_session_id(conv_id) {
+                Ok(Some(session_id)) => {
+                    if let Err(error) = authorize_session_access(db, &caller, &session_id) {
+                        return Ok(DaemonResponse::error(format!(
+                            "Security check failed: {error}"
+                        )));
+                    }
+                }
+                Ok(None) => {} // conversation not found — update will be a no-op
+                Err(error) => {
                     return Ok(DaemonResponse::error(format!(
-                        "Security check failed: {error}"
+                        "Security check failed: could not verify conversation ownership: {error}"
                     )));
                 }
             }

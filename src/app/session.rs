@@ -99,11 +99,18 @@ pub(super) fn handle_session_command(action: SessionAction) -> anyhow::Result<()
 
 pub(super) fn handle_reset_command() -> anyhow::Result<()> {
     let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
-    let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::ClearConversations {
+    match send_to_global_or_fallback(&crate::daemon::DaemonRequest::ClearConversations {
         session: session_id,
         caller: crate::daemon::current_caller_context(),
-    });
-    eprintln!("nsh: conversation context cleared");
+    }) {
+        Ok(crate::daemon::DaemonResponse::Error { message }) => {
+            eprintln!("nsh: failed to clear conversations: {message}");
+        }
+        _ => {
+            // Ok response or daemon not available (no-op) — both are fine
+            eprintln!("nsh: conversation context cleared");
+        }
+    }
     Ok(())
 }
 
