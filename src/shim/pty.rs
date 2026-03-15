@@ -192,14 +192,20 @@ pub fn run_wrapped_shell(
             // ── Child: only async-signal-safe operations ──────
             drop(pty.master);
 
+            // SAFETY: post-fork child — setsid creates a new session.
+            // _exit is async-signal-safe.
             if unsafe { libc::setsid() } == -1 {
                 unsafe { libc::_exit(127) };
             }
 
             let slave_raw = std::os::fd::AsRawFd::as_raw_fd(&pty.slave);
 
+            // SAFETY: TIOCSCTTY makes the PTY the controlling terminal
+            // for this new session. slave_raw is a valid open fd.
             unsafe { libc::ioctl(slave_raw, libc::TIOCSCTTY as libc::c_ulong, 0) };
 
+            // SAFETY: dup2 redirects stdin/stdout/stderr to the PTY slave.
+            // slave_raw is valid; _exit is async-signal-safe on failure.
             for fd in 0..=2 {
                 if unsafe { libc::dup2(slave_raw, fd) } == -1 {
                     unsafe { libc::_exit(127) };

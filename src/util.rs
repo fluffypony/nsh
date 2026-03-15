@@ -57,8 +57,11 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
+        // SAFETY: zeroed ucred is a valid initial value for the SO_PEERCRED query.
         let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
         let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: stream fd is valid for the duration of this call;
+        // SO_PEERCRED is a valid socket option that writes into `cred`.
         let rc = unsafe {
             libc::getsockopt(
                 stream.as_raw_fd(),
@@ -74,6 +77,7 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
             }
             return false;
         }
+        // SAFETY: getuid() is always safe — no arguments, no side effects.
         if cred.uid != unsafe { libc::getuid() } {
             if log_rejection {
                 tracing::warn!("Rejecting daemon connection from uid {}", cred.uid);
@@ -86,6 +90,8 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
         use std::os::fd::AsRawFd;
         let mut euid: libc::uid_t = 0;
         let mut egid: libc::gid_t = 0;
+        // SAFETY: stream fd is valid for the duration of this call;
+        // getpeereid writes uid/gid into the provided out-pointers.
         let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut euid, &mut egid) };
         if rc != 0 {
             if log_rejection {
@@ -93,6 +99,7 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
             }
             return false;
         }
+        // SAFETY: getuid() is always safe — no arguments, no side effects.
         if euid != unsafe { libc::getuid() } {
             if log_rejection {
                 tracing::warn!("Rejecting daemon connection from uid {}", euid);

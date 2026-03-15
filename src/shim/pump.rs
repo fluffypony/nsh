@@ -394,6 +394,7 @@ fn spawn_signal_thread(
                     winch_pending.store(true, Ordering::Relaxed);
                 }
                 _ => {
+                    // SAFETY: forwarding a received signal to the known child pid.
                     unsafe { libc::kill(raw_pid, sig) };
                 }
             }
@@ -484,6 +485,8 @@ pub fn pump_loop(
 
     loop {
         if winch_pending.swap(false, Ordering::Relaxed) {
+            // SAFETY: zeroed winsize is a valid initial value; TIOCGWINSZ reads
+            // the terminal size from the valid stdin fd.
             let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
             if unsafe { libc::ioctl(stdin_raw, libc::TIOCGWINSZ, &mut ws) } == 0
                 && let Ok(mut eng) = capture.lock()
@@ -517,6 +520,7 @@ pub fn pump_loop(
         let daemon_idx = daemon_listener.as_ref().map(|l| {
             let idx = poll_fds.len();
             poll_fds.push(PollFd::from_borrowed_fd(
+                // SAFETY: the listener fd is open and valid for the lifetime of poll_fds.
                 unsafe { BorrowedFd::borrow_raw(std::os::fd::AsRawFd::as_raw_fd(l)) },
                 PollFlags::IN,
             ));
