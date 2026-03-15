@@ -5,7 +5,7 @@
 //! and retrieve_secret.
 
 use crate::daemon_db::DbAccess;
-use crate::memory::types::{MemoryType, Sensitivity};
+use crate::memory::types::{Actor, EventType, MemoryType, Sensitivity};
 
 pub(crate) fn validate_store_memory_input(
     memory_type: MemoryType,
@@ -76,7 +76,25 @@ pub(crate) fn validate_store_memory_input(
                     .into(),
             );
         }
-        MemoryType::Episodic => {}
+        MemoryType::Episodic => {
+            for req in ["event_type", "actor", "summary", "search_keywords"] {
+                if !obj.contains_key(req)
+                    || obj
+                        .get(req)
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                {
+                    return Err(format!("Episodic memory missing required field '{req}'"));
+                }
+            }
+            let event_type = obj.get("event_type").and_then(|v| v.as_str()).unwrap();
+            EventType::parse(event_type)
+                .map_err(|e| format!("Episodic memory has invalid event_type: {e}"))?;
+            let actor = obj.get("actor").and_then(|v| v.as_str()).unwrap();
+            Actor::parse(actor)
+                .map_err(|e| format!("Episodic memory has invalid actor: {e}"))?;
+        }
     }
     Ok(())
 }
@@ -211,5 +229,47 @@ mod tests {
         });
         let err = validate_store_memory_input(MemoryType::Knowledge, &data).unwrap_err();
         assert!(err.contains("invalid sensitivity"));
+    }
+
+    #[test]
+    fn validate_episodic_ok() {
+        let data = json!({
+            "event_type": "command_execution",
+            "actor": "user",
+            "summary": "Ran cargo build",
+            "search_keywords": "cargo build rust"
+        });
+        assert!(validate_store_memory_input(MemoryType::Episodic, &data).is_ok());
+    }
+
+    #[test]
+    fn validate_episodic_missing_field() {
+        let data = json!({ "summary": "Ran cargo build" });
+        let err = validate_store_memory_input(MemoryType::Episodic, &data).unwrap_err();
+        assert!(err.contains("missing required field"));
+    }
+
+    #[test]
+    fn validate_episodic_invalid_event_type() {
+        let data = json!({
+            "event_type": "invalid_type",
+            "actor": "user",
+            "summary": "Ran cargo build",
+            "search_keywords": "cargo build"
+        });
+        let err = validate_store_memory_input(MemoryType::Episodic, &data).unwrap_err();
+        assert!(err.contains("invalid event_type"));
+    }
+
+    #[test]
+    fn validate_episodic_invalid_actor() {
+        let data = json!({
+            "event_type": "command_execution",
+            "actor": "robot",
+            "summary": "Ran cargo build",
+            "search_keywords": "cargo build"
+        });
+        let err = validate_store_memory_input(MemoryType::Episodic, &data).unwrap_err();
+        assert!(err.contains("invalid actor"));
     }
 }
