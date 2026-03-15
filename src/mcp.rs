@@ -309,67 +309,7 @@ impl McpClient {
 
     async fn start_server(name: &str, config: &McpServerConfig) -> anyhow::Result<McpServer> {
         let timeout = Duration::from_secs(config.timeout_seconds);
-        let transport_type = config.effective_transport();
-
-        let transport = match transport_type {
-            "http" => {
-                let url = config
-                    .url
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("MCP server '{name}': url required for http transport")
-                    })?
-                    .clone();
-                let client = reqwest::Client::builder().timeout(timeout).build()?;
-                // Build headers with bearer support
-                let mut headers: Vec<(String, String)> = config
-                    .headers
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                if let Some(tok) = &config.bearer_token {
-                    let value = if let Some(env_var) = tok.strip_prefix('$') {
-                        std::env::var(env_var).unwrap_or_default()
-                    } else {
-                        tok.clone()
-                    };
-                    if !value.is_empty() {
-                        headers.push(("Authorization".into(), format!("Bearer {}", value)));
-                    }
-                }
-                McpTransport::Http {
-                    client,
-                    url,
-                    session_id: None,
-                    headers,
-                }
-            }
-            _ => {
-                let cmd_str = config.command.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!("MCP server '{name}': command required for stdio transport")
-                })?;
-
-                let mut cmd = Command::new(cmd_str);
-                cmd.args(&config.args)
-                    .envs(&config.env)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null());
-
-                let mut child = cmd.spawn().map_err(|e| {
-                    anyhow::anyhow!("Failed to spawn MCP server '{name}' ({cmd_str}): {e}")
-                })?;
-
-                let stdin = child.stdin.take().unwrap();
-                let stdout = BufReader::new(child.stdout.take().unwrap());
-
-                McpTransport::Stdio {
-                    child,
-                    stdin,
-                    stdout,
-                }
-            }
-        };
+        let transport = Self::build_transport(name, config, timeout)?;
 
         let mut server = McpServer {
             transport,
@@ -378,7 +318,89 @@ impl McpClient {
             timeout,
         };
 
-        // Initialize
+        Self::initialize_protocol(&mut server).await?;
+        Self::discover_tools(&mut server).await?;
+
+        Ok(server)
+    }
+
+    fn build_transport(
+        name: &str,
+        config: &McpServerConfig,
+        timeout: Duration,
+    ) -> anyhow::Result<McpTransport> {
+        match config.effective_transport() {
+            "http" => Self::build_http_transport(name, config, timeout),
+            _ => Self::build_stdio_transport(name, config),
+        }
+    }
+
+    fn build_http_transport(
+        name: &str,
+        config: &McpServerConfig,
+        timeout: Duration,
+    ) -> anyhow::Result<McpTransport> {
+        let url = config
+            .url
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow::anyhow!("MCP server '{name}': url required for http transport")
+            })?
+            .clone();
+        let client = reqwest::Client::builder().timeout(timeout).build()?;
+        let mut headers: Vec<(String, String)> = config
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if let Some(tok) = &config.bearer_token {
+            let value = if let Some(env_var) = tok.strip_prefix('$') {
+                std::env::var(env_var).unwrap_or_default()
+            } else {
+                tok.clone()
+            };
+            if !value.is_empty() {
+                headers.push(("Authorization".into(), format!("Bearer {}", value)));
+            }
+        }
+        Ok(McpTransport::Http {
+            client,
+            url,
+            session_id: None,
+            headers,
+        })
+    }
+
+    fn build_stdio_transport(
+        name: &str,
+        config: &McpServerConfig,
+    ) -> anyhow::Result<McpTransport> {
+        let cmd_str = config.command.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("MCP server '{name}': command required for stdio transport")
+        })?;
+
+        let mut cmd = Command::new(cmd_str);
+        cmd.args(&config.args)
+            .envs(&config.env)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+
+        let mut child = cmd.spawn().map_err(|e| {
+            anyhow::anyhow!("Failed to spawn MCP server '{name}' ({cmd_str}): {e}")
+        })?;
+
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+
+        Ok(McpTransport::Stdio {
+            child,
+            stdin,
+            stdout,
+        })
+    }
+
+    async fn initialize_protocol(server: &mut McpServer) -> anyhow::Result<()> {
         server
             .send_request(
                 "initialize",
@@ -398,7 +420,10 @@ impl McpClient {
             .await
             .ok();
 
-        // List tools
+        Ok(())
+    }
+
+    async fn discover_tools(server: &mut McpServer) -> anyhow::Result<()> {
         let tools_result = server.send_request("tools/list", None).await?;
 
         if let Some(tools) = tools_result.get("tools").and_then(|t| t.as_array()) {
@@ -428,7 +453,7 @@ impl McpClient {
             }
         }
 
-        Ok(server)
+        Ok(())
     }
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
