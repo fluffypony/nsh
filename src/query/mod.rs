@@ -572,7 +572,6 @@ async fn stream_iteration_response(
     iteration: usize,
     max_iterations: usize,
 ) -> anyhow::Result<IterationDecision> {
-    let used_forced_json = loop_state.force_json_next;
     let extra_body = if loop_state.force_json_next {
         loop_state.force_json_next = false;
         Some(serde_json::json!({"response_format": {"type": "json_object"}}))
@@ -599,12 +598,7 @@ async fn stream_iteration_response(
         Ok(result) => result,
         Err(error) => {
             let msg = error.to_string();
-            let is_retryable = msg.contains("429")
-                || msg.contains("500")
-                || msg.contains("502")
-                || msg.contains("503")
-                || msg.contains("Too Many Requests")
-                || msg.contains("timeout");
+            let is_retryable = crate::provider::chain::is_retryable_error(&error);
             if msg.contains("401") || msg.contains("403") || msg.contains("Unauthorized") {
                 eprintln!(
                     "\x1b[33mnsh: authentication error — check your API key: nsh config edit\x1b[0m"
@@ -685,8 +679,6 @@ async fn stream_iteration_response(
         }
     };
 
-    let _ = used_forced_json;
-    let _ = session.display.last_stream_had_text();
     Ok(IterationDecision::Response(response))
 }
 
