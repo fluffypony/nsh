@@ -189,7 +189,7 @@ impl CaptureEngine {
             .replace("\x1b[201~", "")
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn total_line_count(&self) -> usize {
         self.history_lines.len()
     }
