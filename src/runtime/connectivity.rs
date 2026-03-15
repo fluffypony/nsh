@@ -9,6 +9,7 @@ static ONLINE: AtomicBool = AtomicBool::new(true);
 struct ConnectivityMonitor {
     probe_url: Arc<Mutex<String>>,
     trigger_tx: mpsc::Sender<()>,
+    thread_running: bool,
 }
 
 static MONITOR: OnceLock<ConnectivityMonitor> = OnceLock::new();
@@ -144,7 +145,9 @@ pub fn status() -> ConnectivityStatus {
 
 pub fn trigger_immediate_check() {
     let monitor = monitor();
-    let _ = monitor.trigger_tx.send(());
+    if monitor.thread_running {
+        let _ = monitor.trigger_tx.send(());
+    }
 }
 
 fn monitor() -> &'static ConnectivityMonitor {
@@ -152,7 +155,7 @@ fn monitor() -> &'static ConnectivityMonitor {
         let (tx, rx) = mpsc::channel::<()>();
         let probe_url = Arc::new(Mutex::new(String::new()));
         let probe_url_for_thread = Arc::clone(&probe_url);
-        if let Err(e) = std::thread::Builder::new()
+        let thread_running = std::thread::Builder::new()
             .name("nshd-connectivity".into())
             .spawn(move || {
                 let mut attempt: usize = 0;
@@ -169,13 +172,18 @@ fn monitor() -> &'static ConnectivityMonitor {
                     attempt = step.next_attempt;
                 }
             })
-        {
-            eprintln!("nsh: failed to spawn connectivity monitor thread: {e}");
-        }
+            .map_err(|e| {
+                eprintln!("nsh: failed to spawn connectivity monitor thread: {e}");
+                // Mark as permanently offline since we can't monitor
+                STATUS.store(ConnectivityStatus::Unknown as u8, Ordering::SeqCst);
+                ONLINE.store(false, Ordering::SeqCst);
+            })
+            .is_ok();
 
         ConnectivityMonitor {
             probe_url,
             trigger_tx: tx,
+            thread_running,
         }
     })
 }
@@ -189,6 +197,9 @@ fn current_probe_url() -> Option<String> {
 
 pub fn start(config: &crate::config::Config) {
     let monitor = monitor();
+    if !monitor.thread_running {
+        return;
+    }
     if let Ok(mut probe_url) = monitor.probe_url.lock() {
         *probe_url = connectivity_probe_url(config);
     }
