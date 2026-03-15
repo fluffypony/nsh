@@ -983,37 +983,14 @@ async fn wait_for_cancel(cancelled: &Arc<AtomicBool>) {
 }
 
 fn describe_coding_tool_action(name: &str, input: &serde_json::Value) -> String {
+    if let Some(desc) = crate::tools::runtime::describe::describe_common_tool(name, input) {
+        return desc;
+    }
     match name {
-        "read_file" => format!(
-            "reading {}",
-            input["path"].as_str().unwrap_or("(missing path)")
-        ),
-        "write_file" => format!(
-            "writing {}",
-            input["path"].as_str().unwrap_or("(missing path)")
-        ),
-        "patch_file" => format!(
-            "patching {}",
-            input["path"].as_str().unwrap_or("(missing path)")
-        ),
-        "grep_file" => {
-            let path = input["path"].as_str().unwrap_or("(missing path)");
-            let pat = input["pattern"].as_str();
-            match pat {
-                Some(p) if !p.is_empty() => format!("searching {path} for /{p}/"),
-                _ => format!("searching {path} for /(missing pattern)/"),
-            }
-        }
-        "glob" => format!(
-            "finding {}",
-            input["pattern"].as_str().unwrap_or("(missing pattern)")
-        ),
-        "list_directory" => format!("listing {}", input["path"].as_str().unwrap_or(".")),
         "bash" => format!(
             "running {}",
             input["command"].as_str().unwrap_or("(missing command)")
         ),
-        "ask_user" => "asking for input...".to_string(),
         "done" => "finishing task".to_string(),
         _ => name.to_string(),
     }

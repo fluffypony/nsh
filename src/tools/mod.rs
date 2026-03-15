@@ -19,7 +19,7 @@ pub mod uninstall_skill;
 pub mod web_search;
 pub mod write_file;
 
-mod runtime;
+pub(crate) mod runtime;
 
 pub(crate) use runtime::file_tools::{
     default_read_path, ensure_directory, execute_file_tool_content, execute_file_tool_result,

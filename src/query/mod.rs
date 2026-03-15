@@ -2893,6 +2893,10 @@ fn execute_sync_tool_outcome(
 }
 
 fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
+    // Use shared descriptions for common tools (read_file, write_file, grep_file, etc.)
+    if let Some(desc) = crate::tools::runtime::describe::describe_common_tool(name, input) {
+        return desc;
+    }
     match name {
         "search_history" => {
             if let Some(q) = input["query"].as_str()
@@ -2910,27 +2914,6 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
                 return format!("searching history for target \"{entity}\"");
             }
             "searching history for \"...\"".to_string()
-        }
-        // Improve clarity for run_command by explicitly echoing the command being run
-        "grep_file" => {
-            let path = input["path"].as_str().unwrap_or("file");
-            if let Some(pat) = input["pattern"].as_str() {
-                format!("searching {path} for /{pat}/")
-            } else {
-                format!("searching {path} for /(missing pattern)/")
-            }
-        }
-        "read_file" => {
-            let path = input["path"].as_str().unwrap_or("file");
-            format!("reading {path}")
-        }
-        "list_directory" => {
-            let path = input["path"].as_str().unwrap_or(".");
-            format!("listing {path}")
-        }
-        "glob" => {
-            let pattern = input["pattern"].as_str().unwrap_or("*");
-            format!("glob: {pattern}")
         }
         "code" => {
             let task = input["task"].as_str().unwrap_or("...");

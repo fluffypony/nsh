@@ -1,3 +1,4 @@
+pub(crate) mod describe;
 pub(crate) mod file_tools;
 pub(crate) mod invocation;
 pub(crate) mod outcome;
