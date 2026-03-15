@@ -407,7 +407,7 @@ pub struct CoreUpdateDecision {
 }
 
 impl RoutingDecision {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn has_any_updates(&self) -> bool {
         self.update_core.is_some()
             || self.update_episodic
@@ -622,7 +622,6 @@ pub struct SearchResult {
 // ── Detected Secret ──
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DetectedSecret {
     pub label: String,
     pub value: String,
