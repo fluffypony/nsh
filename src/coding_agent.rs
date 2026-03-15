@@ -150,7 +150,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
         task,
         context,
         config,
-        db: _db,
+        db,
         session_id: _session_id,
         project_context_xml,
         cancelled,
@@ -174,7 +174,6 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
         .unwrap_or_else(|| "(none)".into());
     let memory_prompt =
         if config.memory.enabled && !config.memory.incognito && config.memory.inject_prompt {
-            let db = crate::daemon_db::DaemonDb::new();
             let search_text = crate::util::truncate(task, 200);
             match db.memory_search(&search_text, None, config.memory.max_retrieval_per_type) {
                 Ok(results) if !results.is_empty() && results != "{}" => {
