@@ -1,4 +1,20 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Error returned when parsing a memory enum from a string value.
+#[derive(Debug, Clone)]
+pub struct ParseEnumError {
+    pub kind: &'static str,
+    pub value: String,
+}
+
+impl fmt::Display for ParseEnumError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown {}: '{}'", self.kind, self.value)
+    }
+}
+
+impl std::error::Error for ParseEnumError {}
 
 // ── ID Generation ──
 
@@ -132,7 +148,7 @@ impl EventType {
         }
     }
 
-    pub fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, ParseEnumError> {
         match s {
             "command_execution" => Ok(EventType::CommandExecution),
             "command_error" => Ok(EventType::CommandError),
@@ -143,7 +159,7 @@ impl EventType {
             "session_end" => Ok(EventType::SessionEnd),
             "project_switch" => Ok(EventType::ProjectSwitch),
             "system_event" => Ok(EventType::SystemEvent),
-            _ => Err(format!("unknown event type: '{s}'")),
+            _ => Err(ParseEnumError { kind: "event type", value: s.to_owned() }),
         }
     }
 }
@@ -171,12 +187,12 @@ impl Actor {
         }
     }
 
-    pub fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, ParseEnumError> {
         match s {
             "user" => Ok(Actor::User),
             "assistant" => Ok(Actor::Assistant),
             "system" => Ok(Actor::System),
-            _ => Err(format!("unknown actor: '{s}'")),
+            _ => Err(ParseEnumError { kind: "actor", value: s.to_owned() }),
         }
     }
 }

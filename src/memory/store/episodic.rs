@@ -1,10 +1,10 @@
 use rusqlite::{Connection, params};
 
-use crate::memory::types::{Actor, EpisodicEvent, EpisodicEventCreate, EventType, generate_id};
+use crate::memory::types::{Actor, EpisodicEvent, EpisodicEventCreate, EventType, ParseEnumError, generate_id};
 
 fn parse_enum_column<T>(
     value: &str,
-    parser: fn(&str) -> Result<T, String>,
+    parser: fn(&str) -> Result<T, ParseEnumError>,
     col_index: usize,
     col_name: &str,
 ) -> rusqlite::Result<T> {
