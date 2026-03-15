@@ -158,15 +158,15 @@ async fn fetch_readme(
             );
         }
         let content = resp2.text().await?;
-        return process_readme_content(&content, goal, config).await;
+        return extract_readme_for_goal(&content, goal, config).await;
     }
 
     check_rate_limit(resp.headers());
     let content = resp.text().await?;
-    process_readme_content(&content, goal, config).await
+    extract_readme_for_goal(&content, goal, config).await
 }
 
-async fn process_readme_content(
+async fn extract_readme_for_goal(
     content: &str,
     goal: &str,
     config: &Config,
