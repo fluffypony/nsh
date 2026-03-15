@@ -90,6 +90,9 @@ pub fn run_wrapped_shell(
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some((fd, termios)) = RESTORE_TERMIOS.get() {
+            // SAFETY: *fd is a raw fd saved from real stdin at setup time and
+            // remains valid for the process lifetime. The borrow does not outlive
+            // the enclosing scope.
             let borrowed = unsafe { BorrowedFd::borrow_raw(*fd) };
             let _ = rustix::termios::tcsetattr(
                 borrowed,
@@ -179,7 +182,10 @@ pub fn run_wrapped_shell(
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    // Fork
+    // SAFETY: fork() is called before any threads are spawned. The child branch
+    // uses only async-signal-safe libc calls (setsid, ioctl, dup2, execve,
+    // _exit). All fd values originate from the PTY pair created above and are
+    // valid at this point.
     match unsafe { libc::fork() } {
         -1 => anyhow::bail!("fork() failed"),
         0 => {
@@ -352,6 +358,8 @@ mod tests {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
+        // SAFETY: TIOCSWINSZ is a valid ioctl for PTY fds; ws is a properly
+        // initialized winsize struct and the fd is from a just-created PTY pair.
         unsafe { libc::ioctl(p1.master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
         copy_winsize(p1.master.as_fd(), p2.master.as_fd()).unwrap();
         let got = termios::tcgetwinsize(p2.master.as_fd()).unwrap();
@@ -402,6 +410,8 @@ mod tests {
         let master_raw = pair.master.as_raw_fd();
         let slave_raw = pair.slave.as_raw_fd();
 
+        // SAFETY: master_raw and slave_raw are valid open fds from the PTY pair.
+        // libc::dup returns a new valid fd, and from_raw_fd takes ownership of it.
         let mut master_file = unsafe { std::fs::File::from_raw_fd(libc::dup(master_raw)) };
         let mut slave_file = unsafe { std::fs::File::from_raw_fd(libc::dup(slave_raw)) };
 
@@ -438,6 +448,8 @@ mod tests {
             ws_xpixel: 800,
             ws_ypixel: 600,
         };
+        // SAFETY: TIOCSWINSZ is a valid ioctl for PTY fds; ws is a properly
+        // initialized winsize struct and the fd is from a just-created PTY pair.
         unsafe { libc::ioctl(p1.master.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
         copy_winsize(p1.master.as_fd(), p2.master.as_fd()).unwrap();
         let got = termios::tcgetwinsize(p2.master.as_fd()).unwrap();
