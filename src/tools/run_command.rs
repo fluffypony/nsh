@@ -94,16 +94,12 @@ pub fn execute_outcome(cmd: &str, config: &Config) -> anyhow::Result<ToolInvocat
         }
     }
 
-    let sensitive_paths = [
-        "/.ssh",
-        "/.gnupg",
-        "/.aws",
-        "/.nsh",
-        "/id_rsa",
-        "/id_ed25519",
-    ];
     let lower_cmd = cmd.to_lowercase();
-    if sensitive_paths.iter().any(|p| lower_cmd.contains(p)) {
+    let sensitive_suffix_hit = crate::security::SENSITIVE_DIR_SUFFIXES
+        .iter()
+        .any(|s| lower_cmd.contains(s));
+    let key_file_hit = lower_cmd.contains("/id_rsa") || lower_cmd.contains("/id_ed25519");
+    if sensitive_suffix_hit || key_file_hit {
         return Ok(ToolInvocationOutcome::failure(
             "DENIED: command references a sensitive path",
         ));

@@ -8,7 +8,7 @@ use serde::Serialize;
 /// The first slice contains cross-platform entries (relative to `home`).
 /// The second slice contains Windows-specific absolute paths.
 /// Callers that only need cross-platform entries can ignore the second slice.
-const SENSITIVE_DIR_SUFFIXES: &[&str] = &[
+pub(crate) const SENSITIVE_DIR_SUFFIXES: &[&str] = &[
     ".ssh",
     ".gnupg",
     ".gpg",
