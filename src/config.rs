@@ -31,10 +31,8 @@ pub struct Config {
     pub db: DbConfig,
     #[serde(default)]
     pub debug: DebugConfig,
-    #[allow(dead_code)]
     #[serde(default)]
     pub mcp: McpConfig,
-    #[allow(dead_code)]
     #[serde(default)]
     pub execution: ExecutionConfig,
     #[serde(default)]
@@ -879,7 +877,6 @@ pub struct DebugConfig {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct McpConfig {
-    #[allow(dead_code)]
     #[serde(default)]
     pub servers: HashMap<String, McpServerConfig>,
 }
