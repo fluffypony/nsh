@@ -1,4 +1,7 @@
-// Library root for nsh: exposes modules and shared main entry for binaries.
+//! nsh (Natural Shell) — AI-powered shell assistant library.
+//!
+//! Provides the core modules for the nsh shell assistant, including LLM query
+//! processing, tool execution, memory management, and shell integration.
 
 pub(crate) mod ansi;
 pub(crate) mod app;

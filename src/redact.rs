@@ -1,7 +1,7 @@
 //! Secret redaction engine for nsh.
 //!
 //! Built-in secret patterns are derived from Amp's secret detection system.
-//! Used with permission from Amp Inc. Copyright © Amp Inc. (https://ampcode.com)
+//! Used with permission from Amp Inc. Copyright © Amp Inc. (<https://ampcode.com>)
 //! Pattern definitions may be updated periodically to match upstream changes.
 
 use std::sync::LazyLock;
