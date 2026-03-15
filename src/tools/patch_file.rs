@@ -1,4 +1,3 @@
-use crate::daemon_db::DbAccess;
 use crate::tools::ToolInvocationOutcome;
 #[cfg(test)]
 use crate::tools::write_file::trash_dir;

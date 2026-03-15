@@ -26,8 +26,7 @@ pub(crate) use runtime::file_tools::{
     open_for_read, open_regular_read_file, read_failure, required_read_path,
 };
 pub use runtime::invocation::{ToolInvocationContext, ToolInvocationResult};
-pub use runtime::outcome::{ToolInvocationOutcome, outcome_to_content, outcome_to_result};
-pub use runtime::path_access::validate_read_path_tool_outcome;
+pub use runtime::outcome::ToolInvocationOutcome;
 pub(crate) use runtime::process_pump;
 pub use runtime::registry::{ToolDefinition, all_tool_definitions};
 pub(crate) use runtime::side_effects::{ToolConversationRecord, record_tool_conversation};
