@@ -1789,8 +1789,6 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
     Ok(())
 }
 
-
-
 fn execute_sync_tool_outcome(
     name: &str,
     input: &serde_json::Value,

@@ -1065,7 +1065,3 @@ Skill installation guidelines:
     }
     result
 }
-
-// build_memories_xml removed with memory system
-
-// memory XML removed entirely
