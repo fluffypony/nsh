@@ -23,7 +23,7 @@ fn is_root() -> bool {
 
 #[cfg(test)]
 fn validate_path(path: &Path) -> anyhow::Result<()> {
-    validate_path_with_access(path, "block")
+    validate_path_with_access(path, crate::config::SensitiveFileAccess::Block)
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,7 @@ pub(crate) fn apply_patch_with_access(
     raw_path: &str,
     search: &str,
     replace: &str,
-    sensitive_file_access: &str,
+    sensitive_file_access: crate::config::SensitiveFileAccess,
 ) -> anyhow::Result<PatchApplication> {
     if raw_path.is_empty() {
         anyhow::bail!("path is required");
@@ -97,7 +97,7 @@ pub fn execute(
         raw_path,
         search,
         replace,
-        config.tools.sensitive_file_access.as_str(),
+        config.tools.sensitive_file_access,
     ) {
         Ok(p) => p,
         Err(e) => return Ok(ToolInvocationOutcome::failure(e.to_string())),
@@ -136,7 +136,7 @@ pub fn execute(
     }
 
     eprintln!();
-    let auto_approve = force_autorun && config.tools.sensitive_file_access != "block";
+    let auto_approve = force_autorun && config.tools.sensitive_file_access != crate::config::SensitiveFileAccess::Block;
     if auto_approve {
         eprintln!("\x1b[2m(auto-approved in autorun mode)\x1b[0m");
     } else {
@@ -380,19 +380,19 @@ mod tests {
     fn test_validate_path_allow_bypasses_sensitive_dirs() {
         let home = dirs::home_dir().unwrap();
         let ssh = home.join(".ssh/test_key");
-        assert!(validate_path_with_access(&ssh, "allow").is_ok());
+        assert!(validate_path_with_access(&ssh, crate::config::SensitiveFileAccess::Allow).is_ok());
 
         let aws = home.join(".aws/credentials");
-        assert!(validate_path_with_access(&aws, "allow").is_ok());
+        assert!(validate_path_with_access(&aws, crate::config::SensitiveFileAccess::Allow).is_ok());
 
         let nsh = home.join(".nsh/something");
-        assert!(validate_path_with_access(&nsh, "allow").is_ok());
+        assert!(validate_path_with_access(&nsh, crate::config::SensitiveFileAccess::Allow).is_ok());
     }
 
     #[test]
     fn test_validate_path_directory_target() {
         let dir = tempfile::TempDir::new().unwrap();
-        let err = validate_path_with_access(dir.path(), "block").unwrap_err();
+        let err = validate_path_with_access(dir.path(), crate::config::SensitiveFileAccess::Block).unwrap_err();
         assert!(
             err.to_string().contains("not a regular file"),
             "expected not a regular file error, got: {err}"
@@ -409,7 +409,7 @@ mod tests {
             let link = dir.path().join("link_dir");
             std::os::unix::fs::symlink(&sensitive, &link).unwrap();
             let target = link.join("test_file");
-            let err = validate_path_with_access(&target, "block").unwrap_err();
+            let err = validate_path_with_access(&target, crate::config::SensitiveFileAccess::Block).unwrap_err();
             assert!(
                 err.to_string().contains("blocked"),
                 "expected blocked error through symlink, got: {err}"
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn test_validate_path_nul_byte() {
         let bad = PathBuf::from("foo\0bar");
-        let err = validate_path_with_access(&bad, "block").unwrap_err();
+        let err = validate_path_with_access(&bad, crate::config::SensitiveFileAccess::Block).unwrap_err();
         assert!(
             err.to_string().contains("NUL"),
             "expected NUL byte error, got: {err}"
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn test_validate_path_etc_non_existent_requires_root() {
         let etc = PathBuf::from("/etc/nsh_nonexistent_test_file");
-        let err = validate_path_with_access(&etc, "block").unwrap_err();
+        let err = validate_path_with_access(&etc, crate::config::SensitiveFileAccess::Block).unwrap_err();
         assert!(
             err.to_string().contains("require root"),
             "expected require root error, got: {err}"

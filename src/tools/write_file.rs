@@ -41,12 +41,12 @@ pub(crate) fn expand_tilde(p: &str) -> PathBuf {
 
 #[cfg(test)]
 fn validate_path(path: &Path) -> anyhow::Result<()> {
-    validate_path_with_access(path, "block")
+    validate_path_with_access(path, crate::config::SensitiveFileAccess::Block)
 }
 
 pub(crate) fn validate_path_with_access(
     path: &Path,
-    sensitive_file_access: &str,
+    sensitive_file_access: crate::config::SensitiveFileAccess,
 ) -> anyhow::Result<()> {
     let s = path.to_string_lossy();
 
@@ -72,10 +72,10 @@ pub(crate) fn validate_path_with_access(
     };
 
     let sensitive_dirs = crate::security::sensitive_dirs_write(&home);
-    if sensitive_file_access != "allow" {
+    if sensitive_file_access != crate::config::SensitiveFileAccess::Allow {
         for dir in &sensitive_dirs {
             if canonical_target.starts_with(dir) {
-                if sensitive_file_access == "ask" {
+                if sensitive_file_access == crate::config::SensitiveFileAccess::Ask {
                     eprintln!(
                         "\x1b[1;33m⚠ '{}' is in a sensitive directory\x1b[0m",
                         path.display()
@@ -105,7 +105,7 @@ pub(crate) fn validate_path_with_access(
     while let Some(path) = current {
         if path.exists() {
             let real_path = path.canonicalize()?;
-            if sensitive_file_access != "allow"
+            if sensitive_file_access != crate::config::SensitiveFileAccess::Allow
                 && sensitive_dirs.iter().any(|d| real_path.starts_with(d))
             {
                 anyhow::bail!(
@@ -235,7 +235,7 @@ pub fn execute(input: &serde_json::Value, ctx: &ToolInvocationContext) -> anyhow
     }
 
     let path = expand_tilde(raw_path);
-    validate_path_with_access(&path, config.tools.sensitive_file_access.as_str())?;
+    validate_path_with_access(&path, config.tools.sensitive_file_access)?;
 
     let cyan_italic = "\x1b[3;36m";
     let bold = "\x1b[1m";
@@ -564,13 +564,13 @@ mod tests {
     fn test_validate_path_allow_sensitive() {
         let home = dirs::home_dir().unwrap();
         let ssh = home.join(".ssh/test_key");
-        assert!(validate_path_with_access(&ssh, "allow").is_ok());
+        assert!(validate_path_with_access(&ssh, crate::config::SensitiveFileAccess::Allow).is_ok());
     }
 
     #[test]
     fn test_validate_path_nul_byte() {
         let bad = PathBuf::from("foo\0bar");
-        let err = validate_path_with_access(&bad, "block").unwrap_err();
+        let err = validate_path_with_access(&bad, crate::config::SensitiveFileAccess::Block).unwrap_err();
         assert!(
             err.to_string().contains("NUL"),
             "expected NUL byte error, got: {err}"
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn test_validate_path_directory_target() {
         let dir = tempfile::TempDir::new().unwrap();
-        let err = validate_path_with_access(dir.path(), "block").unwrap_err();
+        let err = validate_path_with_access(dir.path(), crate::config::SensitiveFileAccess::Block).unwrap_err();
         assert!(
             err.to_string().contains("not a regular file"),
             "expected not a regular file error, got: {err}"
@@ -677,13 +677,13 @@ mod tests {
     fn test_validate_path_allow_bypasses_all_sensitive_dirs() {
         let home = dirs::home_dir().unwrap();
         let ssh = home.join(".ssh/test_key");
-        assert!(validate_path_with_access(&ssh, "allow").is_ok());
+        assert!(validate_path_with_access(&ssh, crate::config::SensitiveFileAccess::Allow).is_ok());
 
         let gnupg = home.join(".gnupg/keyring");
-        assert!(validate_path_with_access(&gnupg, "allow").is_ok());
+        assert!(validate_path_with_access(&gnupg, crate::config::SensitiveFileAccess::Allow).is_ok());
 
         let docker = home.join(".docker/config.json");
-        assert!(validate_path_with_access(&docker, "allow").is_ok());
+        assert!(validate_path_with_access(&docker, crate::config::SensitiveFileAccess::Allow).is_ok());
     }
 
     #[test]

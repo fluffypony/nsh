@@ -560,7 +560,7 @@ fn execute_write_file_tool(
     }
 
     let path = expand_tilde(raw_path);
-    if let Err(e) = validate_path_with_access(&path, "block") {
+    if let Err(e) = validate_path_with_access(&path, crate::config::SensitiveFileAccess::Block) {
         return Ok(format!("Error: {e}"));
     }
     if let Err(e) = ensure_under_working_dir(&path, working_dir) {
@@ -602,7 +602,7 @@ fn execute_patch_file_tool(
         );
     }
 
-    let prepared = match apply_patch_with_access(raw_path, search, replace, "block") {
+    let prepared = match apply_patch_with_access(raw_path, search, replace, crate::config::SensitiveFileAccess::Block) {
         Ok(p) => p,
         Err(e) => return Ok(format!("Error: {e}")),
     };
