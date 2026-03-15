@@ -95,13 +95,23 @@ pub fn execute_outcome(cmd: &str, config: &Config) -> anyhow::Result<ToolInvocat
     }
 
     let lower_cmd = cmd.to_lowercase();
-    // Use path-separator-bounded matching to avoid false positives like ".dockerignore"
+    // Use path-separator-bounded matching to avoid false positives like ".dockerignore".
+    // Match /{suffix}/ (mid-path), /{suffix} at end, or /{suffix} followed by space/quote.
     let sensitive_suffix_hit = crate::security::SENSITIVE_DIR_SUFFIXES
         .iter()
         .any(|s| {
-            let with_sep = format!("/{s}/");
-            let at_end = format!("/{s}");
-            lower_cmd.contains(&with_sep) || lower_cmd.ends_with(&at_end)
+            let needle = format!("/{s}");
+            for (i, _) in lower_cmd.match_indices(&needle) {
+                let after = i + needle.len();
+                if after >= lower_cmd.len() {
+                    return true; // at end of command
+                }
+                let next = lower_cmd.as_bytes()[after];
+                if next == b'/' || next == b' ' || next == b'\'' || next == b'"' {
+                    return true; // followed by separator, space, or quote
+                }
+            }
+            false
         });
     let key_file_hit = lower_cmd.contains("/id_rsa") || lower_cmd.contains("/id_ed25519");
     if sensitive_suffix_hit || key_file_hit {
