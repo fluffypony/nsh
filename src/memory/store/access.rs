@@ -128,14 +128,14 @@ impl<'a> MemoryStoreAccess<'a> {
     pub fn apply_op(&self, op: &MemoryOp) -> anyhow::Result<()> {
         match op {
             MemoryOp::CoreAppend { label, content } => {
-                if let Some(label) = CoreLabel::from_str(label) {
-                    core::append(self.conn, label, content)?;
-                }
+                let label = CoreLabel::from_str(label)
+                    .ok_or_else(|| anyhow::anyhow!("unrecognized core label: {label}"))?;
+                core::append(self.conn, label, content)?;
             }
             MemoryOp::CoreRewrite { label, content } => {
-                if let Some(label) = CoreLabel::from_str(label) {
-                    core::rewrite(self.conn, label, content)?;
-                }
+                let label = CoreLabel::from_str(label)
+                    .ok_or_else(|| anyhow::anyhow!("unrecognized core label: {label}"))?;
+                core::rewrite(self.conn, label, content)?;
             }
             MemoryOp::EpisodicInsert { event } => {
                 episodic::insert(self.conn, event)?;
