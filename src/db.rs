@@ -860,18 +860,18 @@ impl Db {
         rows.collect()
     }
 
-    pub fn update_core_block(&self, label: &str, value: &str) -> rusqlite::Result<()> {
+    pub fn update_core_block(&self, label: crate::memory::types::CoreLabel, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE core_memory SET value = ?, updated_at = datetime('now') WHERE label = ?",
-            params![value, label],
+            params![value, label.as_str()],
         )?;
         Ok(())
     }
 
-    pub fn append_core_block(&self, label: &str, content: &str) -> rusqlite::Result<()> {
+    pub fn append_core_block(&self, label: crate::memory::types::CoreLabel, content: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE core_memory SET value = CASE WHEN value = '' THEN ? ELSE value || '\n' || ? END, updated_at = datetime('now') WHERE label = ?",
-            params![content, content, label],
+            params![content, content, label.as_str()],
         )?;
         Ok(())
     }

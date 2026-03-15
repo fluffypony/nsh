@@ -200,11 +200,13 @@ pub trait DbAccess {
 
     fn memory_core_append(&self, label: &str, content: &str) -> anyhow::Result<()> {
         let db = self.require_direct_db("memory_core_append")?;
+        let label = crate::memory::types::CoreLabel::from_str(label)?;
         db.append_core_block(label, content).map_err(Into::into)
     }
 
     fn memory_core_rewrite(&self, label: &str, content: &str) -> anyhow::Result<()> {
         let db = self.require_direct_db("memory_core_rewrite")?;
+        let label = crate::memory::types::CoreLabel::from_str(label)?;
         db.update_core_block(label, content).map_err(Into::into)
     }
 
