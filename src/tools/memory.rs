@@ -4,16 +4,18 @@
 //! search_memory, core_memory_append, core_memory_rewrite, store_memory,
 //! and retrieve_secret.
 
+use anyhow::{bail, ensure, Context};
+
 use crate::daemon_db::DbAccess;
 use crate::memory::types::{Actor, EventType, MemoryType, Sensitivity};
 
 pub(crate) fn validate_store_memory_input(
     memory_type: MemoryType,
     data: &serde_json::Value,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let obj = data
         .as_object()
-        .ok_or_else(|| "store_memory 'data' must be a JSON object".to_string())?;
+        .context("store_memory 'data' must be a JSON object")?;
     match memory_type {
         MemoryType::Semantic => {
             for req in ["name", "category", "summary", "search_keywords"] {
@@ -24,19 +26,20 @@ pub(crate) fn validate_store_memory_input(
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
                 {
-                    return Err(format!("Semantic memory missing required field '{req}'"));
+                    bail!("Semantic memory missing required field '{req}'");
                 }
             }
         }
         MemoryType::Procedural => {
             for req in ["entry_type", "summary", "steps", "search_keywords"] {
                 if !obj.contains_key(req) {
-                    return Err(format!("Procedural memory missing required field '{req}'"));
+                    bail!("Procedural memory missing required field '{req}'");
                 }
             }
-            if !obj.get("steps").map(|v| v.is_array()).unwrap_or(false) {
-                return Err("Procedural memory 'steps' must be an array".into());
-            }
+            ensure!(
+                obj.get("steps").map(|v| v.is_array()).unwrap_or(false),
+                "Procedural memory 'steps' must be an array"
+            );
         }
         MemoryType::Resource => {
             for req in ["resource_type", "title", "summary", "search_keywords"] {
@@ -47,7 +50,7 @@ pub(crate) fn validate_store_memory_input(
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
                 {
-                    return Err(format!("Resource memory missing required field '{req}'"));
+                    bail!("Resource memory missing required field '{req}'");
                 }
             }
         }
@@ -60,7 +63,7 @@ pub(crate) fn validate_store_memory_input(
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
                 {
-                    return Err(format!("Knowledge memory missing required field '{req}'"));
+                    bail!("Knowledge memory missing required field '{req}'");
                 }
             }
             let sensitivity = obj
@@ -68,12 +71,11 @@ pub(crate) fn validate_store_memory_input(
                 .and_then(|v| v.as_str())
                 .unwrap_or("medium");
             Sensitivity::parse(sensitivity)
-                .map_err(|e| format!("Knowledge memory has invalid sensitivity: {e}"))?;
+                .context("Knowledge memory has invalid sensitivity")?;
         }
         MemoryType::Core => {
-            return Err(
+            bail!(
                 "store_memory does not support 'core'; use core_memory_append/core_memory_rewrite"
-                    .into(),
             );
         }
         MemoryType::Episodic => {
@@ -85,15 +87,13 @@ pub(crate) fn validate_store_memory_input(
                         .map(|s| s.trim().is_empty())
                         .unwrap_or(true)
                 {
-                    return Err(format!("Episodic memory missing required field '{req}'"));
+                    bail!("Episodic memory missing required field '{req}'");
                 }
             }
             let event_type = obj.get("event_type").and_then(|v| v.as_str()).unwrap();
-            EventType::parse(event_type)
-                .map_err(|e| format!("Episodic memory has invalid event_type: {e}"))?;
+            EventType::parse(event_type).context("Episodic memory has invalid event_type")?;
             let actor = obj.get("actor").and_then(|v| v.as_str()).unwrap();
-            Actor::parse(actor)
-                .map_err(|e| format!("Episodic memory has invalid actor: {e}"))?;
+            Actor::parse(actor).context("Episodic memory has invalid actor")?;
         }
     }
     Ok(())
@@ -105,14 +105,14 @@ pub fn execute_search_memory(
     memory_type: &str,
     query: &str,
     limit: usize,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     let mt = if memory_type == "all" {
         None
     } else {
-        Some(MemoryType::parse(memory_type).map_err(|e| e.to_string())?)
+        Some(MemoryType::parse(memory_type)?)
     };
     db.memory_search(query, mt, limit)
-        .map_err(|e| format!("Memory search error: {e}"))
+        .context("Memory search error")
 }
 
 /// Execute a core_memory_append tool call.
@@ -120,10 +120,10 @@ pub fn execute_core_memory_append(
     db: &dyn DbAccess,
     label: &str,
     content: &str,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     db.memory_core_append(label, content)
         .map(|()| format!("Appended to core memory '{label}'"))
-        .map_err(|e| format!("Error: {e}"))
+        .context("core_memory_append failed")
 }
 
 /// Execute a core_memory_rewrite tool call.
@@ -131,10 +131,10 @@ pub fn execute_core_memory_rewrite(
     db: &dyn DbAccess,
     label: &str,
     content: &str,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     db.memory_core_rewrite(label, content)
         .map(|()| format!("Rewrote core memory block '{label}'"))
-        .map_err(|e| format!("Error: {e}"))
+        .context("core_memory_rewrite failed")
 }
 
 /// Execute a store_memory tool call.
@@ -142,13 +142,13 @@ pub fn execute_store_memory(
     db: &dyn DbAccess,
     memory_type: &str,
     data: &serde_json::Value,
-) -> Result<String, String> {
-    let parsed_type = MemoryType::parse(memory_type).map_err(|e| format!("Error: {e}"))?;
+) -> anyhow::Result<String> {
+    let parsed_type = MemoryType::parse(memory_type)?;
     // Validate minimal schema up front to avoid noisy daemon errors
     validate_store_memory_input(parsed_type, data)?;
     db.memory_store(parsed_type, &data.to_string())
         .map(|id| format!("Stored in {memory_type} memory (id: {id})"))
-        .map_err(|e| format!("Error: {e}"))
+        .context("store_memory failed")
 }
 
 /// Execute a retrieve_secret tool call.
@@ -156,9 +156,9 @@ pub fn execute_retrieve_secret(
     db: &dyn DbAccess,
     caption_query: &str,
     explicit_user_request: Option<&str>,
-) -> Result<String, String> {
+) -> anyhow::Result<String> {
     db.memory_retrieve_secret(caption_query, explicit_user_request)
-        .map_err(|e| format!("Secret retrieval error: {e}"))
+        .context("Secret retrieval error")
 }
 
 #[cfg(test)]
@@ -181,7 +181,7 @@ mod tests {
     fn validate_semantic_missing_field() {
         let data = json!({ "name": "X" });
         let err = validate_store_memory_input(MemoryType::Semantic, &data).unwrap_err();
-        assert!(err.contains("missing required field"));
+        assert!(err.to_string().contains("missing required field"));
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
             "search_keywords": "deploy"
         });
         let err = validate_store_memory_input(MemoryType::Procedural, &data).unwrap_err();
-        assert!(err.contains("steps"));
+        assert!(err.to_string().contains("steps"));
     }
 
     #[test]
@@ -228,7 +228,7 @@ mod tests {
             "search_keywords": "token api"
         });
         let err = validate_store_memory_input(MemoryType::Knowledge, &data).unwrap_err();
-        assert!(err.contains("invalid sensitivity"));
+        assert!(err.to_string().contains("invalid sensitivity"));
     }
 
     #[test]
@@ -246,7 +246,7 @@ mod tests {
     fn validate_episodic_missing_field() {
         let data = json!({ "summary": "Ran cargo build" });
         let err = validate_store_memory_input(MemoryType::Episodic, &data).unwrap_err();
-        assert!(err.contains("missing required field"));
+        assert!(err.to_string().contains("missing required field"));
     }
 
     #[test]
@@ -258,7 +258,7 @@ mod tests {
             "search_keywords": "cargo build"
         });
         let err = validate_store_memory_input(MemoryType::Episodic, &data).unwrap_err();
-        assert!(err.contains("invalid event_type"));
+        assert!(err.to_string().contains("invalid event_type"));
     }
 
     #[test]
@@ -270,6 +270,6 @@ mod tests {
             "search_keywords": "cargo build"
         });
         let err = validate_store_memory_input(MemoryType::Episodic, &data).unwrap_err();
-        assert!(err.contains("invalid actor"));
+        assert!(err.to_string().contains("invalid actor"));
     }
 }

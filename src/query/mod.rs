@@ -914,12 +914,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     if mt == "semantic"
                         && let Some(data) = input.get("data")
                     {
-                        let parsed_type =
-                            crate::memory::types::MemoryType::parse(mt).map_err(|e| e.to_string());
-                        let validation = parsed_type.and_then(|pt| {
+                        let validation = (|| -> anyhow::Result<()> {
+                            let pt = crate::memory::types::MemoryType::parse(mt)?;
                             crate::tools::memory::validate_store_memory_input(pt, data)
-                        });
-                        if let Err(msg) = validation {
+                        })();
+                        if let Err(e) = validation {
+                            let msg = e.to_string();
                             let wrapped = crate::security::wrap_tool_result(name, &msg, boundary);
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: id.clone(),
@@ -1466,7 +1466,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         db, mt, q, lim,
                                     ) {
                                         Ok(results) => (results, false),
-                                        Err(e) => (e, true),
+                                        Err(e) => (format!("Error: {e}"), true),
                                     }
                                 }
                                 "core_memory_append" => {
@@ -1476,7 +1476,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         db, label, content,
                                     ) {
                                         Ok(msg) => (msg, false),
-                                        Err(e) => (e, true),
+                                        Err(e) => (format!("Error: {e}"), true),
                                     }
                                 }
                                 "core_memory_rewrite" => {
@@ -1486,7 +1486,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         db, label, content,
                                     ) {
                                         Ok(msg) => (msg, false),
-                                        Err(e) => (e, true),
+                                        Err(e) => (format!("Error: {e}"), true),
                                     }
                                 }
                                 "store_memory" => {
@@ -1499,7 +1499,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         &data,
                                     ) {
                                         Ok(msg) => (msg, false),
-                                        Err(e) => (e, true),
+                                        Err(e) => (format!("Error: {e}"), true),
                                     }
                                 }
                                 "retrieve_secret" => {
@@ -1511,7 +1511,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         Some(original_query.as_str()),
                                     ) {
                                         Ok(secret) => (secret, false),
-                                        Err(e) => (e, true),
+                                        Err(e) => (format!("Error: {e}"), true),
                                     }
                                 }
                                 _ => unreachable!(),
