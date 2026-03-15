@@ -282,12 +282,12 @@ impl Sensitivity {
         }
     }
 
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
+    pub fn parse(s: &str) -> Result<Self, ParseEnumError> {
         match s {
             "low" => Ok(Sensitivity::Low),
             "medium" => Ok(Sensitivity::Medium),
             "high" => Ok(Sensitivity::High),
-            _ => anyhow::bail!("invalid sensitivity: {s}"),
+            _ => Err(ParseEnumError { kind: "sensitivity", value: s.to_owned() }),
         }
     }
 }
@@ -558,7 +558,7 @@ impl MemoryType {
         }
     }
 
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
+    pub fn parse(s: &str) -> Result<Self, ParseEnumError> {
         match s {
             "core" => Ok(MemoryType::Core),
             "episodic" => Ok(MemoryType::Episodic),
@@ -566,7 +566,7 @@ impl MemoryType {
             "procedural" => Ok(MemoryType::Procedural),
             "resource" => Ok(MemoryType::Resource),
             "knowledge" => Ok(MemoryType::Knowledge),
-            _ => anyhow::bail!("unknown memory type: {s}"),
+            _ => Err(ParseEnumError { kind: "memory type", value: s.to_owned() }),
         }
     }
 }
