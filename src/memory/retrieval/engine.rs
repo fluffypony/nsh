@@ -167,85 +167,139 @@ mod tests {
     async fn retrieve_command_suggestion_skips_full_retrieval() {
         let (db, config) = setup_memory();
 
-        // Insert a semantic item to verify it's NOT returned via BM25 search
+        // Insert procedural data that would match BM25 if full retrieval ran
         {
             let conn = db.lock().unwrap();
-            crate::memory::store::semantic::store(
-                &conn,
-                &crate::memory::store::semantic::SemanticWrite {
-                    name: "test_fact",
-                    category: "tools",
-                    summary: "User uses cargo for builds",
-                    details: None,
-                    search_keywords: "cargo build rust",
-                },
-            )
-            .unwrap();
+            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+            store
+                .apply_op(&crate::memory::types::MemoryOp::ProceduralInsert {
+                    entry_type: "workflow".into(),
+                    trigger_pattern: "cargo build".into(),
+                    summary: "How to build with cargo".into(),
+                    steps: "[\"cargo build --release\"]".into(),
+                    search_keywords: "cargo build rust release".into(),
+                })
+                .unwrap();
         }
 
         let engine = MemoryRetrievalEngine::new(&db, &config);
         let ctx = make_query_ctx("cargo build", InteractionMode::CommandSuggestion);
-        let result = engine.retrieve_for_query(&ctx, None).await.unwrap();
 
-        // CommandSuggestion does NOT trigger full retrieval
-        assert!(result.relevant_episodic.is_empty());
-        assert!(result.procedural.is_empty());
-        assert!(result.knowledge.is_empty());
-    }
-
-    #[tokio::test]
-    async fn retrieve_natural_language_performs_full_retrieval() {
-        let (db, config) = setup_memory();
-
-        // Insert data across multiple stores
-        {
-            let conn = db.lock().unwrap();
-            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
-
-            store
-                .apply_op(&crate::memory::types::MemoryOp::SemanticInsert {
-                    name: "rust_project".into(),
-                    category: "tools".into(),
-                    summary: "This is a Rust project using cargo".into(),
-                    details: None,
-                    search_keywords: "rust cargo project".into(),
-                })
-                .unwrap();
-
-            store
-                .apply_op(&crate::memory::types::MemoryOp::EpisodicInsert {
-                    event: crate::memory::types::EpisodicEventCreate {
-                        event_type: crate::memory::types::EventType::CommandExecution,
-                        actor: crate::memory::types::Actor::User,
-                        summary: "ran cargo build".into(),
-                        details: None,
-                        command: Some("cargo build".into()),
-                        exit_code: Some(0),
-                        working_dir: Some("/home/user/project".into()),
-                        project_context: None,
-                        search_keywords: "cargo build rust".into(),
-                    },
-                })
-                .unwrap();
-        }
-
-        let engine = MemoryRetrievalEngine::new(&db, &config);
-        let ctx = make_query_ctx("how do I build with cargo", InteractionMode::NaturalLanguage);
-
+        // Even with LLM providing keywords, full retrieval should NOT run
         let llm = MockLlm {
-            response: serde_json::json!(["cargo", "build", "rust"]),
+            response: serde_json::json!(["cargo", "build"]),
         };
         let result = engine
             .retrieve_for_query(&ctx, Some(&llm))
             .await
             .unwrap();
 
-        // Should have core memory
+        // CommandSuggestion does NOT trigger full retrieval — BM25-only fields stay empty
+        assert!(
+            result.relevant_episodic.is_empty(),
+            "relevant_episodic should be empty for CommandSuggestion"
+        );
+        assert!(
+            result.procedural.is_empty(),
+            "procedural should be empty for CommandSuggestion (data exists but BM25 shouldn't run)"
+        );
+        assert!(result.knowledge.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrieve_natural_language_performs_bm25_search() {
+        let (db, config) = setup_memory();
+
+        // Insert data that will ONLY appear via BM25 search (not in baseline results)
+        {
+            let conn = db.lock().unwrap();
+            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+
+            // This procedural item is only retrievable via BM25 search
+            store
+                .apply_op(&crate::memory::types::MemoryOp::ProceduralInsert {
+                    entry_type: "workflow".into(),
+                    trigger_pattern: "deploy".into(),
+                    summary: "Deploy process for production".into(),
+                    steps: "[\"cargo build --release\", \"deploy to prod\"]".into(),
+                    search_keywords: "deploy production release cargo".into(),
+                })
+                .unwrap();
+
+            // Insert episodic events — these should appear in relevant_episodic via BM25
+            // Use 12+ events so some are beyond the recent-10 cutoff
+            for i in 0..12 {
+                store
+                    .apply_op(&crate::memory::types::MemoryOp::EpisodicInsert {
+                        event: crate::memory::types::EpisodicEventCreate {
+                            event_type: crate::memory::types::EventType::CommandExecution,
+                            actor: crate::memory::types::Actor::User,
+                            summary: format!("ran command {i}"),
+                            details: None,
+                            command: Some(format!("echo {i}")),
+                            exit_code: Some(0),
+                            working_dir: Some("/home/user/project".into()),
+                            project_context: None,
+                            search_keywords: format!("echo number{i}"),
+                        },
+                    })
+                    .unwrap();
+            }
+
+            // Insert a deploy-related episodic event that BM25 should find
+            store
+                .apply_op(&crate::memory::types::MemoryOp::EpisodicInsert {
+                    event: crate::memory::types::EpisodicEventCreate {
+                        event_type: crate::memory::types::EventType::CommandExecution,
+                        actor: crate::memory::types::Actor::User,
+                        summary: "deployed production build".into(),
+                        details: None,
+                        command: Some("cargo build --release && deploy".into()),
+                        exit_code: Some(0),
+                        working_dir: Some("/home/user/project".into()),
+                        project_context: None,
+                        search_keywords: "deploy production release cargo".into(),
+                    },
+                })
+                .unwrap();
+        }
+
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+        let ctx = make_query_ctx("how do I deploy to production", InteractionMode::NaturalLanguage);
+
+        let llm = MockLlm {
+            response: serde_json::json!(["deploy", "production", "release"]),
+        };
+        let result = engine
+            .retrieve_for_query(&ctx, Some(&llm))
+            .await
+            .unwrap();
+
         assert_eq!(result.core.len(), 3);
-        // Should have recent episodic (the one we inserted)
-        assert!(!result.recent_episodic.is_empty());
-        // Should have semantic results from BM25
-        assert!(!result.semantic.is_empty());
+
+        // BM25-specific fields: these are ONLY populated by the full retrieval branch
+        assert!(
+            !result.relevant_episodic.is_empty(),
+            "relevant_episodic should be populated by BM25 search"
+        );
+        assert!(
+            result
+                .relevant_episodic
+                .iter()
+                .any(|e| e.summary.contains("deploy")),
+            "BM25 should find the deploy-related episodic event"
+        );
+        assert!(
+            !result.procedural.is_empty(),
+            "procedural should be populated by BM25 search"
+        );
+        assert!(
+            result
+                .procedural
+                .iter()
+                .any(|p| p.summary.contains("Deploy")),
+            "BM25 should find the deploy procedural workflow"
+        );
     }
 
     #[tokio::test]
@@ -361,5 +415,76 @@ mod tests {
         assert!(result.relevant_episodic.is_empty());
         assert!(result.procedural.is_empty());
         assert!(result.knowledge.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrieve_enforces_budget_truncation() {
+        let (db, config) = setup_memory();
+
+        // Insert many episodic events with large details to blow the 4000-token budget
+        {
+            let conn = db.lock().unwrap();
+            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+
+            for i in 0..30 {
+                store
+                    .apply_op(&crate::memory::types::MemoryOp::EpisodicInsert {
+                        event: crate::memory::types::EpisodicEventCreate {
+                            event_type: crate::memory::types::EventType::CommandExecution,
+                            actor: crate::memory::types::Actor::User,
+                            summary: format!("executed deploy step {i} with verbose output"),
+                            details: Some("x".repeat(500)),
+                            command: Some(format!("deploy-step-{i}")),
+                            exit_code: Some(0),
+                            working_dir: Some("/home/user/project".into()),
+                            project_context: None,
+                            search_keywords: "deploy step verbose output".into(),
+                        },
+                    })
+                    .unwrap();
+            }
+
+            // Add resources with large content
+            for i in 0..10 {
+                store
+                    .apply_op(&crate::memory::types::MemoryOp::ResourceInsert {
+                        resource_type: "file".into(),
+                        file_path: Some(format!("/home/user/project/config{i}.toml")),
+                        file_hash: None,
+                        title: format!("config{i}.toml"),
+                        summary: "deploy configuration file".into(),
+                        content: Some("y".repeat(2000)),
+                        search_keywords: "deploy config toml".into(),
+                    })
+                    .unwrap();
+            }
+        }
+
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+        let ctx = make_query_ctx("show me deploy details", InteractionMode::NaturalLanguage);
+
+        let llm = MockLlm {
+            response: serde_json::json!(["deploy", "step", "verbose"]),
+        };
+        let result = engine
+            .retrieve_for_query(&ctx, Some(&llm))
+            .await
+            .unwrap();
+
+        // Budget enforcement should truncate results to fit within 4000 tokens
+        let token_estimate = crate::memory::retrieval::ranker::estimate_tokens(&result);
+        assert!(
+            token_estimate <= 4000,
+            "budget enforcement should keep tokens <= 4000, got {token_estimate}"
+        );
+
+        // At least phase 2 or 3 should have kicked in: resource/episodic counts reduced
+        let total_items = result.recent_episodic.len()
+            + result.relevant_episodic.len()
+            + result.resource.len();
+        assert!(
+            total_items < 40,
+            "budget enforcement should have truncated items, got {total_items}"
+        );
     }
 }
