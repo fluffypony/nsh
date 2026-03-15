@@ -622,6 +622,7 @@ pub struct SearchResult {
 // ── Detected Secret ──
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DetectedSecret {
     pub label: String,
     pub value: String,

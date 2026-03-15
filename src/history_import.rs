@@ -12,6 +12,7 @@ const MAX_IMPORT_ENTRIES: usize = 10_000;
 const IMPORT_LOCK_FILENAME: &str = "history_import.lock";
 const IMPORT_LOCK_STALE_SECS: u64 = 60 * 60;
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Shell {
     Bash,
