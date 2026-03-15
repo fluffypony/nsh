@@ -49,7 +49,11 @@ impl<'a> MemoryMaintenance<'a> {
         let prompt =
             crate::memory::reflection::build_reflection_prompt(&unconsolidated, &core, &semantic, &procedural);
         let response = llm.complete_json(&prompt).await?;
-        let ops = crate::memory::reflection::parse_reflection_response(&response);
+        let Some(ops) = crate::memory::reflection::parse_reflection_response(&response) else {
+            // LLM response was unparseable — don't mark anything consolidated
+            // so these events are retried on the next reflection cycle.
+            return Ok(ReflectionReport::default());
+        };
 
         let mut report = ReflectionReport::default();
         let ids: Vec<String> = unconsolidated.iter().map(|event| event.id.clone()).collect();
@@ -63,7 +67,7 @@ impl<'a> MemoryMaintenance<'a> {
             }
         }
         // Only mark events as consolidated when all ops succeeded (or LLM
-        // returned no ops, meaning nothing needed consolidation).
+        // returned an empty ops list, meaning nothing needed consolidation).
         if report.ops_failed == 0 {
             crate::memory::store::episodic::mark_consolidated(&conn, &ids)?;
         }
@@ -271,9 +275,9 @@ mod tests {
             insert_unconsolidated_event(&conn)
         };
 
-        // LLM returns no operations — nothing to consolidate
+        // LLM returns a valid empty array — nothing to consolidate
         let llm = MockLlm {
-            response: serde_json::json!({ "operations": [] }),
+            response: serde_json::json!([]),
         };
 
         let maintenance = MemoryMaintenance::new(&db, &config);

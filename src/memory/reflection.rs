@@ -88,12 +88,12 @@ Respond ONLY with the JSON array.
     prompt
 }
 
-pub fn parse_reflection_response(response: &serde_json::Value) -> Vec<MemoryOp> {
+pub fn parse_reflection_response(response: &serde_json::Value) -> Option<Vec<MemoryOp>> {
     match serde_json::from_value::<Vec<MemoryOp>>(response.clone()) {
-        Ok(ops) => crate::memory::ingestion::extractor::validate_keyword_presence(ops),
+        Ok(ops) => Some(crate::memory::ingestion::extractor::validate_keyword_presence(ops)),
         Err(e) => {
             tracing::warn!("Failed to parse reflection response: {e}");
-            vec![]
+            None
         }
     }
 }
@@ -173,14 +173,14 @@ mod tests {
         let resp = serde_json::json!([
             {"op": "NoOp", "reason": "nothing to consolidate"}
         ]);
-        let ops = parse_reflection_response(&resp);
+        let ops = parse_reflection_response(&resp).unwrap();
         assert_eq!(ops.len(), 1);
     }
 
     #[test]
     fn parse_reflection_response_invalid() {
         let ops = parse_reflection_response(&serde_json::json!("not json"));
-        assert!(ops.is_empty());
+        assert!(ops.is_none());
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
                 "search_keywords": "docker container"
             }
         ]);
-        let ops = parse_reflection_response(&resp);
+        let ops = parse_reflection_response(&resp).unwrap();
         assert_eq!(ops.len(), 1);
         assert!(matches!(&ops[0], MemoryOp::SemanticInsert { .. }));
     }
@@ -272,7 +272,7 @@ mod tests {
             {"op": "EpisodicDelete", "ids": ["ep_1", "ep_2"]},
             {"op": "CoreAppend", "label": "human", "content": "prefers vim"}
         ]);
-        let ops = parse_reflection_response(&resp);
+        let ops = parse_reflection_response(&resp).unwrap();
         assert_eq!(ops.len(), 3);
     }
 
@@ -287,7 +287,7 @@ mod tests {
                 "search_keywords": ""
             }
         ]);
-        let ops = parse_reflection_response(&resp);
+        let ops = parse_reflection_response(&resp).unwrap();
         match &ops[0] {
             MemoryOp::SemanticInsert {
                 search_keywords, ..
