@@ -1,5 +1,6 @@
 use crate::config::SensitiveFileAccess;
-use crate::tools::ToolInvocationOutcome;
+use super::outcome::{ToolInvocationOutcome, outcome_to_content, outcome_to_result};
+use super::path_access::validate_read_path_tool_outcome;
 use serde_json::Value;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ pub(crate) fn execute_file_tool_content<F>(
 where
     F: FnOnce(&Value, SensitiveFileAccess) -> anyhow::Result<ToolInvocationOutcome>,
 {
-    crate::tools::outcome_to_content(handler(input, sensitive_file_access))
+    outcome_to_content(handler(input, sensitive_file_access))
 }
 
 pub(crate) fn execute_file_tool_result<F>(
@@ -23,7 +24,7 @@ pub(crate) fn execute_file_tool_result<F>(
 where
     F: FnOnce(&Value, SensitiveFileAccess) -> anyhow::Result<ToolInvocationOutcome>,
 {
-    crate::tools::outcome_to_result(handler(input, sensitive_file_access))
+    outcome_to_result(handler(input, sensitive_file_access))
 }
 
 pub(crate) fn required_read_path(
@@ -83,7 +84,7 @@ fn validated_read_path(
     raw_path: &str,
     sensitive_file_access: SensitiveFileAccess,
 ) -> Result<PathBuf, ToolInvocationOutcome> {
-    crate::tools::validate_read_path_tool_outcome(raw_path, sensitive_file_access)
+    validate_read_path_tool_outcome(raw_path, sensitive_file_access)
 }
 
 #[cfg(unix)]
