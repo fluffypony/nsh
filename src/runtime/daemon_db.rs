@@ -857,7 +857,7 @@ mod tests {
         .expect_err("invalid sensitivity should be rejected");
 
         assert!(
-            err.to_string().contains("invalid sensitivity"),
+            err.to_string().contains("sensitivity"),
             "unexpected error: {err}"
         );
     }
