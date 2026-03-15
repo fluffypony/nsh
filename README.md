@@ -20,7 +20,7 @@ nsh prefills commands at your prompt for review before execution. It never runs 
 
 nsh wraps your shell in a PTY, capturing scrollback and command history into a local SQLite database. When you ask a question with `?`, nsh builds a rich context - your OS, shell, working directory, recent terminal output, project structure, git state, and conversation history - then streams a response from your configured LLM provider.
 
-The assistant responds by calling **tools**: `command` to prefill a shell command, `chat` for text answers, or any of 16 other built-in tools for investigation, file editing, web search, and more. It can chain multiple tool calls in a single turn, investigating before acting.
+The assistant responds by calling **tools**: `command` to prefill a shell command, `chat` for text answers, or any of 24 other built-in tools for investigation, file editing, web search, memory, and more. It can chain multiple tool calls in a single turn, investigating before acting.
 
 ```
 you: ? install ripgrep
@@ -66,7 +66,7 @@ nsh can chain multiple tool calls per query (30 by default, configurable). It in
 
 The `pending` flag on command suggestions enables autonomous multi-step sequences. Safe `pending=true` commands now auto-execute by default and feed their output back into the same tool loop, so nsh can continue investigating, fixing, and verifying without stopping. If you prefer explicit approval for each intermediate step, set `execution.confirm_intermediate_steps = true`.
 
-### 18 Built-In Tools
+### 26 Built-In Tools
 
 | Tool | Purpose |
 |---|---|
@@ -76,15 +76,26 @@ The `pending` flag on command suggestions enables autonomous multi-step sequence
 | `grep_file` | Regex search within files with context lines |
 | `read_file` | Read file contents with line numbers |
 | `list_directory` | List directory contents with metadata |
+| `glob` | Find files by glob pattern |
 | `web_search` | Search the web via Perplexity/Sonar |
+| `github` | Interact with GitHub repos (issues, PRs, README) |
 | `run_command` | Execute safe, allowlisted commands silently |
 | `ask_user` | Clarify ambiguity or gather preferences while keeping the loop active |
+| `code` | Launch a sandboxed coding sub-agent for multi-step file editing |
 | `write_file` | Create or overwrite files (with diff preview and trash backup) |
 | `patch_file` | Surgical find-and-replace in files (with diff preview) |
 | `man_page` | Retrieve man pages for commands |
 | `manage_config` | Modify nsh settings (with confirmation) |
 | `install_skill` | Create reusable custom tool templates |
+| `uninstall_skill` | Remove installed skills |
 | `install_mcp_server` | Add MCP tool servers to configuration |
+| `skill_exists` | Check if a skill is already installed |
+| `search_memory` | Search across all memory tiers |
+| `core_memory_append` | Append to core memory blocks |
+| `core_memory_rewrite` | Rewrite core memory blocks |
+| `store_memory` | Store entries in semantic, procedural, resource, or knowledge memory |
+| `retrieve_secret` | Retrieve encrypted secrets from the knowledge vault |
+| `done` | Signal task completion in multi-step tool loops |
 
  
 
