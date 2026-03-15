@@ -1306,22 +1306,17 @@ impl Db {
     ) -> rusqlite::Result<crate::memory::types::EpisodicEvent> {
         let event_type_str: String = row.get(1)?;
         let actor_str: String = row.get(2)?;
-        let event_type = match event_type_str.as_str() {
-            "command_execution" => crate::memory::types::EventType::CommandExecution,
-            "command_error" => crate::memory::types::EventType::CommandError,
-            "user_instruction" => crate::memory::types::EventType::UserInstruction,
-            "assistant_action" => crate::memory::types::EventType::AssistantAction,
-            "file_edit" => crate::memory::types::EventType::FileEdit,
-            "session_start" => crate::memory::types::EventType::SessionStart,
-            "session_end" => crate::memory::types::EventType::SessionEnd,
-            "project_switch" => crate::memory::types::EventType::ProjectSwitch,
-            _ => crate::memory::types::EventType::SystemEvent,
-        };
-        let actor = match actor_str.as_str() {
-            "assistant" => crate::memory::types::Actor::Assistant,
-            "system" => crate::memory::types::Actor::System,
-            _ => crate::memory::types::Actor::User,
-        };
+        let event_type =
+            crate::memory::types::EventType::parse(&event_type_str).map_err(|_| {
+                rusqlite::Error::InvalidColumnType(
+                    1,
+                    "event_type".into(),
+                    rusqlite::types::Type::Text,
+                )
+            })?;
+        let actor = crate::memory::types::Actor::parse(&actor_str).map_err(|_| {
+            rusqlite::Error::InvalidColumnType(2, "actor".into(), rusqlite::types::Type::Text)
+        })?;
         Ok(crate::memory::types::EpisodicEvent {
             id: row.get(0)?,
             event_type,

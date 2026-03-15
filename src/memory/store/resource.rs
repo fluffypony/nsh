@@ -119,7 +119,7 @@ pub fn search_bm25(
          LIMIT ?",
     )?;
     let rows = stmt.query_map(params![fts_query, limit as i64], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn get_for_cwd(
@@ -136,7 +136,7 @@ pub fn get_for_cwd(
          LIMIT ?",
     )?;
     let rows = stmt.query_map(params![pattern, limit as i64], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<ResourceItem>> {
@@ -146,7 +146,7 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<ResourceItem>> {
          ORDER BY updated_at DESC",
     )?;
     let rows = stmt.query_map([], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[allow(dead_code)]

@@ -131,6 +131,21 @@ impl EventType {
             EventType::SystemEvent => "system_event",
         }
     }
+
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "command_execution" => Ok(EventType::CommandExecution),
+            "command_error" => Ok(EventType::CommandError),
+            "user_instruction" => Ok(EventType::UserInstruction),
+            "assistant_action" => Ok(EventType::AssistantAction),
+            "file_edit" => Ok(EventType::FileEdit),
+            "session_start" => Ok(EventType::SessionStart),
+            "session_end" => Ok(EventType::SessionEnd),
+            "project_switch" => Ok(EventType::ProjectSwitch),
+            "system_event" => Ok(EventType::SystemEvent),
+            _ => Err(format!("unknown event type: '{s}'")),
+        }
+    }
 }
 
 impl std::fmt::Display for EventType {
@@ -153,6 +168,15 @@ impl Actor {
             Actor::User => "user",
             Actor::Assistant => "assistant",
             Actor::System => "system",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "user" => Ok(Actor::User),
+            "assistant" => Ok(Actor::Assistant),
+            "system" => Ok(Actor::System),
+            _ => Err(format!("unknown actor: '{s}'")),
         }
     }
 }

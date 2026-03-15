@@ -2,34 +2,22 @@ use rusqlite::{Connection, params};
 
 use crate::memory::types::{Actor, EpisodicEvent, EpisodicEventCreate, EventType, generate_id};
 
-fn parse_event_type(s: &str) -> EventType {
-    match s {
-        "command_execution" => EventType::CommandExecution,
-        "command_error" => EventType::CommandError,
-        "user_instruction" => EventType::UserInstruction,
-        "assistant_action" => EventType::AssistantAction,
-        "file_edit" => EventType::FileEdit,
-        "session_start" => EventType::SessionStart,
-        "session_end" => EventType::SessionEnd,
-        "project_switch" => EventType::ProjectSwitch,
-        "system_event" => EventType::SystemEvent,
-        _ => EventType::SystemEvent,
-    }
-}
-
-fn parse_actor(s: &str) -> Actor {
-    match s {
-        "assistant" => Actor::Assistant,
-        "system" => Actor::System,
-        _ => Actor::User,
-    }
+fn parse_enum_column<T>(
+    value: &str,
+    parser: fn(&str) -> Result<T, String>,
+    col_index: usize,
+    col_name: &str,
+) -> rusqlite::Result<T> {
+    parser(value).map_err(|_| {
+        rusqlite::Error::InvalidColumnType(col_index, col_name.into(), rusqlite::types::Type::Text)
+    })
 }
 
 fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<EpisodicEvent> {
     Ok(EpisodicEvent {
         id: row.get(0)?,
-        event_type: parse_event_type(&row.get::<_, String>(1)?),
-        actor: parse_actor(&row.get::<_, String>(2)?),
+        event_type: parse_enum_column(&row.get::<_, String>(1)?, EventType::parse, 1, "event_type")?,
+        actor: parse_enum_column(&row.get::<_, String>(2)?, Actor::parse, 2, "actor")?,
         summary: row.get(3)?,
         details: row.get(4)?,
         command: row.get(5)?,
@@ -130,7 +118,7 @@ pub fn list_recent(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_event)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<EpisodicEvent>> {
@@ -140,7 +128,7 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<EpisodicEvent>> {
          ORDER BY occurred_at DESC",
     )?;
     let rows = stmt.query_map([], row_to_event)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn list_unconsolidated(conn: &Connection, limit: usize) -> anyhow::Result<Vec<EpisodicEvent>> {
@@ -152,7 +140,7 @@ pub fn list_unconsolidated(conn: &Connection, limit: usize) -> anyhow::Result<Ve
          LIMIT ?",
     )?;
     let rows = stmt.query_map(params![limit as i64], row_to_event)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn search_bm25(
@@ -187,7 +175,7 @@ pub fn search_bm25(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![fts_query], row_to_event)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn mark_consolidated(conn: &Connection, ids: &[String]) -> anyhow::Result<()> {
@@ -508,31 +496,49 @@ mod tests {
     #[test]
     fn parse_event_type_all_variants() {
         assert_eq!(
-            parse_event_type("command_execution"),
+            EventType::parse("command_execution").unwrap(),
             EventType::CommandExecution
         );
-        assert_eq!(parse_event_type("command_error"), EventType::CommandError);
         assert_eq!(
-            parse_event_type("user_instruction"),
+            EventType::parse("command_error").unwrap(),
+            EventType::CommandError
+        );
+        assert_eq!(
+            EventType::parse("user_instruction").unwrap(),
             EventType::UserInstruction
         );
         assert_eq!(
-            parse_event_type("assistant_action"),
+            EventType::parse("assistant_action").unwrap(),
             EventType::AssistantAction
         );
-        assert_eq!(parse_event_type("file_edit"), EventType::FileEdit);
-        assert_eq!(parse_event_type("session_start"), EventType::SessionStart);
-        assert_eq!(parse_event_type("session_end"), EventType::SessionEnd);
-        assert_eq!(parse_event_type("project_switch"), EventType::ProjectSwitch);
-        assert_eq!(parse_event_type("system_event"), EventType::SystemEvent);
-        assert_eq!(parse_event_type("unknown_type"), EventType::SystemEvent);
+        assert_eq!(
+            EventType::parse("file_edit").unwrap(),
+            EventType::FileEdit
+        );
+        assert_eq!(
+            EventType::parse("session_start").unwrap(),
+            EventType::SessionStart
+        );
+        assert_eq!(
+            EventType::parse("session_end").unwrap(),
+            EventType::SessionEnd
+        );
+        assert_eq!(
+            EventType::parse("project_switch").unwrap(),
+            EventType::ProjectSwitch
+        );
+        assert_eq!(
+            EventType::parse("system_event").unwrap(),
+            EventType::SystemEvent
+        );
+        assert!(EventType::parse("unknown_type").is_err());
     }
 
     #[test]
     fn parse_actor_all_variants() {
-        assert_eq!(parse_actor("user"), Actor::User);
-        assert_eq!(parse_actor("assistant"), Actor::Assistant);
-        assert_eq!(parse_actor("system"), Actor::System);
-        assert_eq!(parse_actor("unknown"), Actor::User);
+        assert_eq!(Actor::parse("user").unwrap(), Actor::User);
+        assert_eq!(Actor::parse("assistant").unwrap(), Actor::Assistant);
+        assert_eq!(Actor::parse("system").unwrap(), Actor::System);
+        assert!(Actor::parse("unknown").is_err());
     }
 }

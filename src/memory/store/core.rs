@@ -7,14 +7,17 @@ pub fn get_all(conn: &Connection) -> anyhow::Result<Vec<CoreBlock>> {
         .prepare("SELECT label, value, char_limit, updated_at FROM core_memory ORDER BY label")?;
     let rows = stmt.query_map([], |row| {
         let label_str: String = row.get(0)?;
+        let label = CoreLabel::from_str(&label_str).ok_or_else(|| {
+            rusqlite::Error::InvalidColumnType(0, "label".into(), rusqlite::types::Type::Text)
+        })?;
         Ok(CoreBlock {
-            label: CoreLabel::from_str(&label_str).unwrap_or(CoreLabel::Human),
+            label,
             value: row.get(1)?,
             char_limit: row.get::<_, i64>(2)? as usize,
             updated_at: row.get(3)?,
         })
     })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 pub fn get_block(conn: &Connection, label: CoreLabel) -> anyhow::Result<CoreBlock> {

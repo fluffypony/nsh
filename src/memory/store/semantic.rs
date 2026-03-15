@@ -94,7 +94,7 @@ pub fn search_bm25(
          LIMIT ?",
     )?;
     let rows = stmt.query_map(params![fts_query, limit as i64], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[allow(dead_code)]
@@ -106,7 +106,7 @@ pub fn list_recent(conn: &Connection, limit: usize) -> anyhow::Result<Vec<Semant
          LIMIT ?",
     )?;
     let rows = stmt.query_map(params![limit as i64], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// Return the most important semantic items for always-on recall.
@@ -121,7 +121,7 @@ pub fn list_top_accessed(conn: &Connection, limit: usize) -> anyhow::Result<Vec<
          LIMIT ?",
     )?;
     let rows = stmt.query_map(params![limit as i64], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<SemanticItem>> {
@@ -131,7 +131,7 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<SemanticItem>> {
          ORDER BY name",
     )?;
     let rows = stmt.query_map([], row_to_item)?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn update(conn: &Connection, id: &str, change: &SemanticUpdate<'_>) -> anyhow::Result<()> {
