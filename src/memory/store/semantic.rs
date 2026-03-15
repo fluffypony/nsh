@@ -97,7 +97,7 @@ pub fn search_bm25(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn list_recent(conn: &Connection, limit: usize) -> anyhow::Result<Vec<SemanticItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, category, summary, details, search_keywords, access_count, last_accessed, created_at, updated_at

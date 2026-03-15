@@ -149,7 +149,7 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<ResourceItem>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn exists_with_hash(conn: &Connection, path: &str, hash: &str) -> anyhow::Result<bool> {
     let exists: bool = conn
         .query_row(

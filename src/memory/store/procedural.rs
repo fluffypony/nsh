@@ -107,7 +107,7 @@ pub fn delete(conn: &Connection, ids: &[String]) -> anyhow::Result<usize> {
     Ok(count)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn increment_access(conn: &Connection, id: &str) -> anyhow::Result<()> {
     conn.execute(
         "UPDATE procedural_memory SET access_count = access_count + 1, last_accessed = datetime('now') WHERE id = ?",
