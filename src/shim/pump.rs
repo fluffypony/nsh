@@ -374,7 +374,7 @@ fn spawn_signal_thread(
                     // plain winsize struct on valid file descriptors; kill sends
                     // a signal to a known child pid.
                     unsafe {
-                        let mut ws: libc::winsize = std::mem::zeroed();
+                        let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
                         if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
                             libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws);
                         }
@@ -385,7 +385,7 @@ fn spawn_signal_thread(
                 signal_hook::consts::SIGCONT => {
                     // SAFETY: same ioctl + kill pattern as SIGWINCH above.
                     unsafe {
-                        let mut ws: libc::winsize = std::mem::zeroed();
+                        let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
                         if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
                             libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws);
                         }
