@@ -152,7 +152,7 @@ fn monitor() -> &'static ConnectivityMonitor {
         let (tx, rx) = mpsc::channel::<()>();
         let probe_url = Arc::new(Mutex::new(String::new()));
         let probe_url_for_thread = Arc::clone(&probe_url);
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("nshd-connectivity".into())
             .spawn(move || {
                 let mut attempt: usize = 0;
@@ -169,7 +169,9 @@ fn monitor() -> &'static ConnectivityMonitor {
                     attempt = step.next_attempt;
                 }
             })
-            .ok();
+        {
+            eprintln!("nsh: failed to spawn connectivity monitor thread: {e}");
+        }
 
         ConnectivityMonitor {
             probe_url,
