@@ -16,6 +16,7 @@ fn is_root() -> bool {
     {
         return false;
     }
+    // SAFETY: geteuid is a read-only syscall with no preconditions.
     unsafe { libc::geteuid() == 0 }
 }
 

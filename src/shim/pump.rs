@@ -370,6 +370,9 @@ fn spawn_signal_thread(
         for sig in signals.forever() {
             match sig {
                 signal_hook::consts::SIGWINCH => {
+                    // SAFETY: ioctl with TIOCGWINSZ/TIOCSWINSZ reads/writes a
+                    // plain winsize struct on valid file descriptors; kill sends
+                    // a signal to a known child pid.
                     unsafe {
                         let mut ws: libc::winsize = std::mem::zeroed();
                         if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
@@ -380,6 +383,7 @@ fn spawn_signal_thread(
                     winch_pending.store(true, Ordering::Relaxed);
                 }
                 signal_hook::consts::SIGCONT => {
+                    // SAFETY: same ioctl + kill pattern as SIGWINCH above.
                     unsafe {
                         let mut ws: libc::winsize = std::mem::zeroed();
                         if libc::ioctl(stdin_fd, libc::TIOCGWINSZ, &mut ws) == 0 {
@@ -420,6 +424,8 @@ pub fn pump_loop(
     let max_output_bytes = wrap_config.max_output_storage_bytes;
     let active_conns = Arc::new(AtomicUsize::new(0));
 
+    // SAFETY: installing SIG_IGN for job-control signals so the parent
+    // pump process isn't suspended by the terminal driver.
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         libc::signal(libc::SIGTTIN, libc::SIG_IGN);
@@ -457,6 +463,7 @@ pub fn pump_loop(
     // while the shell is blocked writing to the PTY slave (circular wait).
     {
         use std::os::fd::AsRawFd;
+        // SAFETY: fcntl with F_GETFL/F_SETFL on a valid owned fd is safe.
         let flags = unsafe { libc::fcntl(pty_master.as_raw_fd(), libc::F_GETFL) };
         if flags >= 0 {
             unsafe {
