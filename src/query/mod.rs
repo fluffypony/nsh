@@ -901,13 +901,11 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             content: crate::security::wrap_tool_result(name, &correction, boundary),
                             is_error: true,
                         });
-                        // Only truly abort after 5 repeats
+                        // Abort after 5 consecutive repeat failures (correction at 4 didn't help)
                         if loop_state.repeat_guard.repeat_fail_count >= 5 {
                             loop_state.abort_tool_loop = true;
                             break;
                         }
-                        // Reset guard to give fresh chances after correction injection, but only after threshold check
-                        loop_state.repeat_guard = RepeatGuard::default();
                         continue;
                     }
                     continue;
