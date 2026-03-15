@@ -286,9 +286,6 @@ async fn initialize_query_session<'a>(
         config.models.main.clone()
     };
 
-    // Placeholder for future model capability detection (tool-calling/JSON mode)
-    let _model_name = chain.first().cloned().unwrap_or_default();
-
     // ── Skills + MCP ───────────────────────────────────
     let skills = crate::skills::load_skills();
 
