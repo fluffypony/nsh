@@ -1037,10 +1037,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             config,
                             opts.force_autorun,
                         ) {
-                            Ok(None) => ("Patch applied successfully.".to_string(), false),
-                            Ok(Some(err_msg)) => {
-                                (crate::security::sanitize_tool_output(&err_msg), true)
-                            }
+                            Ok(outcome) => outcome.into_parts(),
                             Err(e) => {
                                 let err_msg = format!("Failed to apply patch: {e}");
                                 display_tool_error(&err_msg, opts.json_output);

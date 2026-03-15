@@ -1,4 +1,5 @@
 use crate::daemon_db::DbAccess;
+use crate::tools::ToolInvocationOutcome;
 #[cfg(test)]
 use crate::tools::write_file::trash_dir;
 use crate::tools::write_file::{
@@ -71,24 +72,22 @@ pub fn execute(
     private: bool,
     config: &crate::config::Config,
     force_autorun: bool,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<ToolInvocationOutcome> {
     let raw_path = input["path"].as_str().unwrap_or("");
     let search = input["search"].as_str().unwrap_or("");
     let replace = input["replace"].as_str().unwrap_or("");
 
     let redact_re = regex::Regex::new(r"\[REDACTED:[a-zA-Z0-9_-]+\]").unwrap();
     if redact_re.is_match(search) {
-        return Ok(Some(
+        return Ok(ToolInvocationOutcome::failure(
             "search text contains redaction markers ([REDACTED:...]). \
-             Use a different edit anchor that doesn't span redacted content."
-                .into(),
+             Use a different edit anchor that doesn't span redacted content.",
         ));
     }
     if redact_re.is_match(replace) {
-        return Ok(Some(
+        return Ok(ToolInvocationOutcome::failure(
             "replacement text contains redaction markers ([REDACTED:...]). \
-             Cannot write redacted content. Use the actual values."
-                .into(),
+             Cannot write redacted content. Use the actual values.",
         ));
     }
 
@@ -101,7 +100,7 @@ pub fn execute(
         config.tools.sensitive_file_access.as_str(),
     ) {
         Ok(p) => p,
-        Err(e) => return Ok(Some(e.to_string())),
+        Err(e) => return Ok(ToolInvocationOutcome::failure(e.to_string())),
     };
     let path = prepared.path;
     let occurrences = prepared.occurrences;
@@ -161,7 +160,7 @@ pub fn execute(
                     audit_risk: None,
                 },
             )?;
-            return Ok(None);
+            return Ok(ToolInvocationOutcome::success("Patch declined."));
         }
     }
 
@@ -194,7 +193,7 @@ pub fn execute(
         },
     )?;
 
-    Ok(None)
+    Ok(ToolInvocationOutcome::success("Patch applied successfully."))
 }
 
 #[cfg(test)]
@@ -519,6 +518,18 @@ mod tests {
         crate::config::Config::default()
     }
 
+    fn assert_failure_contains(outcome: ToolInvocationOutcome, expected: &str) {
+        match outcome {
+            ToolInvocationOutcome::Failure(msg) => assert!(
+                msg.contains(expected),
+                "expected failure containing '{expected}', got: {msg}"
+            ),
+            ToolInvocationOutcome::Success(msg) => {
+                panic!("expected Failure containing '{expected}', got Success: {msg}")
+            }
+        }
+    }
+
     #[test]
     fn test_execute_redaction_marker_in_search() {
         let input = serde_json::json!({
@@ -529,12 +540,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .contains("search text contains redaction markers")
-        );
+        assert_failure_contains(result, "search text contains redaction markers");
     }
 
     #[test]
@@ -547,12 +553,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert!(result.is_some());
-        assert!(
-            result
-                .unwrap()
-                .contains("replacement text contains redaction markers")
-        );
+        assert_failure_contains(result, "replacement text contains redaction markers");
     }
 
     #[test]
@@ -565,7 +566,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert_eq!(result, Some("path is required".into()));
+        assert_failure_contains(result, "path is required");
     }
 
     #[test]
@@ -577,7 +578,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert_eq!(result, Some("path is required".into()));
+        assert_failure_contains(result, "path is required");
     }
 
     #[test]
@@ -590,7 +591,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert_eq!(result, Some("search is required".into()));
+        assert_failure_contains(result, "search is required");
     }
 
     #[test]
@@ -603,8 +604,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("path traversal"));
+        assert_failure_contains(result, "path traversal");
     }
 
     #[test]
@@ -617,8 +617,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("cannot read"));
+        assert_failure_contains(result, "cannot read");
     }
 
     #[test]
@@ -635,8 +634,7 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("search text not found"));
+        assert_failure_contains(result, "search text not found");
     }
 
     #[test]
@@ -650,11 +648,7 @@ mod tests {
             "replace": "x",
         });
         let result = execute(&input, "q", &db, "s", false, &config, false).unwrap();
-        assert!(
-            result
-                .unwrap()
-                .contains("search text contains redaction markers")
-        );
+        assert_failure_contains(result, "search text contains redaction markers");
 
         let input = serde_json::json!({
             "path": "/tmp/test.txt",
@@ -662,11 +656,7 @@ mod tests {
             "replace": "[REDACTED:A]",
         });
         let result = execute(&input, "q", &db, "s", false, &config, false).unwrap();
-        assert!(
-            result
-                .unwrap()
-                .contains("replacement text contains redaction markers")
-        );
+        assert_failure_contains(result, "replacement text contains redaction markers");
     }
 
     #[test]
@@ -681,10 +671,6 @@ mod tests {
         let db = test_db();
         let config = test_config();
         let result = execute(&input, "query", &db, "sess", false, &config, false).unwrap();
-        let message = result.expect("sensitive path should return an error message");
-        assert!(
-            message.contains("blocked"),
-            "expected blocked sensitive-path message, got: {message}"
-        );
+        assert_failure_contains(result, "blocked");
     }
 }
