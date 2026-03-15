@@ -39,7 +39,12 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
                 crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
                     println!("{}", serde_json::to_string_pretty(&data)?);
                 }
-                response => eprintln!("{response:?}"),
+                crate::daemon::DaemonResponse::Ok { data: None } => {
+                    eprintln!("nsh: no memory stats available");
+                }
+                crate::daemon::DaemonResponse::Error { message } => {
+                    eprintln!("nsh: memory stats failed: {message}");
+                }
             }
         }
         MemoryAction::Core => {
@@ -50,7 +55,12 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
                 crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
                     println!("{}", serde_json::to_string_pretty(&data)?);
                 }
-                response => eprintln!("{response:?}"),
+                crate::daemon::DaemonResponse::Ok { data: None } => {
+                    eprintln!("nsh: no core memory blocks found");
+                }
+                crate::daemon::DaemonResponse::Error { message } => {
+                    eprintln!("nsh: core memory read failed: {message}");
+                }
             }
         }
         MemoryAction::Maintain => {
@@ -119,7 +129,12 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
                 crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
                     println!("{}", serde_json::to_string_pretty(&data)?);
                 }
-                response => eprintln!("{response:?}"),
+                crate::daemon::DaemonResponse::Ok { data: None } => {
+                    eprintln!("nsh: no memory data to export");
+                }
+                crate::daemon::DaemonResponse::Error { message } => {
+                    eprintln!("nsh: memory export failed: {message}");
+                }
             }
         }
         MemoryAction::Telemetry => {

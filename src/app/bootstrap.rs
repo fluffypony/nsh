@@ -1,13 +1,10 @@
-pub(super) fn handle_cli_proxy_action(action: &str) -> anyhow::Result<()> {
+pub(super) fn handle_cli_proxy_action(action: &crate::cli::CliProxyAction) -> anyhow::Result<()> {
+    use crate::cli::CliProxyAction;
     let request = match action {
-        "ensure" => crate::daemon::DaemonRequest::EnsureCLIProxyApi,
-        "status" => crate::daemon::DaemonRequest::CLIProxyApiStatus,
-        "restart" => crate::daemon::DaemonRequest::CLIProxyApiRestart,
-        "check-updates" => crate::daemon::DaemonRequest::CheckForUpdates,
-        _ => {
-            eprintln!("Usage: nsh cliproxy <ensure|status|restart|check-updates>");
-            return Ok(());
-        }
+        CliProxyAction::Ensure => crate::daemon::DaemonRequest::EnsureCLIProxyApi,
+        CliProxyAction::Status => crate::daemon::DaemonRequest::CLIProxyApiStatus,
+        CliProxyAction::Restart => crate::daemon::DaemonRequest::CLIProxyApiRestart,
+        CliProxyAction::CheckUpdates => crate::daemon::DaemonRequest::CheckForUpdates,
     };
     super::daemon_runtime::bootstrap_global_daemon()?;
     let response = super::daemon_runtime::send_to_global_or_fallback(&request)?;

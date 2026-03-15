@@ -185,9 +185,16 @@ pub enum Commands {
 
     /// Manage the local CLIProxyAPI sidecar
     CliProxy {
-        /// Action: ensure, status, restart, or check-updates
-        action: String,
+        action: CliProxyAction,
     },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum CliProxyAction {
+    Ensure,
+    Status,
+    Restart,
+    CheckUpdates,
 }
 
 #[derive(Subcommand)]

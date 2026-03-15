@@ -10,7 +10,14 @@ enum ManageConfigRequest {
     },
 }
 
-pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
+/// Outcome of a config change attempt.
+#[derive(Debug)]
+enum ConfigOutcome {
+    Applied(String),
+    Declined(String),
+}
+
+fn execute(input: &serde_json::Value) -> anyhow::Result<ConfigOutcome> {
     let request = parse_request(input)?;
     let key = match &request {
         ManageConfigRequest::Set { key, .. } | ManageConfigRequest::Remove { key } => key.as_str(),
@@ -21,7 +28,9 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             "\x1b[1;31m✗ Setting '{key}' is security-sensitive and cannot be changed via AI tool call.\x1b[0m"
         );
         eprintln!("\x1b[2m  Edit manually: nsh config edit\x1b[0m");
-        return Ok("User declined or protected setting".to_string());
+        return Ok(ConfigOutcome::Declined(
+            "User declined or protected setting".to_string(),
+        ));
     }
 
     let config_path = crate::config::Config::path();
@@ -54,7 +63,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
                 eprintln!("{red}✗ Invalid configuration: {e}{reset}");
                 eprintln!("{dim}The change was not applied.{reset}");
-                return Ok("Config change declined".to_string());
+                return Ok(ConfigOutcome::Declined("Config change declined".to_string()));
             }
 
             eprintln!("{bold_yellow}nsh config change:{reset}");
@@ -70,18 +79,20 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
                 "{bold_yellow}Apply? [y/N]{reset} "
             ))? {
                 eprintln!("{dim}config change declined{reset}");
-                return Ok("Config change declined".to_string());
+                return Ok(ConfigOutcome::Declined("Config change declined".to_string()));
             }
 
             backup_config(&config_path)?;
             write_config(&config_path, &new_content)?;
             eprintln!("{green}✓ config updated: {key}{reset}");
-            Ok(format!("Successfully applied config change: set {key}"))
+            Ok(ConfigOutcome::Applied(format!(
+                "Successfully applied config change: set {key}"
+            )))
         }
         ManageConfigRequest::Remove { key } => {
             if !remove_toml_value(&mut doc, &key)? {
                 eprintln!("Key not found: {key}");
-                return Ok("Config change declined".to_string());
+                return Ok(ConfigOutcome::Declined("Config change declined".to_string()));
             }
 
             let new_content = doc.to_string();
@@ -89,7 +100,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
             if let Err(e) = toml::from_str::<crate::config::Config>(&new_content) {
                 eprintln!("{red}✗ Invalid configuration: {e}{reset}");
                 eprintln!("{dim}The change was not applied.{reset}");
-                return Ok("Config change declined".to_string());
+                return Ok(ConfigOutcome::Declined("Config change declined".to_string()));
             }
 
             eprintln!("{bold_yellow}nsh config removal:{reset}");
@@ -99,26 +110,23 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
                 "{bold_yellow}Apply? [y/N]{reset} "
             ))? {
                 eprintln!("{dim}config change declined{reset}");
-                return Ok("Config change declined".to_string());
+                return Ok(ConfigOutcome::Declined("Config change declined".to_string()));
             }
 
             backup_config(&config_path)?;
             write_config(&config_path, &new_content)?;
             eprintln!("{green}✓ config key removed: {key}{reset}");
-            Ok(format!("Successfully removed config key: {key}"))
+            Ok(ConfigOutcome::Applied(format!(
+                "Successfully removed config key: {key}"
+            )))
         }
     }
 }
 
 pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
     match execute(input)? {
-        message
-            if message == "Config change declined"
-                || message == "User declined or protected setting" =>
-        {
-            Ok(ToolInvocationOutcome::failure(message))
-        }
-        message => Ok(ToolInvocationOutcome::success(message)),
+        ConfigOutcome::Declined(message) => Ok(ToolInvocationOutcome::failure(message)),
+        ConfigOutcome::Applied(message) => Ok(ToolInvocationOutcome::success(message)),
     }
 }
 
