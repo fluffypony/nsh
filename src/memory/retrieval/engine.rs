@@ -116,3 +116,250 @@ impl<'a> MemoryRetrievalEngine<'a> {
         crate::memory::retrieval::prompt_builder::build_memory_prompt(memories)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::types::{InteractionMode, MemoryQueryContext};
+
+    struct MockLlm {
+        response: serde_json::Value,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryLlmClient for MockLlm {
+        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
+            Ok(self.response.clone())
+        }
+    }
+
+    fn setup_memory() -> (Arc<Mutex<Connection>>, crate::config::MemoryConfig) {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::memory::schema::create_memory_tables(&conn).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let config = crate::config::MemoryConfig::default();
+        (db, config)
+    }
+
+    fn make_query_ctx(query: &str, mode: InteractionMode) -> MemoryQueryContext {
+        MemoryQueryContext {
+            query: query.to_string(),
+            cwd: Some("/home/user/project".into()),
+            session_id: None,
+            interaction_mode: mode,
+            error_context: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn retrieve_returns_core_memory_always() {
+        let (db, config) = setup_memory();
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+
+        let ctx = make_query_ctx("hello", InteractionMode::CommandSuggestion);
+        let result = engine.retrieve_for_query(&ctx, None).await.unwrap();
+
+        // Core memory (3 seeded blocks) should always be present
+        assert_eq!(result.core.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn retrieve_command_suggestion_skips_full_retrieval() {
+        let (db, config) = setup_memory();
+
+        // Insert a semantic item to verify it's NOT returned via BM25 search
+        {
+            let conn = db.lock().unwrap();
+            crate::memory::store::semantic::store(
+                &conn,
+                &crate::memory::store::semantic::SemanticWrite {
+                    name: "test_fact",
+                    category: "tools",
+                    summary: "User uses cargo for builds",
+                    details: None,
+                    search_keywords: "cargo build rust",
+                },
+            )
+            .unwrap();
+        }
+
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+        let ctx = make_query_ctx("cargo build", InteractionMode::CommandSuggestion);
+        let result = engine.retrieve_for_query(&ctx, None).await.unwrap();
+
+        // CommandSuggestion does NOT trigger full retrieval
+        assert!(result.relevant_episodic.is_empty());
+        assert!(result.procedural.is_empty());
+        assert!(result.knowledge.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrieve_natural_language_performs_full_retrieval() {
+        let (db, config) = setup_memory();
+
+        // Insert data across multiple stores
+        {
+            let conn = db.lock().unwrap();
+            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+
+            store
+                .apply_op(&crate::memory::types::MemoryOp::SemanticInsert {
+                    name: "rust_project".into(),
+                    category: "tools".into(),
+                    summary: "This is a Rust project using cargo".into(),
+                    details: None,
+                    search_keywords: "rust cargo project".into(),
+                })
+                .unwrap();
+
+            store
+                .apply_op(&crate::memory::types::MemoryOp::EpisodicInsert {
+                    event: crate::memory::types::EpisodicEventCreate {
+                        event_type: crate::memory::types::EventType::CommandExecution,
+                        actor: crate::memory::types::Actor::User,
+                        summary: "ran cargo build".into(),
+                        details: None,
+                        command: Some("cargo build".into()),
+                        exit_code: Some(0),
+                        working_dir: Some("/home/user/project".into()),
+                        project_context: None,
+                        search_keywords: "cargo build rust".into(),
+                    },
+                })
+                .unwrap();
+        }
+
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+        let ctx = make_query_ctx("how do I build with cargo", InteractionMode::NaturalLanguage);
+
+        let llm = MockLlm {
+            response: serde_json::json!(["cargo", "build", "rust"]),
+        };
+        let result = engine
+            .retrieve_for_query(&ctx, Some(&llm))
+            .await
+            .unwrap();
+
+        // Should have core memory
+        assert_eq!(result.core.len(), 3);
+        // Should have recent episodic (the one we inserted)
+        assert!(!result.recent_episodic.is_empty());
+        // Should have semantic results from BM25
+        assert!(!result.semantic.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrieve_with_cwd_returns_resources() {
+        let (db, config) = setup_memory();
+
+        // Insert a resource tied to a CWD
+        {
+            let conn = db.lock().unwrap();
+            crate::memory::store::resource::store(
+                &conn,
+                &crate::memory::store::resource::ResourceWrite {
+                    resource_type: "file",
+                    file_path: Some("/home/user/project/Cargo.toml"),
+                    file_hash: None,
+                    title: "Cargo.toml",
+                    summary: "Rust project manifest",
+                    content: Some("[package]\nname = \"nsh\""),
+                    search_keywords: "cargo toml rust",
+                },
+            )
+            .unwrap();
+        }
+
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+        let mut ctx = make_query_ctx("what deps do we have", InteractionMode::NaturalLanguage);
+        ctx.cwd = Some("/home/user/project".into());
+
+        let result = engine.retrieve_for_query(&ctx, None).await.unwrap();
+
+        assert!(
+            !result.resource.is_empty(),
+            "should retrieve resources for matching CWD"
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieve_deduplicates_semantic_results() {
+        let (db, config) = setup_memory();
+
+        // Insert a semantic item with high access count (will be in top_semantic)
+        {
+            let conn = db.lock().unwrap();
+            crate::memory::store::semantic::store(
+                &conn,
+                &crate::memory::store::semantic::SemanticWrite {
+                    name: "cargo_tool",
+                    category: "tools",
+                    summary: "cargo is the Rust build tool",
+                    details: None,
+                    search_keywords: "cargo rust build tool",
+                },
+            )
+            .unwrap();
+            // Increment access count so it appears in top_accessed
+            let items = crate::memory::store::semantic::list_all(&conn).unwrap();
+            for item in &items {
+                for _ in 0..10 {
+                    crate::memory::store::semantic::increment_access(&conn, &item.id).unwrap();
+                }
+            }
+        }
+
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+        let ctx = make_query_ctx("cargo build", InteractionMode::NaturalLanguage);
+
+        let llm = MockLlm {
+            response: serde_json::json!(["cargo", "build"]),
+        };
+        let result = engine
+            .retrieve_for_query(&ctx, Some(&llm))
+            .await
+            .unwrap();
+
+        // Verify no duplicate semantic IDs
+        let ids: Vec<_> = result.semantic.iter().map(|s| &s.id).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(ids.len(), unique.len(), "semantic results should be deduplicated");
+    }
+
+    #[test]
+    fn build_memory_prompt_produces_xml_tagged_output() {
+        let (db, config) = setup_memory();
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+
+        let memories = RetrievedMemories {
+            core: vec![crate::memory::types::CoreBlock {
+                label: crate::memory::types::CoreLabel::Human,
+                value: "test user".into(),
+                char_limit: 5000,
+                updated_at: String::new(),
+            }],
+            ..Default::default()
+        };
+
+        let prompt = engine.build_memory_prompt(&memories);
+        assert!(
+            prompt.contains("<memory_context>") || prompt.contains("<core_memory>"),
+            "prompt should contain XML memory tags"
+        );
+    }
+
+    #[tokio::test]
+    async fn retrieve_empty_db_returns_only_core() {
+        let (db, config) = setup_memory();
+        let engine = MemoryRetrievalEngine::new(&db, &config);
+
+        let ctx = make_query_ctx("anything", InteractionMode::NaturalLanguage);
+        let result = engine.retrieve_for_query(&ctx, None).await.unwrap();
+
+        assert_eq!(result.core.len(), 3);
+        assert!(result.recent_episodic.is_empty());
+        assert!(result.relevant_episodic.is_empty());
+        assert!(result.procedural.is_empty());
+        assert!(result.knowledge.is_empty());
+    }
+}

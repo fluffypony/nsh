@@ -130,3 +130,256 @@ impl<'a> MemoryIngestionPipeline<'a> {
         Ok(all_ops)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::types::{ShellEvent, ShellEventType};
+
+    struct MockLlm {
+        response: serde_json::Value,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryLlmClient for MockLlm {
+        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
+            Ok(self.response.clone())
+        }
+    }
+
+    fn setup_memory() -> (Arc<Mutex<Connection>>, crate::config::MemoryConfig) {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::memory::schema::create_memory_tables(&conn).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let config = crate::config::MemoryConfig::default();
+        (db, config)
+    }
+
+    fn make_event(cmd: &str, exit_code: i32) -> ShellEvent {
+        ShellEvent {
+            event_type: ShellEventType::CommandExecution,
+            command: Some(cmd.to_string()),
+            output: None,
+            exit_code: Some(exit_code),
+            working_dir: Some("/home/user".into()),
+            session_id: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            git_context: None,
+            instruction: None,
+            file_path: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ingest_batch_fast_path_produces_episodic_insert() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+        let llm = MockLlm {
+            response: serde_json::json!([]),
+        };
+
+        let events = vec![make_event("ls", 0)];
+        let ops = pipeline.ingest_batch(&events, &llm).await.unwrap();
+
+        assert_eq!(ops.len(), 1);
+        assert!(
+            matches!(&ops[0], MemoryOp::EpisodicInsert { .. }),
+            "fast-path command should produce EpisodicInsert"
+        );
+
+        // Verify it was persisted to the DB
+        let conn = db.lock().unwrap();
+        let count = crate::memory::store::episodic::count(&conn).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn ingest_batch_complex_event_routes_through_extractor() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+
+        // MockLlm returns a SemanticInsert op for complex events
+        let llm = MockLlm {
+            response: serde_json::json!([{
+                "op": "SemanticInsert",
+                "name": "rust_project",
+                "category": "tools",
+                "summary": "User works on a Rust project",
+                "details": null,
+                "search_keywords": "rust cargo project"
+            }]),
+        };
+
+        // UserInstruction events cannot be fast-pathed
+        let event = ShellEvent {
+            event_type: ShellEventType::UserInstruction,
+            command: None,
+            output: None,
+            exit_code: None,
+            working_dir: Some("/home/user/project".into()),
+            session_id: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            git_context: None,
+            instruction: Some("I prefer dark mode".into()),
+            file_path: None,
+        };
+
+        let ops = pipeline.ingest_batch(&[event], &llm).await.unwrap();
+
+        assert!(
+            !ops.is_empty(),
+            "complex event should produce ops from extractor"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, MemoryOp::SemanticInsert { .. })),
+            "should contain SemanticInsert from LLM extraction"
+        );
+
+        // Verify semantic item was persisted
+        let conn = db.lock().unwrap();
+        let count = crate::memory::store::semantic::count(&conn).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn ingest_batch_mixed_events_splits_fast_and_complex() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+
+        let llm = MockLlm {
+            response: serde_json::json!([{
+                "op": "NoOp",
+                "reason": "no useful memory from this event"
+            }]),
+        };
+
+        let events = vec![
+            // Fast-path: simple command
+            make_event("ls", 0),
+            // Complex: user instruction
+            ShellEvent {
+                event_type: ShellEventType::UserInstruction,
+                command: None,
+                output: None,
+                exit_code: None,
+                working_dir: None,
+                session_id: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                git_context: None,
+                instruction: Some("How do I build this?".into()),
+                file_path: None,
+            },
+        ];
+
+        let ops = pipeline.ingest_batch(&events, &llm).await.unwrap();
+
+        // Should have at least the fast-path EpisodicInsert + NoOp from extractor
+        assert!(ops.len() >= 2);
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, MemoryOp::EpisodicInsert { .. })),
+            "fast-path event should produce EpisodicInsert"
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, MemoryOp::NoOp { .. })),
+            "complex event should produce NoOp from mock"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_ingestion_empty_buffer_is_noop() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+        let llm = MockLlm {
+            response: serde_json::json!([]),
+        };
+
+        // Flushing empty buffer should succeed without touching DB
+        pipeline.flush_ingestion(&llm).await.unwrap();
+
+        let conn = db.lock().unwrap();
+        let count = crate::memory::store::episodic::count(&conn).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn flush_ingestion_drains_buffer_and_persists() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+        let llm = MockLlm {
+            response: serde_json::json!([]),
+        };
+
+        // Push events into buffer via record_event
+        pipeline.record_event(make_event("pwd", 0));
+        pipeline.record_event(make_event("whoami", 0));
+
+        assert!(!buffer.lock().unwrap().is_empty());
+
+        pipeline.flush_ingestion(&llm).await.unwrap();
+
+        assert!(buffer.lock().unwrap().is_empty());
+
+        // At least one episodic event should be persisted (the second may merge
+        // with the first via Jaro-Winkler consolidation, so count >= 1)
+        let conn = db.lock().unwrap();
+        let count = crate::memory::store::episodic::count(&conn).unwrap();
+        assert!(count >= 1, "should persist at least one episodic event, got {count}");
+    }
+
+    #[test]
+    fn record_event_skipped_in_incognito_mode() {
+        let (db, mut config) = setup_memory();
+        config.incognito = true;
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+
+        pipeline.record_event(make_event("ls", 0));
+
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_event_skipped_when_disabled() {
+        let (db, mut config) = setup_memory();
+        config.enabled = false;
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+
+        pipeline.record_event(make_event("ls", 0));
+
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_event_skipped_for_ignored_path() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let ignore_patterns = vec!["/secret/*".to_string()];
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &ignore_patterns);
+
+        let mut event = make_event("ls", 0);
+        event.working_dir = Some("/secret/stuff".into());
+        pipeline.record_event(event);
+
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_event_buffers_normal_event() {
+        let (db, config) = setup_memory();
+        let buffer = Mutex::new(IngestionBuffer::new(15, 60));
+        let pipeline = MemoryIngestionPipeline::new(&db, &config, &buffer, &[]);
+
+        pipeline.record_event(make_event("ls", 0));
+
+        assert_eq!(buffer.lock().unwrap().len(), 1);
+    }
+}
