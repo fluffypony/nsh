@@ -469,74 +469,11 @@ fn format_pumped_command_output(
     crate::redact::redact_secrets(&result, &config.redaction)
 }
 
-fn write_pending_shell_files(
-    session_id: &str,
-    command: &str,
-    pending: bool,
-    execute_via_shell_autorun: bool,
-) -> anyhow::Result<()> {
-    let nsh_dir = crate::config::Config::nsh_dir();
-
-    if pending {
-        let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
-        let tmp = pending_file.with_extension("tmp");
-        {
-            use std::io::Write;
-            #[cfg(unix)]
-            use std::os::unix::fs::OpenOptionsExt;
-            #[cfg(unix)]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            #[cfg(not(unix))]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)?;
-            f.write_all(b"1")?;
-        }
-        std::fs::rename(&tmp, &pending_file)?;
-    } else {
-        let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
-        let _ = std::fs::remove_file(&stale_flag);
-    }
-
-    let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
-    if execute_via_shell_autorun {
-        let tmp = autorun_file.with_extension("tmp");
-        {
-            use std::io::Write;
-            #[cfg(unix)]
-            use std::os::unix::fs::OpenOptionsExt;
-            #[cfg(unix)]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            #[cfg(not(unix))]
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)?;
-            f.write_all(b"1")?;
-        }
-        std::fs::rename(&tmp, &autorun_file)?;
-        eprintln!("\x1b[2m(auto-running)\x1b[0m");
-    } else {
-        let _ = std::fs::remove_file(&autorun_file);
-    }
-
-    let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+/// Atomically write `content` to `path` with mode 0o600 (unix) via a `.tmp` rename.
+fn write_atomic_private(path: &std::path::Path, content: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
     {
-        use std::io::Write;
-        let tmp = cmd_file.with_extension("tmp");
         #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
         #[cfg(unix)]
@@ -552,9 +489,38 @@ fn write_pending_shell_files(
             .create(true)
             .truncate(true)
             .open(&tmp)?;
-        f.write_all(command.as_bytes())?;
-        std::fs::rename(&tmp, &cmd_file)?;
+        f.write_all(content)?;
     }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn write_pending_shell_files(
+    session_id: &str,
+    command: &str,
+    pending: bool,
+    execute_via_shell_autorun: bool,
+) -> anyhow::Result<()> {
+    let nsh_dir = crate::config::Config::nsh_dir();
+
+    if pending {
+        let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
+        write_atomic_private(&pending_file, b"1")?;
+    } else {
+        let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
+        let _ = std::fs::remove_file(&stale_flag);
+    }
+
+    let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
+    if execute_via_shell_autorun {
+        write_atomic_private(&autorun_file, b"1")?;
+        eprintln!("\x1b[2m(auto-running)\x1b[0m");
+    } else {
+        let _ = std::fs::remove_file(&autorun_file);
+    }
+
+    let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
+    write_atomic_private(&cmd_file, command.as_bytes())?;
 
     Ok(())
 }
