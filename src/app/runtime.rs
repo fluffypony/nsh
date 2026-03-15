@@ -334,3 +334,87 @@ fn atomic_write(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_dns_txt_records_valid() {
+        let raw = "0.2.0:aarch64-apple-darwin:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234\n\
+                   0.2.1:x86_64-unknown-linux-gnu:1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff\n";
+        let records = parse_dns_txt_records(raw);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].0, "0.2.0");
+        assert_eq!(records[0].1, "aarch64-apple-darwin");
+        assert_eq!(records[1].0, "0.2.1");
+        assert_eq!(records[1].1, "x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn parse_dns_txt_records_strips_quotes() {
+        let raw = "\"0.1.0:aarch64-apple-darwin:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234\"";
+        let records = parse_dns_txt_records(raw);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, "0.1.0");
+    }
+
+    #[test]
+    fn parse_dns_txt_records_rejects_bad_sha() {
+        let raw = "0.2.0:aarch64-apple-darwin:tooshort\n";
+        assert!(parse_dns_txt_records(raw).is_empty());
+    }
+
+    #[test]
+    fn parse_dns_txt_records_rejects_bad_version() {
+        let raw = "v0.2.0:aarch64-apple-darwin:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234\n";
+        assert!(parse_dns_txt_records(raw).is_empty());
+    }
+
+    #[test]
+    fn parse_dns_txt_records_empty_input() {
+        assert!(parse_dns_txt_records("").is_empty());
+        assert!(parse_dns_txt_records("\n\n").is_empty());
+    }
+
+    #[test]
+    fn find_latest_for_target_picks_highest_version() {
+        let records = vec![
+            ("0.1.0".into(), "aarch64-apple-darwin".into(), "sha_a".into()),
+            ("0.3.0".into(), "aarch64-apple-darwin".into(), "sha_c".into()),
+            ("0.2.0".into(), "aarch64-apple-darwin".into(), "sha_b".into()),
+        ];
+        let result = find_latest_for_target(&records, "aarch64-apple-darwin");
+        assert_eq!(result, Some(("0.3.0".into(), "sha_c".into())));
+    }
+
+    #[test]
+    fn find_latest_for_target_filters_by_target() {
+        let records = vec![
+            ("0.5.0".into(), "x86_64-unknown-linux-gnu".into(), "sha_l".into()),
+            ("0.1.0".into(), "aarch64-apple-darwin".into(), "sha_m".into()),
+        ];
+        let result = find_latest_for_target(&records, "aarch64-apple-darwin");
+        assert_eq!(result, Some(("0.1.0".into(), "sha_m".into())));
+    }
+
+    #[test]
+    fn find_latest_for_target_none_when_no_match() {
+        let records = vec![
+            ("0.1.0".into(), "x86_64-unknown-linux-gnu".into(), "sha".into()),
+        ];
+        assert!(find_latest_for_target(&records, "aarch64-apple-darwin").is_none());
+    }
+
+    #[test]
+    fn find_latest_for_target_empty_records() {
+        assert!(find_latest_for_target(&[], "any-target").is_none());
+    }
+
+    #[test]
+    fn current_target_triple_returns_something_on_this_platform() {
+        // This test runs on the build platform; it should match one of the known triples
+        let result = current_target_triple();
+        assert!(result.is_some(), "current platform should be supported");
+    }
+}
