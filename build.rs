@@ -1,5 +1,16 @@
 use std::process::Command;
 
+/// Compute a stable hash of shell hook templates so we can detect when hooks changed.
+/// Uses FNV-1a instead of DefaultHasher which is not stable across Rust versions.
+fn stable_fnv1a(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in data {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
@@ -32,8 +43,7 @@ fn main() {
     // Per-build timestamp so even non-git builds get a unique fingerprint
     let build_nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| format!("{}", d.as_millis()))
-        .unwrap_or_else(|_| "0".to_string());
+        .map_or_else(|_| "0".to_string(), |d| format!("{}", d.as_millis()));
     println!("cargo:rustc-env=NSH_BUILD_NONCE={build_nonce}");
 
     // Composite fingerprint: git_sha + dirty + timestamp
@@ -50,16 +60,6 @@ fn main() {
         if is_core { "1" } else { "0" }
     );
 
-    // Compute a stable hash of shell hook templates so we can detect when hooks changed.
-    // Uses FNV-1a instead of DefaultHasher which is not stable across Rust versions.
-    fn stable_fnv1a(data: &[u8]) -> u64 {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for &byte in data {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        hash
-    }
     let mut combined = Vec::new();
     for shell_file in &[
         "shell/nsh.zsh",
