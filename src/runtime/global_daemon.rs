@@ -322,6 +322,9 @@ fn pid_alive(pid: i64) -> bool {
     if pid <= 0 {
         return false;
     }
+    // SAFETY: libc::kill with signal 0 performs an existence check without
+    // delivering a signal. The pid is validated > 0 above and cast to i32 is
+    // lossless for valid Unix PIDs.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
@@ -363,6 +366,8 @@ fn acquire_global_daemon_lock() -> anyhow::Result<Option<std::fs::File>> {
         .open(&lock_path)?;
 
     use std::os::fd::AsRawFd;
+    // SAFETY: lock_file is an open File whose fd is valid for the duration
+    // of this call. LOCK_EX | LOCK_NB is a valid flock operation.
     let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if ret != 0 {
         log_daemon(
@@ -376,6 +381,9 @@ fn acquire_global_daemon_lock() -> anyhow::Result<Option<std::fs::File>> {
 }
 
 fn detach_global_daemon() {
+    // SAFETY: setsid() creates a new session for the calling process. This is
+    // called once during daemon startup before any threads are spawned, so there
+    // are no concurrent thread-safety concerns.
     unsafe {
         libc::setsid();
     }
@@ -2134,7 +2142,7 @@ fn execute_read(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::MemoryGetCore => match memory.get_core_memory() {
+        DaemonRequest::MemoryGetCore => match memory.core_memory() {
             Ok(blocks) => {
                 let json: Vec<serde_json::Value> = blocks
                     .iter()

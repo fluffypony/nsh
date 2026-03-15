@@ -148,6 +148,9 @@ pub fn is_global_daemon_running() -> bool {
     }
     if let Ok(pid_str) = std::fs::read_to_string(crate::daemon::global_daemon_pid_path())
         && let Ok(pid) = pid_str.trim().parse::<i32>()
+        // SAFETY: `kill(pid, 0)` with signal 0 performs an existence check without
+        // delivering a signal. The pid was just parsed from our own pid file, and
+        // sending signal 0 to a stale/invalid pid is harmless (returns -1/ESRCH).
         && unsafe { libc::kill(pid, 0) } != 0
     {
         let _ = std::fs::remove_file(&socket_path);
@@ -235,13 +238,22 @@ pub fn stop_global_daemon() -> bool {
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
             && let Ok(pid) = pid_str.trim().parse::<i32>()
         {
+            // SAFETY: pid was read from our own pid file; sending SIGTERM to a
+            // process we own is a well-defined POSIX operation. If the pid is
+            // stale, kill() harmlessly returns -1/ESRCH.
             unsafe { libc::kill(pid, libc::SIGTERM) };
             for _ in 0..20 {
                 std::thread::sleep(std::time::Duration::from_millis(100));
+                // SAFETY: `kill(pid, 0)` checks whether the process is still alive
+                // without delivering a signal. The pid originates from our pid file;
+                // a stale pid simply causes kill() to return -1/ESRCH.
                 if unsafe { libc::kill(pid, 0) } != 0 {
                     return true;
                 }
             }
+            // SAFETY: pid was read from our own pid file and the process did not
+            // exit after SIGTERM within the grace period. Escalating to SIGKILL is
+            // a well-defined POSIX operation; a stale pid is harmless (ESRCH).
             unsafe { libc::kill(pid, libc::SIGKILL) };
             return true;
         }
@@ -341,6 +353,9 @@ pub fn signal_daemon_restart() -> bool {
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
             && let Ok(pid) = pid_str.trim().parse::<i32>()
         {
+            // SAFETY: pid was read from our own pid file; sending SIGHUP to
+            // request a graceful restart is a well-defined POSIX operation. If the
+            // pid is stale, kill() returns -1 and we report false.
             return unsafe { libc::kill(pid, libc::SIGHUP) } == 0;
         }
         false

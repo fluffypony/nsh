@@ -2748,6 +2748,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_ssh_context_without_env() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CLIENT");
             std::env::remove_var("SSH_CONNECTION");
@@ -4049,10 +4050,12 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_ssh_context_with_env() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::set_var("SSH_CLIENT", "10.0.0.5 12345 22");
         }
         let result = detect_ssh_context();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CLIENT");
         }
@@ -4065,11 +4068,13 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_ssh_context_with_connection_env() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CLIENT");
             std::env::set_var("SSH_CONNECTION", "192.168.1.100 54321 192.168.1.1 22");
         }
         let result = detect_ssh_context();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CONNECTION");
         }
@@ -5518,10 +5523,12 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_timezone_with_tz_env() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::set_var("TZ", "America/New_York");
         }
         let tz = detect_timezone();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("TZ");
         }
@@ -5532,11 +5539,13 @@ mod tests {
     #[serial_test::serial]
     fn test_detect_timezone_without_tz_env() {
         let original = std::env::var("TZ").ok();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("TZ");
         }
         let tz = detect_timezone();
         if let Some(orig) = original {
+            // SAFETY: test runs serially; no concurrent env access
             unsafe {
                 std::env::set_var("TZ", orig);
             }
@@ -5551,10 +5560,12 @@ mod tests {
     fn test_detect_locale_with_lc_all() {
         let orig_lc = std::env::var("LC_ALL").ok();
         let orig_lang = std::env::var("LANG").ok();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::set_var("LC_ALL", "fr_FR.UTF-8");
         }
         let locale = detect_locale();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             match orig_lc {
                 Some(v) => std::env::set_var("LC_ALL", v),
@@ -5573,11 +5584,13 @@ mod tests {
     fn test_detect_locale_falls_back_to_lang() {
         let orig_lc = std::env::var("LC_ALL").ok();
         let orig_lang = std::env::var("LANG").ok();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("LC_ALL");
             std::env::set_var("LANG", "de_DE.UTF-8");
         }
         let locale = detect_locale();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             match orig_lc {
                 Some(v) => std::env::set_var("LC_ALL", v),
@@ -5596,11 +5609,13 @@ mod tests {
     fn test_detect_locale_default_when_no_env() {
         let orig_lc = std::env::var("LC_ALL").ok();
         let orig_lang = std::env::var("LANG").ok();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("LC_ALL");
             std::env::remove_var("LANG");
         }
         let locale = detect_locale();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             match orig_lc {
                 Some(v) => std::env::set_var("LC_ALL", v),
@@ -5619,11 +5634,13 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_ssh_context_single_field() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CONNECTION");
             std::env::set_var("SSH_CLIENT", "8.8.8.8");
         }
         let result = detect_ssh_context();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CLIENT");
         }
@@ -5634,11 +5651,13 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn test_detect_ssh_context_special_chars_in_ip() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CONNECTION");
             std::env::set_var("SSH_CLIENT", "fe80::1%eth0 12345 22");
         }
         let result = detect_ssh_context();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("SSH_CLIENT");
         }

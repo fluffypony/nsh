@@ -748,7 +748,9 @@ async fn execute_bash(
                 let _ = child.start_kill();
                 #[cfg(unix)]
                 if let Some(id) = child.id() {
-                    // Kill the child process only (not process group)
+                    // SAFETY: child.id() returns a valid PID for a still-running
+                    // process. SIGTERM is a standard termination signal. The cast
+                    // to i32 is lossless for valid Unix PIDs.
                     unsafe { libc::kill(id as i32, libc::SIGTERM); }
                 }
                 let _ = child.wait().await;
@@ -785,6 +787,9 @@ async fn execute_bash(
                     let _ = child.start_kill();
                     #[cfg(unix)]
                     if let Some(id) = child.id() {
+                        // SAFETY: child.id() returns a valid PID for a still-running
+                        // process. SIGTERM is a standard termination signal. The cast
+                        // to i32 is lossless for valid Unix PIDs.
                         unsafe { libc::kill(id as i32, libc::SIGTERM); }
                     }
                     let _ = child.wait().await;

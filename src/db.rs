@@ -194,6 +194,8 @@ pub fn init_db(conn: &Connection, busy_timeout_ms: u64) -> rusqlite::Result<()> 
             #[cfg(unix)]
             {
                 use std::os::fd::AsRawFd;
+                // SAFETY: file is an open File whose fd is valid for the
+                // duration of this call. LOCK_EX is a valid flock operation.
                 unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
             }
             Some(file)
@@ -751,6 +753,8 @@ impl Db {
             }
             #[cfg(unix)]
             let process_missing = {
+                // SAFETY: libc::kill with signal 0 checks process existence
+                // without delivering a signal. The pid is validated > 0 above.
                 let alive = unsafe { libc::kill(*pid as i32, 0) };
                 if alive == -1 {
                     let err = std::io::Error::last_os_error();
@@ -835,7 +839,7 @@ impl Db {
 
     // ── Memory operations ──────────────────────────────────────────
 
-    pub fn get_core_memory(&self) -> rusqlite::Result<Vec<crate::memory::types::CoreBlock>> {
+    pub fn core_memory(&self) -> rusqlite::Result<Vec<crate::memory::types::CoreBlock>> {
         let mut stmt = self.conn.prepare(
             "SELECT label, value, char_limit, updated_at FROM core_memory ORDER BY label",
         )?;
@@ -1583,7 +1587,7 @@ impl Db {
         rows.collect()
     }
 
-    pub fn get_pending_generation_ids(&self) -> rusqlite::Result<Vec<String>> {
+    pub fn pending_generation_ids(&self) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT generation_id FROM usage \
              WHERE generation_id IS NOT NULL AND cost_usd IS NULL \
@@ -2196,7 +2200,7 @@ impl Db {
         }
 
         eprint!("  Core memory usage... ");
-        for block in self.get_core_memory().unwrap_or_default() {
+        for block in self.core_memory().unwrap_or_default() {
             let pct = if block.char_limit > 0 {
                 (block.value.len() as f64 / block.char_limit as f64 * 100.0) as usize
             } else {
@@ -3759,7 +3763,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_pending_generation_ids() {
+    fn test_pending_generation_ids() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
@@ -3786,7 +3790,7 @@ mod tests {
         )
         .unwrap();
 
-        let pending = db.get_pending_generation_ids().unwrap();
+        let pending = db.pending_generation_ids().unwrap();
         assert!(pending.contains(&"gen_123".to_string()));
         assert!(!pending.contains(&"gen_456".to_string()));
     }
@@ -7235,23 +7239,23 @@ mod tests {
     }
 
     #[test]
-    fn test_get_pending_generation_ids_empty() {
+    fn test_pending_generation_ids_empty() {
         let db = test_db();
-        let pending = db.get_pending_generation_ids().unwrap();
+        let pending = db.pending_generation_ids().unwrap();
         assert!(pending.is_empty());
     }
 
     #[test]
-    fn test_get_pending_generation_ids_excludes_no_generation_id() {
+    fn test_pending_generation_ids_excludes_no_generation_id() {
         let db = test_db();
         db.insert_usage("s1", None, "gpt-4", "openai", Some(10), Some(5), None, None)
             .unwrap();
-        let pending = db.get_pending_generation_ids().unwrap();
+        let pending = db.pending_generation_ids().unwrap();
         assert!(pending.is_empty());
     }
 
     #[test]
-    fn test_get_pending_generation_ids_excludes_already_costed() {
+    fn test_pending_generation_ids_excludes_already_costed() {
         let db = test_db();
         db.insert_usage(
             "s1",
@@ -7264,7 +7268,7 @@ mod tests {
             Some("gen_paid"),
         )
         .unwrap();
-        let pending = db.get_pending_generation_ids().unwrap();
+        let pending = db.pending_generation_ids().unwrap();
         assert!(!pending.contains(&"gen_paid".to_string()));
     }
 
@@ -10369,7 +10373,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_pending_generation_ids_multiple() {
+    fn test_pending_generation_ids_multiple() {
         let db = test_db();
         db.insert_usage("s1", None, "m", "p", None, None, None, Some("pend_a"))
             .unwrap();
@@ -10378,7 +10382,7 @@ mod tests {
         db.insert_usage("s1", None, "m", "p", None, None, Some(0.01), Some("done_c"))
             .unwrap();
 
-        let pending = db.get_pending_generation_ids().unwrap();
+        let pending = db.pending_generation_ids().unwrap();
         assert_eq!(pending.len(), 2);
         assert!(pending.contains(&"pend_a".to_string()));
         assert!(pending.contains(&"pend_b".to_string()));

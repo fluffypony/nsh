@@ -27,6 +27,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn clear_wrap_env() {
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::remove_var("NSH_WRAP_SCROLLBACK_LINES");
             std::env::remove_var("NSH_WRAP_MAX_OUTPUT_STORAGE_BYTES");
@@ -51,6 +52,7 @@ mod tests {
     fn shim_wrap_config_reads_overrides_from_env() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         clear_wrap_env();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::set_var("NSH_WRAP_SCROLLBACK_LINES", "222");
             std::env::set_var("NSH_WRAP_DAEMON_AUTOSTART", "true");
@@ -114,6 +116,7 @@ mod tests {
     fn seed_wrap_contract_preserves_explicit_daemon_autostart_override() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         clear_wrap_env();
+        // SAFETY: test runs serially; no concurrent env access
         unsafe {
             std::env::set_var("NSH_WRAP_DAEMON_AUTOSTART", "1");
         }

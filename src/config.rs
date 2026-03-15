@@ -2947,16 +2947,22 @@ model = "search-model"
         };
 
         // Test env var lookup for each known provider
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "ant-env-key") };
         assert_eq!(*auth.resolve_api_key("anthropic").unwrap(), "ant-env-key");
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
 
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::set_var("OPENAI_API_KEY", "oai-env-key") };
         assert_eq!(*auth.resolve_api_key("openai").unwrap(), "oai-env-key");
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
 
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::set_var("GEMINI_API_KEY", "gem-env-key") };
         assert_eq!(*auth.resolve_api_key("gemini").unwrap(), "gem-env-key");
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::remove_var("GEMINI_API_KEY") };
 
         // Unknown provider: no env var mapping, should bail
@@ -2970,6 +2976,7 @@ model = "search-model"
         );
 
         // Known provider with no env var set: should bail with env var name in message
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
         let result = auth.resolve_api_key("anthropic");
         assert!(result.is_err());
@@ -3956,9 +3963,11 @@ key = "value"
             api_key_cmd: None,
             base_url: None,
         };
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::set_var("OPENROUTER_API_KEY", "or-env-key") };
         let key = auth.resolve_api_key("openrouter").unwrap();
         assert_eq!(*key, "or-env-key");
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
     }
 
@@ -3970,9 +3979,11 @@ key = "value"
             api_key_cmd: None,
             base_url: None,
         };
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::set_var("OPENROUTER_API_KEY", "") };
         let result = auth.resolve_api_key("openrouter");
         assert!(result.is_err());
+        // SAFETY: test runs serially; no concurrent env access
         unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
     }
 

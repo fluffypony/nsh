@@ -258,6 +258,9 @@ pub fn stop_sidecar() -> Result<()> {
         && let Ok(pid) = pid_str.trim().parse::<i32>()
     {
         #[cfg(unix)]
+        // SAFETY: pid was parsed from the pid file written at sidecar startup.
+        // Sending SIGTERM to a valid PID is the standard graceful shutdown
+        // mechanism; if the process already exited the signal is harmlessly ignored.
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
@@ -278,6 +281,8 @@ pub fn is_sidecar_running() -> bool {
         && let Ok(pid) = pid_str.trim().parse::<i32>()
     {
         #[cfg(unix)]
+        // SAFETY: libc::kill with signal 0 checks process existence without
+        // delivering a signal. The pid was parsed from a trusted pid file.
         unsafe {
             return libc::kill(pid, 0) == 0;
         }

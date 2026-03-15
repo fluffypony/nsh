@@ -17,7 +17,7 @@ impl<'a> MemoryStoreAccess<'a> {
         Self { conn }
     }
 
-    pub fn get_core_memory(&self) -> anyhow::Result<Vec<CoreBlock>> {
+    pub fn core_memory(&self) -> anyhow::Result<Vec<CoreBlock>> {
         core::get_all(self.conn)
     }
 

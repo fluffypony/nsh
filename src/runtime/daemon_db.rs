@@ -119,7 +119,7 @@ pub trait DbAccess {
     ) -> anyhow::Result<String> {
         let db = self.require_direct_db("memory_retrieve_prompt")?;
         let mut memories = crate::memory::types::RetrievedMemories::default();
-        if let Ok(core) = db.get_core_memory() {
+        if let Ok(core) = db.core_memory() {
             memories.core = core;
         }
         if let Ok(top_sem) = db.list_top_accessed_semantic(5) {

@@ -201,6 +201,10 @@ pub fn run_wrapped_shell(
             }
             drop(pty.slave);
 
+            // SAFETY: post-fork child process. shell_cstr and argv0_cstr are
+            // valid NUL-terminated CStrings; argv and env_ptrs are null-terminated
+            // pointer arrays. execve replaces the process image; _exit is the
+            // async-signal-safe fallback if exec fails.
             unsafe {
                 let argv = [argv0_cstr.as_ptr(), std::ptr::null()];
                 libc::execve(shell_cstr.as_ptr(), argv.as_ptr(), env_ptrs.as_ptr());
@@ -290,6 +294,9 @@ mod exec {
             .map(|a| a.as_ptr())
             .chain(std::iter::once(std::ptr::null()))
             .collect();
+        // SAFETY: cmd is a valid NUL-terminated CString and arg_ptrs is a
+        // null-terminated array of pointers to valid CStrings. On success
+        // execvp does not return; on failure we fall through to last_os_error.
         unsafe {
             libc::execvp(cmd.as_ptr(), arg_ptrs.as_ptr());
         }

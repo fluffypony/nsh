@@ -102,9 +102,9 @@ impl MemorySystem {
         self.retrieval_engine().build_memory_prompt(memories)
     }
 
-    pub fn get_core_memory(&self) -> anyhow::Result<Vec<CoreBlock>> {
+    pub fn core_memory(&self) -> anyhow::Result<Vec<CoreBlock>> {
         let conn = self.db.lock().unwrap();
-        store::access::MemoryStoreAccess::new(&conn).get_core_memory()
+        store::access::MemoryStoreAccess::new(&conn).core_memory()
     }
 
     pub fn update_core_block(
@@ -247,13 +247,13 @@ mod tests {
         let mem = MemorySystem::open(test_config(), ":memory:".into()).unwrap();
         mem.update_core_block(CoreLabel::Human, CoreOp::Append, "Name: Alice")
             .unwrap();
-        let blocks = mem.get_core_memory().unwrap();
+        let blocks = mem.core_memory().unwrap();
         let human = blocks.iter().find(|b| b.label == CoreLabel::Human).unwrap();
         assert_eq!(human.value, "Name: Alice");
 
         mem.update_core_block(CoreLabel::Human, CoreOp::Rewrite, "Name: Bob")
             .unwrap();
-        let blocks = mem.get_core_memory().unwrap();
+        let blocks = mem.core_memory().unwrap();
         let human = blocks.iter().find(|b| b.label == CoreLabel::Human).unwrap();
         assert_eq!(human.value, "Name: Bob");
     }
@@ -288,7 +288,7 @@ mod tests {
         mem.update_core_block(CoreLabel::Human, CoreOp::Append, "test")
             .unwrap();
         mem.clear_all().unwrap();
-        let blocks = mem.get_core_memory().unwrap();
+        let blocks = mem.core_memory().unwrap();
         let human = blocks.iter().find(|b| b.label == CoreLabel::Human).unwrap();
         assert!(human.value.is_empty());
     }
@@ -307,7 +307,7 @@ mod tests {
             .unwrap();
 
         let memories = RetrievedMemories {
-            core: mem.get_core_memory().unwrap(),
+            core: mem.core_memory().unwrap(),
             ..Default::default()
         };
         let prompt = mem.build_memory_prompt(&memories);

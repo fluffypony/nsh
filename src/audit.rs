@@ -85,6 +85,8 @@ fn rotate_audit_log_in_dir(dir: &Path) -> anyhow::Result<()> {
     {
         use std::os::fd::AsRawFd;
 
+        // SAFETY: input_file is an open File whose fd is valid for the
+        // duration of this call. LOCK_EX | LOCK_NB is a valid flock operation.
         let ret = unsafe { libc::flock(input_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         if ret != 0 {
             return Ok(());

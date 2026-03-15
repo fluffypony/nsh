@@ -93,6 +93,8 @@ fn read_env_alt_screen_mode(key: &str) -> Option<crate::config::AltScreenMode> {
 }
 
 pub fn seed_wrap_contract_env_from_config(config: &crate::config::Config) {
+    // SAFETY: called once during single-threaded daemon init before the shim
+    // forks, so no other threads can observe a partial environment update.
     unsafe {
         std::env::set_var(
             "NSH_WRAP_SCROLLBACK_LINES",
