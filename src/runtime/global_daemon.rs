@@ -1585,7 +1585,7 @@ fn try_execute_write(
         } => {
             let op = crate::memory::types::CoreOp::Append;
             let lbl = crate::memory::types::CoreLabel::from_str(&label)
-                .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
+                .map_err(|_| DaemonResponse::error(format!("invalid core label: {label}")));
             match lbl {
                 Err(e) => Ok(e),
                 Ok(l) => {
@@ -1614,7 +1614,7 @@ fn try_execute_write(
         } => {
             let op = crate::memory::types::CoreOp::Rewrite;
             let lbl = crate::memory::types::CoreLabel::from_str(&label)
-                .ok_or_else(|| DaemonResponse::error(format!("invalid core label: {label}")));
+                .map_err(|_| DaemonResponse::error(format!("invalid core label: {label}")));
             match lbl {
                 Err(e) => Ok(e),
                 Ok(l) => {

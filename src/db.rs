@@ -843,7 +843,7 @@ impl Db {
         )?;
         let rows = stmt.query_map([], |row| {
             let label_str: String = row.get(0)?;
-            let label = crate::memory::types::CoreLabel::from_str(&label_str).ok_or_else(|| {
+            let label = crate::memory::types::CoreLabel::from_str(&label_str).map_err(|_| {
                 rusqlite::Error::InvalidColumnType(
                     0,
                     "label".into(),

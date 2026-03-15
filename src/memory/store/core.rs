@@ -7,7 +7,7 @@ pub fn get_all(conn: &Connection) -> anyhow::Result<Vec<CoreBlock>> {
         .prepare("SELECT label, value, char_limit, updated_at FROM core_memory ORDER BY label")?;
     let rows = stmt.query_map([], |row| {
         let label_str: String = row.get(0)?;
-        let label = CoreLabel::from_str(&label_str).ok_or_else(|| {
+        let label = CoreLabel::from_str(&label_str).map_err(|_| {
             rusqlite::Error::InvalidColumnType(0, "label".into(), rusqlite::types::Type::Text)
         })?;
         Ok(CoreBlock {

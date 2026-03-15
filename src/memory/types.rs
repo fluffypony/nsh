@@ -57,12 +57,12 @@ impl CoreLabel {
     }
 
     #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_str(s: &str) -> Result<Self, ParseEnumError> {
         match s {
-            "human" => Some(CoreLabel::Human),
-            "persona" => Some(CoreLabel::Persona),
-            "environment" => Some(CoreLabel::Environment),
-            _ => None,
+            "human" => Ok(CoreLabel::Human),
+            "persona" => Ok(CoreLabel::Persona),
+            "environment" => Ok(CoreLabel::Environment),
+            _ => Err(ParseEnumError { kind: "core label", value: s.to_owned() }),
         }
     }
 
@@ -654,7 +654,7 @@ mod tests {
     fn core_label_roundtrip() {
         for label in [CoreLabel::Human, CoreLabel::Persona, CoreLabel::Environment] {
             let s = label.as_str();
-            assert_eq!(CoreLabel::from_str(s), Some(label));
+            assert_eq!(CoreLabel::from_str(s).unwrap(), label);
         }
     }
 
@@ -713,9 +713,9 @@ mod tests {
 
     #[test]
     fn core_label_from_str_invalid() {
-        assert_eq!(CoreLabel::from_str("invalid"), None);
-        assert_eq!(CoreLabel::from_str(""), None);
-        assert_eq!(CoreLabel::from_str("HUMAN"), None); // case sensitive
+        assert!(CoreLabel::from_str("invalid").is_err());
+        assert!(CoreLabel::from_str("").is_err());
+        assert!(CoreLabel::from_str("HUMAN").is_err()); // case sensitive
     }
 
     #[test]

@@ -129,12 +129,12 @@ impl<'a> MemoryStoreAccess<'a> {
         match op {
             MemoryOp::CoreAppend { label, content } => {
                 let label = CoreLabel::from_str(label)
-                    .ok_or_else(|| anyhow::anyhow!("unrecognized core label: {label}"))?;
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 core::append(self.conn, label, content)?;
             }
             MemoryOp::CoreRewrite { label, content } => {
                 let label = CoreLabel::from_str(label)
-                    .ok_or_else(|| anyhow::anyhow!("unrecognized core label: {label}"))?;
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 core::rewrite(self.conn, label, content)?;
             }
             MemoryOp::EpisodicInsert { event } => {
