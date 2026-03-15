@@ -15,8 +15,6 @@ pub(crate) struct ProviderModels {
 pub(crate) enum ProviderKind {
     Byok,
     Subscription,
-    #[allow(dead_code)]
-    SelfHosted,
     Manual,
 }
 
