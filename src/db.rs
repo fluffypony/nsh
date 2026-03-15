@@ -465,13 +465,10 @@ impl Db {
             .query_row(
                 "SELECT label FROM sessions WHERE id = ?",
                 params![session_id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => rusqlite::Error::QueryReturnedNoRows,
-                other => other,
-            })
-            .or(Ok(None))
+            .optional()
+            .map(Option::flatten)
     }
 
     pub fn session_visible_to_caller(
@@ -480,7 +477,8 @@ impl Db {
         target_session: &str,
     ) -> rusqlite::Result<bool> {
         let Some(caller_session) = caller_session.filter(|value| !value.trim().is_empty()) else {
-            return Ok(true);
+            // Missing caller context must deny access rather than silently granting it.
+            return Ok(false);
         };
         if caller_session == target_session || target_session.starts_with("imported_") {
             return Ok(true);
@@ -1983,6 +1981,16 @@ impl Db {
              ORDER BY created_at DESC LIMIT 1",
                 params![session_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+    }
+
+    pub fn conversation_session_id(&self, conv_id: i64) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT session_id FROM conversations WHERE id = ?",
+                params![conv_id],
+                |row| row.get(0),
             )
             .optional()
     }

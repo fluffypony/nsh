@@ -1366,7 +1366,16 @@ fn try_execute_write(
             }
             Ok(DaemonResponse::ok())
         }
-        DaemonRequest::SetSessionLabel { session, label } => {
+        DaemonRequest::SetSessionLabel {
+            session,
+            label,
+            caller,
+        } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
+            }
             let updated = db
                 .set_session_label(&session, &label)
                 .with_context(|| format!("failed to set label for session `{session}`"))?;
@@ -1374,7 +1383,12 @@ fn try_execute_write(
                 crate::daemon::SessionLabelUpdatePayload { updated },
             ))
         }
-        DaemonRequest::ClearConversations { session } => {
+        DaemonRequest::ClearConversations { session, caller } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session) {
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
+            }
             db.clear_conversations(&session).with_context(|| {
                 format!("failed to clear conversations for session `{session}`")
             })?;
@@ -1388,7 +1402,13 @@ fn try_execute_write(
             explanation,
             executed,
             pending,
+            caller,
         } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session_id) {
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
+            }
             let id = db
                 .insert_conversation(
                     &session_id,
@@ -1432,7 +1452,15 @@ fn try_execute_write(
             conv_id,
             exit_code,
             output_snippet,
+            caller,
         } => {
+            if let Ok(Some(session_id)) = db.conversation_session_id(conv_id) {
+                if let Err(error) = authorize_session_access(db, &caller, &session_id) {
+                    return Ok(DaemonResponse::error(format!(
+                        "Security check failed: {error}"
+                    )));
+                }
+            }
             db.update_conversation_result(conv_id, exit_code, output_snippet.as_deref())
                 .with_context(|| format!("failed to update conversation result for {conv_id}"))?;
             Ok(DaemonResponse::ok())
@@ -2087,7 +2115,16 @@ fn execute_read(
             }
         }
         // ── Memory read operations ──────────────────────
-        DaemonRequest::MemoryRetrieve { context_json } => {
+        DaemonRequest::MemoryRetrieve {
+            context_json,
+            caller,
+        } => {
+            let input = serde_json::json!({ "context_json_len": context_json.len() });
+            if let Err(error) =
+                authorize_memory_tool_request(&caller, "memory_retrieve", &input)
+            {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
             tracing::debug!("memory: retrieve (len={})", context_json.len());
             // Parse context
             match serde_json::from_str::<crate::memory::types::MemoryQueryContext>(&context_json) {
@@ -2122,7 +2159,14 @@ fn execute_read(
             query,
             memory_type,
             limit,
+            caller,
         } => {
+            let input = serde_json::json!({ "query": &query });
+            if let Err(error) =
+                authorize_memory_tool_request(&caller, "memory_search", &input)
+            {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
+            }
             // Use MemorySystem search across all types for now
             match memory.search(&query, normalize_memory_type_for_search(memory_type), limit) {
                 Ok(results) => {
@@ -2142,23 +2186,31 @@ fn execute_read(
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
-        DaemonRequest::MemoryGetCore => match memory.core_memory() {
-            Ok(blocks) => {
-                let json: Vec<serde_json::Value> = blocks
-                    .iter()
-                    .map(|b| {
-                        serde_json::json!({
-                            "label": b.label.as_str(),
-                            "value": b.value,
-                            "char_limit": b.char_limit,
-                            "updated_at": b.updated_at,
-                        })
-                    })
-                    .collect();
-                DaemonResponse::ok_with_data(serde_json::json!({"blocks": json}))
+        DaemonRequest::MemoryGetCore { caller } => {
+            let input = serde_json::json!({});
+            if let Err(error) =
+                authorize_memory_tool_request(&caller, "memory_get_core", &input)
+            {
+                return DaemonResponse::error(format!("Security check failed: {error}"));
             }
-            Err(e) => DaemonResponse::error(format!("{e}")),
-        },
+            match memory.core_memory() {
+                Ok(blocks) => {
+                    let json: Vec<serde_json::Value> = blocks
+                        .iter()
+                        .map(|b| {
+                            serde_json::json!({
+                                "label": b.label.as_str(),
+                                "value": b.value,
+                                "char_limit": b.char_limit,
+                                "updated_at": b.updated_at,
+                            })
+                        })
+                        .collect();
+                    DaemonResponse::ok_with_data(serde_json::json!({"blocks": json}))
+                }
+                Err(e) => DaemonResponse::error(format!("{e}")),
+            }
+        }
         DaemonRequest::MemoryRetrieveSecret {
             caption_query,
             caller,

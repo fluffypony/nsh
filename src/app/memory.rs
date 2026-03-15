@@ -19,6 +19,7 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
                     None => None,
                 },
                 limit,
+                caller: crate::daemon::current_caller_context(),
             };
             match super::daemon_runtime::send_to_global_or_fallback(&request)? {
                 crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
@@ -42,7 +43,9 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
             }
         }
         MemoryAction::Core => {
-            let request = crate::daemon::DaemonRequest::MemoryGetCore;
+            let request = crate::daemon::DaemonRequest::MemoryGetCore {
+                caller: crate::daemon::current_caller_context(),
+            };
             match super::daemon_runtime::send_to_global_or_fallback(&request)? {
                 crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
                     println!("{}", serde_json::to_string_pretty(&data)?);

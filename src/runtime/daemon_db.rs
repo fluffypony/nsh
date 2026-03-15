@@ -611,6 +611,7 @@ impl DbAccess for DaemonDb {
             explanation: explanation.map(str::to_string),
             executed,
             pending,
+            caller: Self::caller_context(),
         })?;
         Ok(response.id)
     }
@@ -618,6 +619,7 @@ impl DbAccess for DaemonDb {
     fn clear_conversations(&self, session_id: &str) -> anyhow::Result<()> {
         self.request_unit(DaemonRequest::ClearConversations {
             session: session_id.to_string(),
+            caller: Self::caller_context(),
         })
     }
 
@@ -648,6 +650,7 @@ impl DbAccess for DaemonDb {
     ) -> anyhow::Result<String> {
         let response: PromptResponse = self.request_data(DaemonRequest::MemoryRetrieve {
             context_json: serde_json::to_string(ctx)?,
+            caller: Self::caller_context(),
         })?;
         Ok(response.prompt)
     }
@@ -662,6 +665,7 @@ impl DbAccess for DaemonDb {
             query: query.to_string(),
             memory_type,
             limit,
+            caller: Self::caller_context(),
         })?;
         Ok(serde_json::to_string(&data)?)
     }

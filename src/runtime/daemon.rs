@@ -104,6 +104,8 @@ pub enum DaemonRequest {
         #[serde(rename = "session_id", alias = "session")]
         session: String,
         label: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     LatestCwdForTty {
         tty: String,
@@ -111,6 +113,8 @@ pub enum DaemonRequest {
     ClearConversations {
         #[serde(rename = "session_id", alias = "session")]
         session: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     GetConversations {
         #[serde(rename = "session_id", alias = "session")]
@@ -138,6 +142,8 @@ pub enum DaemonRequest {
         executed: bool,
         #[serde(default)]
         pending: bool,
+        #[serde(default)]
+        caller: CallerContext,
     },
     InsertUsage {
         session_id: String,
@@ -153,6 +159,8 @@ pub enum DaemonRequest {
         conv_id: i64,
         exit_code: i32,
         output_snippet: Option<String>,
+        #[serde(default)]
+        caller: CallerContext,
     },
     FindPendingConversation {
         #[serde(rename = "session_id", alias = "session")]
@@ -261,14 +269,21 @@ pub enum DaemonRequest {
     },
     MemoryRetrieve {
         context_json: String,
+        #[serde(default)]
+        caller: CallerContext,
     },
     MemorySearch {
         query: String,
         memory_type: Option<MemoryType>,
         #[serde(default = "default_limit")]
         limit: usize,
+        #[serde(default)]
+        caller: CallerContext,
     },
-    MemoryGetCore,
+    MemoryGetCore {
+        #[serde(default)]
+        caller: CallerContext,
+    },
     MemoryCoreAppend {
         label: String,
         content: String,
@@ -556,7 +571,7 @@ fn must_route_through_global_daemon(request: &DaemonRequest) -> bool {
             | DaemonRequest::MemoryIngestBatch { .. }
             | DaemonRequest::MemoryRetrieve { .. }
             | DaemonRequest::MemorySearch { .. }
-            | DaemonRequest::MemoryGetCore
+            | DaemonRequest::MemoryGetCore { .. }
             | DaemonRequest::MemoryCoreAppend { .. }
             | DaemonRequest::MemoryCoreRewrite { .. }
             | DaemonRequest::MemoryStore { .. }

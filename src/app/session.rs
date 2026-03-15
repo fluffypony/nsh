@@ -41,6 +41,7 @@ pub(super) fn handle_session_command(action: SessionAction) -> anyhow::Result<()
             let request = crate::daemon::DaemonRequest::SetSessionLabel {
                 session: session_id,
                 label: label.clone(),
+                caller: crate::daemon::current_caller_context(),
             };
             match global_daemon_payload::<crate::daemon::SessionLabelUpdatePayload>(&request) {
                 Ok(response) if response.updated => eprintln!("nsh: session labeled \"{label}\""),
@@ -100,6 +101,7 @@ pub(super) fn handle_reset_command() -> anyhow::Result<()> {
     let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "default".into());
     let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::ClearConversations {
         session: session_id,
+        caller: crate::daemon::current_caller_context(),
     });
     eprintln!("nsh: conversation context cleared");
     Ok(())
