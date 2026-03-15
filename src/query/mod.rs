@@ -1006,12 +1006,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     "write_file" => {
                         let (content, is_error) = match tools::write_file::execute(
                             input,
-                            query,
-                            db,
-                            session_id,
-                            opts.private,
-                            config,
-                            opts.force_autorun,
+                            &public_tool_ctx,
                         ) {
                             Ok(()) => ("File written successfully.".to_string(), false),
                             Err(e) => {

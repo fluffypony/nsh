@@ -1,4 +1,4 @@
-use crate::daemon_db::DbAccess;
+use crate::tools::runtime::invocation::ToolInvocationContext;
 #[cfg(test)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -209,15 +209,12 @@ pub(crate) fn write_nofollow(path: &Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn execute(
-    input: &serde_json::Value,
-    original_query: &str,
-    db: &dyn DbAccess,
-    session_id: &str,
-    private: bool,
-    config: &crate::config::Config,
-    force_autorun: bool,
-) -> anyhow::Result<()> {
+pub fn execute(input: &serde_json::Value, ctx: &ToolInvocationContext) -> anyhow::Result<()> {
+    let (db, session_id) = ctx.conversation_state()?;
+    let config = ctx.config;
+    let force_autorun = ctx.force_autorun;
+    let private = ctx.private;
+    let original_query = ctx.original_query;
     let raw_path = input["path"].as_str().unwrap_or("");
     let content = input["content"].as_str().unwrap_or("");
 
@@ -767,11 +764,12 @@ mod tests {
     fn test_execute_rejects_redaction_markers() {
         let db = test_db();
         let config = test_config();
+        let ctx = ToolInvocationContext::query("test query", &db, "sess1", false, &config, false);
         let input = serde_json::json!({
             "path": "/tmp/nsh_test_redact.txt",
             "content": "secret = [REDACTED:api-key]",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
+        let err = execute(&input, &ctx).unwrap_err();
         assert!(
             err.to_string().contains("redaction markers"),
             "expected redaction markers error, got: {err}"
@@ -782,6 +780,7 @@ mod tests {
     fn test_execute_rejects_redaction_marker_variants() {
         let db = test_db();
         let config = test_config();
+        let ctx = ToolInvocationContext::query("q", &db, "s", false, &config, false);
         for marker in &[
             "[REDACTED:token]",
             "[REDACTED:github-pat]",
@@ -791,7 +790,7 @@ mod tests {
                 "path": "/tmp/nsh_test_redact2.txt",
                 "content": format!("value = {marker}"),
             });
-            let err = execute(&input, "q", &db, "s", false, &config, false).unwrap_err();
+            let err = execute(&input, &ctx).unwrap_err();
             assert!(
                 err.to_string().contains("redaction markers"),
                 "marker {marker} should be rejected, got: {err}"
@@ -803,11 +802,12 @@ mod tests {
     fn test_execute_rejects_empty_path() {
         let db = test_db();
         let config = test_config();
+        let ctx = ToolInvocationContext::query("test query", &db, "sess1", false, &config, false);
         let input = serde_json::json!({
             "path": "",
             "content": "hello",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
+        let err = execute(&input, &ctx).unwrap_err();
         assert!(
             err.to_string().contains("path is required"),
             "expected 'path is required' error, got: {err}"
@@ -818,10 +818,11 @@ mod tests {
     fn test_execute_rejects_missing_path() {
         let db = test_db();
         let config = test_config();
+        let ctx = ToolInvocationContext::query("test query", &db, "sess1", false, &config, false);
         let input = serde_json::json!({
             "content": "hello",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
+        let err = execute(&input, &ctx).unwrap_err();
         assert!(
             err.to_string().contains("path is required"),
             "expected 'path is required' error, got: {err}"
@@ -832,13 +833,14 @@ mod tests {
     fn test_execute_rejects_sensitive_path() {
         let db = test_db();
         let config = test_config();
+        let ctx = ToolInvocationContext::query("test query", &db, "sess1", false, &config, false);
         let home = dirs::home_dir().unwrap();
         let ssh_path = home.join(".ssh/test_key_file");
         let input = serde_json::json!({
             "path": ssh_path.to_string_lossy(),
             "content": "key data",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
+        let err = execute(&input, &ctx).unwrap_err();
         assert!(
             err.to_string().contains("blocked"),
             "expected blocked error for sensitive path, got: {err}"
@@ -849,11 +851,12 @@ mod tests {
     fn test_execute_rejects_path_traversal() {
         let db = test_db();
         let config = test_config();
+        let ctx = ToolInvocationContext::query("test query", &db, "sess1", false, &config, false);
         let input = serde_json::json!({
             "path": "/tmp/foo/../bar",
             "content": "data",
         });
-        let err = execute(&input, "test query", &db, "sess1", false, &config, false).unwrap_err();
+        let err = execute(&input, &ctx).unwrap_err();
         assert!(
             err.to_string().contains("path traversal"),
             "expected path traversal error, got: {err}"
