@@ -1,3 +1,4 @@
+use crate::config::SensitiveFileAccess;
 use crate::tools::ToolInvocationOutcome;
 use crate::util::human_size;
 use glob::Pattern;
@@ -5,29 +6,29 @@ use std::fs::Metadata;
 
 pub fn execute_with_access(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<String> {
     crate::tools::execute_file_tool_result(input, sensitive_file_access, handle)
 }
 
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    execute_with_access(input, "block")
+    execute_with_access(input, SensitiveFileAccess::Block)
 }
 
 pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
-    execute_outcome_with_access(input, "block")
+    execute_outcome_with_access(input, SensitiveFileAccess::Block)
 }
 
 pub fn execute_outcome_with_access(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<ToolInvocationOutcome> {
     handle(input, sensitive_file_access)
 }
 
 fn handle(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<ToolInvocationOutcome> {
     let pattern_str = input["pattern"]
         .as_str()

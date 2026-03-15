@@ -1,27 +1,21 @@
+use crate::config::SensitiveFileAccess;
 use std::path::{Component, PathBuf};
 
 pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
-    validate_read_path_with_access(raw_path, "block")
+    validate_read_path_with_access(raw_path, SensitiveFileAccess::Block)
 }
 
 pub fn validate_read_path_tool_outcome(
     raw_path: &str,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> Result<PathBuf, super::outcome::ToolInvocationOutcome> {
     validate_read_path_with_access(raw_path, sensitive_file_access)
         .map_err(super::outcome::ToolInvocationOutcome::failure)
 }
 
-pub fn normalize_sensitive_file_access_mode(mode: &str) -> &str {
-    match mode {
-        "allow" | "ask" | "block" => mode,
-        _ => "ask",
-    }
-}
-
 pub fn validate_read_path_with_access(
     raw_path: &str,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> Result<PathBuf, String> {
     let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
         dirs::home_dir().unwrap_or_default().join(rest)
@@ -59,7 +53,7 @@ pub fn validate_read_path_with_access(
     // Note: TOCTOU race between validation and open is acknowledged but
     // impractical to fix without openat-style path resolution, and is
     // also impractical to abuse or attack.
-    if sensitive_file_access != "allow"
+    if sensitive_file_access != SensitiveFileAccess::Allow
         && let Some(home) = dirs::home_dir()
     {
         // Allowlist: reads under ~/.nsh/skills are considered safe so the agent
@@ -78,7 +72,7 @@ pub fn validate_read_path_with_access(
         for dir in &sensitive_dirs {
             let dir_canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
             if canonical.starts_with(&dir_canonical) {
-                if sensitive_file_access == "ask" {
+                if sensitive_file_access == SensitiveFileAccess::Ask {
                     let th = crate::tui::theme::current_theme();
                     eprintln!(
                         "{}⚠ '{raw_path}' is in a sensitive directory{}",
@@ -105,10 +99,8 @@ pub fn validate_read_path_with_access(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        normalize_sensitive_file_access_mode, validate_read_path, validate_read_path_tool_outcome,
-        validate_read_path_with_access,
-    };
+    use super::{validate_read_path, validate_read_path_tool_outcome, validate_read_path_with_access};
+    use crate::config::SensitiveFileAccess;
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
 
@@ -118,12 +110,6 @@ mod tests {
         let xdg_config_guard = EnvVarGuard::remove("XDG_CONFIG_HOME");
         let xdg_data_guard = EnvVarGuard::remove("XDG_DATA_HOME");
         (home, home_guard, xdg_config_guard, xdg_data_guard)
-    }
-
-    #[test]
-    fn normalize_sensitive_file_access_mode_defaults_unknown_to_ask() {
-        assert_eq!(normalize_sensitive_file_access_mode("allow"), "allow");
-        assert_eq!(normalize_sensitive_file_access_mode("unexpected"), "ask");
     }
 
     #[test]
@@ -142,14 +128,16 @@ mod tests {
         std::fs::write(&skill_file, "demo").unwrap();
 
         let resolved =
-            validate_read_path_with_access(skill_file.to_str().unwrap(), "block").unwrap();
+            validate_read_path_with_access(skill_file.to_str().unwrap(), SensitiveFileAccess::Block)
+                .unwrap();
 
         assert_eq!(resolved, std::fs::canonicalize(skill_file).unwrap());
     }
 
     #[test]
     fn validate_read_path_tool_outcome_wraps_denials() {
-        let outcome = validate_read_path_tool_outcome("../secret", "block").unwrap_err();
+        let outcome =
+            validate_read_path_tool_outcome("../secret", SensitiveFileAccess::Block).unwrap_err();
 
         assert_eq!(
             outcome.into_content(),

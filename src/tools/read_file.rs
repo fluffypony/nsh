@@ -1,3 +1,4 @@
+use crate::config::SensitiveFileAccess;
 use crate::tools::ToolInvocationOutcome;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -34,26 +35,26 @@ struct LineRange {
 
 #[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
-    crate::tools::execute_file_tool_content(input, "block", handle)
+    crate::tools::execute_file_tool_content(input, SensitiveFileAccess::Block, handle)
 }
 
 pub fn execute_with_access(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<String> {
     crate::tools::execute_file_tool_content(input, sensitive_file_access, handle)
 }
 
 pub fn execute_outcome_with_access(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<ToolInvocationOutcome> {
     handle(input, sensitive_file_access)
 }
 
 fn handle(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<ToolInvocationOutcome> {
     let request = match parse_request(input, sensitive_file_access)? {
         Ok(request) => request,
@@ -87,7 +88,7 @@ fn handle(
 
 fn parse_request(
     input: &serde_json::Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<Result<ReadRequest, ToolInvocationOutcome>> {
     let path = match crate::tools::required_read_path(input, "path", sensitive_file_access)? {
         Ok(path) => path,

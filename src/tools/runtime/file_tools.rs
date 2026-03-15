@@ -1,3 +1,4 @@
+use crate::config::SensitiveFileAccess;
 use crate::tools::ToolInvocationOutcome;
 use serde_json::Value;
 use std::fs::File;
@@ -5,22 +6,22 @@ use std::path::{Path, PathBuf};
 
 pub(crate) fn execute_file_tool_content<F>(
     input: &Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
     handler: F,
 ) -> anyhow::Result<String>
 where
-    F: FnOnce(&Value, &str) -> anyhow::Result<ToolInvocationOutcome>,
+    F: FnOnce(&Value, SensitiveFileAccess) -> anyhow::Result<ToolInvocationOutcome>,
 {
     crate::tools::outcome_to_content(handler(input, sensitive_file_access))
 }
 
 pub(crate) fn execute_file_tool_result<F>(
     input: &Value,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
     handler: F,
 ) -> anyhow::Result<String>
 where
-    F: FnOnce(&Value, &str) -> anyhow::Result<ToolInvocationOutcome>,
+    F: FnOnce(&Value, SensitiveFileAccess) -> anyhow::Result<ToolInvocationOutcome>,
 {
     crate::tools::outcome_to_result(handler(input, sensitive_file_access))
 }
@@ -28,7 +29,7 @@ where
 pub(crate) fn required_read_path(
     input: &Value,
     field: &str,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> anyhow::Result<Result<PathBuf, ToolInvocationOutcome>> {
     let raw_path = input[field]
         .as_str()
@@ -40,7 +41,7 @@ pub(crate) fn default_read_path(
     input: &Value,
     field: &str,
     default: &str,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> Result<PathBuf, ToolInvocationOutcome> {
     let raw_path = input[field].as_str().unwrap_or(default);
     validated_read_path(raw_path, sensitive_file_access)
@@ -80,7 +81,7 @@ pub(crate) fn read_failure(path: &Path, error: impl std::fmt::Display) -> ToolIn
 
 fn validated_read_path(
     raw_path: &str,
-    sensitive_file_access: &str,
+    sensitive_file_access: SensitiveFileAccess,
 ) -> Result<PathBuf, ToolInvocationOutcome> {
     crate::tools::validate_read_path_tool_outcome(raw_path, sensitive_file_access)
 }

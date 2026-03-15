@@ -1,5 +1,6 @@
 use super::*;
 use super::runtime::path_access::{validate_read_path, validate_read_path_with_access};
+use crate::config::SensitiveFileAccess;
 use serde_json::json;
 use std::collections::HashSet;
 
@@ -177,7 +178,7 @@ fn test_validate_read_path_existing_but_cannot_resolve() {
 
 #[test]
 fn test_validate_read_path_with_access_allow_bypasses_sensitive() {
-    let result = validate_read_path_with_access("~/.ssh/id_rsa", "allow");
+    let result = validate_read_path_with_access("~/.ssh/id_rsa", SensitiveFileAccess::Allow);
     match result {
         Ok(path) => assert!(path.is_absolute()),
         Err(err) => {
@@ -191,7 +192,7 @@ fn test_validate_read_path_with_access_allow_bypasses_sensitive() {
 
 #[test]
 fn test_validate_read_path_with_access_block_rejects_sensitive() {
-    let result = validate_read_path_with_access("~/.ssh/id_rsa", "block");
+    let result = validate_read_path_with_access("~/.ssh/id_rsa", SensitiveFileAccess::Block);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("sensitive"));
 }
@@ -666,14 +667,14 @@ fn test_web_search_tool_requires_query() {
 
 #[test]
 fn test_validate_read_path_allow_mode_normal_path() {
-    let result = validate_read_path_with_access("/tmp", "allow");
+    let result = validate_read_path_with_access("/tmp", SensitiveFileAccess::Allow);
     assert!(result.is_ok());
     assert!(result.unwrap().is_absolute());
 }
 
 #[test]
 fn test_validate_read_path_allow_mode_rejects_dotdot() {
-    let result = validate_read_path_with_access("/tmp/../etc/passwd", "allow");
+    let result = validate_read_path_with_access("/tmp/../etc/passwd", SensitiveFileAccess::Allow);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains(".."));
 }
@@ -701,21 +702,8 @@ fn test_validate_read_path_relative_nonexistent() {
 
 #[test]
 fn test_validate_read_path_block_mode_non_sensitive_path() {
-    let result = validate_read_path_with_access("/tmp", "block");
+    let result = validate_read_path_with_access("/tmp", SensitiveFileAccess::Block);
     assert!(result.is_ok());
     assert!(result.unwrap().is_absolute());
 }
 
-#[test]
-fn test_normalize_sensitive_file_access_mode_accepts_known_values() {
-    assert_eq!(normalize_sensitive_file_access_mode("allow"), "allow");
-    assert_eq!(normalize_sensitive_file_access_mode("ask"), "ask");
-    assert_eq!(normalize_sensitive_file_access_mode("block"), "block");
-}
-
-#[test]
-fn test_normalize_sensitive_file_access_mode_falls_back_to_ask() {
-    assert_eq!(normalize_sensitive_file_access_mode(""), "ask");
-    assert_eq!(normalize_sensitive_file_access_mode("invalid"), "ask");
-    assert_eq!(normalize_sensitive_file_access_mode("ALLOW"), "ask");
-}
