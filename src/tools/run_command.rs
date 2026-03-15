@@ -95,9 +95,14 @@ pub fn execute_outcome(cmd: &str, config: &Config) -> anyhow::Result<ToolInvocat
     }
 
     let lower_cmd = cmd.to_lowercase();
+    // Use path-separator-bounded matching to avoid false positives like ".dockerignore"
     let sensitive_suffix_hit = crate::security::SENSITIVE_DIR_SUFFIXES
         .iter()
-        .any(|s| lower_cmd.contains(s));
+        .any(|s| {
+            let with_sep = format!("/{s}/");
+            let at_end = format!("/{s}");
+            lower_cmd.contains(&with_sep) || lower_cmd.ends_with(&at_end)
+        });
     let key_file_hit = lower_cmd.contains("/id_rsa") || lower_cmd.contains("/id_ed25519");
     if sensitive_suffix_hit || key_file_hit {
         return Ok(ToolInvocationOutcome::failure(

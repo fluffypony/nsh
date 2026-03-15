@@ -487,7 +487,7 @@ pub fn pump_loop(
         if winch_pending.swap(false, Ordering::Relaxed) {
             // SAFETY: zeroed winsize is a valid initial value; TIOCGWINSZ reads
             // the terminal size from the valid stdin fd.
-            let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+            let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
             if unsafe { libc::ioctl(stdin_raw, libc::TIOCGWINSZ, &mut ws) } == 0
                 && let Ok(mut eng) = capture.lock()
             {
