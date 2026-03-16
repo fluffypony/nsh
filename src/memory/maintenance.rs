@@ -181,25 +181,7 @@ impl<'a> MemoryMaintenance<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct MockLlm {
-        response: serde_json::Value,
-    }
-
-    #[async_trait::async_trait]
-    impl MemoryLlmClient for MockLlm {
-        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
-            Ok(self.response.clone())
-        }
-    }
-
-    fn setup_memory() -> (Arc<Mutex<Connection>>, crate::config::MemoryConfig) {
-        let conn = Connection::open_in_memory().unwrap();
-        crate::memory::schema::create_memory_tables(&conn).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let config = crate::config::MemoryConfig::default();
-        (db, config)
-    }
+    use crate::memory::test_support::{setup_memory, MockLlm};
 
     fn insert_unconsolidated_event(conn: &Connection) -> String {
         let event = crate::memory::types::EpisodicEventCreate {

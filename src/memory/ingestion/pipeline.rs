@@ -133,34 +133,13 @@ impl<'a> MemoryIngestionPipeline<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use rusqlite::Connection;
+    use std::sync::Mutex;
 
     use crate::memory::ingestion::IngestionBuffer;
-    use crate::memory::llm_adapter::MemoryLlmClient;
+    use crate::memory::test_support::{setup_memory, MockLlm};
     use crate::memory::types::{MemoryOp, ShellEvent, ShellEventType};
 
     use super::MemoryIngestionPipeline;
-
-    struct MockLlm {
-        response: serde_json::Value,
-    }
-
-    #[async_trait::async_trait]
-    impl MemoryLlmClient for MockLlm {
-        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
-            Ok(self.response.clone())
-        }
-    }
-
-    fn setup_memory() -> (Arc<Mutex<Connection>>, crate::config::MemoryConfig) {
-        let conn = Connection::open_in_memory().unwrap();
-        crate::memory::schema::create_memory_tables(&conn).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let config = crate::config::MemoryConfig::default();
-        (db, config)
-    }
 
     fn make_event(cmd: &str, exit_code: i32) -> ShellEvent {
         crate::memory::ingestion::make_test_event(cmd, exit_code)

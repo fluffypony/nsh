@@ -11,6 +11,8 @@ pub mod schema;
 pub mod search;
 pub mod store;
 pub mod temporal;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod types;
 
 use std::path::Path;

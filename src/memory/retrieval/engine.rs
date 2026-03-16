@@ -18,6 +18,10 @@ impl<'a> MemoryRetrievalEngine<'a> {
         Self { db, config }
     }
 
+    /// Retrieve memories relevant to the given query context.
+    ///
+    /// Side effect: increments access counters on returned semantic items
+    /// so the decay system can preserve frequently-accessed facts.
     pub async fn retrieve_for_query(
         &self,
         ctx: &MemoryQueryContext,
@@ -119,33 +123,10 @@ impl<'a> MemoryRetrievalEngine<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use rusqlite::Connection;
-
-    use crate::memory::llm_adapter::MemoryLlmClient;
+    use crate::memory::test_support::{setup_memory, MockLlm};
     use crate::memory::types::{InteractionMode, MemoryQueryContext, RetrievedMemories};
 
     use super::MemoryRetrievalEngine;
-
-    struct MockLlm {
-        response: serde_json::Value,
-    }
-
-    #[async_trait::async_trait]
-    impl MemoryLlmClient for MockLlm {
-        async fn complete_json(&self, _prompt: &str) -> anyhow::Result<serde_json::Value> {
-            Ok(self.response.clone())
-        }
-    }
-
-    fn setup_memory() -> (Arc<Mutex<Connection>>, crate::config::MemoryConfig) {
-        let conn = Connection::open_in_memory().unwrap();
-        crate::memory::schema::create_memory_tables(&conn).unwrap();
-        let db = Arc::new(Mutex::new(conn));
-        let config = crate::config::MemoryConfig::default();
-        (db, config)
-    }
 
     fn make_query_ctx(query: &str, mode: InteractionMode) -> MemoryQueryContext {
         MemoryQueryContext {

@@ -1599,37 +1599,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     matched_skill = Some((**s).clone());
                                 } else {
                                     // Fallback: minimal edit distance
-                                    fn lev(a: &str, b: &str) -> usize {
-                                        let mut dp = vec![0usize; (b.len() + 1) * (a.len() + 1)];
-                                        let w = b.len() + 1;
-                                        // first column
-                                        for (i, cell) in
-                                            dp.iter_mut().step_by(w).take(a.len() + 1).enumerate()
-                                        {
-                                            *cell = i;
-                                        }
-                                        // first row
-                                        for (j, cell) in dp.iter_mut().take(b.len() + 1).enumerate()
-                                        {
-                                            *cell = j;
-                                        }
-                                        let ab: Vec<char> = a.chars().collect();
-                                        let bb: Vec<char> = b.chars().collect();
-                                        for i in 1..=ab.len() {
-                                            for j in 1..=bb.len() {
-                                                let cost =
-                                                    if ab[i - 1] == bb[j - 1] { 0 } else { 1 };
-                                                let del = dp[(i - 1) * w + j] + 1;
-                                                let ins = dp[i * w + (j - 1)] + 1;
-                                                let sub = dp[(i - 1) * w + (j - 1)] + cost;
-                                                dp[i * w + j] = del.min(ins).min(sub);
-                                            }
-                                        }
-                                        dp[ab.len() * w + bb.len()]
-                                    }
                                     let mut best: Option<(&crate::skills::Skill, usize)> = None;
                                     for s in &candidates {
-                                        let d = lev(req, &s.name);
+                                        let d = crate::util::levenshtein_distance(req, &s.name);
                                         if best.map(|(_, bd)| d < bd).unwrap_or(true) {
                                             best = Some((s, d));
                                         }

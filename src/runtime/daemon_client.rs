@@ -140,6 +140,11 @@ pub fn is_daemon_running(session_id: &str) -> bool {
     }
 }
 
+/// Check whether the global daemon is running and reachable.
+///
+/// Side effect: removes stale socket/pid files if the recorded PID is no
+/// longer alive, so subsequent callers won't waste time connecting to a
+/// dead socket.
 #[cfg(unix)]
 pub fn is_global_daemon_running() -> bool {
     let socket_path = crate::daemon::global_daemon_socket_path();
@@ -153,6 +158,7 @@ pub fn is_global_daemon_running() -> bool {
         // sending signal 0 to a stale/invalid pid is harmless (returns -1/ESRCH).
         && unsafe { libc::kill(pid, 0) } != 0
     {
+        // Clean up stale socket/pid left by a crashed daemon.
         let _ = std::fs::remove_file(&socket_path);
         let _ = std::fs::remove_file(crate::daemon::global_daemon_pid_path());
         return false;

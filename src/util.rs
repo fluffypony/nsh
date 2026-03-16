@@ -40,6 +40,30 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
+/// Compute the Levenshtein (edit) distance between two strings.
+pub(crate) fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let w = b_chars.len() + 1;
+    let mut dp = vec![0usize; w * (a_chars.len() + 1)];
+    for (i, cell) in dp.iter_mut().step_by(w).take(a_chars.len() + 1).enumerate() {
+        *cell = i;
+    }
+    for (j, cell) in dp.iter_mut().take(w).enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a_chars.len() {
+        for j in 1..=b_chars.len() {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let del = dp[(i - 1) * w + j] + 1;
+            let ins = dp[i * w + (j - 1)] + 1;
+            let sub = dp[(i - 1) * w + (j - 1)] + cost;
+            dp[i * w + j] = del.min(ins).min(sub);
+        }
+    }
+    dp[a_chars.len() * w + b_chars.len()]
+}
+
 pub(crate) fn human_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
@@ -233,5 +257,22 @@ mod tests {
             compare_versions("1.0.1", "1.0"),
             std::cmp::Ordering::Greater
         );
+    }
+
+    #[test]
+    fn test_levenshtein_distance_identical() {
+        assert_eq!(levenshtein_distance("kitten", "kitten"), 0);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_classic() {
+        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_empty() {
+        assert_eq!(levenshtein_distance("", "abc"), 3);
+        assert_eq!(levenshtein_distance("abc", ""), 3);
+        assert_eq!(levenshtein_distance("", ""), 0);
     }
 }
