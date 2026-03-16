@@ -1170,6 +1170,7 @@ impl Config {
         if config.web_search.model == WebSearchConfig::default().model
             && config.provider.web_search_model != ProviderConfig::default().web_search_model
         {
+            eprintln!("nsh: [provider].web_search_model is deprecated; move it to [web_search].model in ~/.nsh/config.toml");
             config.web_search.model = config.provider.web_search_model.clone();
         }
 
