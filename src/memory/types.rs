@@ -628,7 +628,9 @@ pub struct DetectedSecret {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        generate_id, ContextBudget, CoreLabel, MemoryType, RoutingDecision, Sensitivity,
+    };
 
     #[test]
     fn generate_id_has_correct_prefix() {

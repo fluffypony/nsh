@@ -185,7 +185,7 @@ pub(crate) fn make_test_event(cmd: &str, exit_code: i32) -> ShellEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::types::{ShellEvent, ShellEventType};
+    use crate::memory::types::ShellEventType;
 
     fn make_event(cmd: &str, exit_code: i32) -> ShellEvent {
         make_test_event(cmd, exit_code)

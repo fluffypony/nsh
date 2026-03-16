@@ -228,7 +228,11 @@ pub fn extract_command_tags(command: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        extract_command_tags, extract_fallback_keywords, parse_extraction_response,
+        validate_keyword_presence,
+    };
+    use crate::memory::types::MemoryOp;
 
     #[test]
     fn extract_fallback_keywords_filters_stop_words() {

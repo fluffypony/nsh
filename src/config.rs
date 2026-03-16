@@ -1802,7 +1802,17 @@ fn opt(x: &mut String, key: &str, value: &str, description: &str, choices: Optio
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use super::{
+        build_config_xml, deep_merge_toml, default_mcp_timeout, find_project_config,
+        is_project_config_candidate_allowed, is_setting_protected, opt, sanitize_project_config,
+        CaptureConfig, Config, ContextConfig, DbConfig, DisplayConfig, ExecutionConfig,
+        HintsConfig, McpConfig, McpServerConfig, ModelsConfig, ProviderAuth, ProviderConfig,
+        RedactionConfig, ToolsConfig, WebSearchConfig, TOOL_BLOCKED_KEYS,
+        TOOL_BLOCKED_KEY_SEGMENTS,
+    };
     use crate::test_support::EnvVarGuard;
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {

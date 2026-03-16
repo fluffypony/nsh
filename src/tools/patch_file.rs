@@ -5,8 +5,6 @@ use crate::tools::write_file::{
     backup_to_trash, expand_tilde, validate_path_with_access, write_nofollow,
 };
 #[cfg(test)]
-use std::io::Write;
-#[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -201,10 +199,12 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::test_support::EnvVarGuard;
-    use crate::tools::write_file::{validate_path_with_access, write_nofollow};
     use tempfile::NamedTempFile;
 
-    use super::{backup_to_trash, execute, expand_tilde, is_root, trash_dir, validate_path};
+    use super::{
+        backup_to_trash, execute, expand_tilde, is_root, trash_dir, validate_path,
+        validate_path_with_access, write_nofollow,
+    };
     use crate::tools::ToolInvocationOutcome;
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {

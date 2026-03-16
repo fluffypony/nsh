@@ -1988,7 +1988,6 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
 #[cfg(test)]
 mod query_loop_tests {
     use super::*;
-    use crate::provider::{LlmProvider, StreamEvent};
     use std::collections::VecDeque;
     use std::sync::Mutex;
     use tokio::sync::mpsc;
@@ -2135,7 +2134,7 @@ mod query_loop_tests {
 
 #[cfg(test)]
 mod repeat_guard_tests {
-    use super::*;
+    use super::RepeatGuard;
 
     #[test]
     fn repeat_guard_triggers_on_third_repeat() {

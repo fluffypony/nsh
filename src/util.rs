@@ -142,7 +142,7 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{compare_versions, levenshtein_distance, truncate, truncate_bytes};
 
     #[test]
     fn test_truncate_multibyte() {

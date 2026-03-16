@@ -429,7 +429,7 @@ mod tests {
     #[cfg(unix)]
     mod unix_tests {
         use super::super::*;
-        use crate::daemon::{DAEMON_PROTOCOL_VERSION, DaemonRequest, DaemonResponse};
+        use crate::daemon::DAEMON_PROTOCOL_VERSION;
         use crate::test_support::EnvVarGuard;
         use serial_test::serial;
         use std::os::unix::net::UnixListener;

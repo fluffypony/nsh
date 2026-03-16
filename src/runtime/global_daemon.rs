@@ -2667,7 +2667,6 @@ fn write_response(
 mod tests {
     use super::*;
     use crate::test_support::EnvVarGuard;
-    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
     fn send_request_and_read_response(

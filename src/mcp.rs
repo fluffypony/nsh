@@ -594,7 +594,12 @@ impl Drop for McpClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        find_event_boundary, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, McpClient,
+        McpServer, McpToolInfo, McpTransport, MCP_PROTOCOL_VERSION,
+    };
+    use serde_json::json;
+    use std::time::Duration;
 
     #[test]
     fn find_event_boundary_crlf() {

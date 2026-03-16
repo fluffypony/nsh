@@ -179,8 +179,9 @@ impl<'a> MemoryMaintenance<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::MemoryMaintenance;
     use crate::memory::test_support::{setup_memory, MockLlm};
+    use rusqlite::Connection;
 
     fn insert_unconsolidated_event(conn: &Connection) -> String {
         let event = crate::memory::types::EpisodicEventCreate {

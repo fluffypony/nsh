@@ -722,7 +722,6 @@ impl DbAccess for DaemonDb {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::memory::types::MemoryType;
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
     use std::io::{BufRead, BufReader, Write};

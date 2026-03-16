@@ -92,8 +92,9 @@ pub fn should_run_decay(conn: &Connection) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{get_fade_cutoff, record_decay_run, run_decay, should_run_decay};
     use crate::memory::schema::create_memory_tables;
+    use rusqlite::Connection;
 
     fn setup() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

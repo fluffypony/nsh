@@ -1068,8 +1068,11 @@ Skill installation guidelines:
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::context::*;
+    use super::build_system_prompt;
+    use crate::context::{
+        EnvironmentContext, HistoryContext, MachineDetails, MemoryUsage, ProjectInfo,
+        QueryContext, TerminalContext,
+    };
 
     fn make_ctx(os_info: &str) -> QueryContext {
         QueryContext {

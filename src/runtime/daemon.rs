@@ -939,7 +939,11 @@ pub fn global_daemon_lock_path() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        daemon_pid_path, daemon_socket_path, default_max_lines, generate_summaries_sync,
+        handle_daemon_request, run_db_thread, DaemonRequest, DaemonResponse, DbCommand,
+        Mutex, DAEMON_PROTOCOL_VERSION,
+    };
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
 
