@@ -1987,9 +1987,17 @@ async fn backfill_llm_summaries(config: &Config, _session_id: &str) -> anyhow::R
 
 #[cfg(test)]
 mod query_loop_tests {
-    use super::*;
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
+    use super::{
+        run_agent_tool_loop, streaming, QueryLlmRuntime, QueryOptions, QueryPromptState,
+        QuerySession, QueryToolRuntime,
+    };
+    use crate::config::Config;
+    use crate::provider::{
+        ActiveProvider, ChatRequest, ContentBlock, LlmProvider, Message, Role, StreamEvent,
+    };
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
 
     struct MockProvider {

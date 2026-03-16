@@ -2313,7 +2313,8 @@ fn execute_read(
 
 #[cfg(test)]
 mod tests_memory_stats {
-    use super::*;
+    use super::{execute_read, MemoryTaskTracker};
+    use crate::daemon::{DaemonRequest, DaemonResponse};
 
     #[test]
     fn memory_stats_includes_telemetry() {
@@ -2665,9 +2666,18 @@ fn write_response(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::*;
+    use super::{
+        audit_sensitive_daemon_action_with, enqueue_unique_memory_task, execute_read,
+        execute_write, handle_global_connection, is_write_request, parse_memory_json,
+        sensitive_daemon_audit_fields, MemoryQueueDecision, MemoryQueueGuards, MemoryTask,
+        MemoryTaskTracker, ReadCommand, WriteCommand,
+    };
+    use crate::daemon::{DaemonRequest, DaemonResponse};
     use crate::test_support::EnvVarGuard;
+    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn send_request_and_read_response(
         request_line: &str,

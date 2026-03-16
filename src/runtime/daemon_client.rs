@@ -428,11 +428,12 @@ mod tests {
 
     #[cfg(unix)]
     mod unix_tests {
-        use super::super::*;
-        use crate::daemon::DAEMON_PROTOCOL_VERSION;
+        use super::super::{is_daemon_running, send_request, try_send_request, BufReader};
+        use crate::daemon::{DaemonRequest, DaemonResponse, DAEMON_PROTOCOL_VERSION};
         use crate::test_support::EnvVarGuard;
         use serial_test::serial;
-        use std::os::unix::net::UnixListener;
+        use std::io::{BufRead, Write};
+        use std::os::unix::net::{UnixListener, UnixStream};
         use std::path::{Path, PathBuf};
 
         fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
