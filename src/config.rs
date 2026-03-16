@@ -973,7 +973,7 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
 
 #[cfg(test)]
 mod tests_model_capabilities {
-    use super::*;
+    use super::model_capabilities;
 
     #[test]
     fn codex_models_disable_tools_and_json() {

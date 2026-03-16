@@ -133,8 +133,15 @@ impl<'a> MemoryIngestionPipeline<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::memory::types::{ShellEvent, ShellEventType};
+    use std::sync::{Arc, Mutex};
+
+    use rusqlite::Connection;
+
+    use crate::memory::ingestion::IngestionBuffer;
+    use crate::memory::llm_adapter::MemoryLlmClient;
+    use crate::memory::types::{MemoryOp, ShellEvent, ShellEventType};
+
+    use super::MemoryIngestionPipeline;
 
     struct MockLlm {
         response: serde_json::Value,

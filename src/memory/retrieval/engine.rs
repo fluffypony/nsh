@@ -119,8 +119,14 @@ impl<'a> MemoryRetrievalEngine<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::memory::types::{InteractionMode, MemoryQueryContext};
+    use std::sync::{Arc, Mutex};
+
+    use rusqlite::Connection;
+
+    use crate::memory::llm_adapter::MemoryLlmClient;
+    use crate::memory::types::{InteractionMode, MemoryQueryContext, RetrievedMemories};
+
+    use super::MemoryRetrievalEngine;
 
     struct MockLlm {
         response: serde_json::Value,

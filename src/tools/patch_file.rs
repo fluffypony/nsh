@@ -197,9 +197,15 @@ pub fn execute(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+
     use crate::test_support::EnvVarGuard;
+    use crate::tools::write_file::{validate_path_with_access, write_nofollow};
     use tempfile::NamedTempFile;
+
+    use super::{backup_to_trash, execute, expand_tilde, is_root, trash_dir, validate_path};
+    use crate::tools::ToolInvocationOutcome;
 
     fn temp_home_env() -> (tempfile::TempDir, EnvVarGuard, EnvVarGuard, EnvVarGuard) {
         let home = tempfile::tempdir().unwrap();

@@ -170,9 +170,11 @@ pub(crate) fn models_for_provider(provider: &str) -> ProviderModels {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::autoconfigure::detect::DetectedKey;
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
+
+    use super::{build_provider_options, models_for_provider, ProviderKind};
 
     #[test]
     #[serial]

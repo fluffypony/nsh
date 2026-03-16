@@ -210,7 +210,12 @@ pub fn start(config: &crate::config::Config) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::atomic::Ordering;
+
+    use super::{
+        current_probe_url, evaluate_monitor_step, is_online, schedule_for_attempt, start, status,
+        ConnectivityStatus, MonitorStep, ONLINE, STATUS,
+    };
 
     #[test]
     fn test_schedule_progression() {
