@@ -52,6 +52,31 @@ fn push_wrapped_tool_result(
     });
 }
 
+/// Apply the standard redact → sanitize pipeline to tool output content.
+fn finalize_tool_content(content: &str, config: &Config) -> String {
+    let redacted = crate::redact::redact_secrets(content, &config.redaction);
+    crate::security::sanitize_tool_output(&redacted)
+}
+
+/// Push a tool result from a `Result<ToolInvocationOutcome>`, handling
+/// the Ok/Err conversion, redaction, sanitization, wrapping with boundary,
+/// and appending to results.
+fn push_outcome_tool_result(
+    tool_results: &mut Vec<ContentBlock>,
+    tool_use_id: String,
+    tool_name: &str,
+    result: anyhow::Result<tools::ToolInvocationOutcome>,
+    boundary: &str,
+    config: &Config,
+) {
+    let (content, is_error) = match result {
+        Ok(outcome) => outcome.into_parts(),
+        Err(e) => (format!("Error: {e}"), true),
+    };
+    let finalized = finalize_tool_content(&content, config);
+    push_wrapped_tool_result(tool_results, tool_use_id, tool_name, &finalized, is_error, boundary);
+}
+
 /// Wraps a tool future with timeout handling.
 /// In autorun mode: auto-extends once, then returns timeout error.
 /// In interactive mode: prompts user to continue waiting.
@@ -962,14 +987,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         Ok(result) => {
                             let (content, is_error) =
                                 result.into_outcome_or_failure(name).into_parts();
-                            let redacted =
-                                crate::redact::redact_secrets(&content, &config.redaction);
-                            let sanitized = crate::security::sanitize_tool_output(&redacted);
+                            let finalized = finalize_tool_content(&content, config);
                             push_wrapped_tool_result(
                                 &mut tool_results,
                                 id.clone(),
                                 name,
-                                &sanitized,
+                                &finalized,
                                 is_error,
                                 boundary,
                             );
@@ -1047,42 +1070,15 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     }
                     "manage_config" => {
                         let result = tools::manage_config::execute_outcome(input);
-                        let (content, is_error) = match result {
-                            Ok(outcome) => outcome.into_parts(),
-                            Err(e) => (format!("Error: {e}"), true),
-                        };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
                     }
                     "install_skill" => {
                         let result = tools::install_skill::execute_outcome(input);
-                        let (content, is_error) = match result {
-                            Ok(outcome) => outcome.into_parts(),
-                            Err(e) => (format!("Error: {e}"), true),
-                        };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
                     }
                     "install_mcp_server" => {
                         let result = tools::install_mcp::execute_outcome(input, config);
-                        let (content, is_error) = match result {
-                            Ok(outcome) => outcome.into_parts(),
-                            Err(e) => (format!("Error: {e}"), true),
-                        };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
                     }
                     "done" => {
                         has_terminal_tool = true;
@@ -1266,16 +1262,15 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                 }
                                 Err(e) => (format!("Coding agent error: {e}"), true),
                             };
-                            let redacted =
-                                crate::redact::redact_secrets(&content, &config.redaction);
-                            let sanitized = crate::security::sanitize_tool_output(&redacted);
-                            let wrapped =
-                                crate::security::wrap_tool_result(name, &sanitized, boundary);
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: wrapped,
+                            let finalized = finalize_tool_content(&content, config);
+                            push_wrapped_tool_result(
+                                &mut tool_results,
+                                id.clone(),
+                                name,
+                                &finalized,
                                 is_error,
-                            });
+                                boundary,
+                            );
                         }
                     }
                     _ => {
@@ -1340,13 +1335,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             }
                         };
                         let (content, is_error) = outcome.into_parts();
-                        let redacted = crate::redact::redact_secrets(&content, &config.redaction);
-                        let sanitized = crate::security::sanitize_tool_output(&redacted);
+                        let finalized = finalize_tool_content(&content, config);
                         push_wrapped_tool_result(
                             &mut tool_results,
                             id,
                             &name,
-                            &sanitized,
+                            &finalized,
                             is_error,
                             boundary,
                         );
@@ -1699,10 +1693,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     }
                 };
                 loop_state.tool_health.record(&name, !is_error);
-                let redacted = crate::redact::redact_secrets(&content, &config.redaction);
-                let redacted = crate::util::truncate(&redacted, 32000);
-                let sanitized = crate::security::sanitize_tool_output(&redacted);
-                let wrapped = crate::security::wrap_tool_result(&name, &sanitized, boundary);
+                let finalized = finalize_tool_content(&content, config);
+                let finalized = crate::util::truncate(&finalized, 32000);
+                let wrapped = crate::security::wrap_tool_result(&name, &finalized, boundary);
                 tool_results.push(ContentBlock::ToolResult {
                     tool_use_id: id,
                     content: wrapped,
@@ -1718,9 +1711,8 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                 Ok(result) => result.into_outcome_or_failure(&name).into_parts(),
                 Err(e) => (format!("Error: {e}"), true),
             };
-            let redacted = crate::redact::redact_secrets(&content, &config.redaction);
-            let sanitized = crate::security::sanitize_tool_output(&redacted);
-            push_wrapped_tool_result(&mut tool_results, id, &name, &sanitized, is_error, boundary);
+            let finalized = finalize_tool_content(&content, config);
+            push_wrapped_tool_result(&mut tool_results, id, &name, &finalized, is_error, boundary);
         }
 
         if tool_results.is_empty() {
