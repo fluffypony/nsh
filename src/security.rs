@@ -540,19 +540,23 @@ pub fn assess_command(cmd: &str) -> (RiskLevel, Option<&'static str>) {
 }
 
 pub fn sanitize_tool_output(content: &str) -> String {
-    let patterns = [
-        r"(?i)(ignore|disregard|forget|override)\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|rules|prompts)",
-        r"(?i)you\s+are\s+now\s+(a|an|in)\s+",
-        r"(?i)new\s+instructions?\s*:",
-        r"(?i)system\s*prompt\s*:",
-    ];
+    use std::sync::LazyLock;
+    static INJECTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
+        [
+            r"(?i)(ignore|disregard|forget|override)\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|rules|prompts)",
+            r"(?i)you\s+are\s+now\s+(a|an|in)\s+",
+            r"(?i)new\s+instructions?\s*:",
+            r"(?i)system\s*prompt\s*:",
+        ]
+        .iter()
+        .filter_map(|pat| regex::Regex::new(pat).ok())
+        .collect()
+    });
     let mut result = content.to_string();
-    for pat in &patterns {
-        if let Ok(re) = regex::Regex::new(pat) {
-            result = re
-                .replace_all(&result, "[injection attempt filtered]")
-                .to_string();
-        }
+    for re in INJECTION_PATTERNS.iter() {
+        result = re
+            .replace_all(&result, "[injection attempt filtered]")
+            .to_string();
     }
     result
 }

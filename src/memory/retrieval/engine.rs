@@ -116,7 +116,6 @@ impl<'a> MemoryRetrievalEngine<'a> {
     }
 
     pub fn build_memory_prompt(&self, memories: &RetrievedMemories) -> String {
-        let _ = self.config;
         crate::memory::retrieval::prompt_builder::build_memory_prompt(memories)
     }
 }

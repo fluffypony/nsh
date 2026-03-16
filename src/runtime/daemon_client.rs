@@ -286,7 +286,7 @@ pub fn ensure_global_daemon_running() -> anyhow::Result<()> {
             return Ok(());
         }
     }
-    Ok(())
+    anyhow::bail!("daemon failed to start after 20 retries (1s)")
 }
 
 /// Ensure the global daemon binary version matches ours; gracefully restart if not.

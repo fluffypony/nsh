@@ -66,13 +66,10 @@ impl CoreLabel {
         }
     }
 
+    /// All core blocks share the same character limit.
     #[cfg(test)]
     pub fn default_limit(&self) -> usize {
-        match self {
-            CoreLabel::Human => 5000,
-            CoreLabel::Persona => 5000,
-            CoreLabel::Environment => 5000,
-        }
+        5000
     }
 }
 
