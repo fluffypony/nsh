@@ -1433,7 +1433,13 @@ fn try_execute_write(
             output_tokens,
             cost_usd,
             generation_id,
+            caller,
         } => {
+            if let Err(error) = authorize_session_access(db, &caller, &session_id) {
+                return Ok(DaemonResponse::error(format!(
+                    "Security check failed: {error}"
+                )));
+            }
             let id = db
                 .insert_usage(
                     &session_id,

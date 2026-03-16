@@ -154,6 +154,8 @@ pub enum DaemonRequest {
         output_tokens: Option<u32>,
         cost_usd: Option<f64>,
         generation_id: Option<String>,
+        #[serde(default)]
+        caller: CallerContext,
     },
     UpdateConversationResult {
         conv_id: i64,
