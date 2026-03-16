@@ -453,7 +453,7 @@ mod tests {
         mem.apply_op(
             &conn,
             &MemoryOp::CoreAppend {
-                label: "human".into(),
+                label: CoreLabel::Human,
                 content: "likes Rust".into(),
             },
         )
@@ -463,7 +463,7 @@ mod tests {
         mem.apply_op(
             &conn,
             &MemoryOp::CoreRewrite {
-                label: "persona".into(),
+                label: CoreLabel::Persona,
                 content: "helpful assistant".into(),
             },
         )

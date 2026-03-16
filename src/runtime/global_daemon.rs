@@ -1903,14 +1903,7 @@ fn execute_read(
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::GetUsageStats { period } => {
-            let usage_period = match period.as_str() {
-                "today" => crate::db::UsagePeriod::Today,
-                "week" => crate::db::UsagePeriod::Week,
-                "month" => crate::db::UsagePeriod::Month,
-                "all" => crate::db::UsagePeriod::All,
-                _ => crate::db::UsagePeriod::Month,
-            };
-            match db.get_usage_stats(usage_period) {
+            match db.get_usage_stats(period) {
                 Ok(stats) => {
                     let payload = crate::daemon::UsageStatsPayload {
                         stats: stats

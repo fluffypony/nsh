@@ -430,11 +430,11 @@ impl RoutingDecision {
 #[serde(tag = "op")]
 pub enum MemoryOp {
     CoreAppend {
-        label: String,
+        label: CoreLabel,
         content: String,
     },
     CoreRewrite {
-        label: String,
+        label: CoreLabel,
         content: String,
     },
     EpisodicInsert {

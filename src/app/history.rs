@@ -29,7 +29,14 @@ pub(super) fn handle_history_command(action: HistoryAction) -> anyhow::Result<()
 }
 
 pub(super) fn handle_cost_command(period: String) -> anyhow::Result<()> {
-    let request = crate::daemon::DaemonRequest::GetUsageStats { period };
+    let usage_period = match period.as_str() {
+        "today" => crate::db::UsagePeriod::Today,
+        "week" => crate::db::UsagePeriod::Week,
+        "month" => crate::db::UsagePeriod::Month,
+        "all" => crate::db::UsagePeriod::All,
+        _ => crate::db::UsagePeriod::Month,
+    };
+    let request = crate::daemon::DaemonRequest::GetUsageStats { period: usage_period };
     let stats = match global_daemon_payload::<crate::daemon::UsageStatsPayload>(&request) {
         Ok(response) if !response.stats.is_empty() => response.stats,
         _ => {

@@ -130,7 +130,7 @@ pub enum DaemonRequest {
         limit: usize,
     },
     GetUsageStats {
-        period: String,
+        period: crate::db::UsagePeriod,
     },
     InsertConversation {
         session_id: String,
