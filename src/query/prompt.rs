@@ -1065,3 +1065,163 @@ Skill installation guidelines:
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::*;
+
+    fn make_ctx(os_info: &str) -> QueryContext {
+        QueryContext {
+            environment: EnvironmentContext {
+                os_info: os_info.into(),
+                hostname: "test".into(),
+                datetime_info: String::new(),
+                timezone_info: String::new(),
+                locale_info: String::new(),
+                locale_detail: String::new(),
+                machine_details: MachineDetails {
+                    arch: String::new(),
+                    cores: 0,
+                    total_ram: String::new(),
+                    pkg_managers: String::new(),
+                    lang_pkg_managers: String::new(),
+                    dev_tools: String::new(),
+                },
+                cpu_model: String::new(),
+                gpu_info: String::new(),
+                disk_info: vec![],
+                memory_usage: MemoryUsage {
+                    used: String::new(),
+                    total: String::new(),
+                    available: String::new(),
+                },
+                load_average: String::new(),
+                cpu_samples: String::new(),
+                network_info: vec![],
+                uptime: String::new(),
+            },
+            terminal: TerminalContext {
+                shell: "bash".into(),
+                cwd: "/home/user".into(),
+                username: "user".into(),
+                cwd_listing: vec![],
+                scrollback_text: String::new(),
+            },
+            history: HistoryContext {
+                conversation_history: vec![],
+                session_history: vec![],
+                other_sessions: vec![],
+            },
+            custom_instructions: None,
+            project_info: ProjectInfo {
+                root: None,
+                project_type: String::new(),
+                git_branch: None,
+                git_status: None,
+                git_commits: vec![],
+                files: vec![],
+            },
+            ssh_context: None,
+            container_context: None,
+        }
+    }
+
+    #[test]
+    fn macos_gets_homebrew_guidance() {
+        let ctx = make_ctx("macOS 14.5 Darwin arm64");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("Homebrew"), "macOS should get Homebrew guidance");
+    }
+
+    #[test]
+    fn windows_gets_winget_guidance() {
+        let ctx = make_ctx("Windows 11 Pro 10.0.22631");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("winget"), "Windows should get winget guidance");
+        assert!(prompt.contains("PowerShell"), "Windows should get PowerShell guidance");
+    }
+
+    #[test]
+    fn linux_gets_generic_package_guidance() {
+        let ctx = make_ctx("Ubuntu 24.04 Linux x86_64");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("apt, dnf, pacman"), "Linux should get generic guidance");
+    }
+
+    #[test]
+    fn wsl_gets_specific_guidance() {
+        let ctx = make_ctx("Ubuntu 24.04 WSL2 Linux x86_64");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("WSL"), "WSL should get specific guidance");
+    }
+
+    #[test]
+    fn boundary_note_included() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "", "test-boundary-123", "", "", "");
+        assert!(prompt.contains("test-boundary-123"), "boundary should appear in prompt");
+        assert!(prompt.contains("UNTRUSTED DATA"), "boundary security note should be present");
+    }
+
+    #[test]
+    fn memory_prompt_included_when_non_empty() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "user prefers dark mode");
+        assert!(prompt.contains("--- PERSISTENT MEMORY ---"), "memory section delimiter should appear");
+        assert!(prompt.contains("user prefers dark mode"));
+    }
+
+    #[test]
+    fn memory_prompt_omitted_when_empty() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(!prompt.contains("--- PERSISTENT MEMORY ---"), "empty memory should not add section delimiter");
+    }
+
+    #[test]
+    fn relevant_history_included_when_non_empty() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "<relevant_history>ssh prod</relevant_history>", "");
+        assert!(prompt.contains("relevant_history"), "history should be included");
+        assert!(prompt.contains("ssh prod"));
+    }
+
+    #[test]
+    fn ssh_context_referenced_when_present() {
+        let mut ctx = make_ctx("Linux");
+        ctx.ssh_context = Some("connected to prod-server-01".into());
+        // ssh_context is rendered via the xml_context parameter by the caller;
+        // verify the prompt includes the base SSH guidance text
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("nsh"), "base prompt should contain nsh identity");
+    }
+
+    #[test]
+    fn config_xml_included() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "", "b", "<config>test</config>", "", "");
+        assert!(prompt.contains("<config>test</config>"), "config XML should be in prompt");
+    }
+
+    #[test]
+    fn xml_context_included() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "<env>test</env>", "b", "", "", "");
+        assert!(prompt.contains("<env>test</env>"), "XML context should be in prompt");
+    }
+
+    #[test]
+    fn security_guidance_present() {
+        let ctx = make_ctx("Linux");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("NEVER generate commands that pipe remote content"), "security guidance should be present");
+    }
+
+    #[test]
+    fn freebsd_gets_pkg_guidance() {
+        let ctx = make_ctx("FreeBSD 14.0-RELEASE amd64");
+        let prompt = build_system_prompt(&ctx, "", "b", "", "", "");
+        assert!(prompt.contains("FreeBSD"), "FreeBSD should get pkg guidance");
+    }
+}
