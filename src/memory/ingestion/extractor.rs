@@ -132,13 +132,14 @@ fn parse_extraction_response(response: &serde_json::Value) -> anyhow::Result<Vec
     }
 }
 
+/// Ensure every insert op has non-empty search_keywords, falling back to
+/// summary-derived keywords when the LLM returned blanks.
 pub fn validate_keyword_presence(ops: Vec<MemoryOp>) -> Vec<MemoryOp> {
     ops.into_iter()
         .map(|op| match op {
             MemoryOp::EpisodicInsert { mut event } => {
-                if event.search_keywords.trim().is_empty() {
-                    event.search_keywords = extract_fallback_keywords(&event.summary);
-                }
+                event.search_keywords =
+                    ensure_keywords(event.search_keywords, &event.summary);
                 MemoryOp::EpisodicInsert { event }
             }
             MemoryOp::SemanticInsert {
@@ -147,43 +148,37 @@ pub fn validate_keyword_presence(ops: Vec<MemoryOp>) -> Vec<MemoryOp> {
                 summary,
                 details,
                 search_keywords,
-            } => {
-                let kw = if search_keywords.trim().is_empty() {
-                    extract_fallback_keywords(&summary)
-                } else {
-                    search_keywords
-                };
-                MemoryOp::SemanticInsert {
-                    name,
-                    category,
-                    summary,
-                    details,
-                    search_keywords: kw,
-                }
-            }
+            } => MemoryOp::SemanticInsert {
+                name,
+                category,
+                search_keywords: ensure_keywords(search_keywords, &summary),
+                summary,
+                details,
+            },
             MemoryOp::ProceduralInsert {
                 entry_type,
                 trigger_pattern,
                 summary,
                 steps,
                 search_keywords,
-            } => {
-                let kw = if search_keywords.trim().is_empty() {
-                    extract_fallback_keywords(&summary)
-                } else {
-                    search_keywords
-                };
-                MemoryOp::ProceduralInsert {
-                    entry_type,
-                    trigger_pattern,
-                    summary,
-                    steps,
-                    search_keywords: kw,
-                }
-            }
+            } => MemoryOp::ProceduralInsert {
+                entry_type,
+                trigger_pattern,
+                search_keywords: ensure_keywords(search_keywords, &summary),
+                summary,
+                steps,
+            },
             other => other,
         })
         .collect()
+}
+
+fn ensure_keywords(keywords: String, summary: &str) -> String {
+    if keywords.trim().is_empty() {
+        extract_fallback_keywords(summary)
+    } else {
+        keywords
+    }
 }
 
 pub fn extract_fallback_keywords(text: &str) -> String {
