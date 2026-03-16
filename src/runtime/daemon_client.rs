@@ -331,7 +331,7 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
             );
             stop_global_daemon();
             std::thread::sleep(std::time::Duration::from_millis(500));
-            let _ = ensure_global_daemon_running();
+            ensure_global_daemon_running()?;
         }
     }
     Ok(())
