@@ -127,6 +127,9 @@ mod tests {
 
     use super::MemoryRetrievalEngine;
 
+    use std::sync::{Arc, Mutex};
+    use rusqlite::Connection;
+
     fn make_query_ctx(query: &str, mode: InteractionMode) -> MemoryQueryContext {
         MemoryQueryContext {
             query: query.to_string(),
@@ -135,6 +138,12 @@ mod tests {
             interaction_mode: mode,
             error_context: None,
         }
+    }
+
+    /// Run a setup closure that needs the DB lock, outside of async context.
+    fn with_db(db: &Arc<Mutex<Connection>>, f: impl FnOnce(&Connection)) {
+        let conn = db.lock().unwrap();
+        f(&conn);
     }
 
     #[tokio::test]
@@ -154,9 +163,8 @@ mod tests {
         let (db, config) = setup_memory();
 
         // Insert procedural data that would match BM25 if full retrieval ran
-        {
-            let conn = db.lock().unwrap();
-            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+        with_db(&db, |conn| {
+            let store = crate::memory::store::access::MemoryStoreAccess::new(conn);
             store
                 .apply_op(&crate::memory::types::MemoryOp::ProceduralInsert {
                     entry_type: "workflow".into(),
@@ -166,7 +174,7 @@ mod tests {
                     search_keywords: "cargo build rust release".into(),
                 })
                 .unwrap();
-        }
+        });
 
         let engine = MemoryRetrievalEngine::new(&db, &config);
         let ctx = make_query_ctx("cargo build", InteractionMode::CommandSuggestion);
@@ -197,9 +205,8 @@ mod tests {
         let (db, config) = setup_memory();
 
         // Insert data that will ONLY appear via BM25 search (not in baseline results)
-        {
-            let conn = db.lock().unwrap();
-            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+        with_db(&db, |conn| {
+            let store = crate::memory::store::access::MemoryStoreAccess::new(conn);
 
             // This procedural item is only retrievable via BM25 search
             store
@@ -212,7 +219,7 @@ mod tests {
                 })
                 .unwrap();
 
-            // Insert episodic events — these should appear in relevant_episodic via BM25
+            // Insert episodic events -- these should appear in relevant_episodic via BM25
             // Use 12+ events so some are beyond the recent-10 cutoff
             for i in 0..12 {
                 store
@@ -248,7 +255,7 @@ mod tests {
                     },
                 })
                 .unwrap();
-        }
+        });
 
         let engine = MemoryRetrievalEngine::new(&db, &config);
         let ctx = make_query_ctx("how do I deploy to production", InteractionMode::NaturalLanguage);
@@ -293,10 +300,9 @@ mod tests {
         let (db, config) = setup_memory();
 
         // Insert a resource tied to a CWD
-        {
-            let conn = db.lock().unwrap();
+        with_db(&db, |conn| {
             crate::memory::store::resource::store(
-                &conn,
+                conn,
                 &crate::memory::store::resource::ResourceWrite {
                     resource_type: "file",
                     file_path: Some("/home/user/project/Cargo.toml"),
@@ -308,7 +314,7 @@ mod tests {
                 },
             )
             .unwrap();
-        }
+        });
 
         let engine = MemoryRetrievalEngine::new(&db, &config);
         let mut ctx = make_query_ctx("what deps do we have", InteractionMode::NaturalLanguage);
@@ -327,10 +333,9 @@ mod tests {
         let (db, config) = setup_memory();
 
         // Insert a semantic item with high access count (will be in top_semantic)
-        {
-            let conn = db.lock().unwrap();
+        with_db(&db, |conn| {
             crate::memory::store::semantic::store(
-                &conn,
+                conn,
                 &crate::memory::store::semantic::SemanticWrite {
                     name: "cargo_tool",
                     category: "tools",
@@ -341,13 +346,13 @@ mod tests {
             )
             .unwrap();
             // Increment access count so it appears in top_accessed
-            let items = crate::memory::store::semantic::list_all(&conn).unwrap();
+            let items = crate::memory::store::semantic::list_all(conn).unwrap();
             for item in &items {
                 for _ in 0..10 {
-                    crate::memory::store::semantic::increment_access(&conn, &item.id).unwrap();
+                    crate::memory::store::semantic::increment_access(conn, &item.id).unwrap();
                 }
             }
-        }
+        });
 
         let engine = MemoryRetrievalEngine::new(&db, &config);
         let ctx = make_query_ctx("cargo build", InteractionMode::NaturalLanguage);
@@ -408,9 +413,8 @@ mod tests {
         let (db, config) = setup_memory();
 
         // Insert many episodic events with large details to blow the 4000-token budget
-        {
-            let conn = db.lock().unwrap();
-            let store = crate::memory::store::access::MemoryStoreAccess::new(&conn);
+        with_db(&db, |conn| {
+            let store = crate::memory::store::access::MemoryStoreAccess::new(conn);
 
             for i in 0..30 {
                 store
@@ -444,7 +448,7 @@ mod tests {
                     })
                     .unwrap();
             }
-        }
+        });
 
         let engine = MemoryRetrievalEngine::new(&db, &config);
         let ctx = make_query_ctx("show me deploy details", InteractionMode::NaturalLanguage);

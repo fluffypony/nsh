@@ -164,9 +164,11 @@ mod tests {
         );
 
         // Verify it was persisted to the DB
-        let conn = db.lock().unwrap();
-        let count = crate::memory::store::episodic::count(&conn).unwrap();
-        assert_eq!(count, 1);
+        {
+            let conn = db.lock().unwrap();
+            let count = crate::memory::store::episodic::count(&conn).unwrap();
+            assert_eq!(count, 1);
+        }
     }
 
     #[tokio::test]
@@ -214,9 +216,11 @@ mod tests {
         );
 
         // Verify semantic item was persisted
-        let conn = db.lock().unwrap();
-        let count = crate::memory::store::semantic::count(&conn).unwrap();
-        assert_eq!(count, 1);
+        {
+            let conn = db.lock().unwrap();
+            let count = crate::memory::store::semantic::count(&conn).unwrap();
+            assert_eq!(count, 1);
+        }
     }
 
     #[tokio::test]
@@ -278,9 +282,11 @@ mod tests {
         // Flushing empty buffer should succeed without touching DB
         pipeline.flush_ingestion(&llm).await.unwrap();
 
-        let conn = db.lock().unwrap();
-        let count = crate::memory::store::episodic::count(&conn).unwrap();
-        assert_eq!(count, 0);
+        {
+            let conn = db.lock().unwrap();
+            let count = crate::memory::store::episodic::count(&conn).unwrap();
+            assert_eq!(count, 0);
+        }
     }
 
     #[tokio::test]
@@ -304,9 +310,11 @@ mod tests {
 
         // At least one episodic event should be persisted (the second may merge
         // with the first via Jaro-Winkler consolidation, so count >= 1)
-        let conn = db.lock().unwrap();
-        let count = crate::memory::store::episodic::count(&conn).unwrap();
-        assert!(count >= 1, "should persist at least one episodic event, got {count}");
+        {
+            let conn = db.lock().unwrap();
+            let count = crate::memory::store::episodic::count(&conn).unwrap();
+            assert!(count >= 1, "should persist at least one episodic event, got {count}");
+        }
     }
 
     #[test]
