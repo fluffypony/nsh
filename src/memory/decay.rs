@@ -4,7 +4,6 @@ use crate::memory::types::DecayReport;
 
 pub fn run_decay(
     conn: &Connection,
-    _fade_after_days: u32,
     expire_after_days: u32,
 ) -> anyhow::Result<DecayReport> {
     let mut report = DecayReport::default();
@@ -105,7 +104,7 @@ mod tests {
     #[test]
     fn run_decay_empty_db() {
         let conn = setup();
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(report.episodic_deleted, 0);
         assert_eq!(report.semantic_deleted, 0);
     }
@@ -146,7 +145,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.episodic_deleted, 1,
             "old episodic event should be deleted"
@@ -169,7 +168,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.semantic_deleted, 0,
             "high-access semantic items should be preserved"
@@ -186,7 +185,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.semantic_deleted, 1,
             "low-access old semantic items should be deleted"
@@ -202,7 +201,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.procedural_deleted, 0,
             "high-access procedural items should be preserved"
@@ -218,7 +217,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.procedural_deleted, 1,
             "low-access old procedural items should be deleted"
@@ -234,7 +233,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.resource_deleted, 1,
             "old resource items should be deleted"
@@ -250,7 +249,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(report.resource_deleted, 0);
     }
 
@@ -263,7 +262,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.knowledge_deleted, 1,
             "old low-sensitivity knowledge should be deleted"
@@ -279,7 +278,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.knowledge_deleted, 0,
             "medium/high sensitivity knowledge should be preserved"
@@ -295,7 +294,7 @@ mod tests {
             [],
         ).unwrap();
 
-        let report = run_decay(&conn, 30, 90).unwrap();
+        let report = run_decay(&conn, 90).unwrap();
         assert_eq!(
             report.knowledge_deleted, 0,
             "high sensitivity knowledge should be preserved"
@@ -327,7 +326,7 @@ mod tests {
         ).unwrap();
 
         // With expire_after_days=5, the 10-day-old event should be deleted
-        let report = run_decay(&conn, 3, 5).unwrap();
+        let report = run_decay(&conn, 5).unwrap();
         assert_eq!(report.episodic_deleted, 1);
     }
 

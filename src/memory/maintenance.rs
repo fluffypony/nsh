@@ -23,7 +23,6 @@ impl<'a> MemoryMaintenance<'a> {
         let conn = self.db.lock().unwrap();
         let report = crate::memory::decay::run_decay(
             &conn,
-            self.config.fade_after_days,
             self.config.expire_after_days,
         )?;
         crate::memory::decay::record_decay_run(&conn)?;
