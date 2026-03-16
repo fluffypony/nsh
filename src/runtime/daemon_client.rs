@@ -106,7 +106,7 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
     serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
 }
 
-pub fn get_system_info(_session_id: &str) -> anyhow::Result<crate::context::SystemInfoBundle> {
+pub fn get_system_info() -> anyhow::Result<crate::context::SystemInfoBundle> {
     let request = DaemonRequest::GetSystemInfo;
     match send_to_global(&request) {
         Ok(DaemonResponse::Ok { data: Some(d) }) => Ok(serde_json::from_value(d)?),

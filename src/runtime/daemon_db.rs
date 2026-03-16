@@ -113,6 +113,13 @@ pub trait DbAccess {
     );
 
     // ── Memory system ──────────────────────────────────
+
+    /// Simplified retrieval for the direct-DB path (no daemon).
+    ///
+    /// Returns core memory + top-accessed semantic items only.
+    /// The full BM25-based retrieval (topic extraction, episodic search,
+    /// budget enforcement) requires async LLM calls and runs only through
+    /// the daemon-backed implementation.
     fn memory_retrieve_prompt(
         &self,
         _ctx: &crate::memory::types::MemoryQueryContext,

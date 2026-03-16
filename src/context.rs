@@ -376,7 +376,7 @@ pub fn build_context(
     config: &Config,
 ) -> anyhow::Result<QueryContext> {
     let (static_info, semi_dynamic, cpu_samples, memory_usage, load_average) =
-        match crate::daemon_client::get_system_info(session_id) {
+        match crate::daemon_client::get_system_info() {
             Ok(daemon_data) => (
                 StaticSystemInfo {
                     os_info: daemon_data.static_info.os_info,
