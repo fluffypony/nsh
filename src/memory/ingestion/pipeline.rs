@@ -156,18 +156,7 @@ mod tests {
     }
 
     fn make_event(cmd: &str, exit_code: i32) -> ShellEvent {
-        ShellEvent {
-            event_type: ShellEventType::CommandExecution,
-            command: Some(cmd.to_string()),
-            output: None,
-            exit_code: Some(exit_code),
-            working_dir: Some("/home/user".into()),
-            session_id: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            git_context: None,
-            instruction: None,
-            file_path: None,
-        }
+        crate::memory::ingestion::make_test_event(cmd, exit_code)
     }
 
     #[tokio::test]

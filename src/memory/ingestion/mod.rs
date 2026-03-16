@@ -166,23 +166,29 @@ fn generate_fast_path_keywords(event: &ShellEvent) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn make_test_event(cmd: &str, exit_code: i32) -> ShellEvent {
+    use crate::memory::types::ShellEventType;
+    ShellEvent {
+        event_type: ShellEventType::CommandExecution,
+        command: Some(cmd.to_string()),
+        output: None,
+        exit_code: Some(exit_code),
+        working_dir: Some("/home/user".into()),
+        session_id: None,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        git_context: None,
+        instruction: None,
+        file_path: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::memory::types::{ShellEvent, ShellEventType};
 
     fn make_event(cmd: &str, exit_code: i32) -> ShellEvent {
-        ShellEvent {
-            event_type: ShellEventType::CommandExecution,
-            command: Some(cmd.to_string()),
-            output: None,
-            exit_code: Some(exit_code),
-            working_dir: Some("/home/user".into()),
-            session_id: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            git_context: None,
-            instruction: None,
-            file_path: None,
-        }
+        make_test_event(cmd, exit_code)
     }
 
     #[test]
