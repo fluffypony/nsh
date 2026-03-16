@@ -459,10 +459,6 @@ impl DaemonResponse {
         Self::Ok { data: None }
     }
 
-    pub fn ok_with_data(data: serde_json::Value) -> Self {
-        Self::Ok { data: Some(data) }
-    }
-
     pub fn ok_with_payload(payload: impl Serialize) -> Self {
         match serde_json::to_value(payload) {
             Ok(data) => Self::Ok { data: Some(data) },
@@ -644,7 +640,7 @@ pub fn handle_daemon_request(
                         None,
                     )
                 },
-                |id| DaemonResponse::ok_with_data(serde_json::json!({"id": id})),
+                |id| DaemonResponse::ok_with_payload(serde_json::json!({"id": id})),
             )
         }
 
@@ -885,7 +881,7 @@ pub fn run_db_thread(rx: std::sync::mpsc::Receiver<DbCommand>) {
     }
 }
 
-pub fn generate_summaries_sync_pub(db: &crate::db::Db) {
+pub fn generate_pending_summaries(db: &crate::db::Db) {
     generate_summaries_sync(db);
 }
 
@@ -1166,8 +1162,8 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_response_ok_with_data() {
-        let resp = DaemonResponse::ok_with_data(serde_json::json!({"key": "value"}));
+    fn test_daemon_response_ok_with_payload() {
+        let resp = DaemonResponse::ok_with_payload(serde_json::json!({"key": "value"}));
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"status\":\"ok\""));
         assert!(json.contains("\"key\":\"value\""));
@@ -1579,8 +1575,8 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_response_ok_with_data_roundtrip() {
-        let resp = DaemonResponse::ok_with_data(
+    fn test_daemon_response_ok_with_payload_roundtrip() {
+        let resp = DaemonResponse::ok_with_payload(
             serde_json::json!({"list": [1, 2, 3], "nested": {"a": true}}),
         );
         let json = serde_json::to_string(&resp).unwrap();
@@ -1981,8 +1977,8 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_response_ok_with_data_serialization_includes_data() {
-        let resp = DaemonResponse::ok_with_data(serde_json::json!(42));
+    fn test_daemon_response_ok_with_payload_serialization_includes_data() {
+        let resp = DaemonResponse::ok_with_payload(serde_json::json!(42));
         let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(val["status"], "ok");
         assert_eq!(val["data"], 42);
@@ -2005,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_response_deserialize_ok_with_data() {
+    fn test_daemon_response_deserialize_ok_with_payload() {
         let json = r#"{"status":"ok","data":{"key":"val"}}"#;
         let resp: DaemonResponse = serde_json::from_str(json).unwrap();
         if let DaemonResponse::Ok { data: Some(d) } = resp {
@@ -2049,7 +2045,7 @@ mod tests {
 
     #[test]
     fn test_daemon_response_ok_with_null_data() {
-        let resp = DaemonResponse::ok_with_data(serde_json::Value::Null);
+        let resp = DaemonResponse::ok_with_payload(serde_json::Value::Null);
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"data\":null"));
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
@@ -2058,14 +2054,14 @@ mod tests {
 
     #[test]
     fn test_daemon_response_ok_with_empty_object() {
-        let resp = DaemonResponse::ok_with_data(serde_json::json!({}));
+        let resp = DaemonResponse::ok_with_payload(serde_json::json!({}));
         let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(val["data"], serde_json::json!({}));
     }
 
     #[test]
     fn test_daemon_response_ok_with_array_data() {
-        let resp = DaemonResponse::ok_with_data(serde_json::json!([1, "two", 3]));
+        let resp = DaemonResponse::ok_with_payload(serde_json::json!([1, "two", 3]));
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
         if let DaemonResponse::Ok { data: Some(d) } = parsed {
@@ -2394,7 +2390,7 @@ mod tests {
         let data = serde_json::json!({
             "a": {"b": {"c": {"d": [1, 2, {"e": true}]}}}
         });
-        let resp = DaemonResponse::ok_with_data(data.clone());
+        let resp = DaemonResponse::ok_with_payload(data.clone());
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
         if let DaemonResponse::Ok { data: Some(d) } = parsed {
@@ -2981,8 +2977,8 @@ mod tests {
     }
 
     #[test]
-    fn test_daemon_response_ok_with_data_includes_data() {
-        let resp = DaemonResponse::ok_with_data(serde_json::json!({"key": "value"}));
+    fn test_daemon_response_ok_with_payload_includes_data() {
+        let resp = DaemonResponse::ok_with_payload(serde_json::json!({"key": "value"}));
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"key\""));
         assert!(json.contains("\"value\""));

@@ -1229,7 +1229,6 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     context: extra_context,
                                     config,
                                     db,
-                                    session_id,
                                     project_context_xml: &xml_context,
                                     cancelled: &cancelled,
                                     force_autorun: opts.force_autorun,
@@ -1872,13 +1871,15 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
 
 fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), String> {
     if name == "install_skill" {
+        let has_str = |key: &str| {
+            input
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+        };
         // Repo mode: just needs a repo/url — skip all other validation
-        let have_repo = input
-            .get("repo")
-            .or_else(|| input.get("url"))
-            .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
+        let have_repo = has_str("repo") || has_str("url");
         // Also detect URLs passed in name field
         let name_is_url = input
             .get("name")
@@ -1894,44 +1895,14 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
             return Ok(());
         }
         // Manual mode: require name + description + (command OR runtime+script OR docs)
-        let have_name = input
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        let have_desc = input
-            .get("description")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-        if !have_name || !have_desc {
+        if !has_str("name") || !has_str("description") {
             return Err(
                 "Missing required field 'name' or 'description' for tool 'install_skill'. \
                         To install from a Git repo, pass repo=URL instead."
                     .to_string(),
             );
         }
-        let have_command = input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let have_runtime = input
-            .get("runtime")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let have_script = input
-            .get("script")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        let have_docs = input
-            .get("docs")
-            .and_then(|v| v.as_str())
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
-        if !(have_command || (have_runtime && have_script) || have_docs) {
+        if !(has_str("command") || (has_str("runtime") && has_str("script")) || has_str("docs")) {
             return Err("Provide either 'command', both 'runtime' and 'script', or 'docs' for 'install_skill'".to_string());
         }
         return Ok(());

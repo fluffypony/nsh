@@ -99,7 +99,6 @@ pub(crate) fn validate_store_memory_input(
     Ok(())
 }
 
-/// Execute a search_memory tool call.
 pub fn execute_search_memory(
     db: &dyn DbAccess,
     memory_type: &str,
@@ -115,7 +114,6 @@ pub fn execute_search_memory(
         .context("Memory search error")
 }
 
-/// Execute a core_memory_append tool call.
 pub fn execute_core_memory_append(
     db: &dyn DbAccess,
     label: &str,
@@ -126,7 +124,6 @@ pub fn execute_core_memory_append(
         .context("core_memory_append failed")
 }
 
-/// Execute a core_memory_rewrite tool call.
 pub fn execute_core_memory_rewrite(
     db: &dyn DbAccess,
     label: &str,
@@ -137,7 +134,6 @@ pub fn execute_core_memory_rewrite(
         .context("core_memory_rewrite failed")
 }
 
-/// Execute a store_memory tool call.
 pub fn execute_store_memory(
     db: &dyn DbAccess,
     memory_type: &str,
@@ -151,7 +147,6 @@ pub fn execute_store_memory(
         .context("store_memory failed")
 }
 
-/// Execute a retrieve_secret tool call.
 pub fn execute_retrieve_secret(
     db: &dyn DbAccess,
     caption_query: &str,

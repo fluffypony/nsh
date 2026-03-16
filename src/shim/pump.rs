@@ -833,7 +833,7 @@ fn handle_local_capture_request(
         crate::daemon::DaemonRequest::Scrollback { max_lines } => match capture.lock() {
             Ok(eng) => {
                 let text = eng.get_lines(max_lines);
-                crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({"scrollback": text}))
+                crate::daemon::DaemonResponse::ok_with_payload(serde_json::json!({"scrollback": text}))
             }
             Err(_) => crate::daemon::DaemonResponse::error("capture lock poisoned"),
         },
@@ -850,12 +850,12 @@ fn handle_local_capture_request(
                 let lines: Vec<&str> = text.lines().collect();
                 let start = lines.len().saturating_sub(max_lines);
                 let result = lines[start..].join("\n");
-                crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({"output": result}))
+                crate::daemon::DaemonResponse::ok_with_payload(serde_json::json!({"output": result}))
             }
             Err(_) => crate::daemon::DaemonResponse::error("capture lock poisoned"),
         },
         crate::daemon::DaemonRequest::Status => {
-            crate::daemon::DaemonResponse::ok_with_data(serde_json::json!({
+            crate::daemon::DaemonResponse::ok_with_payload(serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "build_version": env!("NSH_BUILD_VERSION"),
                 "build_fingerprint": env!("NSH_BUILD_FINGERPRINT"),

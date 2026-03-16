@@ -11,7 +11,6 @@ pub fn trivial_summary(cmd: &str, exit_code: i32, output: &str) -> Option<String
         _ if output.trim().is_empty() && exit_code == 0 => {
             Some(format!("Ran `{cmd}` (exit 0, no output)"))
         }
-        _ if output.trim().len() < 20 => None,
         _ => None,
     }
 }

@@ -1,5 +1,31 @@
 use crate::cli::{DaemonReadAction, DaemonSendAction};
 
+/// Build a `DaemonRequest::Record` from the individual field values.
+fn record_request(
+    session: String,
+    command: String,
+    cwd: String,
+    exit_code: i32,
+    started_at: String,
+    duration_ms: Option<i64>,
+    tty: String,
+    pid: i32,
+    shell: String,
+) -> crate::daemon::DaemonRequest {
+    crate::daemon::DaemonRequest::Record {
+        session,
+        command,
+        cwd,
+        exit_code,
+        started_at,
+        tty,
+        pid,
+        shell,
+        duration_ms,
+        output: None,
+    }
+}
+
 pub(super) fn handle_daemon_send_command(action: DaemonSendAction) -> anyhow::Result<()> {
     #[cfg(not(unix))]
     {
@@ -43,18 +69,17 @@ pub(super) fn handle_daemon_send_command(action: DaemonSendAction) -> anyhow::Re
             tty,
             pid,
             shell,
-        } => crate::daemon::DaemonRequest::Record {
-            session: session.clone(),
-            command: command.clone(),
-            cwd: cwd.clone(),
-            exit_code: *exit_code,
-            started_at: started_at.clone(),
-            tty: tty.clone(),
-            pid: *pid,
-            shell: shell.clone(),
-            duration_ms: *duration_ms,
-            output: None,
-        },
+        } => record_request(
+            session.clone(),
+            command.clone(),
+            cwd.clone(),
+            *exit_code,
+            started_at.clone(),
+            *duration_ms,
+            tty.clone(),
+            *pid,
+            shell.clone(),
+        ),
         DaemonSendAction::Heartbeat { session } => crate::daemon::DaemonRequest::Heartbeat {
             session: session.clone(),
         },
@@ -86,18 +111,9 @@ pub(super) fn handle_daemon_send_command(action: DaemonSendAction) -> anyhow::Re
                 pid,
                 shell,
             } => {
-                let global_request = crate::daemon::DaemonRequest::Record {
-                    session,
-                    command,
-                    cwd,
-                    exit_code,
-                    started_at,
-                    tty,
-                    pid,
-                    shell,
-                    duration_ms,
-                    output: None,
-                };
+                let global_request = record_request(
+                    session, command, cwd, exit_code, started_at, duration_ms, tty, pid, shell,
+                );
                 let _ = super::daemon_runtime::send_to_global_or_fallback(&global_request);
             }
             DaemonSendAction::Heartbeat { session } => {

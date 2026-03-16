@@ -289,6 +289,9 @@ pub trait DbAccess {
         caption_query: &str,
         explicit_user_request: Option<&str>,
     ) -> anyhow::Result<String> {
+        // `explicit_user_request` is intentionally unused on the direct-DB path.
+        // Usage auditing (which consumes this field) only runs through the
+        // daemon-backed `DaemonDb` implementation, so discarding it here is safe.
         let _ = explicit_user_request;
         let db = self.require_direct_db("memory_retrieve_secret")?;
         let results = db.search_knowledge_fts(caption_query, 3, &["low", "medium", "high"])?;
@@ -935,7 +938,7 @@ mod tests {
         let _session_guard = EnvVarGuard::set("NSH_SESSION_ID", "caller-sess");
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "conversations": [
                     {
                         "query": "why did this fail?",
@@ -986,7 +989,7 @@ mod tests {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "conversations": [
                     {
                         "query": "broken",
@@ -1019,7 +1022,7 @@ mod tests {
         let _session_guard = EnvVarGuard::set("NSH_SESSION_ID", "caller-sess");
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "results": []
             })),
         );
@@ -1048,7 +1051,7 @@ mod tests {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "results": [
                     {
                         "id": 42,
@@ -1123,7 +1126,7 @@ mod tests {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "results": [
                     {
                         "command_id": 11,
@@ -1211,7 +1214,7 @@ mod tests {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "prompt": "<core_memory>...</core_memory>"
             })),
         );
@@ -1241,7 +1244,7 @@ mod tests {
         let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = setup_isolated_home();
         let (request_rx, handle) = spawn_mock_global_daemon(
             home.path(),
-            DaemonResponse::ok_with_data(serde_json::json!({
+            DaemonResponse::ok_with_payload(serde_json::json!({
                 "results": [
                     {"type": "semantic", "id": "sem_1234", "summary": "Uses cargo", "score": 0.0}
                 ]

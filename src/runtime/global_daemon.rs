@@ -18,7 +18,7 @@ enum MemoryTask {
     BootstrapScan,
 }
 
-fn normalize_memory_type_for_search(
+fn exclude_core_from_search(
     requested: Option<crate::memory::types::MemoryType>,
 ) -> Option<crate::memory::types::MemoryType> {
     match requested {
@@ -1308,12 +1308,12 @@ fn try_execute_write(
                 }
             }
 
-            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
+            Ok(DaemonResponse::ok_with_payload(serde_json::json!({"id": id})))
         }
         DaemonRequest::Heartbeat { session } => {
             db.update_heartbeat(&session)
                 .with_context(|| format!("failed to update heartbeat for session `{session}`"))?;
-            crate::daemon::generate_summaries_sync_pub(db);
+            crate::daemon::generate_pending_summaries(db);
             Ok(DaemonResponse::ok())
         }
         DaemonRequest::CreateSession {
@@ -1422,7 +1422,7 @@ fn try_execute_write(
                 .with_context(|| {
                     format!("failed to insert conversation for session `{session_id}`")
                 })?;
-            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
+            Ok(DaemonResponse::ok_with_payload(serde_json::json!({"id": id})))
         }
         DaemonRequest::InsertUsage {
             session_id,
@@ -1452,7 +1452,7 @@ fn try_execute_write(
                     generation_id.as_deref(),
                 )
                 .with_context(|| format!("failed to insert usage for session `{session_id}`"))?;
-            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
+            Ok(DaemonResponse::ok_with_payload(serde_json::json!({"id": id})))
         }
         DaemonRequest::UpdateConversationResult {
             conv_id,
@@ -1489,7 +1489,7 @@ fn try_execute_write(
             let count = db.prune(retention_days).with_context(|| {
                 format!("failed to prune records older than {retention_days} days")
             })?;
-            Ok(DaemonResponse::ok_with_data(
+            Ok(DaemonResponse::ok_with_payload(
                 serde_json::json!({"pruned": count}),
             ))
         }
@@ -1501,7 +1501,7 @@ fn try_execute_write(
             let count = db
                 .cleanup_orphaned_sessions()
                 .context("failed to clean up orphaned sessions")?;
-            Ok(DaemonResponse::ok_with_data(
+            Ok(DaemonResponse::ok_with_payload(
                 serde_json::json!({"cleaned": count}),
             ))
         }
@@ -1509,7 +1509,7 @@ fn try_execute_write(
             let updated = db
                 .update_summary(id, &summary)
                 .with_context(|| format!("failed to update summary for command {id}"))?;
-            Ok(DaemonResponse::ok_with_data(
+            Ok(DaemonResponse::ok_with_payload(
                 serde_json::json!({"updated": updated}),
             ))
         }
@@ -1527,7 +1527,7 @@ fn try_execute_write(
                 .with_context(|| {
                     format!("failed to update usage cost for generation `{generation_id}`")
                 })?;
-            Ok(DaemonResponse::ok_with_data(
+            Ok(DaemonResponse::ok_with_payload(
                 serde_json::json!({"updated": updated}),
             ))
         }
@@ -1535,7 +1535,7 @@ fn try_execute_write(
             let count = db
                 .mark_unsummarized_for_llm()
                 .context("failed to mark unsummarized commands for LLM processing")?;
-            Ok(DaemonResponse::ok_with_data(
+            Ok(DaemonResponse::ok_with_payload(
                 serde_json::json!({"count": count}),
             ))
         }
@@ -1543,12 +1543,12 @@ fn try_execute_write(
             let count = db
                 .backfill_command_entities_if_needed()
                 .context("failed to backfill command entities")?;
-            Ok(DaemonResponse::ok_with_data(
+            Ok(DaemonResponse::ok_with_payload(
                 serde_json::json!({"backfilled": count}),
             ))
         }
         DaemonRequest::GenerateSummaries | DaemonRequest::SummarizeCheck { .. } => {
-            crate::daemon::generate_summaries_sync_pub(db);
+            crate::daemon::generate_pending_summaries(db);
             Ok(DaemonResponse::ok())
         }
         // ── Memory write operations ──────────────────────
@@ -1664,7 +1664,7 @@ fn try_execute_write(
             let id = DbAccess::memory_store(db, memory_type, &data_json).with_context(|| {
                 format!("failed to store {} memory entry", memory_type.as_str())
             })?;
-            Ok(DaemonResponse::ok_with_data(serde_json::json!({"id": id})))
+            Ok(DaemonResponse::ok_with_payload(serde_json::json!({"id": id})))
         }
         DaemonRequest::MemoryDelete {
             memory_type,
@@ -1814,7 +1814,7 @@ fn queue_memory_task_response(
     let task_kind = MemoryTaskKind::from_task(&task);
     let task_name = task_kind.status_key();
     match queue_memory_task(memory_tx, queue_guards, memory_task_tracker, task) {
-        Ok(status) => Ok(DaemonResponse::ok_with_data(serde_json::json!({
+        Ok(status) => Ok(DaemonResponse::ok_with_payload(serde_json::json!({
             "status": status.as_status(),
             "task": memory_task_tracker.task_snapshot(task_kind),
         }))),
@@ -1898,9 +1898,9 @@ fn execute_read(
             }
             match db.find_pending_conversation(&session) {
                 Ok(Some((id, cmd))) => {
-                    DaemonResponse::ok_with_data(serde_json::json!({"id": id, "command": cmd}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"id": id, "command": cmd}))
                 }
-                Ok(None) => DaemonResponse::ok_with_data(serde_json::json!({"found": false})),
+                Ok(None) => DaemonResponse::ok_with_payload(serde_json::json!({"found": false})),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -1932,7 +1932,7 @@ fn execute_read(
         }
 
         DaemonRequest::GetMeta { key } => match db.get_meta(&key) {
-            Ok(value) => DaemonResponse::ok_with_data(serde_json::json!({"value": value})),
+            Ok(value) => DaemonResponse::ok_with_payload(serde_json::json!({"value": value})),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::GetSessionLabel { session, caller } => {
@@ -1963,7 +1963,7 @@ fn execute_read(
                             "output": c.output,
                         })
                     }).collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"commands": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -1989,7 +1989,7 @@ fn execute_read(
                             })
                         })
                         .collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"commands": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -2029,7 +2029,7 @@ fn execute_read(
                             })
                         })
                         .collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -2062,13 +2062,13 @@ fn execute_read(
                             "executable": r.executable, "entity": r.entity, "entity_type": r.entity_type,
                         })
                     }).collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
         DaemonRequest::CommandCount => match db.command_count() {
-            Ok(count) => DaemonResponse::ok_with_data(serde_json::json!({"count": count})),
+            Ok(count) => DaemonResponse::ok_with_payload(serde_json::json!({"count": count})),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::CommandsNeedingSummary { limit } => {
@@ -2077,7 +2077,7 @@ fn execute_read(
                     let json: Vec<serde_json::Value> = cmds.iter().map(|c| {
                         serde_json::json!({"id": c.id, "command": c.command, "cwd": c.cwd, "exit_code": c.exit_code, "output": c.output})
                     }).collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"commands": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -2088,7 +2088,7 @@ fn execute_read(
                     let json: Vec<serde_json::Value> = cmds.iter().map(|c| {
                         serde_json::json!({"id": c.id, "command": c.command, "cwd": c.cwd, "exit_code": c.exit_code, "output": c.output})
                     }).collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"commands": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"commands": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -2117,7 +2117,7 @@ fn execute_read(
                 load_average,
             };
             match serde_json::to_value(bundle) {
-                Ok(value) => DaemonResponse::ok_with_data(value),
+                Ok(value) => DaemonResponse::ok_with_payload(value),
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
@@ -2152,7 +2152,7 @@ fn execute_read(
                     match result {
                         Ok(memories) => {
                             let prompt = memory.build_memory_prompt(&memories);
-                            DaemonResponse::ok_with_data(serde_json::json!({
+                            DaemonResponse::ok_with_payload(serde_json::json!({
                                 "prompt": prompt,
                             }))
                         }
@@ -2175,7 +2175,7 @@ fn execute_read(
                 return DaemonResponse::error(format!("Security check failed: {error}"));
             }
             // Use MemorySystem search across all types for now
-            match memory.search(&query, normalize_memory_type_for_search(memory_type), limit) {
+            match memory.search(&query, exclude_core_from_search(memory_type), limit) {
                 Ok(results) => {
                     let json: Vec<serde_json::Value> = results
                         .into_iter()
@@ -2188,7 +2188,7 @@ fn execute_read(
                             })
                         })
                         .collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -2213,7 +2213,7 @@ fn execute_read(
                             })
                         })
                         .collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"blocks": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"blocks": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
@@ -2244,13 +2244,13 @@ fn execute_read(
                             })
                         })
                         .collect();
-                    DaemonResponse::ok_with_data(serde_json::json!({"results": json}))
+                    DaemonResponse::ok_with_payload(serde_json::json!({"results": json}))
                 }
                 Err(e) => DaemonResponse::error(format!("{e}")),
             }
         }
         DaemonRequest::MemoryExportAll => match memory.export_all() {
-            Ok(data) => DaemonResponse::ok_with_data(data),
+            Ok(data) => DaemonResponse::ok_with_payload(data),
             Err(e) => DaemonResponse::error(format!("{e}")),
         },
         DaemonRequest::MemoryStats => {
@@ -2280,7 +2280,7 @@ fn execute_read(
                         .flatten()
                         .unwrap_or_else(|| "".into());
 
-                    DaemonResponse::ok_with_data(serde_json::json!({
+                    DaemonResponse::ok_with_payload(serde_json::json!({
                         "core": stats.core_count,
                         "episodic": stats.episodic_count,
                         "semantic": stats.semantic_count,
@@ -2480,7 +2480,7 @@ fn handle_global_connection(
 fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse> {
     match req {
         DaemonRequest::EnsureCLIProxyApi => Some(match crate::cliproxyapi::ensure_running() {
-            Ok(port) => DaemonResponse::ok_with_data(serde_json::json!({"port": port})),
+            Ok(port) => DaemonResponse::ok_with_payload(serde_json::json!({"port": port})),
             Err(e) => DaemonResponse::error(e.to_string()),
         }),
         DaemonRequest::CLIProxyApiStatus => {
@@ -2516,7 +2516,7 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
         DaemonRequest::CLIProxyApiRestart => {
             let _ = crate::cliproxyapi::stop_sidecar();
             Some(match crate::cliproxyapi::ensure_running() {
-                Ok(port) => DaemonResponse::ok_with_data(serde_json::json!({"port": port})),
+                Ok(port) => DaemonResponse::ok_with_payload(serde_json::json!({"port": port})),
                 Err(e) => DaemonResponse::error(e.to_string()),
             })
         }
@@ -2712,14 +2712,14 @@ mod tests {
         if let Some(cmd) = &write_cmd {
             let _ = cmd
                 .reply
-                .send(DaemonResponse::ok_with_data(serde_json::json!({
+                .send(DaemonResponse::ok_with_payload(serde_json::json!({
                     "routed": "write"
                 })));
         }
         if let Some(cmd) = &read_cmd {
             let _ = cmd
                 .reply
-                .send(DaemonResponse::ok_with_data(serde_json::json!({
+                .send(DaemonResponse::ok_with_payload(serde_json::json!({
                     "routed": "read"
                 })));
         }

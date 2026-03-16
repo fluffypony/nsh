@@ -532,7 +532,7 @@ mod tests {
                 assert_eq!(parsed["session_id"], "sess-42");
                 write_mock_response(
                     stream,
-                    DaemonResponse::ok_with_data(serde_json::json!({"received": parsed["type"]})),
+                    DaemonResponse::ok_with_payload(serde_json::json!({"received": parsed["type"]})),
                 );
             });
 
@@ -606,7 +606,7 @@ mod tests {
                 assert_eq!(parsed["type"], "status");
                 assert_eq!(parsed["v"], DAEMON_PROTOCOL_VERSION);
 
-                let resp = DaemonResponse::ok_with_data(serde_json::json!({"mock": true}));
+                let resp = DaemonResponse::ok_with_payload(serde_json::json!({"mock": true}));
                 let mut resp_json = serde_json::to_string(&resp).unwrap();
                 resp_json.push('\n');
                 use std::io::Write;
