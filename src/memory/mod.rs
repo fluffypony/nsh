@@ -92,6 +92,10 @@ impl MemorySystem {
         self.ingestion_pipeline().ingest_batch(events, llm).await
     }
 
+    /// Retrieve memories relevant to the given query context.
+    ///
+    /// Side effect: increments access counters on returned semantic items
+    /// so the decay system can preserve frequently-accessed facts.
     pub async fn retrieve_for_query(
         &self,
         ctx: &MemoryQueryContext,
