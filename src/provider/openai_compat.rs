@@ -2112,6 +2112,7 @@ pub fn spawn_openai_stream(
         use futures::StreamExt;
         let mut stream = resp.bytes_stream().eventsource();
         let mut current_tool_index: Option<usize> = None;
+        let mut done_sent = false;
         let mut generation_id: Option<String> = None;
         // Add timeout bounds to detect stalled SSE connections (300s for thinking models)
         while let Ok(maybe_event) =
@@ -2133,6 +2134,7 @@ pub fn spawn_openai_stream(
                     let _ = tx.send(StreamEvent::ToolUseEnd).await;
                 }
                 let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                done_sent = true;
                 break;
             }
             let chunk: serde_json::Value = match serde_json::from_str(&event.data) {
@@ -2182,6 +2184,7 @@ pub fn spawn_openai_stream(
                     let _ = tx.send(StreamEvent::ToolUseEnd).await;
                 }
                 let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                done_sent = true;
                 break;
             }
         }
@@ -2190,7 +2193,9 @@ pub fn spawn_openai_stream(
         if current_tool_index.is_some() {
             let _ = tx.send(StreamEvent::ToolUseEnd).await;
         }
-        let _ = tx.send(StreamEvent::Done { usage: None }).await;
+        if !done_sent {
+            let _ = tx.send(StreamEvent::Done { usage: None }).await;
+        }
     });
     Ok(rx)
 }

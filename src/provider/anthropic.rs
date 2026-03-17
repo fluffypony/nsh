@@ -204,6 +204,7 @@ impl LlmProvider for AnthropicProvider {
             let mut stream = resp.bytes_stream().eventsource();
             let mut in_tool_use = false;
             let mut in_server_tool_use = false;
+            let mut done_sent = false;
 
             while let Some(event) = stream.next().await {
                 let event = match event {
@@ -272,11 +273,13 @@ impl LlmProvider for AnthropicProvider {
                             in_tool_use = false;
                         }
                         let _ = tx.send(StreamEvent::Done { usage: None }).await;
+                        done_sent = true;
                         break;
                     }
                     "error" => {
                         let msg = data["error"]["message"].as_str().unwrap_or("Unknown error");
                         let _ = tx.send(StreamEvent::Error(msg.to_string())).await;
+                        done_sent = true;
                         break;
                     }
                     _ => {}
@@ -287,7 +290,9 @@ impl LlmProvider for AnthropicProvider {
             if in_tool_use {
                 let _ = tx.send(StreamEvent::ToolUseEnd).await;
             }
-            let _ = tx.send(StreamEvent::Done { usage: None }).await;
+            if !done_sent {
+                let _ = tx.send(StreamEvent::Done { usage: None }).await;
+            }
         });
         Ok(rx)
     }
