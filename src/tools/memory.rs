@@ -90,9 +90,15 @@ pub(crate) fn validate_store_memory_input(
                     bail!("Episodic memory missing required field '{req}'");
                 }
             }
-            let event_type = obj.get("event_type").and_then(|v| v.as_str()).unwrap();
+            let event_type = obj
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .context("Episodic memory 'event_type' must be a string")?;
             EventType::parse(event_type).context("Episodic memory has invalid event_type")?;
-            let actor = obj.get("actor").and_then(|v| v.as_str()).unwrap();
+            let actor = obj
+                .get("actor")
+                .and_then(|v| v.as_str())
+                .context("Episodic memory 'actor' must be a string")?;
             Actor::parse(actor).context("Episodic memory has invalid actor")?;
         }
     }
