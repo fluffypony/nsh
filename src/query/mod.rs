@@ -1537,51 +1537,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                 .get("expected_timeout_seconds")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(crate::tools::default_timeout_for_tool(&name_for_exec));
-                            // Try exact match first
-                            let mut matched_skill = skills
-                                .iter()
-                                .find(|s| format!("skill_{}", s.name) == name_for_exec)
-                                .cloned();
-                            // If the model used a slightly different skill name (e.g., 'humanizer' vs 'humanize'),
-                            // attempt a simple fuzzy match to map to an existing installed skill.
-                            if matched_skill.is_none() && name_for_exec.starts_with("skill_") {
-                                let req = name_for_exec.trim_start_matches("skill_");
-                                let candidates: Vec<&crate::skills::Skill> =
-                                    skills.iter().collect();
-                                // Heuristic: try common suffix trims and then minimal edit distance <= 2
-                                let trims = ["er", "or", "r", "s", "ing", "izer", "ise", "ize"];
-                                let mut bases = vec![req.to_string()];
-                                for t in &trims {
-                                    if let Some(base) = req.strip_suffix(t) {
-                                        bases.push(base.to_string());
-                                    }
-                                }
-                                // Prefer substring proximity
-                                if let Some(s) = candidates.iter().find(|s| {
-                                    bases.iter().any(|b| {
-                                        s.name == *b
-                                            || s.name.starts_with(b)
-                                            || b.starts_with(&s.name)
-                                    })
-                                }) {
-                                    matched_skill = Some((**s).clone());
-                                } else {
-                                    // Fallback: minimal edit distance
-                                    let mut best: Option<(&crate::skills::Skill, usize)> = None;
-                                    for s in &candidates {
-                                        let d = crate::util::levenshtein_distance(req, &s.name);
-                                        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
-                                            best = Some((s, d));
-                                        }
-                                    }
-                                    if let Some((s, d)) = best
-                                        && d <= 2
-                                    {
-                                        matched_skill = Some((*s).clone());
-                                    }
-                                }
-                            }
-                            if let Some(skill) = matched_skill {
+                            if let Some(skill) = find_matching_skill(&name_for_exec, &skills) {
                                 let timeout = input
                                     .get("expected_timeout_seconds")
                                     .and_then(|v| v.as_u64())
@@ -1720,6 +1676,61 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
     loop_state.flush_deferred_chat_renders(session)?;
 
     Ok(())
+}
+
+/// Match a tool name against installed skills using exact match, suffix
+/// trimming heuristics, substring proximity, and Levenshtein distance.
+fn find_matching_skill(
+    tool_name: &str,
+    skills: &[crate::skills::Skill],
+) -> Option<crate::skills::Skill> {
+    // Try exact match first
+    if let Some(skill) = skills
+        .iter()
+        .find(|s| format!("skill_{}", s.name) == tool_name)
+    {
+        return Some(skill.clone());
+    }
+
+    // Fuzzy match only for skill_* tool names
+    if !tool_name.starts_with("skill_") {
+        return None;
+    }
+    let req = tool_name.trim_start_matches("skill_");
+
+    // Heuristic: try common suffix trims and then minimal edit distance <= 2
+    let trims = ["er", "or", "r", "s", "ing", "izer", "ise", "ize"];
+    let mut bases = vec![req.to_string()];
+    for t in &trims {
+        if let Some(base) = req.strip_suffix(t) {
+            bases.push(base.to_string());
+        }
+    }
+
+    // Prefer substring proximity
+    if let Some(s) = skills.iter().find(|s| {
+        bases
+            .iter()
+            .any(|b| s.name == *b || s.name.starts_with(b) || b.starts_with(&s.name))
+    }) {
+        return Some(s.clone());
+    }
+
+    // Fallback: minimal edit distance
+    let mut best: Option<(&crate::skills::Skill, usize)> = None;
+    for s in skills {
+        let d = crate::util::levenshtein_distance(req, &s.name);
+        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((s, d));
+        }
+    }
+    if let Some((s, d)) = best
+        && d <= 2
+    {
+        return Some(s.clone());
+    }
+
+    None
 }
 
 fn execute_sync_tool_outcome(
