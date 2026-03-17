@@ -405,7 +405,7 @@ pub struct ProviderConfig {
     pub default: String,
     pub model: String,
     pub fallback_model: Option<String>,
-    /// Deprecated: use `[web_search].model` instead.
+    /// Deprecated: use `\[web_search\].model` instead.
     #[deprecated(note = "use [web_search].model instead")]
     pub web_search_model: String,
     pub openrouter: Option<ProviderAuth>,
