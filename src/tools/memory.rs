@@ -101,16 +101,11 @@ pub(crate) fn validate_store_memory_input(
 
 pub fn execute_search_memory(
     db: &dyn DbAccess,
-    memory_type: &str,
+    memory_type: Option<MemoryType>,
     query: &str,
     limit: usize,
 ) -> anyhow::Result<String> {
-    let mt = if memory_type == "all" {
-        None
-    } else {
-        Some(MemoryType::parse(memory_type)?)
-    };
-    db.memory_search(query, mt, limit)
+    db.memory_search(query, memory_type, limit)
         .context("Memory search error")
 }
 
@@ -136,14 +131,14 @@ pub fn execute_core_memory_rewrite(
 
 pub fn execute_store_memory(
     db: &dyn DbAccess,
-    memory_type: &str,
+    memory_type: MemoryType,
     data: &serde_json::Value,
 ) -> anyhow::Result<String> {
-    let parsed_type = MemoryType::parse(memory_type)?;
     // Validate minimal schema up front to avoid noisy daemon errors
-    validate_store_memory_input(parsed_type, data)?;
-    db.memory_store(parsed_type, &data.to_string())
-        .map(|id| format!("Stored in {memory_type} memory (id: {id})"))
+    validate_store_memory_input(memory_type, data)?;
+    let type_name = memory_type.as_str();
+    db.memory_store(memory_type, &data.to_string())
+        .map(|id| format!("Stored in {type_name} memory (id: {id})"))
         .context("store_memory failed")
 }
 

@@ -1421,7 +1421,11 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         } else {
                             let (content, is_error) = match name.as_str() {
                                 "search_memory" => {
-                                    let mt = input["memory_type"].as_str().unwrap_or("all");
+                                    let mt = input["memory_type"]
+                                        .as_str()
+                                        .filter(|s| *s != "all")
+                                        .map(crate::memory::types::MemoryType::parse)
+                                        .transpose()?;
                                     let q = input["query"].as_str().unwrap_or("");
                                     let lim =
                                         (input["limit"].as_u64().unwrap_or(10) as usize).min(50);
@@ -1453,7 +1457,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     }
                                 }
                                 "store_memory" => {
-                                    let memory_type = input["memory_type"].as_str().unwrap_or("");
+                                    let memory_type = crate::memory::types::MemoryType::parse(
+                                        input["memory_type"].as_str().unwrap_or(""),
+                                    )?;
                                     let data =
                                         input.get("data").cloned().unwrap_or(serde_json::json!({}));
                                     match crate::tools::memory::execute_store_memory(
