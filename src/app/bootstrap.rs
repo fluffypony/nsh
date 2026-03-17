@@ -28,7 +28,7 @@ pub(super) fn handle_init_command(shell: String, hash: bool) -> anyhow::Result<(
 
     let nsh_dir = crate::config::Config::nsh_dir();
     let _ = std::fs::remove_file(nsh_dir.join("update_notice"));
-    let mut script = crate::init::generate_init_script(&shell);
+    let mut script = super::init::generate_init_script(&shell);
     if let Ok(config) = crate::config::Config::load()
         && !config.shell_hooks.iterm2_cwd_reporting
     {

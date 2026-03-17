@@ -32,7 +32,7 @@ pub(super) fn handle_session_command(action: SessionAction) -> anyhow::Result<()
             let _ = send_to_global_or_fallback(&crate::daemon::DaemonRequest::EndSession {
                 session: session.clone(),
             });
-            crate::shell_hooks::cleanup_pending_files(&session);
+            super::shell_hooks::cleanup_pending_files(&session);
         }
         SessionAction::Label { label, session } => {
             let session_id = session.unwrap_or_else(|| {

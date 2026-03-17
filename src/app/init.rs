@@ -1,10 +1,10 @@
 pub fn generate_init_script(shell: &str) -> String {
     let session_id = uuid::Uuid::new_v4().to_string();
     let template = match shell {
-        "zsh" => include_str!("../shell/nsh.zsh"),
-        "bash" => include_str!("../shell/nsh.bash"),
-        "fish" => include_str!("../shell/nsh.fish"),
-        "powershell" | "pwsh" => include_str!("../shell/nsh.ps1"),
+        "zsh" => include_str!("../../shell/nsh.zsh"),
+        "bash" => include_str!("../../shell/nsh.bash"),
+        "fish" => include_str!("../../shell/nsh.fish"),
+        "powershell" | "pwsh" => include_str!("../../shell/nsh.ps1"),
         "cmd" => "@echo off\r\nDOSKEY ?=nsh query -- $*\r\n",
         other => {
             return format!(

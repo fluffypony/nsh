@@ -9,12 +9,14 @@ mod daemon_runtime;
 mod daemon_transport;
 mod doctor;
 mod history;
+mod init;
 mod memory;
 mod provider;
 mod query;
 mod record;
 mod runtime;
 mod session;
+mod shell_hooks;
 mod status;
 
 use self::bootstrap::{handle_cli_proxy_action, handle_completions_command, handle_init_command};
