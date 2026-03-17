@@ -594,6 +594,8 @@ fn execute_doc_skill(skill: &Skill, input: &serde_json::Value) -> anyhow::Result
     Ok(result)
 }
 
+/// Async wrapper around [`execute_skill`]. Takes ownership of `skill` and
+/// `input` because `spawn_blocking` requires `'static` closures.
 pub async fn execute_skill_async(skill: Skill, input: serde_json::Value) -> anyhow::Result<String> {
     let timeout_secs = skill.timeout_seconds;
     let result = tokio::time::timeout(

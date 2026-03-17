@@ -140,6 +140,14 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
     true
 }
 
+/// Escape XML special characters in a string.
+pub fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{compare_versions, levenshtein_distance, truncate, truncate_bytes};

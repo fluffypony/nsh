@@ -90,6 +90,7 @@ fn check_rate_limit(headers: &reqwest::header::HeaderMap) {
 }
 
 /// Main tool entry point — dispatches on `action`.
+/// Async because it makes outgoing HTTP requests to the GitHub/provider APIs.
 pub async fn execute(input: &serde_json::Value, config: &Config) -> anyhow::Result<String> {
     let action = input["action"].as_str().unwrap_or("");
     let repo_spec = input["repo"].as_str().unwrap_or("");

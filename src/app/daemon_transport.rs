@@ -1,7 +1,7 @@
 use crate::cli::{DaemonReadAction, DaemonSendAction};
 
 /// Build a `DaemonRequest::Record` from the individual field values.
-fn record_request(
+pub(super) fn record_request(
     session: String,
     command: String,
     cwd: String,

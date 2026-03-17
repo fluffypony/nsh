@@ -404,12 +404,12 @@ async fn initialize_query_session<'a>(
                 relevant_history_xml.push_str("  <entry>\n");
                 relevant_history_xml.push_str(&format!(
                     "    <historical_command>{}</historical_command>\n",
-                    context::xml_escape(&hit.command)
+                    crate::util::xml_escape(&hit.command)
                 ));
                 if let Some(summary) = &hit.summary {
                     relevant_history_xml.push_str(&format!(
                         "    <summary>{}</summary>\n",
-                        context::xml_escape(summary)
+                        crate::util::xml_escape(summary)
                     ));
                 }
                 relevant_history_xml.push_str("  </entry>\n");
@@ -1031,42 +1031,18 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         }
                     }
                     "write_file" => {
-                        let (content, is_error) = match tools::write_file::execute(
+                        let result = tools::write_file::execute(
                             input,
                             &public_tool_ctx,
-                        ) {
-                            Ok(()) => ("File written successfully.".to_string(), false),
-                            Err(e) => {
-                                let err_msg = format!("Failed to write file: {e}");
-                                display_tool_error(&err_msg, opts.json_output);
-                                (err_msg, true)
-                            }
-                        };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
+                        ).map(|()| tools::ToolInvocationOutcome::success("File written successfully."));
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
                     }
                     "patch_file" => {
-                        let (content, is_error) = match tools::patch_file::execute(
+                        let result = tools::patch_file::execute(
                             input,
                             &public_tool_ctx,
-                        ) {
-                            Ok(outcome) => outcome.into_parts(),
-                            Err(e) => {
-                                let err_msg = format!("Failed to apply patch: {e}");
-                                display_tool_error(&err_msg, opts.json_output);
-                                (err_msg, true)
-                            }
-                        };
-                        let wrapped = crate::security::wrap_tool_result(name, &content, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error,
-                        });
+                        );
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
                     }
                     "manage_config" => {
                         let result = tools::manage_config::execute_outcome(input);
@@ -1503,21 +1479,15 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                 }
                                 _ => unreachable!(),
                             };
-                            // For retrieve_secret, apply redaction so the secret
-                            // doesn't persist in conversation history unredacted
-                            let content = if name == "retrieve_secret" {
-                                crate::redact::redact_secrets(&content, &config.redaction)
-                            } else {
-                                content
-                            };
-                            let sanitized = crate::security::sanitize_tool_output(&content);
-                            let wrapped =
-                                crate::security::wrap_tool_result(&name, &sanitized, boundary);
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: id,
-                                content: wrapped,
+                            let finalized = finalize_tool_content(&content, config);
+                            push_wrapped_tool_result(
+                                &mut tool_results,
+                                id,
+                                &name,
+                                &finalized,
                                 is_error,
-                            });
+                                boundary,
+                            );
                         }
                     }
                     _ => {

@@ -79,7 +79,8 @@ impl std::fmt::Display for CoreLabel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CoreOp {
     Append,
     Rewrite,
@@ -399,8 +400,8 @@ pub struct RoutingDecision {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreUpdateDecision {
-    pub label: String,
-    pub op: String, // "append" or "rewrite"
+    pub label: CoreLabel,
+    pub op: CoreOp,
 }
 
 impl RoutingDecision {

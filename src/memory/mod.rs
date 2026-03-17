@@ -1,6 +1,5 @@
 pub mod bootstrap;
 pub mod decay;
-pub mod id;
 pub mod ingestion;
 pub mod llm_adapter;
 pub mod maintenance;
@@ -19,8 +18,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
-
-pub use types::*;
+use types::{
+    BootstrapReport, CoreBlock, CoreLabel, CoreOp, DecayReport, MemoryOp, MemoryQueryContext,
+    MemoryStats, MemoryType, ReflectionReport, RetrievedMemories, SearchResult, ShellEvent,
+    ShellEventType,
+};
 
 pub struct MemorySystem {
     db: Arc<Mutex<Connection>>,

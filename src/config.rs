@@ -405,6 +405,7 @@ pub struct ProviderConfig {
     pub default: String,
     pub model: String,
     pub fallback_model: Option<String>,
+    /// Deprecated: use `[web_search].model` instead.
     pub web_search_model: String,
     pub openrouter: Option<ProviderAuth>,
     pub anthropic: Option<ProviderAuth>,
@@ -1484,7 +1485,7 @@ fn append_hints_section(x: &mut String, config: &Config) {
     x.push_str("  <section name=\"hints\">\n");
     x.push_str(&format!(
         "    <option key=\"suppressed_exit_codes\" value=\"{}\" description=\"Exit codes that should not show '? fix' failure hints\" />\n",
-        crate::context::xml_escape(
+        crate::util::xml_escape(
             &config
                 .hints
                 .normalized_suppressed_exit_codes()
@@ -1498,7 +1499,7 @@ fn append_hints_section(x: &mut String, config: &Config) {
 }
 
 fn append_models_section(x: &mut String, config: &Config) {
-    use crate::context::xml_escape;
+    use crate::util::xml_escape;
 
     x.push_str("  <section name=\"models\">\n");
     x.push_str(&format!(
@@ -1517,7 +1518,7 @@ fn append_models_section(x: &mut String, config: &Config) {
 }
 
 fn append_tools_section(x: &mut String, config: &Config) {
-    use crate::context::xml_escape;
+    use crate::util::xml_escape;
 
     x.push_str("  <section name=\"tools\">\n");
     x.push_str(&format!(
@@ -1677,7 +1678,7 @@ fn append_debug_section(x: &mut String, config: &Config) {
 }
 
 fn append_mcp_servers(x: &mut String, config: &Config, mcp_servers: &[(String, usize)]) {
-    use crate::context::xml_escape;
+    use crate::util::xml_escape;
 
     x.push_str(&format!(
         "  <mcp_servers count=\"{}\">\n",
@@ -1705,7 +1706,7 @@ fn append_mcp_servers(x: &mut String, config: &Config, mcp_servers: &[(String, u
 }
 
 fn append_installed_skills(x: &mut String, skills: &[crate::skills::Skill]) {
-    use crate::context::xml_escape;
+    use crate::util::xml_escape;
 
     x.push_str(&format!(
         "  <installed_skills count=\"{}\">\n",
@@ -1790,7 +1791,7 @@ fn append_memory_section(x: &mut String, config: &Config) {
 }
 
 fn opt(x: &mut String, key: &str, value: &str, description: &str, choices: Option<&str>) {
-    use crate::context::xml_escape;
+    use crate::util::xml_escape;
     let choices_attr = choices
         .map(|c| format!(" choices=\"{}\"", xml_escape(c)))
         .unwrap_or_default();

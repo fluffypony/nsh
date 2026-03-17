@@ -178,7 +178,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
                     let redacted = crate::redact::redact_secrets(&results, &config.redaction);
                     format!(
                         "<memory_search_results>\n{}\n</memory_search_results>",
-                        crate::context::xml_escape(&redacted)
+                        crate::util::xml_escape(&redacted)
                     )
                 }
                 _ => String::new(),

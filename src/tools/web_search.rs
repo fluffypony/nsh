@@ -3,6 +3,7 @@ use crate::provider::{self, ChatRequest, ContentBlock, Message, Role, ToolChoice
 use crate::tools::{ToolInvocationContext, ToolInvocationResult};
 use serde_json::json;
 
+/// Async because it makes an outgoing HTTP request to the web search provider API.
 pub async fn invoke(
     input: &serde_json::Value,
     ctx: &ToolInvocationContext<'_>,

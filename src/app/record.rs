@@ -23,21 +23,10 @@ pub(super) fn handle_record_command(input: RecordCommandInput) -> anyhow::Result
         shell,
     } = input;
     super::daemon_runtime::maybe_stage_hook_reload_notice(Some(&session));
-    let request = crate::daemon::DaemonRequest::Record {
-        session: session.clone(),
-        command,
-        cwd,
-        exit_code,
-        started_at,
-        tty,
-        pid,
-        shell,
-        duration_ms,
-        output: None,
-    };
-    if let crate::daemon::DaemonRequest::Record { tty, cwd, .. } = &request {
-        let _ = crate::fast_cwd::update_tty_cwd(tty, cwd);
-    }
+    let _ = crate::fast_cwd::update_tty_cwd(&tty, &cwd);
+    let request = super::daemon_transport::record_request(
+        session, command, cwd, exit_code, started_at, duration_ms, tty, pid, shell,
+    );
     match super::daemon_runtime::send_to_global_or_fallback(&request) {
         Ok(crate::daemon::DaemonResponse::Error { message }) => {
             eprintln!("nsh: record error: {message}");

@@ -1,4 +1,6 @@
-use crate::memory::types::{CoreUpdateDecision, RoutingDecision, ShellEvent, ShellEventType};
+use crate::memory::types::{
+    CoreLabel, CoreOp, CoreUpdateDecision, RoutingDecision, ShellEvent, ShellEventType,
+};
 
 #[derive(Clone, Copy)]
 enum PolicyControl {
@@ -104,7 +106,7 @@ fn apply_user_instruction_policy(
     if let Some(text) = event.instruction.as_deref()
         && is_explicit_memory_directive(text)
     {
-        set_core_append(decision, "human", "Explicit memory directive detected");
+        set_core_append(decision, CoreLabel::Human, "Explicit memory directive detected");
         return PolicyControl::Stop;
     }
     decision.update_semantic = true;
@@ -143,7 +145,7 @@ fn apply_environment_change_policy(
 ) -> PolicyControl {
     let cmd = event.command.as_deref().unwrap_or("");
     if is_environment_changing_command(cmd) {
-        set_core_append(decision, "environment", "Environment change detected");
+        set_core_append(decision, CoreLabel::Environment, "Environment change detected");
     }
     PolicyControl::Continue
 }
@@ -154,7 +156,7 @@ fn apply_preference_policy(
 ) -> PolicyControl {
     let cmd = event.command.as_deref().unwrap_or("");
     if is_preference_revealing(cmd) {
-        set_core_append(decision, "human", "User preference detected");
+        set_core_append(decision, CoreLabel::Human, "User preference detected");
     }
     PolicyControl::Continue
 }
@@ -207,10 +209,10 @@ fn apply_error_learning_policy(
     PolicyControl::Continue
 }
 
-fn set_core_append(decision: &mut RoutingDecision, label: &str, reasoning: &str) {
+fn set_core_append(decision: &mut RoutingDecision, label: CoreLabel, reasoning: &str) {
     decision.update_core = Some(CoreUpdateDecision {
-        label: label.into(),
-        op: "append".into(),
+        label,
+        op: CoreOp::Append,
     });
     decision.reasoning = reasoning.into();
 }
@@ -600,7 +602,7 @@ mod tests {
             d.update_core.is_some(),
             "nvim should reveal user preference"
         );
-        assert_eq!(d.update_core.as_ref().unwrap().label, "human");
+        assert_eq!(d.update_core.as_ref().unwrap().label, CoreLabel::Human);
     }
 
     #[test]
@@ -631,7 +633,7 @@ mod tests {
             d.update_core.is_some(),
             "brew install should flag environment change"
         );
-        assert_eq!(d.update_core.as_ref().unwrap().label, "environment");
+        assert_eq!(d.update_core.as_ref().unwrap().label, CoreLabel::Environment);
     }
 
     #[test]
@@ -821,7 +823,7 @@ mod tests {
         };
         let d = route(&event);
         assert!(d.update_core.is_some());
-        assert_eq!(d.update_core.as_ref().unwrap().label, "human");
+        assert_eq!(d.update_core.as_ref().unwrap().label, CoreLabel::Human);
     }
 
     #[test]

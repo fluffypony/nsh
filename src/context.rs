@@ -1402,12 +1402,8 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-pub fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
+/// Re-exported from [`crate::util::xml_escape`] for local convenience.
+pub use crate::util::xml_escape;
 
 fn detect_os() -> String {
     #[cfg(target_os = "macos")]
