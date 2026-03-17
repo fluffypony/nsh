@@ -1322,10 +1322,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     "web_search" => {
                         let ws_config = config.clone();
                         let ws_input = input.clone();
-                        let timeout = input
-                            .get("expected_timeout_seconds")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(crate::tools::default_timeout_for_tool("web_search"));
+                        let timeout = tool_timeout(&input, "web_search");
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
@@ -1336,29 +1333,16 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     .await
                                     .map(|result| result.into_outcome_or_failure("web_search"))
                             };
-                            let result = match execute_with_timeout(
-                                fut,
-                                "web_search",
-                                timeout,
-                                extension_timeout,
-                                force_autorun,
-                            )
-                            .await
-                            {
-                                Ok(Ok(outcome)) => Ok(outcome),
-                                Ok(Err(e)) => Err(format!("{e}")),
-                                Err(msg) => Err(msg),
-                            };
+                            let result = flatten_timeout_result(
+                                execute_with_timeout(fut, "web_search", timeout, extension_timeout, force_autorun).await,
+                            );
                             (id, name, result)
                         }));
                     }
                     "github" => {
                         let input_clone = input.clone();
                         let github_config = config.clone();
-                        let timeout = input_clone
-                            .get("expected_timeout_seconds")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(crate::tools::default_timeout_for_tool("github"));
+                        let timeout = tool_timeout(&input, "github");
                         let extension_timeout = config.execution.tool_timeout_extension_seconds;
                         let force_autorun = opts.force_autorun;
                         futs.push(Box::pin(async move {
@@ -1370,19 +1354,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     ),
                                 )
                             };
-                            let result = match execute_with_timeout(
-                                fut,
-                                "github",
-                                timeout,
-                                extension_timeout,
-                                force_autorun,
-                            )
-                            .await
-                            {
-                                Ok(Ok(outcome)) => Ok(outcome),
-                                Ok(Err(e)) => Err(format!("{e}")),
-                                Err(msg) => Err(msg),
-                            };
+                            let result = flatten_timeout_result(
+                                execute_with_timeout(fut, "github", timeout, extension_timeout, force_autorun).await,
+                            );
                             (id, name, result)
                         }));
                     }
@@ -1502,10 +1476,7 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             let name_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
-                            let timeout = input
-                                .get("expected_timeout_seconds")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(crate::tools::default_timeout_for_tool("mcp"));
+                            let timeout = tool_timeout(&input, "mcp");
                             let extension_timeout = config.execution.tool_timeout_extension_seconds;
                             let force_autorun = opts.force_autorun;
                             futs.push(Box::pin(async move {
@@ -1513,19 +1484,10 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                     let mut mc = mcp.lock().await;
                                     mc.call_tool(&name_exec, input).await
                                 };
-                                let result = match execute_with_timeout(
-                                    fut_call,
-                                    &name_ret,
-                                    timeout,
-                                    extension_timeout,
-                                    force_autorun,
-                                )
-                                .await
-                                {
-                                    Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
-                                    Ok(Err(e)) => Err(format!("{e}")),
-                                    Err(msg) => Err(msg),
-                                };
+                                let result = flatten_timeout_result(
+                                    execute_with_timeout(fut_call, &name_ret, timeout, extension_timeout, force_autorun).await
+                                        .map(|r| r.map(tools::ToolInvocationOutcome::success)),
+                                );
                                 (id_ret, name_ret, result)
                             }));
                         } else {
@@ -1533,33 +1495,18 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             let name_for_exec = name.clone();
                             let id_ret = id;
                             let name_ret = name;
-                            let tool_timeout = input
-                                .get("expected_timeout_seconds")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(crate::tools::default_timeout_for_tool(&name_for_exec));
+                            let timeout = tool_timeout(&input, &name_for_exec);
                             if let Some(skill) = find_matching_skill(&name_for_exec, &skills) {
-                                let timeout = input
-                                    .get("expected_timeout_seconds")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(crate::tools::default_timeout_for_tool("skill"));
+                                let timeout = tool_timeout(&input, "skill");
                                 let extension_timeout =
                                     config.execution.tool_timeout_extension_seconds;
                                 let force_autorun = opts.force_autorun;
                                 futs.push(Box::pin(async move {
                                     let fut = crate::skills::execute_skill_async(skill, input);
-                                    let result = match execute_with_timeout(
-                                        fut,
-                                        &name_ret,
-                                        timeout,
-                                        extension_timeout,
-                                        force_autorun,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Ok(r)) => Ok(tools::ToolInvocationOutcome::success(r)),
-                                        Ok(Err(e)) => Err(format!("{e}")),
-                                        Err(msg) => Err(msg),
-                                    };
+                                    let result = flatten_timeout_result(
+                                        execute_with_timeout(fut, &name_ret, timeout, extension_timeout, force_autorun).await
+                                            .map(|r| r.map(tools::ToolInvocationOutcome::success)),
+                                    );
                                     (id_ret, name_ret, result)
                                 }));
                             } else {
@@ -1575,14 +1522,8 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                         )
                                     });
                                     let result = match execute_with_timeout(
-                                        task,
-                                        &name_ret,
-                                        tool_timeout,
-                                        extension_timeout,
-                                        force_autorun,
-                                    )
-                                    .await
-                                    {
+                                        task, &name_ret, timeout, extension_timeout, force_autorun,
+                                    ).await {
                                         Ok(Ok(inner)) => inner.map_err(|e| format!("{e}")),
                                         Ok(Err(e)) => Err(format!("task panicked: {e}")),
                                         Err(msg) => Err(msg),
@@ -1676,6 +1617,25 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
     loop_state.flush_deferred_chat_renders(session)?;
 
     Ok(())
+}
+
+/// Extract timeout from tool input, falling back to the tool-specific default.
+fn tool_timeout(input: &serde_json::Value, tool_name: &str) -> u64 {
+    input
+        .get("expected_timeout_seconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(crate::tools::default_timeout_for_tool(tool_name))
+}
+
+/// Flatten the nested Ok(Ok)/Ok(Err)/Err pattern from execute_with_timeout.
+fn flatten_timeout_result<E: std::fmt::Display>(
+    result: Result<Result<tools::ToolInvocationOutcome, E>, String>,
+) -> Result<tools::ToolInvocationOutcome, String> {
+    match result {
+        Ok(Ok(outcome)) => Ok(outcome),
+        Ok(Err(e)) => Err(format!("{e}")),
+        Err(msg) => Err(msg),
+    }
 }
 
 /// Match a tool name against installed skills using exact match, suffix
