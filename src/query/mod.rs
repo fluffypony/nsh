@@ -1008,11 +1008,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                 if !is_error {
                                     loop_state.deferred_chat_renders.push(response_text);
                                 }
+                                let finalized = finalize_tool_content(&content, config);
                                 push_wrapped_tool_result(
                                     &mut tool_results,
                                     id.clone(),
                                     name,
-                                    &content,
+                                    &finalized,
                                     is_error,
                                     boundary,
                                 );
@@ -1171,12 +1172,8 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                 _ => {}
                             }
                         }
-                        let wrapped = crate::security::wrap_tool_result(name, &body, boundary);
-                        tool_results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: wrapped,
-                            is_error: false,
-                        });
+                        let finalized = finalize_tool_content(&body, config);
+                        push_wrapped_tool_result(&mut tool_results, id.clone(), name, &finalized, false, boundary);
                     }
                     "code" => {
                         let task = input["task"].as_str().unwrap_or("");
