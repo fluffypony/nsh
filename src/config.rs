@@ -406,6 +406,7 @@ pub struct ProviderConfig {
     pub model: String,
     pub fallback_model: Option<String>,
     /// Deprecated: use `[web_search].model` instead.
+    #[deprecated(note = "use [web_search].model instead")]
     pub web_search_model: String,
     pub openrouter: Option<ProviderAuth>,
     pub anthropic: Option<ProviderAuth>,
@@ -428,6 +429,7 @@ pub struct ProviderConfig {
 }
 
 impl Default for ProviderConfig {
+    #[allow(deprecated)]
     fn default() -> Self {
         let defaults = model_defaults::provider_models(model_defaults::DEFAULT_PROVIDER);
         Self {
@@ -1168,6 +1170,7 @@ impl Config {
 
         let mut config: Config = base_value.try_into()?;
 
+        #[allow(deprecated)]
         if config.web_search.model == WebSearchConfig::default().model
             && config.provider.web_search_model != ProviderConfig::default().web_search_model
         {
