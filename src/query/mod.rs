@@ -974,11 +974,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         Err(e) => {
                             let err_msg = format!("Command tool error: {e}");
                             display_tool_error(&err_msg, opts.json_output);
+                            let finalized = finalize_tool_content(&err_msg, config);
                             push_wrapped_tool_result(
                                 &mut tool_results,
                                 id.clone(),
                                 name,
-                                &err_msg,
+                                &finalized,
                                 true,
                                 boundary,
                             );
@@ -1022,11 +1023,12 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                             }
                             Err(e) => {
                                 let err_msg = format!("Error: {e}");
+                                let finalized = finalize_tool_content(&err_msg, config);
                                 push_wrapped_tool_result(
                                     &mut tool_results,
                                     id.clone(),
                                     name,
-                                    &err_msg,
+                                    &finalized,
                                     true,
                                     boundary,
                                 );
