@@ -27,8 +27,6 @@ pub struct CaptureEngine {
     max_history_lines: usize,
     prev_visible: Vec<String>,
     mark_state: Option<(usize, Vec<String>)>,
-    #[allow(dead_code)]
-    capture_mode: crate::config::CaptureMode,
     alt_screen_mode: crate::config::AltScreenMode,
 }
 
@@ -39,7 +37,7 @@ impl CaptureEngine {
         rate_limit_bps: usize,
         pause_seconds: u64,
         max_scrollback_lines: usize,
-        capture_mode: String,
+        _capture_mode: String,
         alt_screen_mode: String,
     ) -> Self {
         Self::from_modes(
@@ -48,7 +46,6 @@ impl CaptureEngine {
             rate_limit_bps,
             pause_seconds,
             max_scrollback_lines,
-            capture_mode.into(),
             alt_screen_mode.into(),
         )
     }
@@ -59,7 +56,6 @@ impl CaptureEngine {
         rate_limit_bps: usize,
         pause_seconds: u64,
         max_scrollback_lines: usize,
-        capture_mode: crate::config::CaptureMode,
         alt_screen_mode: crate::config::AltScreenMode,
     ) -> Self {
         Self {
@@ -75,7 +71,6 @@ impl CaptureEngine {
             max_history_lines: max_scrollback_lines,
             prev_visible: Vec::new(),
             mark_state: None,
-            capture_mode,
             alt_screen_mode,
         }
     }

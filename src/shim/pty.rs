@@ -120,7 +120,6 @@ pub fn run_wrapped_shell(
         wrap_config.scrollback_rate_limit_bps,
         wrap_config.scrollback_pause_seconds,
         wrap_config.scrollback_lines.max(1000),
-        wrap_config.capture_mode,
         wrap_config.alt_screen_mode,
     )));
 
