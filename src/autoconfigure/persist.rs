@@ -52,7 +52,7 @@ pub(crate) fn save_config_routing(
         doc["provider"][chosen_provider] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     if via_sidecar {
-        let base_url = crate::provider_bootstrap::cliproxy_base_url();
+        let base_url = crate::provider::bootstrap::cliproxy_base_url();
         doc["provider"][chosen_provider]["base_url"] = toml_edit::value(base_url);
         doc["provider"][chosen_provider]["api_key"] = toml_edit::value("nsh-internal");
     } else if !chosen_key.is_empty() {
@@ -79,7 +79,7 @@ pub(crate) fn save_config_routing(
             doc["provider"][&option.id] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         if option.requires_cliproxyapi {
-            let base_url = crate::provider_bootstrap::cliproxy_base_url();
+            let base_url = crate::provider::bootstrap::cliproxy_base_url();
             doc["provider"][&option.id]["base_url"] = toml_edit::value(base_url);
             doc["provider"][&option.id]["api_key"] = toml_edit::value("nsh-internal");
         } else if let Some(key) = &option.detected_key {

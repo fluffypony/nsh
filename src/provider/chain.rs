@@ -745,7 +745,7 @@ mod tests {
             max_tokens: 1,
             stream: false,
             extra_body: Some(json!({
-                "_transport_base_url": crate::provider_bootstrap::cliproxy_base_url(),
+                "_transport_base_url": crate::provider::bootstrap::cliproxy_base_url(),
                 "_transport_strip_provider_prefix": true
             })),
         };

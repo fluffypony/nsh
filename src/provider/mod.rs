@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub(crate) mod bootstrap;
 pub mod chain;
 pub mod openai;
 pub mod openai_compat;
@@ -154,12 +155,12 @@ impl ActiveProvider {
         provider_name: &str,
         config: &crate::config::Config,
     ) -> anyhow::Result<Self> {
-        let provider_cfg = crate::provider_bootstrap::provider_factory_config(config);
+        let provider_cfg = crate::provider::bootstrap::provider_factory_config(config);
         Self::from_factory(provider_name, &provider_cfg, create_provider)
     }
 
     pub fn default_from_config(config: &crate::config::Config) -> anyhow::Result<Self> {
-        let provider_cfg = crate::provider_bootstrap::provider_factory_config(config);
+        let provider_cfg = crate::provider::bootstrap::provider_factory_config(config);
         Self::from_factory(&provider_cfg.default, &provider_cfg, create_provider)
     }
 
@@ -511,7 +512,7 @@ mod tests {
     #[test]
     fn create_provider_unknown_name_returns_error() {
         let config =
-            crate::provider_bootstrap::provider_factory_config(&crate::config::Config::default());
+            crate::provider::bootstrap::provider_factory_config(&crate::config::Config::default());
         let result = create_provider("nonexistent", &config);
         let err = result.err().expect("should be an error");
         assert!(err.to_string().contains("Unknown provider"));
@@ -525,7 +526,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("openrouter", &provider_config);
         assert!(result.is_ok());
     }
@@ -538,7 +539,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("anthropic", &provider_config);
         assert!(result.is_ok());
     }
@@ -551,7 +552,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("openai", &provider_config);
         assert!(result.is_ok());
     }
@@ -560,7 +561,7 @@ mod tests {
     fn create_provider_gemini_without_config_returns_error() {
         let mut config = crate::config::Config::default();
         config.provider.gemini = None;
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("gemini", &provider_config);
         let err = result.err().expect("should be an error");
         assert!(err.to_string().contains("Gemini not configured"));
@@ -570,7 +571,7 @@ mod tests {
     fn create_provider_ollama_without_config_uses_defaults() {
         let mut config = crate::config::Config::default();
         config.provider.ollama = None;
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("ollama", &provider_config);
         assert!(result.is_ok());
     }
@@ -583,7 +584,7 @@ mod tests {
             api_key_cmd: None,
             base_url: None,
         });
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("gemini", &provider_config);
         assert!(result.is_ok());
     }
@@ -591,7 +592,7 @@ mod tests {
     #[test]
     fn create_provider_sidecar_provider_uses_openai_compat_path() {
         let config = crate::config::Config::default();
-        let provider_config = crate::provider_bootstrap::provider_factory_config(&config);
+        let provider_config = crate::provider::bootstrap::provider_factory_config(&config);
         let result = create_provider("copilot", &provider_config);
         assert!(result.is_ok());
     }

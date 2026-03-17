@@ -150,7 +150,7 @@ mod tests {
     use super::*;
 
     fn cfg_from(config: crate::config::Config) -> crate::provider::ProviderFactoryConfig {
-        crate::provider_bootstrap::provider_factory_config(&config)
+        crate::provider::bootstrap::provider_factory_config(&config)
     }
 
     #[test]

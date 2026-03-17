@@ -116,7 +116,7 @@ where
     F: Fn(&str, &provider::ProviderFactoryConfig) -> anyhow::Result<Box<dyn provider::LlmProvider>>,
 {
     let ws_provider_name = &config.web_search.provider;
-    let provider_cfg = crate::provider_bootstrap::provider_factory_config(config);
+    let provider_cfg = crate::provider::bootstrap::provider_factory_config(config);
     execute_with_provider_builder(query, config, || {
         provider::ActiveProvider::from_factory(ws_provider_name, &provider_cfg, provider_factory)
     })

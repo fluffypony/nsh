@@ -31,7 +31,7 @@ fn connectivity_probe_url(config: &crate::config::Config) -> String {
         "anthropic" => "https://api.anthropic.com/v1/messages".into(),
         "ollama" => "http://127.0.0.1:11434/api/tags".into(),
         _ if p.ends_with("_sub") => {
-            format!("{}/models", crate::provider_bootstrap::cliproxy_base_url())
+            format!("{}/models", crate::provider::bootstrap::cliproxy_base_url())
         }
         _ => "https://openrouter.ai/api/v1/models".into(),
     }

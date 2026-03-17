@@ -948,7 +948,7 @@ mod tests {
     fn build_request_body_normalizes_model_for_sidecar_transport() {
         let provider = OpenAICompatProvider::new(OpenAICompatProviderConfig {
             api_key: Zeroizing::new("test-key".into()),
-            base_url: crate::provider_bootstrap::cliproxy_base_url(),
+            base_url: crate::provider::bootstrap::cliproxy_base_url(),
             strip_provider_prefix: true,
             fallback_model: None,
             extra_headers: vec![],

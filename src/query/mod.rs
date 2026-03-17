@@ -1,4 +1,6 @@
+mod coding_agent;
 mod prompt;
+mod tool_health;
 
 use std::io::Write;
 use std::sync::Arc;
@@ -228,7 +230,7 @@ impl<'a> QuerySession<'a> {
 }
 
 struct QueryLoopState {
-    tool_health: crate::tool_health::ToolHealthTracker,
+    tool_health: tool_health::ToolHealthTracker,
     query_start: std::time::Instant,
     max_query_duration: std::time::Duration,
     force_json_next: bool,
@@ -242,7 +244,7 @@ struct QueryLoopState {
 impl QueryLoopState {
     fn new(config: &Config) -> Self {
         Self {
-            tool_health: crate::tool_health::ToolHealthTracker::new(),
+            tool_health: tool_health::ToolHealthTracker::new(),
             query_start: std::time::Instant::now(),
             max_query_duration: std::time::Duration::from_secs(
                 config.execution.max_query_duration_seconds,
@@ -1196,8 +1198,8 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                                 is_error: true,
                             });
                         } else {
-                            let result = crate::coding_agent::run_coding_agent(
-                                crate::coding_agent::CodingAgentRequest {
+                            let result = coding_agent::run_coding_agent(
+                                coding_agent::CodingAgentRequest {
                                     task,
                                     context: extra_context,
                                     config,
