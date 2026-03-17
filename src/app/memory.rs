@@ -65,20 +65,26 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
         }
         MemoryAction::Maintain => {
             eprintln!("Queueing memory decay...");
-            let _ = super::daemon_runtime::send_to_global_or_fallback(
+            if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                 &crate::daemon::DaemonRequest::MemoryRunDecay,
-            );
+            ) {
+                eprintln!("nsh: failed to queue decay: {e}");
+            }
             eprintln!("Queueing memory reflection...");
-            let _ = super::daemon_runtime::send_to_global_or_fallback(
+            if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                 &crate::daemon::DaemonRequest::MemoryRunReflection,
-            );
+            ) {
+                eprintln!("nsh: failed to queue reflection: {e}");
+            }
             eprintln!("Memory maintenance queued.");
         }
         MemoryAction::Bootstrap => {
             eprintln!("Queueing memory bootstrap scan...");
-            let _ = super::daemon_runtime::send_to_global_or_fallback(
+            if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                 &crate::daemon::DaemonRequest::MemoryBootstrapScan,
-            );
+            ) {
+                eprintln!("nsh: failed to queue bootstrap: {e}");
+            }
             eprintln!("Bootstrap scan queued.");
         }
         MemoryAction::Clear { r#type } => {
@@ -93,35 +99,45 @@ pub(super) fn handle_memory_command(action: MemoryAction) -> anyhow::Result<()> 
                         return Ok(());
                     }
                 };
-                let _ = super::daemon_runtime::send_to_global_or_fallback(
+                if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                     &crate::daemon::DaemonRequest::MemoryClearByType {
                         memory_type: parsed_type,
                         confirmed: true,
                         caller: crate::daemon::current_caller_context(),
                     },
-                );
-                eprintln!("{memory_type} memories cleared.");
-            } else {
-                let _ = super::daemon_runtime::send_to_global_or_fallback(
+                ) {
+                    eprintln!("nsh: failed to clear {memory_type} memories: {e}");
+                } else {
+                    eprintln!("{memory_type} memories cleared.");
+                }
+            } else if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                     &crate::daemon::DaemonRequest::MemoryClearAll {
                         confirmed: true,
                         caller: crate::daemon::current_caller_context(),
                     },
-                );
-                eprintln!("All memories cleared.");
+                ) {
+                    eprintln!("nsh: failed to clear all memories: {e}");
+                } else {
+                    eprintln!("All memories cleared.");
             }
         }
         MemoryAction::Decay => {
-            let _ = super::daemon_runtime::send_to_global_or_fallback(
+            if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                 &crate::daemon::DaemonRequest::MemoryRunDecay,
-            );
-            eprintln!("Memory decay queued.");
+            ) {
+                eprintln!("nsh: failed to queue decay: {e}");
+            } else {
+                eprintln!("Memory decay queued.");
+            }
         }
         MemoryAction::Reflect => {
-            let _ = super::daemon_runtime::send_to_global_or_fallback(
+            if let Err(e) = super::daemon_runtime::send_to_global_or_fallback(
                 &crate::daemon::DaemonRequest::MemoryRunReflection,
-            );
-            eprintln!("Memory reflection queued.");
+            ) {
+                eprintln!("nsh: failed to queue reflection: {e}");
+            } else {
+                eprintln!("Memory reflection queued.");
+            }
         }
         MemoryAction::Export { format: _ } => {
             let request = crate::daemon::DaemonRequest::MemoryExportAll;

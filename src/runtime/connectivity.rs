@@ -1,10 +1,7 @@
 use reqwest::Url;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::Duration;
-
-static ONLINE: AtomicBool = AtomicBool::new(true);
 
 struct ConnectivityMonitor {
     probe_url: Arc<Mutex<String>>,
@@ -50,7 +47,6 @@ fn schedule_for_attempt(attempt: usize) -> Duration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MonitorStep {
     status: ConnectivityStatus,
-    online: bool,
     next_attempt: usize,
 }
 
@@ -75,7 +71,6 @@ where
     };
     MonitorStep {
         status,
-        online: matches!(status, ConnectivityStatus::Online),
         next_attempt,
     }
 }
@@ -168,7 +163,6 @@ fn monitor() -> &'static ConnectivityMonitor {
                         .unwrap_or_default();
                     let step = evaluate_monitor_step(&current_url, attempt, signaled, probe_once);
                     STATUS.store(step.status as u8, Ordering::SeqCst);
-                    ONLINE.store(step.online, Ordering::SeqCst);
                     attempt = step.next_attempt;
                 }
             })
@@ -176,7 +170,6 @@ fn monitor() -> &'static ConnectivityMonitor {
                 eprintln!("nsh: failed to spawn connectivity monitor thread: {e}");
                 // Mark as permanently offline since we can't monitor
                 STATUS.store(ConnectivityStatus::Unknown as u8, Ordering::SeqCst);
-                ONLINE.store(false, Ordering::SeqCst);
             })
             .is_ok();
 
@@ -204,7 +197,6 @@ pub fn start(config: &crate::config::Config) {
         *probe_url = connectivity_probe_url(config);
     }
     STATUS.store(ConnectivityStatus::Unknown as u8, Ordering::SeqCst);
-    ONLINE.store(false, Ordering::SeqCst);
     let _ = monitor.trigger_tx.send(());
 }
 
@@ -214,7 +206,7 @@ mod tests {
 
     use super::{
         current_probe_url, evaluate_monitor_step, is_online, schedule_for_attempt, start, status,
-        ConnectivityStatus, MonitorStep, ONLINE, STATUS,
+        ConnectivityStatus, MonitorStep, STATUS,
     };
 
     #[test]
@@ -249,7 +241,6 @@ mod tests {
     #[test]
     fn test_status_defaults_to_unknown_before_start() {
         STATUS.store(ConnectivityStatus::Unknown as u8, Ordering::SeqCst);
-        ONLINE.store(false, Ordering::SeqCst);
 
         assert_eq!(status(), ConnectivityStatus::Unknown);
         assert!(!is_online());
@@ -262,7 +253,6 @@ mod tests {
             unknown,
             MonitorStep {
                 status: ConnectivityStatus::Unknown,
-                online: false,
                 next_attempt: 0,
             }
         );
@@ -272,7 +262,6 @@ mod tests {
             online,
             MonitorStep {
                 status: ConnectivityStatus::Online,
-                online: true,
                 next_attempt: 0,
             }
         );
@@ -285,7 +274,6 @@ mod tests {
             step,
             MonitorStep {
                 status: ConnectivityStatus::Offline,
-                online: false,
                 next_attempt: 3,
             }
         );
@@ -301,7 +289,6 @@ mod tests {
             capped,
             MonitorStep {
                 status: ConnectivityStatus::Offline,
-                online: false,
                 next_attempt: 4,
             }
         );
