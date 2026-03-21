@@ -134,6 +134,7 @@ function renderTerminalView(sessionId: string) {
     <div class="terminal-view">
       <div class="terminal-toolbar">
         <button id="detach-btn">← Back</button>
+        <button id="reconnect-btn">Reconnect</button>
         <span>${sessionId}</span>
       </div>
       <div id="terminal-container"></div>
@@ -143,6 +144,17 @@ function renderTerminalView(sessionId: string) {
   document.getElementById('detach-btn')!.addEventListener('click', () => {
     disposeTerminal();
     renderSessionsView();
+  });
+
+  document.getElementById('reconnect-btn')!.addEventListener('click', async () => {
+    disposeTerminal();
+    try {
+      await invoke('resume_session', { sessionId });
+      initTerminal('terminal-container', sessionId);
+    } catch (e) {
+      console.error('Reconnect failed:', e);
+      renderSessionsView();
+    }
   });
 
   initTerminal('terminal-container', sessionId);
