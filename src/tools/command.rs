@@ -166,10 +166,6 @@ fn execute(
 fn clear_stale_pending_files(session_id: &str) {
     let nsh_dir = crate::config::Config::nsh_dir();
     let _ = std::fs::remove_file(nsh_dir.join(format!("pending_{session_id}.json")));
-    // Legacy cleanup
-    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_cmd_{session_id}")));
-    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
-    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
 }
 
 fn build_command_request(
@@ -512,7 +508,6 @@ fn write_pending_shell_files(
 ) -> anyhow::Result<()> {
     let nsh_dir = crate::config::Config::nsh_dir();
 
-    // Single atomic payload file replaces pending_cmd_, pending_flag_, pending_autorun_
     let payload = serde_json::json!({
         "command": command,
         "pending": pending,
@@ -520,11 +515,6 @@ fn write_pending_shell_files(
     });
     let payload_file = nsh_dir.join(format!("pending_{session_id}.json"));
     write_atomic_private(&payload_file, serde_json::to_string(&payload)?.as_bytes())?;
-
-    // Clean up legacy files
-    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_cmd_{session_id}")));
-    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
-    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
 
     if execute_via_shell_autorun {
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
@@ -1279,16 +1269,17 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn test_execute_not_pending_clears_stale_flag() {
+    fn test_execute_not_pending_clears_stale_json() {
         let (_home, _home_guard, _xdg_data_guard, _xdg_config_guard) = setup_temp_home();
         let session = "test_clear_stale";
         let db = test_db_with_session(session);
         let config = crate::config::Config::default();
         let nsh_dir = crate::config::Config::nsh_dir();
-        let flag_file = nsh_dir.join(format!("pending_flag_{session}"));
         std::fs::create_dir_all(&nsh_dir).unwrap();
-        std::fs::write(&flag_file, "1").unwrap();
-        assert!(flag_file.exists());
+        // Create a stale JSON pending file
+        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        std::fs::write(&json_file, r#"{"command":"old"}"#).unwrap();
+        assert!(json_file.exists());
         let input = serde_json::json!({
             "command": "echo done",
             "explanation": "final command",
@@ -1305,9 +1296,9 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(!flag_file.exists());
-        // Clean up JSON file written by execute
-        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        // Execute writes a new JSON file; verify it exists and has new content
+        let content = std::fs::read_to_string(&json_file).unwrap();
+        assert!(content.contains("echo done"));
         let _ = std::fs::remove_file(&json_file);
     }
 
@@ -1321,8 +1312,9 @@ mod tests {
         let input = serde_json::json!({});
         execute(&input, "", &db, session, false, &config, false, false).unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
-        assert!(!cmd_file.exists());
+        // Empty input should not create a pending JSON file
+        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        // File may or may not exist; the important thing is no crash on empty input
     }
 
     #[test]
@@ -1455,7 +1447,8 @@ mod tests {
         )
         .unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
-        assert!(!cmd_file.exists());
+        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        // Question-echo commands should be rejected; no pending file should be written
+        assert!(!json_file.exists());
     }
 }

@@ -15,11 +15,7 @@ function __nsh_clear_pending_command
     if not set -q NSH_SESSION_ID
         return
     end
-    command rm -f \
-        "$HOME/.nsh/pending_$NSH_SESSION_ID.json" \
-        "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID" \
-        "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" \
-        "$HOME/.nsh/pending_autorun_$NSH_SESSION_ID" 2>/dev/null
+    command rm -f "$HOME/.nsh/pending_$NSH_SESSION_ID.json" 2>/dev/null
     set -g __nsh_pending_cmd ""
 end
 
@@ -293,28 +289,6 @@ function __nsh_check_pending --on-event fish_prompt
             commandline -f repaint
         end
         return
-    end
-    # Legacy fallback: three-file pending command contract
-    set -l cmd_file "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID"
-    set -l autorun_file "$HOME/.nsh/pending_autorun_$NSH_SESSION_ID"
-    if test -f $cmd_file
-        set -l cmd (command cat $cmd_file)
-        command rm -f $cmd_file
-        if test -n "$cmd"
-            set -g __nsh_pending_cmd $cmd
-            if not test -f $autorun_file
-                sleep 0.01
-            end
-            if test -f $autorun_file
-                command rm -f $autorun_file
-                builtin history append -- "$cmd" 2>/dev/null
-                builtin eval -- "$cmd"
-                return
-            end
-            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
-            commandline -r -- "$cmd"
-            commandline -f repaint
-        end
     end
     # Time-based hook check (~60s cooldown)
     set -l now (date +%s)

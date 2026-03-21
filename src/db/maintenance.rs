@@ -303,17 +303,11 @@ impl Db {
                     && (name.ends_with(".sock") || name.ends_with(".pid")))
                     || name.starts_with("scrollback_") && !name.ends_with(".sock")
                     || (name.starts_with("pending_") && name.ends_with(".json"))
-                    || name.starts_with("pending_cmd_")
-                    || name.starts_with("pending_flag_")
-                    || name.starts_with("pending_autorun_")
                 {
                     let session_id = name
                         .trim_start_matches("daemon_")
                         .trim_start_matches("scrollback_")
                         .trim_start_matches("pending_")
-                        .trim_start_matches("cmd_")
-                        .trim_start_matches("flag_")
-                        .trim_start_matches("autorun_")
                         .trim_end_matches(".json")
                         .trim_end_matches(".sock")
                         .trim_end_matches(".pid")

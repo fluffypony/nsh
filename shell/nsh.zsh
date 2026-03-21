@@ -107,11 +107,7 @@ __nsh_install_accept_line_widget() {
 
 __nsh_clear_pending_command() {
     [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
-    command rm -f \
-        "$HOME/.nsh/pending_${NSH_SESSION_ID}.json" \
-        "$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}" \
-        "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" \
-        "$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}" 2>/dev/null
+    command rm -f "$HOME/.nsh/pending_${NSH_SESSION_ID}.json" 2>/dev/null
     __NSH_PENDING_CMD=""
 }
 
@@ -433,25 +429,6 @@ __nsh_check_pending() {
             print -z "$cmd"
         fi
         return
-    fi
-    # Legacy fallback: three-file pending command contract
-    local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
-    local autorun_file="$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}"
-    if [[ -f "$cmd_file" ]]; then
-        local cmd="$(command cat "$cmd_file")"
-        command rm -f "$cmd_file"
-        if [[ -n "$cmd" ]]; then
-            __NSH_PENDING_CMD="$cmd"
-            if [[ ! -f "$autorun_file" ]]; then sleep 0.01; fi
-            if [[ -f "$autorun_file" ]]; then
-                command rm -f "$autorun_file"
-                print -s -- "$cmd"
-                builtin eval -- "$cmd"
-                return 0
-            fi
-            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
-            print -z "$cmd"
-        fi
     fi
 }
 

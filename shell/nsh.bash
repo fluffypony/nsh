@@ -15,11 +15,7 @@ fi
 
 __nsh_clear_pending_command() {
     [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
-    command rm -f \
-        "$HOME/.nsh/pending_${NSH_SESSION_ID}.json" \
-        "$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}" \
-        "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" \
-        "$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}" 2>/dev/null
+    command rm -f "$HOME/.nsh/pending_${NSH_SESSION_ID}.json" 2>/dev/null
     __nsh_pending_cmd=""
 }
 
@@ -295,27 +291,6 @@ __nsh_check_pending() {
                 printf '1' > "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" 2>/dev/null
             fi
             if [[ "$autorun" == "True" || "$autorun" == "true" ]]; then
-                history -s -- "$cmd"
-                builtin eval -- "$cmd"
-                return
-            fi
-            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
-            READLINE_LINE="$cmd"
-            READLINE_POINT=${#cmd}
-        fi
-    fi
-    # Legacy fallback: three-file pending command contract
-    local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
-    local autorun_file="$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}"
-    if [[ -f "$cmd_file" ]]; then
-        local cmd
-        cmd="$(command cat "$cmd_file")"
-        command rm -f "$cmd_file"
-        if [[ -n "$cmd" ]]; then
-            __nsh_pending_cmd="$cmd"
-            if [[ ! -f "$autorun_file" ]]; then sleep 0.01; fi
-            if [[ -f "$autorun_file" ]]; then
-                command rm -f "$autorun_file"
                 history -s -- "$cmd"
                 builtin eval -- "$cmd"
                 return
