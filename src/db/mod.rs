@@ -104,5 +104,5 @@ pub(crate) fn gethostname() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-#[cfg(all(test, not(any())))]
+#[cfg(test)]
 mod tests;

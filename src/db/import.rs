@@ -89,6 +89,7 @@ impl Db {
         tx.commit()
     }
 
+    #[cfg(test)]
     pub fn conn_execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
         self.conn.execute_batch(sql)
     }

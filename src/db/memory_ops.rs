@@ -1,4 +1,5 @@
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 use super::Db;
 use super::types::ResourceMemoryWrite;
@@ -526,5 +527,3 @@ impl Db {
         })
     }
 }
-
-use rusqlite::OptionalExtension;

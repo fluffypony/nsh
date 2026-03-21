@@ -21,7 +21,6 @@ use rusqlite::Connection;
 use types::{
     BootstrapReport, CoreBlock, CoreLabel, CoreOp, DecayReport, MemoryOp, MemoryQueryContext,
     MemoryStats, MemoryType, ReflectionReport, RetrievedMemories, SearchResult, ShellEvent,
-    ShellEventType,
 };
 
 pub struct MemorySystem {

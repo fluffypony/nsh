@@ -84,6 +84,7 @@ impl Db {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn update_command(
         &self,
         id: i64,

@@ -76,6 +76,7 @@ impl Db {
         rows.collect()
     }
 
+    #[cfg(test)]
     pub fn pending_generation_ids(&self) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT generation_id FROM usage \

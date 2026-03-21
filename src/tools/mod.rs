@@ -33,8 +33,7 @@ pub(crate) use runtime::side_effects::{ToolConversationRecord, record_tool_conve
 pub use runtime::timeout_policy::default_timeout_for_tool;
 pub(crate) use runtime::tty_prompts::read_terminal_line_with;
 pub use runtime::tty_prompts::{
-    prompt_tty_confirmation, prompt_tty_confirmation_default_yes, prompt_tty_confirmation_safe,
-    prompt_tty_yes_confirmation, read_tty_confirmation, read_tty_confirmation_default_yes,
+    prompt_tty_confirmation, read_tty_confirmation, read_tty_confirmation_default_yes,
     read_tty_confirmation_safe, read_tty_yes_confirmation, read_user_input_with_timeout,
 };
 

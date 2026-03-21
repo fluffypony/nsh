@@ -1,4 +1,5 @@
 use rusqlite::params;
+use rusqlite::OptionalExtension;
 
 use super::Db;
 
@@ -447,5 +448,3 @@ impl Db {
             })
     }
 }
-
-use rusqlite::OptionalExtension;

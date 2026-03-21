@@ -14,9 +14,6 @@ pub const DEFAULT_FALLBACK_MODEL: &str = "anthropic/claude-sonnet-4.6";
 pub const DEFAULT_WEB_SEARCH_PROVIDER: &str = "openrouter";
 pub const DEFAULT_WEB_SEARCH_MODEL: &str = "perplexity/sonar";
 
-pub const GEMINI_25_PRO_OPENROUTER: &str = "google/gemini-2.5-pro";
-pub const GEMINI_3_PRO_OPENROUTER: &str = "google/gemini-3-pro";
-
 const OPENROUTER_MAIN: &[&str] = &[
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3-flash-preview",

@@ -98,6 +98,7 @@ where
     execute_request(request, &provider).await
 }
 
+#[cfg(test)]
 async fn execute_with_active_provider(
     query: &str,
     config: &Config,

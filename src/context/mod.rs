@@ -8,16 +8,15 @@
 pub(crate) mod project;
 pub(crate) mod system_info;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::config::Config;
 use crate::daemon_db::DbAccess;
 use crate::db::{CommandWithSummary, ConversationExchange, OtherSessionSummary};
 
 pub use system_info::{
-    DiskInfo, MachineDetails, MemoryUsage, NetworkInterface, SemiDynamicInfo,
-    SemiDynamicInfoSnapshot, StaticSystemInfo, StaticSystemInfoSnapshot, SystemInfoBundle,
-    xml_escape,
+    DiskInfo, MachineDetails, MemoryUsage, NetworkInterface, SemiDynamicInfo, StaticSystemInfo,
+    SystemInfoBundle, xml_escape,
 };
 pub(crate) use system_info::{
     load_or_refresh_semi_dynamic_info, load_or_refresh_static_info, load_or_sample_volatile_info,
