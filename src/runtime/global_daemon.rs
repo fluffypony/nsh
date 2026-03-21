@@ -1,5 +1,5 @@
 use anyhow::Context;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -2387,14 +2387,12 @@ fn handle_global_connection(
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
 
-    let limited_stream = (&stream).take(1024 * 1024);
-    let mut reader = BufReader::new(limited_stream);
-    let mut line = String::new();
-    if reader.read_line(&mut line).is_err() {
-        return;
-    }
+    let payload = match nsh_proto::sync_framing::read_frame(&mut &stream) {
+        Ok(data) => data,
+        Err(_) => return,
+    };
 
-    let request: DaemonRequest = match serde_json::from_str(line.trim()) {
+    let request: DaemonRequest = match serde_json::from_slice(&payload) {
         Ok(r) => r,
         Err(e) => {
             let resp = DaemonResponse::error(format!("parse error: {e}"));
@@ -2405,7 +2403,10 @@ fn handle_global_connection(
             return;
         }
     };
-    log_daemon("server.connection.request", line.trim());
+    log_daemon(
+        "server.connection.request",
+        &String::from_utf8_lossy(&payload),
+    );
     // Track active session IDs for per-session notifications (in-memory)
     match &request {
         DaemonRequest::CreateSession {
@@ -2712,11 +2713,9 @@ fn write_response(
             serde_json::json!(env!("NSH_BUILD_FINGERPRINT")),
         );
     }
-    let mut json = serde_json::to_string(&json_val)
-        .unwrap_or_else(|_| r#"{"status":"error","message":"serialize error"}"#.into());
-    json.push('\n');
-    w.write_all(json.as_bytes())?;
-    w.flush()
+    let json_bytes = serde_json::to_vec(&json_val)
+        .unwrap_or_else(|_| br#"{"status":"error","message":"serialize error"}"#.to_vec());
+    nsh_proto::sync_framing::write_frame(&mut w, &json_bytes)
 }
 
 #[cfg(all(test, unix))]
@@ -2729,7 +2728,7 @@ mod tests {
     };
     use crate::daemon::{DaemonRequest, DaemonResponse};
     use crate::test_support::EnvVarGuard;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -2752,14 +2751,10 @@ mod tests {
             handle_global_connection(server, write_tx, read_tx, sessions);
         });
 
-        let mut line = request_line.to_string();
-        if !line.ends_with('\n') {
-            line.push('\n');
-        }
-        client
-            .write_all(line.as_bytes())
+        // Send request as length-prefixed frame
+        let req_bytes = request_line.as_bytes();
+        nsh_proto::sync_framing::write_frame(&mut client, req_bytes)
             .expect("write request to daemon conn");
-        client.flush().expect("flush request");
 
         let write_cmd = write_rx.recv_timeout(Duration::from_millis(300)).ok();
         let read_cmd = read_rx.recv_timeout(Duration::from_millis(300)).ok();
@@ -2779,11 +2774,10 @@ mod tests {
                 })));
         }
 
-        let mut response = String::new();
-        let mut reader = BufReader::new(client);
-        reader
-            .read_line(&mut response)
+        // Read response as length-prefixed frame
+        let response_bytes = nsh_proto::sync_framing::read_frame(&mut client)
             .expect("read daemon response");
+        let response = String::from_utf8_lossy(&response_bytes).to_string();
 
         handler.join().expect("join daemon connection handler");
         (response, write_cmd, read_cmd)

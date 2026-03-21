@@ -1,7 +1,4 @@
-use std::io::BufRead;
-#[cfg(test)]
-use std::io::BufReader;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
@@ -10,39 +7,8 @@ use std::os::unix::net::UnixStream;
 
 use crate::daemon::{DaemonRequest, DaemonResponse};
 
-const MAX_DAEMON_RESPONSE_BYTES: u64 = 10 * 1024 * 1024;
-
 fn log_daemon_client(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
-}
-
-fn read_daemon_response<R: Read>(reader: &mut R) -> anyhow::Result<String> {
-    let mut buf_reader = std::io::BufReader::with_capacity(256 * 1024, reader);
-    let mut line = String::new();
-    let bytes_read = buf_reader.read_line(&mut line)?;
-
-    if bytes_read == 0 {
-        anyhow::bail!("empty daemon response (EOF before any data)");
-    }
-    if line.len() as u64 > MAX_DAEMON_RESPONSE_BYTES {
-        anyhow::bail!("daemon response exceeded {MAX_DAEMON_RESPONSE_BYTES} bytes");
-    }
-
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        anyhow::bail!("empty daemon response (whitespace only)");
-    }
-
-    if trimmed.starts_with('{') && !trimmed.ends_with('}') {
-        anyhow::bail!(
-            "daemon response appears truncated ({} bytes received, ends with '...{}'). \
-             This usually means the response was too large or a write timeout occurred.",
-            trimmed.len(),
-            &trimmed[trimmed.len().saturating_sub(40)..]
-        );
-    }
-
-    Ok(trimmed.to_string())
 }
 
 pub fn send_request(session_id: &str, request: &DaemonRequest) -> anyhow::Result<DaemonResponse> {
@@ -84,23 +50,26 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
             serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
         );
     }
-    let mut json = serde_json::to_string(&json_val)?;
-    json.push('\n');
+    let json_bytes = serde_json::to_vec(&json_val)?;
     log_daemon_client(
         "client.send_request",
-        &format!("session={session_id}\nrequest={}", json.trim_end()),
+        &format!(
+            "session={session_id}\nrequest={}",
+            String::from_utf8_lossy(&json_bytes)
+        ),
     );
-    stream.write_all(json.as_bytes())?;
-    stream.flush()?;
+    nsh_proto::sync_framing::write_frame(&mut stream, &json_bytes)?;
 
-    let response_line = read_daemon_response(&mut stream)?;
-    // Parse generically to inspect daemon version fields
-    let json_val: serde_json::Value = serde_json::from_str(&response_line)
+    let response_bytes = nsh_proto::sync_framing::read_frame(&mut stream)?;
+    let json_val: serde_json::Value = serde_json::from_slice(&response_bytes)
         .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
 
     log_daemon_client(
         "client.send_request.response",
-        &format!("session={session_id}\nresponse={response_line}"),
+        &format!(
+            "session={session_id}\nresponse={}",
+            String::from_utf8_lossy(&response_bytes)
+        ),
     );
 
     serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
@@ -208,25 +177,20 @@ fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse
             serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
         );
     }
-    let mut json = serde_json::to_string(&json_val)?;
-    json.push('\n');
+    let json_bytes = serde_json::to_vec(&json_val)?;
     log_daemon_client(
         "client.send_to_global",
-        &format!("request={}", json.trim_end()),
+        &format!("request={}", String::from_utf8_lossy(&json_bytes)),
     );
-    stream.write_all(json.as_bytes())?;
-    stream.flush()?;
+    nsh_proto::sync_framing::write_frame(&mut stream, &json_bytes)?;
 
-    let response_line = read_daemon_response(&mut stream)?;
-    // Parse generically first to detect version
-    let json_val: serde_json::Value = serde_json::from_str(&response_line)
+    let response_bytes = nsh_proto::sync_framing::read_frame(&mut stream)?;
+    let json_val: serde_json::Value = serde_json::from_slice(&response_bytes)
         .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
-
-    // Inline version checks removed — handled centrally via ensure_daemon_version_matches()
 
     log_daemon_client(
         "client.send_to_global.response",
-        &format!("response={response_line}"),
+        &format!("response={}", String::from_utf8_lossy(&response_bytes)),
     );
 
     serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
@@ -428,11 +392,10 @@ mod tests {
 
     #[cfg(unix)]
     mod unix_tests {
-        use super::super::{is_daemon_running, send_request, try_send_request, BufReader};
+        use super::super::{is_daemon_running, send_request, try_send_request};
         use crate::daemon::{DaemonRequest, DaemonResponse, DAEMON_PROTOCOL_VERSION};
         use crate::test_support::EnvVarGuard;
         use serial_test::serial;
-        use std::io::{BufRead, Write};
         use std::os::unix::net::{UnixListener, UnixStream};
         use std::path::{Path, PathBuf};
 
@@ -458,10 +421,7 @@ mod tests {
         }
 
         fn write_mock_response(stream: &mut UnixStream, response: DaemonResponse) {
-            let mut response_json = serde_json::to_string(&response).unwrap();
-            response_json.push('\n');
-            stream.write_all(response_json.as_bytes()).unwrap();
-            stream.flush().unwrap();
+            nsh_proto::sync_framing::write_message(stream, &response).unwrap();
         }
 
         fn spawn_session_daemon(
@@ -470,12 +430,9 @@ mod tests {
         ) -> (PathBuf, std::thread::JoinHandle<()>) {
             let (sock_path, listener) = daemon_socket_fixture(session_id);
             let handler = std::thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
-                let mut reader = BufReader::new(&stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let mut stream = stream;
+                let (mut stream, _) = listener.accept().unwrap();
+                let payload = nsh_proto::sync_framing::read_frame(&mut stream).unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
                 handle_request(request, &mut stream);
             });
             (sock_path, handler)

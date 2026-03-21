@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::Mutex;
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CallerContext {
@@ -1980,7 +1980,7 @@ mod tests {
 
     #[test]
     fn test_protocol_version_exact_value() {
-        assert_eq!(DAEMON_PROTOCOL_VERSION, 1);
+        assert_eq!(DAEMON_PROTOCOL_VERSION, 2);
     }
 
     #[test]

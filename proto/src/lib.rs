@@ -127,8 +127,8 @@ pub mod framing {
     }
 }
 
-/// Synchronous length-prefixed framing for the per-session Unix socket
-/// stream-mode protocol (used after StreamAttach handshake).
+/// Synchronous length-prefixed framing for Unix socket IPC.
+/// Format: 4-byte big-endian length, then JSON payload.
 pub mod sync_framing {
     use std::io::{self, Read, Write};
 
@@ -155,4 +155,38 @@ pub mod sync_framing {
         r.read_exact(&mut buf)?;
         Ok(buf)
     }
+
+    pub fn write_message<W: Write>(w: &mut W, msg: &impl serde::Serialize) -> io::Result<()> {
+        let json = serde_json::to_vec(msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        write_frame(w, &json)
+    }
+
+    pub fn read_message<T: serde::de::DeserializeOwned, R: Read>(r: &mut R) -> io::Result<T> {
+        let data = read_frame(r)?;
+        serde_json::from_slice(&data)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+/// Lightweight state updates sent via unreliable datagrams.
+/// Best-effort: the receiver must tolerate missing updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StatePush {
+    SessionActivity {
+        session_id: String,
+        last_cwd: Option<String>,
+        git_branch: Option<String>,
+        running_command: Option<String>,
+    },
+    CommandStarted {
+        session_id: String,
+        command: String,
+    },
+    CommandFinished {
+        session_id: String,
+        command: String,
+        exit_code: i32,
+    },
 }

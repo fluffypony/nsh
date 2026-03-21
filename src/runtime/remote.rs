@@ -234,7 +234,7 @@ async fn bridge_to_session(
     let unix_stream = tokio::net::UnixStream::connect(&socket_path).await?;
     let (unix_read, mut unix_write) = unix_stream.into_split();
 
-    // Send handshake (newline-delimited JSON)
+    // Send handshake (length-prefixed frame)
     let mut handshake_req = serde_json::json!({
         "v": crate::daemon::DAEMON_PROTOCOL_VERSION,
         "type": request_type,
@@ -244,15 +244,13 @@ async fn bridge_to_session(
     if let Some(seq) = last_seq {
         handshake_req["last_seq"] = serde_json::json!(seq);
     }
-    let mut req_bytes = serde_json::to_vec(&handshake_req)?;
-    req_bytes.push(b'\n');
-    tokio::io::AsyncWriteExt::write_all(&mut unix_write, &req_bytes).await?;
+    let req_bytes = serde_json::to_vec(&handshake_req)?;
+    nsh_proto::framing::write_frame(&mut unix_write, &req_bytes).await?;
 
-    // Read handshake response (newline-delimited JSON)
-    let mut reader = tokio::io::BufReader::new(unix_read);
-    let mut response_line = String::new();
-    tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut response_line).await?;
-    let handshake_resp: serde_json::Value = serde_json::from_str(&response_line)?;
+    // Read handshake response (length-prefixed frame)
+    let mut unix_read = unix_read;
+    let handshake_resp_bytes = nsh_proto::framing::read_frame(&mut unix_read).await?;
+    let handshake_resp: serde_json::Value = serde_json::from_slice(&handshake_resp_bytes)?;
 
     // Extract snapshot (attach) or resumed flag and send to mobile
     let snapshot = handshake_resp["data"]["snapshot"]
@@ -271,7 +269,6 @@ async fn bridge_to_session(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // === Bridge: Unix socket <-> QUIC stream ===
-    let mut unix_read = reader.into_inner();
 
     ATTACHED_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
