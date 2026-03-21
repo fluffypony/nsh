@@ -71,8 +71,10 @@ export async function initTerminal(containerId: string, sessionId: string) {
   }
 }
 
-export function disposeTerminal() {
-  invoke('detach_session');
+export function disposeTerminal(sendDetach: boolean = true) {
+  if (sendDetach) {
+    invoke('detach_session');
+  }
   if (terminalDataUnlisten) {
     terminalDataUnlisten();
     terminalDataUnlisten = null;

@@ -148,10 +148,11 @@ function renderTerminalView(sessionId: string) {
 
   document.getElementById('reconnect-btn')!.addEventListener('click', async () => {
     try {
-      // Detach current session first
+      // Detach and clean up terminal UI (skip sending detach from dispose
+      // since we send it explicitly here to avoid race conditions)
       await invoke('detach_session');
-      disposeTerminal();
-      // Re-attach fresh (resume uses last_seq internally)
+      disposeTerminal(false);
+      // Re-attach fresh
       renderTerminalView(sessionId);
     } catch (e) {
       console.error('Reconnect failed:', e);
