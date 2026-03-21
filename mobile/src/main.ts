@@ -69,6 +69,7 @@ async function renderSessionsView() {
         <strong>${s.label || s.session_id}</strong>
         <span class="session-detail">${s.shell} (${s.tty})</span>
         ${s.last_cwd ? `<span class="session-cwd">${s.last_cwd}</span>` : ''}
+        ${s.git_branch ? `<span class="session-branch">${s.git_branch}</span>` : ''}
       </div>
     `,
       )
