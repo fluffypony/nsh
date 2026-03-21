@@ -170,11 +170,26 @@ async fn handle_remote_stream(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Validate session_id in requests that use it (prevent path traversal)
+    let validate_session_id = |id: &str| -> bool {
+        id.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+
     match request {
         RemoteRequest::ListSessions => {
             let sessions = list_active_sessions()?;
             let response = RemoteResponse::SessionList { sessions };
             nsh_proto::framing::write_message(&mut send, &response)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
+        RemoteRequest::Attach { ref session_id } if !validate_session_id(session_id) => {
+            let err = RemoteResponse::Error {
+                message: "invalid session_id format".into(),
+            };
+            nsh_proto::framing::write_message(&mut send, &err)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
         }
@@ -577,6 +592,19 @@ fn list_active_sessions() -> anyhow::Result<Vec<RemoteSessionInfo>> {
             })
         })?
         .filter_map(|r| r.ok())
+        .filter(|s| {
+            // Filter out zombie sessions where the shell PID is no longer alive
+            #[cfg(unix)]
+            {
+                if s.pid > 0
+                    // SAFETY: kill(pid, 0) checks process existence without signaling.
+                    && unsafe { libc::kill(s.pid as libc::pid_t, 0) } != 0
+                {
+                    return false;
+                }
+            }
+            true
+        })
         .collect();
     Ok(sessions)
 }

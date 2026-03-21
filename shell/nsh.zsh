@@ -408,8 +408,7 @@ __nsh_check_pending() {
         command rm -f "$payload_file"
         if [[ -n "$raw" ]]; then
             local cmd autorun pending
-            cmd="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)" || \
-                cmd="$(printf '%s' "$raw" | command sed -n 's/.*"command":"\([^"]*\)".*/\1/p')"
+            cmd="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)"
             autorun="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)" || \
                 autorun="false"
             pending="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('pending',False))" 2>/dev/null)" || \

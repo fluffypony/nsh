@@ -35,6 +35,26 @@ function global:prompt {
         }
     } catch {}
 
+    # --- Check for pending commands from nsh query ---
+    $pendingFile = Join-Path $HOME ".nsh\pending_$env:NSH_SESSION_ID.json"
+    if (Test-Path $pendingFile) {
+        $raw = Get-Content $pendingFile -Raw -ErrorAction SilentlyContinue
+        Remove-Item $pendingFile -Force -ErrorAction SilentlyContinue
+        if ($raw) {
+            try {
+                $parsed = $raw | ConvertFrom-Json
+                if ($parsed.command) {
+                    if ($parsed.autorun -eq $true) {
+                        Invoke-Expression $parsed.command
+                    } else {
+                        Write-Host "  nsh: next step from previous task - Enter to continue, edit to modify, Ctrl-C to cancel" -ForegroundColor DarkGray
+                        [Microsoft.PowerShell.PSConsoleReadLine]::Insert($parsed.command)
+                    }
+                }
+            } catch {}
+        }
+    }
+
     # --- Update notifications ---
     $msgFile = Join-Path $HOME ".nsh\nsh_msg_$env:NSH_SESSION_ID"
     if (Test-Path $msgFile) {

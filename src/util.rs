@@ -133,9 +133,12 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
     {
-        tracing::warn!(
-            "Peer UID check not implemented for this platform, relying on socket permissions"
-        );
+        if log_rejection {
+            tracing::warn!(
+                "Peer UID check not implemented for this platform, rejecting for safety"
+            );
+        }
+        return false;
     }
     true
 }

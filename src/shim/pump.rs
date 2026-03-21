@@ -1262,10 +1262,10 @@ fn handle_stream_attach(
         }
     }
 
-    // Clean up: decrement subscriber count, join input thread, then run
-    // cleanup (which restores winsize only when count reaches 0).
-    remote_state.unsubscribe();
+    // Clean up: join input thread first (ensures it stops writing),
+    // then decrement subscriber count, then run cleanup.
     input_thread.join().ok();
+    remote_state.unsubscribe();
     remote_state.cleanup_on_disconnect(peer_id.as_deref());
 }
 

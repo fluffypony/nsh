@@ -2650,6 +2650,7 @@ fn is_write_request(req: &DaemonRequest) -> bool {
             | DaemonRequest::MemoryBootstrapScan
             | DaemonRequest::MemoryClearAll { .. }
             | DaemonRequest::MemoryClearByType { .. }
+            | DaemonRequest::RemoteRevoke { .. }
     )
 }
 

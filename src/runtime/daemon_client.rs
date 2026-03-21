@@ -261,11 +261,11 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let last = LAST_VERSION_CHECK.load(AtomicOrdering::Relaxed);
+    let last = LAST_VERSION_CHECK.load(AtomicOrdering::Acquire);
     if now.saturating_sub(last) < 10 {
         return Ok(());
     }
-    LAST_VERSION_CHECK.store(now, AtomicOrdering::Relaxed);
+    LAST_VERSION_CHECK.store(now, AtomicOrdering::Release);
     let our_version = env!("CARGO_PKG_VERSION");
     let our_build = env!("NSH_BUILD_VERSION");
     let our_fingerprint = env!("NSH_BUILD_FINGERPRINT");
