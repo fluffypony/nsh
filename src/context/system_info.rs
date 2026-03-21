@@ -579,7 +579,7 @@ fn detect_cpu_model() -> String {
         )
         .unwrap_or_default();
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "freebsd", target_os = "windows")))]
     String::new()
 }
 
@@ -651,7 +651,7 @@ fn detect_gpu_info() -> String {
         }
         return String::new();
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     String::new()
 }
 
@@ -774,7 +774,7 @@ pub(crate) fn detect_disk_info() -> Vec<DiskInfo> {
         }
         return out;
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "windows")))]
     Vec::new()
 }
 
@@ -893,11 +893,13 @@ fn detect_memory_usage() -> MemoryUsage {
             available: String::new(),
         };
     }
-    #[allow(unreachable_code)]
-    MemoryUsage {
-        total: String::new(),
-        used: String::new(),
-        available: String::new(),
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        MemoryUsage {
+            total: String::new(),
+            used: String::new(),
+            available: String::new(),
+        }
     }
 }
 
@@ -1051,7 +1053,7 @@ fn detect_network_info() -> Vec<NetworkInterface> {
         entries.truncate(5);
         return entries;
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Vec::new()
 }
 
@@ -1092,7 +1094,7 @@ pub(crate) fn detect_locale_detail() -> String {
         )
         .unwrap_or_default();
     }
-    #[allow(unreachable_code)]
+    #[cfg(not(any(unix, windows)))]
     String::new()
 }
 
