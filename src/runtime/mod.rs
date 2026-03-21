@@ -6,4 +6,8 @@ pub mod daemon_db;
 #[cfg(unix)]
 pub mod global_daemon;
 pub mod live_update;
+#[cfg(feature = "remote")]
+pub mod remote;
+#[cfg(feature = "remote")]
+pub mod remote_key;
 pub mod update_checker;

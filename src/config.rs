@@ -41,6 +41,8 @@ pub struct Config {
     pub cliproxyapi: CliProxyApiConfig,
     #[serde(default)]
     pub shell_hooks: ShellHooksConfig,
+    #[serde(default)]
+    pub remote: RemoteConfig,
 }
 
 pub const DEFAULT_SUPPRESSED_EXIT_CODES: &[i32] = &[130, 137, 141, 143];
@@ -366,6 +368,22 @@ impl Default for ShellHooksConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+pub struct RemoteConfig {
+    pub enabled: bool,
+    pub allowed_keys: Vec<String>,
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_keys: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct ModelsConfig {
     pub main: Vec<String>,
     pub fast: Vec<String>,
@@ -680,6 +698,9 @@ pub const TOOL_BLOCKED_KEYS: &[&str] = &[
     "provider.codex_sub.api_key",
     "provider.gemini_sub.api_key",
     "provider.deepseek.api_key",
+    // Remote access (security-sensitive)
+    "remote.enabled",
+    "remote.allowed_keys",
 ];
 
 const TOOL_BLOCKED_KEY_SEGMENTS: &[&str] = &["api_key", "api_key_cmd", "base_url"];
@@ -705,6 +726,65 @@ pub fn is_setting_protected(key: &str) -> bool {
         }
     }
     false
+}
+
+/// Add a remote peer's public key to the allowed_keys list in config.toml.
+/// Also sets remote.enabled = true.
+pub fn add_remote_allowed_key(node_id: &str) -> anyhow::Result<()> {
+    let config_path = Config::path();
+    let content = if config_path.exists() {
+        std::fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+    let mut doc: toml_edit::DocumentMut = if content.is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        content.parse::<toml_edit::DocumentMut>()?
+    };
+
+    if doc.get("remote").is_none() {
+        doc["remote"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["remote"]["enabled"] = toml_edit::value(true);
+
+    let existing = doc["remote"]
+        .get("allowed_keys")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if !existing.iter().any(|v| v.as_str() == Some(node_id)) {
+        let mut arr = existing;
+        arr.push(node_id);
+        doc["remote"]["allowed_keys"] = toml_edit::value(arr);
+    }
+    std::fs::write(&config_path, doc.to_string())?;
+    Ok(())
+}
+
+/// Remove a remote peer's public key from the allowed_keys list.
+pub fn remove_remote_allowed_key(node_id: &str) -> anyhow::Result<bool> {
+    let config_path = Config::path();
+    if !config_path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(&config_path)?;
+    let mut doc: toml_edit::DocumentMut = content.parse()?;
+    let mut found = false;
+    if let Some(remote) = doc.get_mut("remote") {
+        if let Some(keys) = remote.get_mut("allowed_keys") {
+            if let Some(arr) = keys.as_array_mut() {
+                let before = arr.len();
+                arr.retain(|v| v.as_str() != Some(node_id));
+                found = arr.len() < before;
+            }
+        }
+    }
+    if found {
+        std::fs::write(&config_path, doc.to_string())?;
+    }
+    Ok(found)
 }
 
 impl ToolsConfig {
@@ -1308,6 +1388,7 @@ pub fn build_config_xml(
     append_mcp_servers(&mut x, config, mcp_servers);
     append_installed_skills(&mut x, skills);
     append_memory_section(&mut x, config);
+    append_remote_section(&mut x, config);
     x.push_str("</nsh_configuration>");
     x
 }
@@ -1789,6 +1870,24 @@ fn append_memory_section(x: &mut String, config: &Config) {
     x.push_str(&format!(
         "    <option key=\"ignore_paths\" value=\"({} patterns)\" description=\"Glob patterns for directories excluded from memory\" protected=\"true\" />\n",
         config.memory.ignore_paths.len()
+    ));
+    x.push_str("  </section>\n");
+}
+
+fn append_remote_section(x: &mut String, config: &Config) {
+    x.push_str("  <section name=\"remote\">\n");
+    opt(
+        x,
+        "enabled",
+        &config.remote.enabled.to_string(),
+        "Enable iroh-based remote access for nsh mobile app",
+        Some("true,false"),
+    );
+    x.push_str(&format!(
+        "    <option key=\"allowed_keys\" value=\"({} keys)\" \
+         description=\"Ed25519 public keys allowed to connect remotely\" \
+         protected=\"true\" />\n",
+        config.remote.allowed_keys.len()
     ));
     x.push_str("  </section>\n");
 }

@@ -313,7 +313,7 @@ pub struct SessionInfo {
 type ActiveSessions =
     std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>>;
 
-fn log_daemon(action: &str, payload: &str) {
+pub(crate) fn log_daemon(action: &str, payload: &str) {
     crate::debug_io::daemon_log("daemon.log", action, payload);
 }
 
