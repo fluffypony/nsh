@@ -118,6 +118,9 @@ pub(crate) fn validate_path_with_access(
             }
             break;
         }
+        if path.parent().is_none() || path == std::path::Path::new("/") {
+            break;
+        }
         current = path.parent().map(|pp| pp.to_path_buf());
     }
 
