@@ -76,6 +76,7 @@ impl ToolInvocationResult {
         Self::Continue(ToolInvocationOutcome::success(content))
     }
 
+    #[cfg(test)]
     pub fn failure(content: impl Into<String>) -> Self {
         Self::Continue(ToolInvocationOutcome::failure(content))
     }

@@ -34,10 +34,12 @@ impl ToolInvocationOutcome {
     }
 }
 
+#[cfg(test)]
 pub fn outcome_to_content(result: anyhow::Result<ToolInvocationOutcome>) -> anyhow::Result<String> {
     result.map(ToolInvocationOutcome::into_content)
 }
 
+#[cfg(test)]
 pub fn outcome_to_result(result: anyhow::Result<ToolInvocationOutcome>) -> anyhow::Result<String> {
     match result? {
         ToolInvocationOutcome::Success(content) => Ok(content),

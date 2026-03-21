@@ -12,6 +12,7 @@ pub mod streaming;
 pub mod theme;
 
 pub mod style {
+    #![allow(dead_code)]
     pub const RESET: &str = "\x1b[0m";
     pub const BOLD: &str = "\x1b[1m";
     pub const DIM: &str = "\x1b[2m";
@@ -101,7 +102,6 @@ pub enum BoxStyle {
     Safe,
     Elevated,
     Dangerous,
-    Info,
     Question,
 }
 
@@ -112,7 +112,6 @@ impl BoxStyle {
             BoxStyle::Safe => (LIGHT_GRAY, BOLD_CYAN),
             BoxStyle::Elevated => (ORANGE, ORANGE),
             BoxStyle::Dangerous => (BRIGHT_RED, BRIGHT_RED),
-            BoxStyle::Info => (SOFT_BLUE, SOFT_BLUE),
             BoxStyle::Question => (PINK, PINK),
         }
     }
@@ -168,43 +167,6 @@ pub fn render_box(label: &str, content: &[ContentLine], box_style: BoxStyle) {
     eprintln!("  {border_color}╰{:─<bottom_dashes$}╯{reset}", "");
 }
 
-/// Convenience: render a simple info/status box with a single text block.
-pub fn render_simple_box(label: &str, text: &str, box_style: BoxStyle) {
-    render_box(
-        label,
-        &[ContentLine {
-            text: text.to_string(),
-            dim: false,
-        }],
-        box_style,
-    );
-}
-
-// ─── Section Headers ────────────────────────────────────────────────
-
-/// Print a full-width section header: ── Title ────────────────
-pub fn section_header(title: &str) {
-    let w = term_width().saturating_sub(2);
-    let label = format!(" {title} ");
-    let label_len = label.chars().count();
-    let padding = w.saturating_sub(label_len + 3);
-    let th = crate::tui::theme::current_theme();
-    eprintln!(
-        "  {}── {} {}{}",
-        th.accent,
-        title,
-        "─".repeat(padding),
-        th.reset
-    );
-}
-
-/// Print a subtle horizontal rule.
-pub fn hr() {
-    let w = term_width().saturating_sub(4);
-    let th = crate::tui::theme::current_theme();
-    eprintln!("  {}{}{}", th.dim, "─".repeat(w), th.reset);
-}
-
 // ─── Status Line Helpers ────────────────────────────────────────────
 
 /// Tool action indicator: ◆ doing something…
@@ -214,36 +176,6 @@ pub fn tool_status(message: &str) {
         "  {}◆{} {}{}{}",
         th.accent, th.reset, th.dim, message, th.reset
     );
-}
-
-/// Error indicator: ✖ something failed
-pub fn tool_error(message: &str) {
-    let th = crate::tui::theme::current_theme();
-    eprintln!(
-        "  {}✖{} {}{}{}",
-        th.error, th.reset, th.error, message, th.reset
-    );
-}
-
-/// Success indicator: ✓ something worked
-pub fn tool_success(message: &str) {
-    let th = crate::tui::theme::current_theme();
-    eprintln!(
-        "  {}✓{} {}{}{}",
-        th.success, th.reset, th.dim, message, th.reset
-    );
-}
-
-// ─── Tool Start/Finish Dividers ─────────────────────────────────────
-
-/// Subtle divider showing tool execution start.
-pub fn tool_divider(tool_name: &str) {
-    let w = term_width().saturating_sub(4);
-    let label = format!(" {tool_name} ");
-    let label_len = label.chars().count();
-    let pad = w.saturating_sub(label_len);
-    let th = crate::tui::theme::current_theme();
-    eprintln!("  {}{}{}{}", th.dim, label, "─".repeat(pad), th.reset);
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use crate::config::SensitiveFileAccess;
 use std::path::{Component, PathBuf};
 
+#[cfg(test)]
 pub fn validate_read_path(raw_path: &str) -> Result<PathBuf, String> {
     validate_read_path_with_access(raw_path, SensitiveFileAccess::Block)
 }

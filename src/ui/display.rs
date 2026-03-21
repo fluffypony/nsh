@@ -1,12 +1,17 @@
+#[cfg(test)]
 use crate::config::DisplayConfig;
+#[cfg(test)]
 use crate::stream_consumer::DisplayEvent;
+#[cfg(test)]
 use std::io::{self, Write};
 
+#[cfg(test)]
 pub struct TerminalDisplay {
     is_streaming_text: bool,
     chat_color: String,
 }
 
+#[cfg(test)]
 impl TerminalDisplay {
     pub fn new(config: &DisplayConfig) -> Self {
         Self {

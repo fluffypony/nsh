@@ -47,6 +47,7 @@ impl StreamDisplay {
         self.json_output
     }
 
+    #[cfg(test)]
     pub fn last_stream_had_text(&self) -> bool {
         self.last_stream_had_text.load(Ordering::SeqCst)
     }

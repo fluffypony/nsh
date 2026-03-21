@@ -61,6 +61,7 @@ fn audit_log_to_dir(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn rotate_audit_log() -> anyhow::Result<()> {
     let dir = crate::config::Config::nsh_dir();
     rotate_audit_log_in_dir(&dir)

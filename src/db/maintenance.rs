@@ -39,6 +39,7 @@ impl Db {
             .execute_batch("INSERT INTO commands_fts(commands_fts) VALUES('integrity-check')")
     }
 
+    #[cfg(test)]
     pub fn prune_if_due(&self, retention_days: u32) -> rusqlite::Result<()> {
         let should_prune: bool = self
             .conn

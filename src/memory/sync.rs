@@ -27,6 +27,7 @@ pub struct MemorySyncEngine {
 }
 
 #[cfg(feature = "remote")]
+#[allow(dead_code)]
 impl MemorySyncEngine {
     /// Initialize the sync engine with the user's secret key.
     pub async fn new(_secret_key: &iroh::SecretKey) -> anyhow::Result<Self> {

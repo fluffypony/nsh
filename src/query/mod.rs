@@ -825,10 +825,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
     let db = session.db;
     let session_id = session.session_id;
     let opts = session.opts;
-    let query = session.prompt.query.clone();
+    let _query = session.prompt.query.clone();
     let original_query = session.prompt.original_query.clone();
     let boundary = session.prompt.boundary.clone();
-    let query = query.as_str();
     let boundary = boundary.as_str();
     let cancelled = Arc::clone(&session.llm.cancelled);
     let public_tool_ctx = tools::ToolInvocationContext::query(

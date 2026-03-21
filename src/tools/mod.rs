@@ -22,9 +22,11 @@ pub mod write_file;
 pub(crate) mod runtime;
 
 pub(crate) use runtime::file_tools::{
-    default_read_path, ensure_directory, execute_file_tool_content, execute_file_tool_result,
-    open_for_read, open_regular_read_file, read_failure, required_read_path,
+    default_read_path, ensure_directory, open_for_read, open_regular_read_file, read_failure,
+    required_read_path,
 };
+#[cfg(test)]
+pub(crate) use runtime::file_tools::{execute_file_tool_content, execute_file_tool_result};
 pub use runtime::invocation::{ToolInvocationContext, ToolInvocationResult};
 pub use runtime::outcome::ToolInvocationOutcome;
 pub(crate) use runtime::process_pump;

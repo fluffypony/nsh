@@ -1314,7 +1314,7 @@ mod tests {
         execute(&input, "", &db, session, false, &config, false, false).unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
         // Empty input should not create a pending JSON file
-        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        let _json_file = nsh_dir.join(format!("pending_{session}.json"));
         // File may or may not exist; the important thing is no crash on empty input
     }
 

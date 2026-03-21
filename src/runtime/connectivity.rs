@@ -99,10 +99,12 @@ fn probe_once_inner(url: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 pub fn is_online() -> bool {
     matches!(status(), ConnectivityStatus::Online)
 }
 
+#[cfg(test)]
 pub fn status() -> ConnectivityStatus {
     match STATUS.load(Ordering::SeqCst) {
         1 => ConnectivityStatus::Online,

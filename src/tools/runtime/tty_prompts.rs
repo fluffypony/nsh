@@ -134,22 +134,12 @@ pub fn read_tty_yes_confirmation() -> bool {
         .unwrap_or(false)
 }
 
-pub fn prompt_tty_yes_confirmation(prompt: &str) -> std::io::Result<bool> {
-    print_confirmation_prompt(prompt)?;
-    Ok(read_tty_yes_confirmation())
-}
-
 /// Like read_tty_confirmation but defaults to "No" when a read error occurs.
 /// Useful for potentially dangerous defaults where we should not auto-approve.
 pub fn read_tty_confirmation_default_yes() -> bool {
     read_terminal_line()
         .map(|line| is_default_yes_confirmation_accepted(&line))
         .unwrap_or(false)
-}
-
-pub fn prompt_tty_confirmation_default_yes(prompt: &str) -> std::io::Result<bool> {
-    print_confirmation_prompt(prompt)?;
-    Ok(read_tty_confirmation_default_yes())
 }
 
 /// Read confirmation from /dev/tty directly, avoiding stdin conflicts
@@ -159,11 +149,6 @@ pub fn read_tty_confirmation_safe() -> bool {
     read_tty_line()
         .map(|line| is_default_yes_confirmation_accepted(&line))
         .unwrap_or(false)
-}
-
-pub fn prompt_tty_confirmation_safe(prompt: &str) -> std::io::Result<bool> {
-    print_confirmation_prompt(prompt)?;
-    Ok(read_tty_confirmation_safe())
 }
 
 fn handle_user_input_event(line: &mut String, event: crossterm::event::Event) -> UserInputProgress {

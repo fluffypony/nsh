@@ -18,7 +18,7 @@ pub fn snapshot_binary_meta() {
     });
 }
 
-/// Check if the on-disk binary differs from the one at startup.
+#[cfg(test)]
 pub fn has_binary_changed() -> bool {
     let startup = match STARTUP_META.get().and_then(|o| o.as_ref()) {
         Some(s) => s,
@@ -38,22 +38,22 @@ pub fn has_binary_changed() -> bool {
     }
 }
 
-/// Version compiled into this binary
+#[cfg(test)]
 pub fn running_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Build fingerprint compiled into this binary
+#[cfg(test)]
 pub fn running_fingerprint() -> &'static str {
     env!("NSH_BUILD_FINGERPRINT")
 }
 
-/// Wrapper protocol version compiled into this binary
+#[cfg(test)]
 pub fn running_wrapper_protocol() -> &'static str {
     env!("NSH_WRAPPER_PROTOCOL_VERSION")
 }
 
-/// Hook hash compiled into this binary
+#[cfg(test)]
 pub fn running_hook_hash() -> &'static str {
     env!("NSH_HOOK_HASH")
 }

@@ -4,6 +4,7 @@ use crate::util::human_size;
 use glob::Pattern;
 use std::fs::Metadata;
 
+#[cfg(test)]
 pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: SensitiveFileAccess,
@@ -11,10 +12,12 @@ pub fn execute_with_access(
     crate::tools::execute_file_tool_result(input, sensitive_file_access, handle)
 }
 
+#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     execute_with_access(input, SensitiveFileAccess::Block)
 }
 
+#[cfg(test)]
 pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
     execute_outcome_with_access(input, SensitiveFileAccess::Block)
 }

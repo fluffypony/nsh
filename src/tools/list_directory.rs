@@ -4,10 +4,12 @@ use crate::util::human_size;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     crate::tools::execute_file_tool_content(input, SensitiveFileAccess::Block, handle)
 }
 
+#[cfg(test)]
 pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: SensitiveFileAccess,

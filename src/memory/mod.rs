@@ -16,6 +16,7 @@ pub mod types;
 #[cfg(feature = "remote")]
 pub mod sync;
 
+#[cfg(test)]
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -195,6 +196,7 @@ impl MemorySystem {
         self.config.incognito
     }
 
+    #[cfg(test)]
     pub fn is_ignored_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
         privacy::is_ignored_path(&path_str, &self.ignore_patterns)
@@ -212,6 +214,7 @@ impl MemorySystem {
         store::access::MemoryStoreAccess::new(&conn).resource_exists_with_hash(path, hash)
     }
 
+    #[cfg(test)]
     fn apply_op(&self, conn: &Connection, op: &MemoryOp) -> anyhow::Result<()> {
         store::access::MemoryStoreAccess::new(conn).apply_op(op)
     }

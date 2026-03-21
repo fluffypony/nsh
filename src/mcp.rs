@@ -497,6 +497,7 @@ impl McpClient {
         defs
     }
 
+    #[cfg(test)]
     pub fn has_tool(&self, prefixed_name: &str) -> bool {
         self.parse_tool_name(prefixed_name).is_some()
     }

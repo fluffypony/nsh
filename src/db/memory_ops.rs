@@ -231,6 +231,7 @@ impl Db {
         rows.collect()
     }
 
+    #[cfg(test)]
     pub fn list_all_semantic(&self) -> rusqlite::Result<Vec<crate::memory::types::SemanticItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, category, summary, details, search_keywords, \
@@ -287,6 +288,7 @@ impl Db {
         rows.collect()
     }
 
+    #[cfg(test)]
     pub fn list_all_procedural(
         &self,
     ) -> rusqlite::Result<Vec<crate::memory::types::ProceduralItem>> {
@@ -417,6 +419,7 @@ impl Db {
             .optional()
     }
 
+    #[cfg(test)]
     pub fn set_memory_config(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO memory_config(key, value) VALUES (?, ?)",

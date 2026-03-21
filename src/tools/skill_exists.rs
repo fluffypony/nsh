@@ -1,3 +1,4 @@
+#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {

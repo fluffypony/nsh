@@ -1,5 +1,7 @@
+#[cfg(test)]
 use crate::tools::ToolInvocationOutcome;
 
+#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
@@ -47,6 +49,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     Ok(format!("Successfully uninstalled skill '{name}'"))
 }
 
+#[cfg(test)]
 pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
     match execute(input)? {
         message if message == "Uninstall declined" => Ok(ToolInvocationOutcome::failure(message)),

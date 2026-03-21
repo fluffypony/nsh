@@ -442,7 +442,7 @@ fn run_command_with_timeout(command: &str, args: &[&str], timeout: Duration) -> 
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn run_shell_with_timeout(script: &str, timeout: Duration) -> Option<String> {
     run_command_with_timeout("sh", &["-c", script], timeout)
 }
