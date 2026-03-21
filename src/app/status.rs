@@ -107,6 +107,34 @@ pub(super) fn handle_status_command() -> anyhow::Result<()> {
     eprintln!("  Model:      {}", config.provider.model);
     eprintln!("  DB path:    {}", db_path.display());
     eprintln!("  DB size:    {db_size_str}");
+
+    // Remote access status
+    #[cfg(feature = "remote")]
+    {
+        if config.remote.enabled {
+            #[cfg(unix)]
+            if let Ok(resp) = crate::daemon_client::send_to_global(
+                &crate::daemon::DaemonRequest::RemoteStatus,
+            ) {
+                if let crate::daemon::DaemonResponse::Ok {
+                    data: Some(d),
+                } = resp
+                {
+                    let node_id = d["node_id"].as_str().unwrap_or("unknown");
+                    let short_id = &node_id[..16.min(node_id.len())];
+                    let peers = d["connected_peers"].as_u64().unwrap_or(0);
+                    eprintln!("  Remote:     enabled (EndpointId: {short_id}...)");
+                    eprintln!("  Peers:      {peers} connected");
+                } else {
+                    eprintln!("  Remote:     enabled (daemon not running)");
+                }
+            } else {
+                eprintln!("  Remote:     enabled (daemon not running)");
+            }
+        } else {
+            eprintln!("  Remote:     disabled");
+        }
+    }
     let hooks_outdated = std::env::var("NSH_HOOK_HASH")
         .map(|hash| hash != env!("NSH_HOOK_HASH"))
         .unwrap_or(false);

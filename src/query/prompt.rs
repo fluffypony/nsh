@@ -802,6 +802,19 @@ install_mcp_server to connect to MCP servers. All changes require user confirmat
   tools.run_command_allowlist, redaction.enabled, redaction.disable_builtin,
   and any provider API keys, key commands, or base URLs.
   If the user asks to change these, direct them to `nsh config edit`.
+- The remote.enabled and remote.allowed_keys settings are also security-sensitive
+  and cannot be changed via the manage_config tool — direct the user to use
+  `nsh remote` commands instead.
+
+## Remote Access
+nsh supports remote terminal access from mobile devices via the `nsh remote` commands:
+- `nsh remote pair` — displays a QR code for pairing with the nsh mobile app
+- `nsh remote status` — shows iroh endpoint state, connected peers
+- `nsh remote revoke <node_id>` — removes a paired device and disconnects active sessions
+The remote system uses iroh for P2P QUIC connectivity with Ed25519 key authentication.
+Configuration is in the [remote] section of config.toml.
+When the user asks about remote access, mobile app, phone connection, or monitoring
+their terminal remotely, guide them to `nsh remote pair` rather than suggesting SSH tunnels.
 
 ## Proactive Learning
 Prefer deriving associations (package→manager, service→config paths) from local evidence

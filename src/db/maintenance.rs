@@ -356,7 +356,23 @@ impl Db {
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
         eprintln!("{result}");
 
-        // 12. Memory health section
+        // 12. Remote access
+        eprint!("  Remote access... ");
+        if config.remote.enabled {
+            let key_path = crate::config::Config::nsh_dir().join("remote_key");
+            if key_path.exists() {
+                eprintln!(
+                    "enabled ({} authorized keys)",
+                    config.remote.allowed_keys.len()
+                );
+            } else {
+                eprintln!("enabled but no key generated (run `nsh remote pair`)");
+            }
+        } else {
+            eprintln!("disabled");
+        }
+
+        // 13. Memory health section
         let mem_health = self.build_memory_health_section();
         eprint!("{mem_health}");
 

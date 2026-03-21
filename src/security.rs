@@ -609,6 +609,27 @@ pub fn secure_nsh_directory() {
 #[cfg(not(unix))]
 pub fn secure_nsh_directory() {}
 
+/// Validate that a remote peer is authorized by checking against the allowed_keys list.
+#[cfg(feature = "remote")]
+pub fn validate_remote_peer(
+    node_id: &str,
+    allowed_keys: &[String],
+) -> Result<(), String> {
+    if allowed_keys.is_empty() {
+        return Err("no remote keys configured".into());
+    }
+    let normalized = node_id.strip_prefix("ed25519:").unwrap_or(node_id);
+    if !allowed_keys.iter().any(|k| {
+        let k_normalized = k.strip_prefix("ed25519:").unwrap_or(k);
+        k_normalized == normalized
+    }) {
+        return Err(format!(
+            "EndpointId {node_id} is not in the allowed_keys list"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate memory tool inputs for security.
 ///
 /// - `retrieve_secret`: should only be called when there's evidence of explicit user request
