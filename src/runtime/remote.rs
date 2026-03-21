@@ -64,6 +64,7 @@ pub fn spawn_iroh_endpoint(
 #[derive(Debug)]
 struct NshAuthHook;
 
+#[allow(clippy::manual_async_fn)]
 impl iroh::endpoint::EndpointHooks for NshAuthHook {
     fn after_handshake<'a>(
         &'a self,
@@ -120,10 +121,10 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
                         git_branch: session.git_branch.clone(),
                         running_command: session.running_command.clone(),
                     };
-                    if let Ok(bytes) = serde_json::to_vec(&update) {
-                        if bytes.len() < 1200 {
-                            broadcast_datagram(&bytes);
-                        }
+                    if let Ok(bytes) = serde_json::to_vec(&update)
+                        && bytes.len() < 1200
+                    {
+                        broadcast_datagram(&bytes);
                     }
                 }
             }
@@ -529,7 +530,7 @@ fn detect_running_command(shell_pid: i64) -> Option<String> {
             }
         }
 
-        return None;
+        None
     }
 
     #[cfg(target_os = "macos")]
@@ -582,7 +583,7 @@ fn detect_running_command(shell_pid: i64) -> Option<String> {
             }
             let _ = output; // suppress unused warning
         }
-        return None;
+        None
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

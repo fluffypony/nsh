@@ -2480,7 +2480,7 @@ use rusqlite::params;
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();
 
         set_session_last_heartbeat(&db, "s1", "2025-01-01T00:00:00Z");
-        let hb1 = Some("2025-01-01T00:00:00Z".to_string());
+        let hb1 = "2025-01-01T00:00:00Z".to_string();
         db.update_heartbeat("s1").unwrap();
 
         let hb2: Option<String> = db
@@ -2492,9 +2492,8 @@ use rusqlite::params;
             )
             .unwrap();
 
-        assert!(hb1.is_some());
         assert!(hb2.is_some());
-        assert!(hb2.unwrap() > hb1.unwrap());
+        assert!(hb2.unwrap() > hb1);
     }
 
     #[test]
@@ -3707,11 +3706,6 @@ use rusqlite::params;
         .unwrap();
         assert_eq!(db.command_count().unwrap(), 1);
     }
-
-    // memory-related tests removed
-
-    // #[test]
-    // fn test_upsert_memory_case_insensitive_key() {}
 
     #[test]
     fn test_mark_unsummarized_for_llm_empty() {

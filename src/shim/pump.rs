@@ -295,11 +295,15 @@ impl CaptureEngine {
     }
 }
 
+/// A subscriber channel that receives (sequence_number, pty_output_bytes).
+#[cfg(unix)]
+type PtyOutputSender = std::sync::mpsc::SyncSender<(u64, Vec<u8>)>;
+
 /// Shared state for remote client attachment to a PTY session.
 #[cfg(unix)]
 pub struct PtyRemoteState {
     /// Raw PTY output subscribers with sequence numbers. The pump loop sends; handler threads receive.
-    pub output_subscribers: Mutex<Vec<std::sync::mpsc::SyncSender<(u64, Vec<u8>)>>>,
+    pub output_subscribers: Mutex<Vec<PtyOutputSender>>,
     /// Explicit count of attached clients (incremented on subscribe, decremented on unsubscribe).
     pub subscriber_count: std::sync::atomic::AtomicUsize,
     /// Write end of the remote input pipe. Handler threads write here;
@@ -1182,49 +1186,44 @@ fn handle_stream_attach(
         .name("remote-input".into())
         .spawn(move || {
             let mut reader = stream_clone;
-            loop {
-                match nsh_proto::sync_framing::read_frame(&mut reader) {
-                    Ok(data) => match serde_json::from_slice::<crate::daemon::DaemonRequest>(&data)
-                    {
-                        Ok(crate::daemon::DaemonRequest::StreamInput { bytes }) => {
-                            // Only the control lease holder (or anyone if no lease) can send input
-                            let allowed = remote_state_clone
-                                .control_lease
-                                .lock()
-                                .map(|l| {
-                                    l.is_none()
-                                        || l.as_deref() == peer_id_for_input.as_deref()
-                                })
-                                .unwrap_or(true);
-                            if allowed {
-                                let _ = remote_state_clone.inject_input(&bytes);
-                            }
+            while let Ok(data) = nsh_proto::sync_framing::read_frame(&mut reader) {
+                match serde_json::from_slice::<crate::daemon::DaemonRequest>(&data) {
+                    Ok(crate::daemon::DaemonRequest::StreamInput { bytes }) => {
+                        // Only the control lease holder (or anyone if no lease) can send input
+                        let allowed = remote_state_clone
+                            .control_lease
+                            .lock()
+                            .map(|l| {
+                                l.is_none()
+                                    || l.as_deref() == peer_id_for_input.as_deref()
+                            })
+                            .unwrap_or(true);
+                        if allowed {
+                            let _ = remote_state_clone.inject_input(&bytes);
                         }
-                        Ok(crate::daemon::DaemonRequest::StreamResize { cols, rows }) => {
-                            // Only the control lease holder (or anyone if no lease) can resize
-                            let allowed = remote_state_clone
-                                .control_lease
-                                .lock()
-                                .map(|l| {
-                                    l.is_none()
-                                        || l.as_deref() == peer_id_for_input.as_deref()
-                                })
-                                .unwrap_or(true);
-                            if allowed {
-                                // Mark that a remote resize occurred (for restore on disconnect)
-                                remote_state_clone.remote_resized.store(
-                                    true,
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                                let _ = remote_state_clone.resize(cols, rows);
-                            }
+                    }
+                    Ok(crate::daemon::DaemonRequest::StreamResize { cols, rows }) => {
+                        // Only the control lease holder (or anyone if no lease) can resize
+                        let allowed = remote_state_clone
+                            .control_lease
+                            .lock()
+                            .map(|l| {
+                                l.is_none()
+                                    || l.as_deref() == peer_id_for_input.as_deref()
+                            })
+                            .unwrap_or(true);
+                        if allowed {
+                            remote_state_clone.remote_resized.store(
+                                true,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            let _ = remote_state_clone.resize(cols, rows);
                         }
-                        Ok(crate::daemon::DaemonRequest::StreamDetach) => {
-                            break;
-                        }
-                        _ => {} // Unknown command, ignore
-                    },
-                    Err(_) => break, // Socket closed or error
+                    }
+                    Ok(crate::daemon::DaemonRequest::StreamDetach) => {
+                        break;
+                    }
+                    _ => {} // Unknown command, ignore
                 }
             }
             // Signal the output relay to stop

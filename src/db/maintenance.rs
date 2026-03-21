@@ -272,15 +272,6 @@ impl Db {
         if let Ok(entries) = std::fs::read_dir(&nsh_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                // Clean up legacy shared CWD index files
-                if name == "tty_last_cwd"
-                    || name == "tty_last_cwd.lock"
-                    || name == "tty_last_cwd.tmp"
-                {
-                    let _ = std::fs::remove_file(entry.path());
-                    orphaned_count += 1;
-                    continue;
-                }
                 // Clean up orphaned per-TTY CWD files (skip active sessions)
                 if name.starts_with("cwd_") && !name.ends_with(".tmp") {
                     // Extract TTY from filename: cwd__dev_ttys011 → /dev/ttys011

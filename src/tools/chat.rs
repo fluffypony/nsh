@@ -49,6 +49,7 @@ pub fn invoke(
     Ok(ToolInvocationResult::success("Message displayed."))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     input: &serde_json::Value,
     original_query: &str,

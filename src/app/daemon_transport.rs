@@ -1,6 +1,7 @@
 use crate::cli::{DaemonReadAction, DaemonSendAction};
 
 /// Build a `DaemonRequest::Record` from the individual field values.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn record_request(
     session: String,
     command: String,

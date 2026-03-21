@@ -366,20 +366,11 @@ impl Default for ShellHooksConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct RemoteConfig {
     pub enabled: bool,
     pub allowed_keys: Vec<String>,
-}
-
-impl Default for RemoteConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            allowed_keys: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1931,6 +1922,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_config_default_values() {
         let config = Config::default();
         assert_eq!(config.provider.default, "openrouter");
@@ -1966,6 +1958,7 @@ default = "openrouter"
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_config_parse_full_toml() {
         let toml_str = r#"
 [provider]
@@ -4211,6 +4204,7 @@ key = "value"
     // ── ProviderConfig defaults ─────────────────────────
 
     #[test]
+    #[allow(deprecated)]
     fn test_provider_config_defaults() {
         let p = ProviderConfig::default();
         assert_eq!(p.default, "openrouter");
@@ -4858,6 +4852,7 @@ timeout_seconds = "fast"
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_config_web_search_model_override_from_provider() {
         let toml_str = r#"
 [provider]
@@ -4875,6 +4870,7 @@ web_search_model = "custom/search-model"
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_config_web_search_model_no_override_when_explicitly_set() {
         let toml_str = r#"
 [provider]

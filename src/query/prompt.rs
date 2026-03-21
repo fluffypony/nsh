@@ -2,7 +2,6 @@
 ///
 /// Builds the full XML system prompt including environment context,
 /// tool instructions, security guidance, and memory context.
-
 pub fn build_system_prompt(
     ctx: &crate::context::QueryContext,
     xml_context: &str,

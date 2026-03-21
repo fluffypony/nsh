@@ -63,6 +63,7 @@ pub fn invoke(
     .map(ToolInvocationResult::from)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     input: &serde_json::Value,
     original_query: &str,
@@ -1229,7 +1230,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_file).unwrap()).unwrap();
         assert_eq!(payload["command"].as_str().unwrap(), "cd /tmp");
-        assert_eq!(payload["autorun"].as_bool().unwrap(), true);
+        assert!(payload["autorun"].as_bool().unwrap());
         let _ = std::fs::remove_file(&json_file);
     }
 
@@ -1263,7 +1264,7 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&json_file).unwrap()).unwrap();
         assert_eq!(payload["command"].as_str().unwrap(), "echo hello");
-        assert_eq!(payload["pending"].as_bool().unwrap(), true);
+        assert!(payload["pending"].as_bool().unwrap());
         let _ = std::fs::remove_file(&json_file);
     }
 
