@@ -1,12 +1,14 @@
-// Windows PTY stub: intentionally unimplemented.
-//
-// The nsh shim on Windows supports query, history, and tool invocation but cannot
-// wrap a shell with a PTY because the Windows console subsystem lacks the Unix PTY
-// primitives this crate relies on (forkpty, TIOCSWINSZ, etc.).  Users who need full
-// functionality should run nsh inside WSL.
-//
-// The functions here return descriptive errors at runtime rather than failing at
-// compile time, so that non-wrapping features remain usable on native Windows.
+//! Windows PTY wrapping: intentionally not implemented.
+//!
+//! The nsh shim on Windows supports query, history, and tool invocation but cannot
+//! wrap a shell with a PTY because the Windows console subsystem lacks the Unix PTY
+//! primitives this crate relies on (forkpty, TIOCSWINSZ, etc.).
+//!
+//! Windows users should use WSL for full PTY functionality.
+//! This is a conscious design decision, not a TODO.
+//!
+//! The functions here return descriptive errors at runtime rather than failing at
+//! compile time, so that non-wrapping features remain usable on native Windows.
 
 pub fn run_wrapped_shell(
     _shell: &str,

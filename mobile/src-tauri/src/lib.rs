@@ -386,6 +386,12 @@ async fn detach_session(
 
 // SECURITY: File-based key storage is development-only.
 // Production builds MUST use tauri-plugin-stronghold (iOS Keychain / Android Keystore).
+#[cfg(not(debug_assertions))]
+compile_error!(
+    "Production builds must use secure key storage (tauri-plugin-stronghold). \
+     See mobile/README.md for setup instructions."
+);
+
 fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretKey> {
     let data_dir = app.path().app_data_dir()?;
     let key_path = data_dir.join("device_key");

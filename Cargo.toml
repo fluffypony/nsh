@@ -102,6 +102,7 @@ nsh-proto = { path = "proto" }
 
 # Remote access
 iroh = { version = "0.97", optional = true }
+iroh-docs = { version = "0.97", optional = true }
 qrcode = { version = "0.14", optional = true }
 mdns-sd = { version = "0.11", optional = true }
 
@@ -133,4 +134,4 @@ wiremock = "0.6"
 [features]
 default = ["remote"]
 global-daemon-test = []
-remote = ["iroh", "qrcode", "mdns-sd"]
+remote = ["iroh", "iroh-docs", "qrcode", "mdns-sd"]
