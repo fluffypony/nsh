@@ -85,12 +85,23 @@ pub enum SessionEvent {
         session_id: String,
         prompt: String,
     },
-    // PLANNED: SecurityPrompt will be generated when the daemon detects
-    // elevated-risk commands and needs mobile user approval before execution.
-    SecurityPrompt {
-        session_id: String,
-        message: String,
-    },
+}
+
+/// Messages the remote side sends into the shim's Unix socket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RemoteToShim {
+    Input { bytes: Vec<u8> },
+    Resize { cols: u16, rows: u16 },
+    Detach,
+}
+
+/// Messages the shim emits back to the remote side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShimToRemote {
+    Output { seq: u64, bytes: Vec<u8> },
+    SessionUpdate { event: String },
 }
 
 /// Length-prefixed binary framing for QUIC streams.
