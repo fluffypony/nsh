@@ -187,6 +187,13 @@ pub enum Commands {
     CliProxy {
         action: CliProxyAction,
     },
+
+    /// Manage remote access (nsh mobile)
+    #[cfg(feature = "remote")]
+    Remote {
+        #[command(subcommand)]
+        action: RemoteAction,
+    },
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -371,6 +378,20 @@ pub enum DaemonReadAction {
 pub enum DoctorAction {
     /// Check whether command output capture is active for this shell session
     Capture,
+}
+
+#[cfg(feature = "remote")]
+#[derive(Subcommand)]
+pub enum RemoteAction {
+    /// Show QR code for mobile pairing
+    Pair,
+    /// Show remote endpoint status
+    Status,
+    /// Revoke a paired device
+    Revoke {
+        /// EndpointId to revoke (prefix match accepted)
+        node_id: String,
+    },
 }
 
 #[cfg(test)]

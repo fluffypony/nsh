@@ -14,6 +14,8 @@ mod memory;
 mod provider;
 mod query;
 mod record;
+#[cfg(feature = "remote")]
+mod remote;
 mod runtime;
 mod session;
 mod shell_hooks;
@@ -150,6 +152,8 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::DaemonSend { action } => handle_daemon_send_command(action)?,
         Commands::DaemonRead { action } => handle_daemon_read_command(action)?,
         Commands::HistoryImportRun => handle_history_import_run_command(),
+        #[cfg(feature = "remote")]
+        Commands::Remote { action } => remote::handle_remote_command(action)?,
     }
 
     Ok(())
