@@ -1327,12 +1327,12 @@ fn try_execute_write(
                 }
             }
 
-            if command.starts_with("ssh ") || command == "ssh" {
-                if let Err(error) = db.backfill_command_entities_if_needed() {
-                    tracing::warn!(
-                        "failed to backfill command entities after recording command {id} for session `{session}`: {error}"
-                    );
-                }
+            if (command.starts_with("ssh ") || command == "ssh")
+                && let Err(error) = db.backfill_command_entities_if_needed()
+            {
+                tracing::warn!(
+                    "failed to backfill command entities after recording command {id} for session `{session}`: {error}"
+                );
             }
 
             // ── Memory: record generic command execution ─────────────
@@ -2707,10 +2707,10 @@ fn detect_project_root_fast(cwd: &str) -> Option<String> {
     use std::path::Path;
 
     // Skip project detection for paths under ~/.nsh/ (skills, config, etc.)
-    if let Some(nsh_dir) = dirs::home_dir().map(|h| h.join(".nsh")) {
-        if Path::new(cwd).starts_with(&nsh_dir) {
-            return None;
-        }
+    if let Some(nsh_dir) = dirs::home_dir().map(|h| h.join(".nsh"))
+        && Path::new(cwd).starts_with(&nsh_dir)
+    {
+        return None;
     }
 
     let markers = [

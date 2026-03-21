@@ -114,10 +114,10 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
     {
         use iroh::Watcher;
         let initial_addr = addr_watcher.get();
-        if let Some(relay) = initial_addr.relay_urls().next() {
-            if let Ok(mut cached) = HOME_RELAY_URL.lock() {
-                *cached = Some(relay.to_string());
-            }
+        if let Some(relay) = initial_addr.relay_urls().next()
+            && let Ok(mut cached) = HOME_RELAY_URL.lock()
+        {
+            *cached = Some(relay.to_string());
         }
     }
     // Spawn background task to track relay URL changes
@@ -138,7 +138,7 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
     let handler = NshRemoteHandler;
 
     let router = iroh::protocol::Router::builder(endpoint)
-        .accept(ALPN.to_vec(), handler)
+        .accept(ALPN, handler)
         .spawn();
 
     // Periodic state push via unreliable datagrams (best-effort)
@@ -577,39 +577,37 @@ fn detect_running_command(shell_pid: i64) -> Option<String> {
             if let Ok(children_output) = std::process::Command::new("pgrep")
                 .args(["-P", &shell_pid.to_string()])
                 .output()
+                && children_output.status.success()
             {
-                if children_output.status.success() {
-                    let text = String::from_utf8_lossy(&children_output.stdout);
-                    for child_pid in text.lines() {
-                        let child_pid = child_pid.trim();
-                        if child_pid.is_empty() {
-                            continue;
-                        }
-                        if let Ok(cmd_output) = std::process::Command::new("ps")
-                            .args(["-o", "command=", "-p", child_pid])
-                            .output()
+                let text = String::from_utf8_lossy(&children_output.stdout);
+                for child_pid in text.lines() {
+                    let child_pid = child_pid.trim();
+                    if child_pid.is_empty() {
+                        continue;
+                    }
+                    if let Ok(cmd_output) = std::process::Command::new("ps")
+                        .args(["-o", "command=", "-p", child_pid])
+                        .output()
+                        && cmd_output.status.success()
+                    {
+                        let cmd = String::from_utf8_lossy(&cmd_output.stdout)
+                            .trim()
+                            .to_string();
+                        let base = cmd
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("")
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("");
+                        if !cmd.is_empty()
+                            && !matches!(
+                                base,
+                                "bash" | "zsh" | "fish" | "sh" | "dash" | "-bash"
+                                    | "-zsh" | "-fish"
+                            )
                         {
-                            if cmd_output.status.success() {
-                                let cmd = String::from_utf8_lossy(&cmd_output.stdout)
-                                    .trim()
-                                    .to_string();
-                                let base = cmd
-                                    .split_whitespace()
-                                    .next()
-                                    .unwrap_or("")
-                                    .rsplit('/')
-                                    .next()
-                                    .unwrap_or("");
-                                if !cmd.is_empty()
-                                    && !matches!(
-                                        base,
-                                        "bash" | "zsh" | "fish" | "sh" | "dash" | "-bash"
-                                            | "-zsh" | "-fish"
-                                    )
-                                {
-                                    return Some(cmd);
-                                }
-                            }
+                            return Some(cmd);
                         }
                     }
                 }

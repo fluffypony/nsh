@@ -763,14 +763,13 @@ pub fn remove_remote_allowed_key(node_id: &str) -> anyhow::Result<bool> {
     let content = std::fs::read_to_string(&config_path)?;
     let mut doc: toml_edit::DocumentMut = content.parse()?;
     let mut found = false;
-    if let Some(remote) = doc.get_mut("remote") {
-        if let Some(keys) = remote.get_mut("allowed_keys") {
-            if let Some(arr) = keys.as_array_mut() {
-                let before = arr.len();
-                arr.retain(|v| v.as_str() != Some(node_id));
-                found = arr.len() < before;
-            }
-        }
+    if let Some(remote) = doc.get_mut("remote")
+        && let Some(keys) = remote.get_mut("allowed_keys")
+        && let Some(arr) = keys.as_array_mut()
+    {
+        let before = arr.len();
+        arr.retain(|v| v.as_str() != Some(node_id));
+        found = arr.len() < before;
     }
     if found {
         std::fs::write(&config_path, doc.to_string())?;

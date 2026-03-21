@@ -427,10 +427,10 @@ impl PtyRemoteState {
     /// client had resized the PTY, re-syncs the PTY to the local terminal's current size.
     pub fn cleanup_on_disconnect(&self, peer_id: Option<&str>) {
         // Only clear lease if the disconnecting peer owns it
-        if let Ok(mut lease) = self.control_lease.lock() {
-            if peer_id.is_none() || lease.as_deref() == peer_id {
-                *lease = None;
-            }
+        if let Ok(mut lease) = self.control_lease.lock()
+            && (peer_id.is_none() || lease.as_deref() == peer_id)
+        {
+            *lease = None;
         }
         // When the last client disconnects and a remote resize happened,
         // re-sync PTY size from the real terminal (stdin) to undo remote resize.
@@ -1105,12 +1105,11 @@ fn handle_stream_attach(
     stream.set_write_timeout(None).ok();
 
     // Set control lease if peer_id provided and no current holder
-    if let Some(ref pid) = peer_id {
-        if let Ok(mut lease) = remote_state.control_lease.lock() {
-            if lease.is_none() {
-                *lease = Some(pid.clone());
-            }
-        }
+    if let Some(ref pid) = peer_id
+        && let Ok(mut lease) = remote_state.control_lease.lock()
+        && lease.is_none()
+    {
+        *lease = Some(pid.clone());
     }
 
     // Subscribe to raw output broadcast
