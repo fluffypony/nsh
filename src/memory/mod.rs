@@ -23,7 +23,6 @@ use rusqlite::Connection;
 use types::{
     BootstrapReport, CoreBlock, CoreLabel, CoreOp, DecayReport, MemoryOp, MemoryQueryContext,
     MemoryStats, MemoryType, ReflectionReport, RetrievedMemories, SearchResult, ShellEvent,
-    ShellEventType,
 };
 
 pub struct MemorySystem {
@@ -239,6 +238,7 @@ impl MemorySystem {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use types::ShellEventType;
 
     fn test_config() -> crate::config::MemoryConfig {
         crate::config::MemoryConfig::default()

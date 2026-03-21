@@ -961,8 +961,6 @@ fn handle_daemon_connection_inner(
     session_id: &str,
     remote_state: &Arc<PtyRemoteState>,
 ) {
-    use std::io::Write;
-
     // Include session context in logs to aid debugging and ensure param is meaningful
     tracing::trace!(
         "daemon: handling per-session connection for session={}",

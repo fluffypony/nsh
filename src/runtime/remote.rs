@@ -109,10 +109,7 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
 
     let node_id = endpoint.id();
     // Watch endpoint address for relay URL changes and keep cache updated
-    let mut addr_watcher = {
-        use iroh::Watcher;
-        endpoint.watch_addr()
-    };
+    let mut addr_watcher = endpoint.watch_addr();
     // Seed the initial value
     {
         use iroh::Watcher;

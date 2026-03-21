@@ -21,6 +21,7 @@
 /// entries across devices via CRDTs. For now this is scaffolding
 /// that establishes the module structure and public API.
 #[cfg(feature = "remote")]
+#[allow(dead_code)]
 pub struct MemorySyncEngine {
     _placeholder: (),
 }

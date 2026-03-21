@@ -1,5 +1,4 @@
 use anyhow::Context;
-use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -2798,7 +2797,6 @@ mod tests {
     };
     use crate::daemon::{DaemonRequest, DaemonResponse};
     use crate::test_support::EnvVarGuard;
-    use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
     use std::time::Duration;
