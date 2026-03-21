@@ -42,8 +42,6 @@ pub(crate) use runtime::daemon_db;
 pub(crate) use runtime::global_daemon;
 pub(crate) use runtime::live_update;
 #[cfg(feature = "remote")]
-pub(crate) use runtime::remote;
-#[cfg(feature = "remote")]
 pub(crate) use runtime::remote_key;
 pub use runtime::update_checker;
 pub(crate) use shim::pty;

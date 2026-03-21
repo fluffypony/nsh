@@ -614,6 +614,8 @@ fn instruction_candidates() -> &'static [&'static str] {
         ".cursor/rules",
         ".clinerules/rules",
         ".roorules/rules",
+        "ARCHITECTURE.md",
+        "docs/ARCHITECTURE.md",
         "CONVENTIONS.md",
         "AI.md",
         "LLM.md",

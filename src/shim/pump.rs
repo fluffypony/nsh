@@ -1006,7 +1006,6 @@ fn handle_daemon_connection_inner(
 /// Inlined here to avoid a dependency on nsh-proto in the shim boundary.
 #[cfg(unix)]
 fn read_length_prefixed_frame<R: std::io::Read>(r: &mut R) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
