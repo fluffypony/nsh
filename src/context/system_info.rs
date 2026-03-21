@@ -1094,8 +1094,6 @@ pub(crate) fn detect_locale_detail() -> String {
         )
         .unwrap_or_default();
     }
-    #[cfg(not(any(unix, windows)))]
-    String::new()
 }
 
 fn detect_uptime() -> String {
