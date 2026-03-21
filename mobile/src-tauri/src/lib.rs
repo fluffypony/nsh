@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::Manager;
 use tokio::sync::Mutex;
@@ -9,8 +10,10 @@ struct AppState {
     active_connection: Arc<Mutex<Option<iroh::endpoint::Connection>>>,
     /// Active QUIC send stream for the attached session (for input/resize/detach).
     active_send: Arc<Mutex<Option<iroh::endpoint::SendStream>>>,
-    /// Last seen sequence number for resume support.
-    last_seq: Arc<Mutex<u64>>,
+    /// Currently attached session ID.
+    active_session_id: Arc<Mutex<Option<String>>>,
+    /// Per-session last-seen sequence numbers for resume support.
+    last_seq_map: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,7 +29,8 @@ pub fn run() {
                 connected_node: Arc::new(Mutex::new(None)),
                 active_connection: Arc::new(Mutex::new(None)),
                 active_send: Arc::new(Mutex::new(None)),
-                last_seq: Arc::new(Mutex::new(0)),
+                active_session_id: Arc::new(Mutex::new(None)),
+                last_seq_map: Arc::new(Mutex::new(HashMap::new())),
             };
             app.manage(state);
             Ok(())
@@ -82,6 +86,7 @@ async fn disconnect_from_daemon(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     *state.active_send.lock().await = None;
+    *state.active_session_id.lock().await = None;
     *state.active_connection.lock().await = None;
     *state.connected_node.lock().await = None;
     Ok(())
@@ -124,7 +129,7 @@ async fn attach_session(
 
     let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
 
-    let req = nsh_proto::RemoteRequest::Attach { session_id };
+    let req = nsh_proto::RemoteRequest::Attach { session_id: session_id.clone() };
     nsh_proto::framing::write_message(&mut send, &req)
         .await
         .map_err(|e| e.to_string())?;
@@ -139,18 +144,20 @@ async fn attach_session(
         _ => return Err("unexpected response".into()),
     };
 
-    // Store send stream for input/resize/detach commands
+    // Store send stream and active session for input/resize/detach/resume
     *state.active_send.lock().await = Some(send);
+    *state.active_session_id.lock().await = Some(session_id.clone());
 
     // Spawn background task to stream terminal data to frontend
     let app_clone = app.clone();
-    let last_seq = Arc::clone(&state.last_seq);
+    let seq_map = Arc::clone(&state.last_seq_map);
+    let sid = session_id;
     tokio::spawn(async move {
         loop {
             match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
             {
                 Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
-                    *last_seq.lock().await = seq;
+                    seq_map.lock().await.insert(sid.clone(), seq);
                     let _ = app_clone.emit("terminal-data", bytes);
                 }
                 Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
@@ -190,8 +197,9 @@ async fn resume_session(
 
     let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
 
-    let last_seq = *state.last_seq.lock().await;
-    let req = nsh_proto::RemoteRequest::Resume { session_id, last_seq };
+    let last_seq = state.last_seq_map.lock().await
+        .get(&session_id).copied().unwrap_or(0);
+    let req = nsh_proto::RemoteRequest::Resume { session_id: session_id.clone(), last_seq };
     nsh_proto::framing::write_message(&mut send, &req)
         .await
         .map_err(|e| e.to_string())?;
@@ -207,15 +215,17 @@ async fn resume_session(
     };
 
     *state.active_send.lock().await = Some(send);
+    *state.active_session_id.lock().await = Some(session_id.clone());
 
     let app_clone = app.clone();
-    let last_seq_arc = Arc::clone(&state.last_seq);
+    let seq_map = Arc::clone(&state.last_seq_map);
+    let sid = session_id;
     tokio::spawn(async move {
         loop {
             match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
             {
                 Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
-                    *last_seq_arc.lock().await = seq;
+                    seq_map.lock().await.insert(sid.clone(), seq);
                     let _ = app_clone.emit("terminal-data", bytes);
                 }
                 Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
@@ -281,6 +291,7 @@ async fn detach_session(
         let _ = nsh_proto::framing::write_message(send, &req).await;
     }
     *send_lock = None;
+    *state.active_session_id.lock().await = None;
     Ok(())
 }
 

@@ -202,13 +202,14 @@ fn handle_discover() -> anyhow::Result<()> {
         "_nsh._udp.local.",
         &format!("nsh-{}", &node_id_str[..std::cmp::min(8, node_id_str.len())]),
         &format!("{hostname}.local."),
-        "",
+        (),   // no static IPs — enable_addr_auto populates from interfaces
         0,
         Some(std::collections::HashMap::from([
             ("node_id".to_string(), node_id_str.clone()),
         ])),
     )
-    .map_err(|e| anyhow::anyhow!("mDNS service info: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("mDNS service info: {e}"))?
+    .enable_addr_auto();
     mdns.register(service_info)
         .map_err(|e| anyhow::anyhow!("mDNS register: {e}"))?;
 
