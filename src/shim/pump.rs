@@ -307,6 +307,8 @@ pub struct PtyRemoteState {
     pub remote_input_write: std::os::fd::RawFd,
     /// PTY master fd for resize ioctl.
     pub pty_master_fd: std::os::fd::RawFd,
+    /// Real stdin fd, used to read the local terminal size on disconnect restore.
+    pub stdin_fd: std::os::fd::RawFd,
     /// CaptureEngine for screen snapshots.
     pub capture: Arc<Mutex<CaptureEngine>>,
     /// Sequence-numbered ring buffer for reconnection replay.
@@ -314,8 +316,9 @@ pub struct PtyRemoteState {
     /// Current remote control lease holder (if any).
     /// When set, only this peer can send input/resize; observer mode is read-only.
     pub control_lease: Mutex<Option<String>>,
-    /// Original terminal size, saved before first remote resize so it can be restored on detach.
-    pub original_winsize: Mutex<Option<libc::winsize>>,
+    /// Whether any remote client has resized the PTY during this session.
+    /// Set on first remote resize; cleared on last-client disconnect restore.
+    pub remote_resized: std::sync::atomic::AtomicBool,
 }
 
 /// Ring buffer for reconnection replay.
@@ -409,23 +412,27 @@ impl PtyRemoteState {
 
     /// Clean up after a remote client disconnects (explicit detach or unclean EOF).
     /// Must be called AFTER unsubscribe() so the count is accurate.
-    /// Clears control_lease unconditionally. Restores original_winsize only when
-    /// no other subscribers remain (i.e. this was the last attached client).
+    /// Clears control_lease unconditionally. When no subscribers remain and a remote
+    /// client had resized the PTY, re-syncs the PTY to the local terminal's current size.
     pub fn cleanup_on_disconnect(&self) {
         // Always release control lease
         if let Ok(mut lease) = self.control_lease.lock() {
             *lease = None;
         }
-        // Only restore terminal size when no subscribers are left
+        // When the last client disconnects and a remote resize happened,
+        // re-sync PTY size from the real terminal (stdin) to undo remote resize.
         if self
             .subscriber_count
             .load(std::sync::atomic::Ordering::Relaxed)
             == 0
+            && self
+                .remote_resized
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
         {
-            if let Ok(mut orig) = self.original_winsize.lock() {
-                if let Some(ws) = orig.take() {
-                    let _ = self.resize(ws.ws_col, ws.ws_row);
-                }
+            let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+            let ret = unsafe { libc::ioctl(self.stdin_fd, libc::TIOCGWINSZ, &mut ws) };
+            if ret == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+                let _ = self.resize(ws.ws_col, ws.ws_row);
             }
         }
     }
@@ -606,10 +613,11 @@ pub fn pump_loop(
         subscriber_count: std::sync::atomic::AtomicUsize::new(0),
         remote_input_write: std::os::fd::AsRawFd::as_raw_fd(&remote_input_write),
         pty_master_fd: pty_master_raw,
+        stdin_fd: stdin_raw,
         capture: Arc::clone(&capture),
         replay_buffer: Mutex::new(ReplayBuffer::new(1024 * 1024)), // 1 MB ring buffer
         control_lease: Mutex::new(None),
-        original_winsize: Mutex::new(None),
+        remote_resized: std::sync::atomic::AtomicBool::new(false),
     });
 
     let nsh_dir = crate::config::Config::nsh_dir();
@@ -1093,6 +1101,7 @@ fn handle_stream_attach(
             || writer.write_all(b"\n").is_err()
             || writer.flush().is_err()
         {
+            remote_state.unsubscribe();
             return;
         }
     }
@@ -1102,7 +1111,10 @@ fn handle_stream_attach(
     // Clone the stream for the input-reading thread
     let stream_clone = match stream.try_clone() {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => {
+            remote_state.unsubscribe();
+            return;
+        }
     };
     let remote_state_clone = Arc::clone(remote_state);
 
@@ -1139,22 +1151,11 @@ fn handle_stream_attach(
                                 .map(|l| l.is_none())
                                 .unwrap_or(true);
                             if allowed {
-                                // Save original terminal size before the first remote resize
-                                if let Ok(mut orig) = remote_state_clone.original_winsize.lock() {
-                                    if orig.is_none() {
-                                        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-                                        let ret = unsafe {
-                                            libc::ioctl(
-                                                remote_state_clone.pty_master_fd,
-                                                libc::TIOCGWINSZ,
-                                                &mut ws,
-                                            )
-                                        };
-                                        if ret == 0 {
-                                            *orig = Some(ws);
-                                        }
-                                    }
-                                }
+                                // Mark that a remote resize occurred (for restore on disconnect)
+                                remote_state_clone.remote_resized.store(
+                                    true,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                                 let _ = remote_state_clone.resize(cols, rows);
                             }
                         }
@@ -1172,7 +1173,10 @@ fn handle_stream_attach(
 
     let input_thread = match input_thread {
         Ok(t) => t,
-        Err(_) => return,
+        Err(_) => {
+            remote_state.unsubscribe();
+            return;
+        }
     };
 
     // Main thread: reads from output subscriber, writes raw bytes to socket.
