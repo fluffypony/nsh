@@ -100,6 +100,7 @@ rand = "0.9"
 iroh = { version = "0.97", optional = true }
 qrcode = { version = "0.14", optional = true }
 nsh-proto = { path = "proto", optional = true }
+mdns-sd = { version = "0.11", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["termios", "pty", "process", "pipe", "event", "stdio", "fs"] }
@@ -129,4 +130,4 @@ wiremock = "0.6"
 [features]
 default = ["remote"]
 global-daemon-test = []
-remote = ["iroh", "qrcode", "nsh-proto"]
+remote = ["iroh", "qrcode", "nsh-proto", "mdns-sd"]

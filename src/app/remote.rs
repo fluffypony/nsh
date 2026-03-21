@@ -189,11 +189,34 @@ fn handle_discover() -> anyhow::Result<()> {
     eprintln!("Share this code with the connecting device.");
     eprintln!("Waiting for connections... (Ctrl-C to cancel)");
 
+    // Start mDNS advertisement so mobile apps can discover us on LAN
+    let hostname = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "nsh-host".to_string());
+    let mdns = mdns_sd::ServiceDaemon::new()
+        .map_err(|e| anyhow::anyhow!("mDNS daemon: {e}"))?;
+    let service_info = mdns_sd::ServiceInfo::new(
+        "_nsh._udp.local.",
+        &format!("nsh-{}", &node_id_str[..std::cmp::min(8, node_id_str.len())]),
+        &format!("{hostname}.local."),
+        "",
+        0,
+        Some(std::collections::HashMap::from([
+            ("node_id".to_string(), node_id_str.clone()),
+        ])),
+    )
+    .map_err(|e| anyhow::anyhow!("mDNS service info: {e}"))?;
+    mdns.register(service_info)
+        .map_err(|e| anyhow::anyhow!("mDNS register: {e}"))?;
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
-    rt.block_on(async {
+    let result = rt.block_on(async {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
             .secret_key(key)
             .alpns(vec![nsh_proto::ALPN.to_vec()])
@@ -236,9 +259,12 @@ fn handle_discover() -> anyhow::Result<()> {
         }
 
         Ok::<_, anyhow::Error>(())
-    })?;
+    });
 
-    Ok(())
+    // Unregister mDNS on exit
+    let _ = mdns.shutdown();
+
+    result
 }
 
 /// Render a QR code using Unicode half-block characters.

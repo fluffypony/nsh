@@ -17,6 +17,7 @@ struct AppState {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_biometric::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let key = load_or_generate_mobile_key(app)?;
             let state = AppState {
@@ -35,6 +36,7 @@ pub fn run() {
             disconnect_from_daemon,
             list_sessions,
             attach_session,
+            resume_session,
             send_input,
             resize_terminal,
             detach_session,
@@ -47,6 +49,8 @@ pub fn run() {
 async fn connect_to_daemon(
     state: tauri::State<'_, AppState>,
     node_id: String,
+    // TODO: Use relay_url to construct EndpointAddr when iroh supports it
+    // let addr = EndpointAddr::new(node_id).with_relay_url(relay_url);
     _relay_url: Option<String>,
 ) -> Result<(), String> {
     let mut ep_lock = state.endpoint.lock().await;
@@ -150,7 +154,87 @@ async fn attach_session(
                     let _ = app_clone.emit("terminal-data", bytes);
                 }
                 Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
-                    let _ = app_clone.emit("session-update", event);
+                    let _ = app_clone.emit("session-update", event.clone());
+                    match &event {
+                        nsh_proto::SessionEvent::CommandCompleted { command, exit_code, .. } => {
+                            let _ = app_clone.emit("push-notification", serde_json::json!({
+                                "title": if *exit_code == 0 { "Command completed" } else { "Command failed" },
+                                "body": format!("{} (exit {})", command, exit_code),
+                            }));
+                        }
+                        nsh_proto::SessionEvent::AwaitingInput { prompt, .. } => {
+                            let _ = app_clone.emit("push-notification", serde_json::json!({
+                                "title": "nsh: Awaiting input",
+                                "body": prompt,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => break,
+            }
+        }
+    });
+
+    Ok(initial_screen)
+}
+
+#[tauri::command]
+async fn resume_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<u8>, String> {
+    let conn = state.active_connection.lock().await;
+    let conn = conn.as_ref().ok_or("not connected")?;
+
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+
+    let last_seq = *state.last_seq.lock().await;
+    let req = nsh_proto::RemoteRequest::Resume { session_id, last_seq };
+    nsh_proto::framing::write_message(&mut send, &req)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let resp: nsh_proto::RemoteResponse = nsh_proto::framing::read_message(&mut recv)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let initial_screen = match resp {
+        nsh_proto::RemoteResponse::AttachOk { initial_screen } => initial_screen,
+        nsh_proto::RemoteResponse::Error { message } => return Err(message),
+        _ => return Err("unexpected response".into()),
+    };
+
+    *state.active_send.lock().await = Some(send);
+
+    let app_clone = app.clone();
+    let last_seq_arc = Arc::clone(&state.last_seq);
+    tokio::spawn(async move {
+        loop {
+            match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
+            {
+                Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
+                    *last_seq_arc.lock().await = seq;
+                    let _ = app_clone.emit("terminal-data", bytes);
+                }
+                Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
+                    let _ = app_clone.emit("session-update", event.clone());
+                    match &event {
+                        nsh_proto::SessionEvent::CommandCompleted { command, exit_code, .. } => {
+                            let _ = app_clone.emit("push-notification", serde_json::json!({
+                                "title": if *exit_code == 0 { "Command completed" } else { "Command failed" },
+                                "body": format!("{} (exit {})", command, exit_code),
+                            }));
+                        }
+                        nsh_proto::SessionEvent::AwaitingInput { prompt, .. } => {
+                            let _ = app_clone.emit("push-notification", serde_json::json!({
+                                "title": "nsh: Awaiting input",
+                                "body": prompt,
+                            }));
+                        }
+                        _ => {}
+                    }
                 }
                 _ => break,
             }
