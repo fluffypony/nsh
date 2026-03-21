@@ -55,6 +55,7 @@ pub fn run() {
 
 #[tauri::command]
 async fn connect_to_daemon(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     node_id: String,
     relay_url: Option<String>,
@@ -80,6 +81,24 @@ async fn connect_to_daemon(
         endpoint.connect(node_id, nsh_proto::ALPN).await
     }
     .map_err(|e| e.to_string())?;
+
+    // Spawn datagram receiver for real-time state pushes
+    let conn_for_datagrams = connection.clone();
+    let app_dg = app.clone();
+    tokio::spawn(async move {
+        loop {
+            match conn_for_datagrams.read_datagram().await {
+                Ok(bytes) => {
+                    if let Ok(update) =
+                        serde_json::from_slice::<nsh_proto::StatePush>(&bytes)
+                    {
+                        let _ = app_dg.emit("state-push", &update);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 
     *state.connected_node.lock().await = Some(node_id);
     *state.active_connection.lock().await = Some(connection);

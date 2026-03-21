@@ -15,6 +15,16 @@ static CONNECTED_PEERS: std::sync::LazyLock<Arc<AtomicU32>> =
     std::sync::LazyLock::new(|| Arc::new(AtomicU32::new(0)));
 static ATTACHED_SESSIONS: std::sync::LazyLock<Arc<AtomicU32>> =
     std::sync::LazyLock::new(|| Arc::new(AtomicU32::new(0)));
+static ACTIVE_CONNECTIONS: std::sync::LazyLock<
+    Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
+> = std::sync::LazyLock::new(|| Arc::new(std::sync::Mutex::new(Vec::new())));
+
+/// Send a best-effort state push to all connected peers via unreliable datagrams.
+pub fn broadcast_datagram(payload: &[u8]) {
+    if let Ok(mut conns) = ACTIVE_CONNECTIONS.lock() {
+        conns.retain(|c| c.send_datagram(payload.to_vec().into()).is_ok());
+    }
+}
 
 pub fn live_peer_counts() -> (u32, u32) {
     (
@@ -97,6 +107,29 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
         .accept(ALPN.to_vec(), handler)
         .spawn();
 
+    // Periodic state push via unreliable datagrams (best-effort)
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if let Ok(sessions) = list_active_sessions() {
+                for session in &sessions {
+                    let update = nsh_proto::StatePush::SessionActivity {
+                        session_id: session.session_id.clone(),
+                        last_cwd: session.last_cwd.clone(),
+                        git_branch: session.git_branch.clone(),
+                        running_command: session.running_command.clone(),
+                    };
+                    if let Ok(bytes) = serde_json::to_vec(&update) {
+                        if bytes.len() < 1200 {
+                            broadcast_datagram(&bytes);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Keep router alive until shutdown signal
     // The router runs its accept loop in the background; we block here.
     // In practice, the global daemon thread will keep this alive until process exit.
@@ -139,6 +172,9 @@ impl iroh::protocol::ProtocolHandler for NshRemoteHandler {
         crate::runtime::global_daemon::log_daemon("iroh.accepted", &remote_id_str);
 
         CONNECTED_PEERS.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut conns) = ACTIVE_CONNECTIONS.lock() {
+            conns.push(connection.clone());
+        }
 
         // Accept bidirectional streams in a loop
         loop {

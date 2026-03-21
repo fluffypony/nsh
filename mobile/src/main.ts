@@ -38,6 +38,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     sendNotification({ title: e.payload.title, body: e.payload.body });
   });
 
+  // Listen for real-time state pushes via datagrams
+  await listen('state-push', () => {
+    if (currentView === 'sessions') {
+      renderSessionsView();
+    }
+  });
+
   renderPairView();
 });
 

@@ -85,6 +85,8 @@ pub enum SessionEvent {
         session_id: String,
         prompt: String,
     },
+    // PLANNED: SecurityPrompt will be generated when the daemon detects
+    // elevated-risk commands and needs mobile user approval before execution.
     SecurityPrompt {
         session_id: String,
         message: String,
