@@ -265,7 +265,7 @@ mod tests {
     fn test_zsh_cleanup_uses_command_rm() {
         let script = generate_init_script("zsh");
         assert!(
-            script.contains("command rm -f \"$cmd_file\""),
+            script.contains("command rm -f \"$payload_file\""),
             "zsh init should bypass rm aliases when clearing pending command files"
         );
     }
@@ -274,7 +274,7 @@ mod tests {
     fn test_bash_cleanup_uses_command_rm() {
         let script = generate_init_script("bash");
         assert!(
-            script.contains("command rm -f \"$cmd_file\""),
+            script.contains("command rm -f \"$payload_file\""),
             "bash init should bypass rm aliases when clearing pending command files"
         );
     }
@@ -283,7 +283,7 @@ mod tests {
     fn test_fish_cleanup_uses_command_rm() {
         let script = generate_init_script("fish");
         assert!(
-            script.contains("command rm -f $cmd_file"),
+            script.contains("command rm -f $payload_file"),
             "fish init should bypass rm aliases when clearing pending command files"
         );
     }
@@ -292,7 +292,7 @@ mod tests {
     fn test_zsh_pending_file_io_uses_command() {
         let script = generate_init_script("zsh");
         assert!(
-            script.contains("local cmd=\"$(command cat \"$cmd_file\")\""),
+            script.contains("command cat \"$payload_file\""),
             "zsh init should bypass cat aliases when reading pending command files"
         );
         assert!(
@@ -305,7 +305,7 @@ mod tests {
     fn test_bash_pending_file_io_uses_command() {
         let script = generate_init_script("bash");
         assert!(
-            script.contains("cmd=\"$(command cat \"$cmd_file\")\""),
+            script.contains("command cat \"$payload_file\""),
             "bash init should bypass cat aliases when reading pending command files"
         );
         assert!(
@@ -318,7 +318,7 @@ mod tests {
     fn test_fish_pending_file_io_uses_command() {
         let script = generate_init_script("fish");
         assert!(
-            script.contains("set -l cmd (command cat $cmd_file)"),
+            script.contains("command cat $payload_file"),
             "fish init should bypass cat aliases when reading pending command files"
         );
         assert!(

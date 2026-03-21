@@ -729,7 +729,6 @@ mod tests {
     use crate::memory::types::MemoryType;
     use crate::test_support::EnvVarGuard;
     use serial_test::serial;
-    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
     use std::path::Path;
 
@@ -911,18 +910,13 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept connection");
-            let mut line = String::new();
-            let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
-            reader.read_line(&mut line).expect("read request line");
+            let payload = nsh_proto::sync_framing::read_frame(&mut stream)
+                .expect("read framed request");
             let request_json: serde_json::Value =
-                serde_json::from_str(line.trim()).expect("parse request json");
+                serde_json::from_slice(&payload).expect("parse request json");
             tx.send(request_json).expect("send captured request");
-            let mut response_json = serde_json::to_string(&response).expect("serialize response");
-            response_json.push('\n');
-            stream
-                .write_all(response_json.as_bytes())
-                .expect("write response");
-            stream.flush().expect("flush response");
+            nsh_proto::sync_framing::write_message(&mut stream, &response)
+                .expect("write framed response");
             // keep the listener alive briefly to avoid ECONNREFUSED races in follow-up calls
             std::thread::sleep(std::time::Duration::from_millis(50));
         });
