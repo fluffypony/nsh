@@ -1143,16 +1143,11 @@ fn handle_stream_attach(
                             }
                         }
                         Ok(crate::daemon::DaemonRequest::StreamDetach) => {
-                            remote_state_clone.cleanup_on_disconnect();
                             break;
                         }
                         _ => {} // Unknown command, ignore
                     },
-                    Err(_) => {
-                        // Unclean disconnect: also clean up
-                        remote_state_clone.cleanup_on_disconnect();
-                        break;
-                    }
+                    Err(_) => break, // Socket closed or error
                 }
             }
         });
@@ -1175,8 +1170,23 @@ fn handle_stream_attach(
         }
     }
 
-    // Clean up
+    // Clean up: drop the output receiver first so its matching sender
+    // becomes disconnected, then prune disconnected senders from the
+    // subscriber list so the count is accurate, then run cleanup
+    // (which only restores winsize when no subscribers remain).
+    drop(output_rx);
+    if let Ok(mut subs) = remote_state.output_subscribers.lock() {
+        subs.retain(|tx| {
+            // Keep senders that are still connected (ok or full but alive)
+            match tx.try_send(Vec::new()) {
+                Ok(()) => true,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => true,
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+            }
+        });
+    }
     input_thread.join().ok();
+    remote_state.cleanup_on_disconnect();
 }
 
 #[cfg(unix)]
