@@ -37,8 +37,9 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                              2) Chain multiple steps (download → extract → install → configure). \
                              3) See error output and auto-fix it. \
                              Only set to false for the very final command that completes the user's goal. \
-                             In autorun mode, pending commands execute immediately. In other modes, \
-                             the user confirms and you continue.",
+                             In autorun mode, pending commands execute immediately and output is returned. \
+                             pending=false also auto-runs if allowed by the security policy. \
+                             In other modes, the user confirms and you continue.",
                         "default": false
                     },
                     "expected_timeout_seconds": {

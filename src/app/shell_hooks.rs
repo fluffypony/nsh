@@ -8,6 +8,8 @@ pub const PENDING_AUTORUN_PREFIX: &str = "pending_autorun_";
 /// Clean up pending files for a session.
 pub fn cleanup_pending_files(session_id: &str) {
     let dir = crate::config::Config::nsh_dir();
+    let _ = std::fs::remove_file(dir.join(format!("pending_{session_id}.json")));
+    // Legacy cleanup
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_CMD_PREFIX}{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_FLAG_PREFIX}{session_id}")));
     let _ = std::fs::remove_file(dir.join(format!("{PENDING_AUTORUN_PREFIX}{session_id}")));

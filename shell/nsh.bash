@@ -16,6 +16,7 @@ fi
 __nsh_clear_pending_command() {
     [[ -z "${NSH_SESSION_ID:-}" ]] && return 0
     command rm -f \
+        "$HOME/.nsh/pending_${NSH_SESSION_ID}.json" \
         "$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}" \
         "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" \
         "$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}" 2>/dev/null
@@ -273,6 +274,31 @@ __nsh_prompt_command() {
 
 # ── Check for pending commands from nsh query ───────────
 __nsh_check_pending() {
+    # Atomic JSON payload file (new format)
+    local payload_file="$HOME/.nsh/pending_${NSH_SESSION_ID}.json"
+    if [[ -f "$payload_file" ]]; then
+        local raw
+        raw="$(command cat "$payload_file")"
+        command rm -f "$payload_file"
+        if [[ -n "$raw" ]]; then
+            local cmd autorun
+            cmd="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)" || \
+                cmd="$(printf '%s' "$raw" | command sed -n 's/.*"command":"\([^"]*\)".*/\1/p')"
+            autorun="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)" || \
+                autorun="false"
+            if [[ -z "$cmd" ]]; then return; fi
+            __nsh_pending_cmd="$cmd"
+            if [[ "$autorun" == "True" || "$autorun" == "true" ]]; then
+                history -s -- "$cmd"
+                builtin eval -- "$cmd"
+                return
+            fi
+            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
+            READLINE_LINE="$cmd"
+            READLINE_POINT=${#cmd}
+        fi
+    fi
+    # Legacy fallback: three-file pending command contract
     local cmd_file="$HOME/.nsh/pending_cmd_${NSH_SESSION_ID}"
     local autorun_file="$HOME/.nsh/pending_autorun_${NSH_SESSION_ID}"
     if [[ -f "$cmd_file" ]]; then
@@ -281,17 +307,13 @@ __nsh_check_pending() {
         command rm -f "$cmd_file"
         if [[ -n "$cmd" ]]; then
             __nsh_pending_cmd="$cmd"
-            # Brief yield for writer to create autorun marker
-            if [[ ! -f "$autorun_file" ]]; then
-                sleep 0.01
-            fi
+            if [[ ! -f "$autorun_file" ]]; then sleep 0.01; fi
             if [[ -f "$autorun_file" ]]; then
                 command rm -f "$autorun_file"
                 history -s -- "$cmd"
                 builtin eval -- "$cmd"
                 return
             fi
-            # Non-autorun: prefill the editing buffer (let bash add to history when user runs it)
             printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
             READLINE_LINE="$cmd"
             READLINE_POINT=${#cmd}

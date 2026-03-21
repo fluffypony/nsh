@@ -162,6 +162,16 @@ runtime enforces safety gates and confirmations automatically:
     confirm or edit. Use `pending=true` for intermediate steps to stay in
     control across multi-step tasks.
 
+CRITICAL AUTORUN RULE: When the user's configuration uses autorun mode (or when
+the query ends with !!), you MUST set pending=true on EVERY command where you need
+to verify the result or continue working. The ONLY exception is the absolute final
+step that completes the user's goal. In autorun mode, ALL non-dangerous commands
+auto-execute — both pending=true (executed immediately with output returned to you)
+and pending=false (executed via the shell). You do NOT need to worry about the user
+reviewing commands in autorun mode. If a command cannot autorun due to elevated risk
+without allow_unsafe_autorun, it will be explicitly flagged to the user. Focus on
+correctness: every command you emit will run.
+
 System-level commands that manage services or OS facilities (e.g. `launchctl`,
 `brew services`, `systemctl`, Windows `sc`/PowerShell service cmdlets) are
 permitted. When you create or modify a service definition, you must also enable

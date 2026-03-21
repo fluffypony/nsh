@@ -16,6 +16,7 @@ function __nsh_clear_pending_command
         return
     end
     command rm -f \
+        "$HOME/.nsh/pending_$NSH_SESSION_ID.json" \
         "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID" \
         "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" \
         "$HOME/.nsh/pending_autorun_$NSH_SESSION_ID" 2>/dev/null
@@ -264,6 +265,30 @@ end
 
 # ── Check for pending commands ──────────────────────────
 function __nsh_check_pending --on-event fish_prompt
+    # Atomic JSON payload file (new format)
+    set -l payload_file "$HOME/.nsh/pending_$NSH_SESSION_ID.json"
+    if test -f $payload_file
+        set -l raw (command cat $payload_file)
+        command rm -f $payload_file
+        if test -n "$raw"
+            set -l cmd (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)
+            or set -l cmd (printf '%s' "$raw" | command sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+            set -l autorun (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)
+            or set autorun "false"
+            if test -z "$cmd"; return; end
+            set -g __nsh_pending_cmd $cmd
+            if test "$autorun" = "True" -o "$autorun" = "true"
+                builtin history append -- "$cmd" 2>/dev/null
+                builtin eval -- "$cmd"
+                return
+            end
+            printf '\x1b[2m  nsh: next step from previous task — Enter to continue, edit to modify, Ctrl-C to cancel\x1b[0m\n' >&2
+            commandline -r -- "$cmd"
+            commandline -f repaint
+        end
+        return
+    end
+    # Legacy fallback: three-file pending command contract
     set -l cmd_file "$HOME/.nsh/pending_cmd_$NSH_SESSION_ID"
     set -l autorun_file "$HOME/.nsh/pending_autorun_$NSH_SESSION_ID"
     if test -f $cmd_file
@@ -271,7 +296,6 @@ function __nsh_check_pending --on-event fish_prompt
         command rm -f $cmd_file
         if test -n "$cmd"
             set -g __nsh_pending_cmd $cmd
-            # Brief yield for writer to create autorun marker
             if not test -f $autorun_file
                 sleep 0.01
             end

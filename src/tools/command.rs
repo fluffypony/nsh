@@ -93,6 +93,16 @@ fn execute(
     emit_command_preview(&request, json_output)?;
     let plan = plan_command_execution(&request, config, force_autorun);
 
+    // Diagnostic when autorun is blocked for elevated commands
+    if (force_autorun || config.execution.mode == "autorun")
+        && !plan.should_execute_immediately
+        && matches!(request.risk, RiskLevel::Elevated)
+        && !json_output
+    {
+        eprintln!("\x1b[33m  (autorun paused for elevated command — user confirmation required)\x1b[0m");
+        eprintln!("\x1b[2m    (To autorun elevated commands, set `execution.allow_unsafe_autorun = true`)\x1b[0m");
+    }
+
     if matches!(request.risk, RiskLevel::Safe) && plan.auto_execute_pending && !json_output {
         eprintln!("\x1b[2m  $ {}\x1b[0m", request.command);
     }
@@ -155,12 +165,11 @@ fn execute(
 
 fn clear_stale_pending_files(session_id: &str) {
     let nsh_dir = crate::config::Config::nsh_dir();
-    let stale_cmd = nsh_dir.join(format!("pending_cmd_{session_id}"));
-    if stale_cmd.exists() {
-        let _ = std::fs::remove_file(&stale_cmd);
-        let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
-        let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
-    }
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_{session_id}.json")));
+    // Legacy cleanup
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_cmd_{session_id}")));
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
 }
 
 fn build_command_request(
@@ -277,12 +286,12 @@ fn plan_command_execution(
     config: &crate::config::Config,
     force_autorun: bool,
 ) -> CommandExecutionPlan {
+    let autorun_mode = config.execution.mode == "autorun";
     let can_autorun = match request.risk {
         RiskLevel::Safe => true,
-        RiskLevel::Elevated => config.execution.allow_unsafe_autorun,
+        RiskLevel::Elevated => force_autorun || autorun_mode || config.execution.allow_unsafe_autorun,
         RiskLevel::Dangerous => false,
     };
-    let autorun_mode = config.execution.mode == "autorun";
     let mut user_confirmed_intermediate = false;
     if request.pending
         && !force_autorun
@@ -503,25 +512,23 @@ fn write_pending_shell_files(
 ) -> anyhow::Result<()> {
     let nsh_dir = crate::config::Config::nsh_dir();
 
-    if pending {
-        let pending_file = nsh_dir.join(format!("pending_flag_{session_id}"));
-        write_atomic_private(&pending_file, b"1")?;
-    } else {
-        let stale_flag = nsh_dir.join(format!("pending_flag_{session_id}"));
-        let _ = std::fs::remove_file(&stale_flag);
-    }
+    // Single atomic payload file replaces pending_cmd_, pending_flag_, pending_autorun_
+    let payload = serde_json::json!({
+        "command": command,
+        "pending": pending,
+        "autorun": execute_via_shell_autorun,
+    });
+    let payload_file = nsh_dir.join(format!("pending_{session_id}.json"));
+    write_atomic_private(&payload_file, serde_json::to_string(&payload)?.as_bytes())?;
 
-    let autorun_file = nsh_dir.join(format!("pending_autorun_{session_id}"));
+    // Clean up legacy files
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_cmd_{session_id}")));
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_flag_{session_id}")));
+    let _ = std::fs::remove_file(nsh_dir.join(format!("pending_autorun_{session_id}")));
+
     if execute_via_shell_autorun {
-        write_atomic_private(&autorun_file, b"1")?;
         eprintln!("\x1b[2m(auto-running)\x1b[0m");
-    } else {
-        let _ = std::fs::remove_file(&autorun_file);
     }
-
-    let cmd_file = nsh_dir.join(format!("pending_cmd_{session_id}"));
-    write_atomic_private(&cmd_file, command.as_bytes())?;
-
     Ok(())
 }
 
