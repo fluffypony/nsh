@@ -1002,6 +1002,25 @@ fn handle_daemon_connection_inner(
     }
 }
 
+/// Read a length-prefixed frame from a stream: 4-byte big-endian length, then payload.
+/// Inlined here to avoid a dependency on nsh-proto in the shim boundary.
+#[cfg(unix)]
+fn read_length_prefixed_frame<R: std::io::Read>(r: &mut R) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut len_buf = [0u8; 4];
+    r.read_exact(&mut len_buf)?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > 10 * 1024 * 1024 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame too large: {len} bytes"),
+        ));
+    }
+    let mut buf = vec![0u8; len];
+    r.read_exact(&mut buf)?;
+    Ok(buf)
+}
+
 /// Handle a StreamAttach request: switch the Unix socket to streaming mode.
 /// After sending the initial snapshot, this function relays raw PTY output
 /// to the client and reads length-prefixed commands back.
@@ -1053,7 +1072,7 @@ fn handle_stream_attach(
         .spawn(move || {
             let mut reader = stream_clone;
             loop {
-                match nsh_proto::sync_framing::read_frame(&mut reader) {
+                match read_length_prefixed_frame(&mut reader) {
                     Ok(data) => match serde_json::from_slice::<crate::daemon::DaemonRequest>(&data)
                     {
                         Ok(crate::daemon::DaemonRequest::StreamInput { bytes }) => {
