@@ -2602,6 +2602,10 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
                 Err(e) => Some(DaemonResponse::error(e.to_string())),
             }
         }
+        #[cfg(feature = "remote")]
+        DaemonRequest::SubscribeEvents { .. } => {
+            Some(DaemonResponse::error("event subscription not yet implemented"))
+        }
         _ => None,
     }
 }

@@ -719,7 +719,6 @@ impl DbAccess for DaemonDb {
         Ok(serde_json::to_string(&response)?)
     }
 
-    // memory_record_event removed from trait
 }
 
 #[cfg(all(test, unix))]

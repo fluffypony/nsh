@@ -377,7 +377,6 @@ pub fn send_to_global_with_retry(_request: DaemonRequest) -> anyhow::Result<Daem
     anyhow::bail!("global daemon not available on this platform")
 }
 
-// (Memory client helpers were removed; use DbAccess via DaemonDb instead.)
 
 #[cfg(test)]
 mod tests {

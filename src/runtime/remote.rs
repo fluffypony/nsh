@@ -164,8 +164,9 @@ impl iroh::protocol::ProtocolHandler for NshRemoteHandler {
 async fn handle_remote_stream(
     mut send: iroh::endpoint::SendStream,
     mut recv: iroh::endpoint::RecvStream,
-    _peer_id: &str,
+    peer_id: &str,
 ) -> anyhow::Result<()> {
+    tracing::debug!("handling remote stream from peer {peer_id}");
     let request: RemoteRequest = nsh_proto::framing::read_message(&mut recv)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -199,7 +200,7 @@ async fn handle_remote_stream(
                 send,
                 recv,
                 &session_id,
-                _peer_id,
+                peer_id,
                 "stream_attach",
                 None,
             )
@@ -214,7 +215,7 @@ async fn handle_remote_stream(
                 send,
                 recv,
                 &session_id,
-                _peer_id,
+                peer_id,
                 "stream_resume",
                 Some(last_seq),
             )

@@ -186,8 +186,6 @@ fn execute(
         result.push('\n');
     }
 
-    // memory section removed entirely
-
     const MAX_TOOL_RESULT_BYTES: usize = 48_000;
     if result.len() > MAX_TOOL_RESULT_BYTES {
         let mut end = MAX_TOOL_RESULT_BYTES;
