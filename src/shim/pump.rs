@@ -397,6 +397,29 @@ impl PtyRemoteState {
         Ok(())
     }
 
+    /// Clean up after a remote client disconnects (explicit detach or unclean EOF).
+    /// Clears control_lease unconditionally. Restores original_winsize only when
+    /// no other output subscribers remain (i.e. this was the last attached client).
+    pub fn cleanup_on_disconnect(&self) {
+        // Always release control lease
+        if let Ok(mut lease) = self.control_lease.lock() {
+            *lease = None;
+        }
+        // Only restore terminal size when no subscribers are left
+        let remaining = self
+            .output_subscribers
+            .lock()
+            .map(|subs| subs.len())
+            .unwrap_or(0);
+        if remaining == 0 {
+            if let Ok(mut orig) = self.original_winsize.lock() {
+                if let Some(ws) = orig.take() {
+                    let _ = self.resize(ws.ws_col, ws.ws_row);
+                }
+            }
+        }
+    }
+
     pub fn get_screen_snapshot(&self) -> Vec<u8> {
         if let Ok(eng) = self.capture.lock() {
             eng.get_screen_snapshot()
@@ -1082,43 +1105,54 @@ fn handle_stream_attach(
                     Ok(data) => match serde_json::from_slice::<crate::daemon::DaemonRequest>(&data)
                     {
                         Ok(crate::daemon::DaemonRequest::StreamInput { bytes }) => {
-                            let _ = remote_state_clone.inject_input(&bytes);
+                            // Only the control lease holder (or anyone if no lease) can send input
+                            let allowed = remote_state_clone
+                                .control_lease
+                                .lock()
+                                .map(|l| l.is_none())
+                                .unwrap_or(true);
+                            if allowed {
+                                let _ = remote_state_clone.inject_input(&bytes);
+                            }
                         }
                         Ok(crate::daemon::DaemonRequest::StreamResize { cols, rows }) => {
-                            // Save original terminal size before the first remote resize
-                            if let Ok(mut orig) = remote_state_clone.original_winsize.lock() {
-                                if orig.is_none() {
-                                    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-                                    let ret = unsafe {
-                                        libc::ioctl(
-                                            remote_state_clone.pty_master_fd,
-                                            libc::TIOCGWINSZ,
-                                            &mut ws,
-                                        )
-                                    };
-                                    if ret == 0 {
-                                        *orig = Some(ws);
+                            // Only the control lease holder (or anyone if no lease) can resize
+                            let allowed = remote_state_clone
+                                .control_lease
+                                .lock()
+                                .map(|l| l.is_none())
+                                .unwrap_or(true);
+                            if allowed {
+                                // Save original terminal size before the first remote resize
+                                if let Ok(mut orig) = remote_state_clone.original_winsize.lock() {
+                                    if orig.is_none() {
+                                        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+                                        let ret = unsafe {
+                                            libc::ioctl(
+                                                remote_state_clone.pty_master_fd,
+                                                libc::TIOCGWINSZ,
+                                                &mut ws,
+                                            )
+                                        };
+                                        if ret == 0 {
+                                            *orig = Some(ws);
+                                        }
                                     }
                                 }
+                                let _ = remote_state_clone.resize(cols, rows);
                             }
-                            let _ = remote_state_clone.resize(cols, rows);
                         }
                         Ok(crate::daemon::DaemonRequest::StreamDetach) => {
-                            // Restore original terminal size if it was saved
-                            if let Ok(mut orig) = remote_state_clone.original_winsize.lock() {
-                                if let Some(ws) = orig.take() {
-                                    let _ = remote_state_clone.resize(ws.ws_col, ws.ws_row);
-                                }
-                            }
-                            // Release control lease if held
-                            if let Ok(mut lease) = remote_state_clone.control_lease.lock() {
-                                *lease = None;
-                            }
+                            remote_state_clone.cleanup_on_disconnect();
                             break;
                         }
                         _ => {} // Unknown command, ignore
                     },
-                    Err(_) => break, // Socket closed or error
+                    Err(_) => {
+                        // Unclean disconnect: also clean up
+                        remote_state_clone.cleanup_on_disconnect();
+                        break;
+                    }
                 }
             }
         });
