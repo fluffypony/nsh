@@ -904,23 +904,45 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         None
     };
 
-    // Initialize memory sync engine if remote is enabled (scaffolding — engine is a placeholder)
+    // Initialize memory sync engine in a persistent background thread if remote is enabled.
+    // The thread keeps its own tokio runtime alive for the engine's async operations.
     #[cfg(feature = "remote")]
-    let _memory_sync = if config.remote.enabled {
+    let _memory_sync_handle = if config.remote.enabled {
         match crate::runtime::remote_key::load_or_create_secret_key() {
             Ok(secret_key) => {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build();
-                match rt {
-                    Ok(rt) => match rt.block_on(crate::memory::sync::MemorySyncEngine::new(&secret_key)) {
-                        Ok(engine) => Some(engine),
-                        Err(e) => {
-                            tracing::warn!("memory sync init failed: {e}");
-                            None
-                        }
-                    },
-                    Err(_) => None,
+                let handle = std::thread::Builder::new()
+                    .name("nshd-memory-sync".into())
+                    .spawn(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                tracing::warn!("memory sync runtime build failed: {e}");
+                                return;
+                            }
+                        };
+                        rt.block_on(async move {
+                            match crate::memory::sync::MemorySyncEngine::new(&secret_key).await {
+                                Ok(_engine) => {
+                                    // Engine initialized; keep runtime alive for future
+                                    // background sync operations (currently scaffolding).
+                                    // Park indefinitely until process exit.
+                                    std::future::pending::<()>().await;
+                                }
+                                Err(e) => {
+                                    tracing::warn!("memory sync init failed: {e}");
+                                }
+                            }
+                        });
+                    });
+                match handle {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        tracing::warn!("memory sync thread spawn failed: {e}");
+                        None
+                    }
                 }
             }
             Err(e) => {

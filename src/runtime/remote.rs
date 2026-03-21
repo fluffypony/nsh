@@ -108,12 +108,34 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
         .await?;
 
     let node_id = endpoint.id();
-    // Cache the home relay URL for status reporting
-    if let Some(relay) = endpoint.addr().relay_urls().next() {
-        if let Ok(mut cached) = HOME_RELAY_URL.lock() {
-            *cached = Some(relay.to_string());
+    // Watch endpoint address for relay URL changes and keep cache updated
+    let mut addr_watcher = {
+        use iroh::Watcher;
+        endpoint.watch_addr()
+    };
+    // Seed the initial value
+    {
+        use iroh::Watcher;
+        let initial_addr = addr_watcher.get();
+        if let Some(relay) = initial_addr.relay_urls().next() {
+            if let Ok(mut cached) = HOME_RELAY_URL.lock() {
+                *cached = Some(relay.to_string());
+            }
         }
     }
+    // Spawn background task to track relay URL changes
+    tokio::spawn(async move {
+        use iroh::Watcher;
+        loop {
+            if addr_watcher.updated().await.is_err() {
+                break;
+            }
+            let addr = addr_watcher.get();
+            if let Ok(mut cached) = HOME_RELAY_URL.lock() {
+                *cached = addr.relay_urls().next().map(|r| r.to_string());
+            }
+        }
+    });
     crate::runtime::global_daemon::log_daemon("iroh.started", &format!("EndpointId: {node_id}"));
 
     let handler = NshRemoteHandler;
