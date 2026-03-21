@@ -95,6 +95,7 @@ tar = "0.4"
 tempfile = "3"
 base64 = "0.22"
 rand = "0.9"
+scopeguard = "1"
 
 # IPC framing (always available for daemon↔shim protocol)
 nsh-proto = { path = "proto" }

@@ -34,51 +34,64 @@ pub fn decrypt_secret(hex_data: &str) -> anyhow::Result<String> {
     Ok(String::from_utf8(plaintext)?)
 }
 
+fn read_existing_key(key_path: &std::path::Path) -> anyhow::Result<[u8; 32]> {
+    let bytes = std::fs::read(key_path)?;
+    if bytes.len() < 32 {
+        anyhow::bail!("vault.key is too short (expected 32 bytes)");
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&bytes[..32]);
+    Ok(key)
+}
+
 fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
     let key_path = crate::config::Config::nsh_dir().join("vault.key");
     if key_path.exists() {
-        let bytes = std::fs::read(&key_path)?;
-        if bytes.len() < 32 {
-            anyhow::bail!("vault.key is too short (expected 32 bytes)");
-        }
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&bytes[..32]);
-        Ok(key)
-    } else {
-        use aes_gcm::aead::rand_core::RngCore;
-        let mut key = [0u8; 32];
-        let mut rng = OsRng;
-        rng.fill_bytes(&mut key);
+        return read_existing_key(&key_path);
+    }
+
+    use aes_gcm::aead::rand_core::RngCore;
+    let mut key = [0u8; 32];
+    let mut rng = OsRng;
+    rng.fill_bytes(&mut key);
+
+    // Use create_new (O_EXCL) to prevent race conditions.
+    // If another process created the file first, read their key instead.
+    let create_result = {
         #[cfg(unix)]
         {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
+            std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
-                .open(&key_path)?;
-            file.write_all(&key)?;
+                .open(&key_path)
+                .map(|mut f| { let _ = f.write_all(&key); })
         }
         #[cfg(not(unix))]
         {
             use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
+            std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&key_path)?;
-            file.write_all(&key)?;
-            let mut perms = std::fs::metadata(&key_path)?.permissions();
-            perms.set_readonly(true);
-            std::fs::set_permissions(&key_path, perms)?;
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("attrib")
-                    .args(["+H", &key_path.to_string_lossy()])
-                    .output();
-            }
+                .open(&key_path)
+                .map(|mut f| {
+                    let _ = f.write_all(&key);
+                    let mut perms = std::fs::metadata(&key_path).unwrap().permissions();
+                    perms.set_readonly(true);
+                    let _ = std::fs::set_permissions(&key_path, perms);
+                })
         }
-        Ok(key)
+    };
+
+    match create_result {
+        Ok(()) => Ok(key),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another process created the key first — use theirs
+            read_existing_key(&key_path)
+        }
+        Err(e) => Err(e.into()),
     }
 }
 

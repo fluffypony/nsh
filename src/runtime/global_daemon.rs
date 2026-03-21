@@ -2689,7 +2689,13 @@ fn detect_project_root_fast(cwd: &str) -> Option<String> {
     loop {
         for marker in &markers {
             if dir.join(marker).exists() {
-                return Some(dir.to_string_lossy().to_string());
+                // Canonicalize to handle symlinks consistently
+                return Some(
+                    dir.canonicalize()
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| dir.to_string_lossy().to_string()),
+                );
             }
         }
         // Stop at home directory or filesystem root

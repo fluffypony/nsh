@@ -236,7 +236,14 @@ impl Db {
                     params_vec.push(Box::new(sf.to_string()));
                 }
             }
-            params_vec.push(Box::new(limit as i64));
+            // Over-fetch when regex filtering will be applied post-query,
+            // since the SQL LIMIT runs before regex and may drop valid results.
+            let fetch_limit = if regex_pattern.is_some() {
+                (limit as i64) * 10
+            } else {
+                limit as i64
+            };
+            params_vec.push(Box::new(fetch_limit));
 
             let params_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params_vec.iter().map(|p| p.as_ref()).collect();
@@ -266,6 +273,7 @@ impl Db {
                     });
                 }
 
+            results.truncate(limit);
             return Ok(results);
         }
 

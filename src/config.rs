@@ -1040,9 +1040,12 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
         caps.supports_json_mode = false; // conservative
     }
 
-    // OpenAI native web search support: keep matching conservative to avoid
-    // sending OpenAI-specific search options to incompatible model variants.
+    // OpenAI native web search support
     if p == "openai" && !m.contains("codex") && (m == "gpt-5.2" || m.contains("gpt-5-search")) {
+        caps.supports_web_search = true;
+    }
+    // Perplexity/Sonar models support web search natively
+    if m.contains("perplexity") || m.contains("sonar") {
         caps.supports_web_search = true;
     }
 

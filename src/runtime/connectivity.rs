@@ -85,41 +85,14 @@ fn probe_once_inner(url: &str) -> bool {
         && let Some(host) = u.host_str()
     {
         let port = u.port_or_known_default().unwrap_or(80);
-        if let Ok(addr) = format!("{}:{}", host, port).parse::<std::net::SocketAddr>()
-            && std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok()
-        {
-            return true;
-        }
 
-        // Resolve with explicit timeout to avoid blocking this monitoring thread
-        // on slow or wedged system DNS resolvers.
-        let resolved: Vec<std::net::SocketAddr> =
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt.block_on(async move {
-                    use hickory_resolver::Resolver;
-                    let resolver = match Resolver::builder_tokio() {
-                        Ok(builder) => builder.build(),
-                        Err(_) => return Vec::new(),
-                    };
-                    match tokio::time::timeout(Duration::from_secs(3), resolver.lookup_ip(host))
-                        .await
-                    {
-                        Ok(Ok(lookup)) => lookup
-                            .iter()
-                            .map(|ip| std::net::SocketAddr::new(ip, port))
-                            .collect(),
-                        _ => Vec::new(),
-                    }
-                }),
-                Err(_) => Vec::new(),
-            };
-
-        for addr in resolved {
-            if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
-                return true;
+        // Use std::net resolution instead of spawning a tokio runtime per probe
+        use std::net::ToSocketAddrs;
+        if let Ok(addrs) = format!("{}:{}", host, port).to_socket_addrs() {
+            for addr in addrs {
+                if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+                    return true;
+                }
             }
         }
     }

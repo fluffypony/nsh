@@ -26,9 +26,9 @@ fn parse_repo_spec(input: &str) -> anyhow::Result<(String, String, Option<String
             if segments.len() >= 2 {
                 let owner = segments[0].to_string();
                 let repo = segments[1].trim_end_matches(".git").to_string();
-                let path = if segments.len() > 3 {
-                    // skip "blob"/"tree" + branch
-                    Some(segments[3..].join("/"))
+                let path = if segments.len() > 4 {
+                    // skip "blob"/"tree" (index 2) + branch (index 3)
+                    Some(segments[4..].join("/"))
                 } else {
                     None
                 };

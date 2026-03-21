@@ -249,7 +249,9 @@ pub fn execute(input: &serde_json::Value, ctx: &ToolInvocationContext) -> anyhow
     eprintln!();
 
     let existing = if path.exists() {
-        Some(std::fs::read_to_string(&path)?)
+        std::fs::read(&path)
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
     } else {
         None
     };

@@ -336,6 +336,9 @@ async fn bridge_to_session(
     // === Bridge: Unix socket <-> QUIC stream ===
 
     ATTACHED_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _session_guard = scopeguard::guard((), |_| {
+        ATTACHED_SESSIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    });
 
     // Task 1: Unix socket (binary-framed PTY output) -> QUIC (TerminalData)
     let mut output_task = tokio::spawn(async move {
@@ -429,7 +432,7 @@ async fn bridge_to_session(
         _ = &mut input_task => { output_task.abort(); }
     }
 
-    ATTACHED_SESSIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    // _session_guard drop handles ATTACHED_SESSIONS decrement
     Ok(())
 }
 
