@@ -14,6 +14,8 @@ struct AppState {
     active_session_id: Arc<Mutex<Option<String>>>,
     /// Per-session last-seen sequence numbers for resume support.
     last_seq_map: Arc<Mutex<HashMap<String, u64>>>,
+    /// Background reader task handle — aborted before spawning a new one.
+    reader_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -31,6 +33,7 @@ pub fn run() {
                 active_send: Arc::new(Mutex::new(None)),
                 active_session_id: Arc::new(Mutex::new(None)),
                 last_seq_map: Arc::new(Mutex::new(HashMap::new())),
+                reader_task: Arc::new(Mutex::new(None)),
             };
             app.manage(state);
             Ok(())
@@ -44,6 +47,7 @@ pub fn run() {
             send_input,
             resize_terminal,
             detach_session,
+            send_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -53,9 +57,7 @@ pub fn run() {
 async fn connect_to_daemon(
     state: tauri::State<'_, AppState>,
     node_id: String,
-    // TODO: Use relay_url to construct EndpointAddr when iroh supports it
-    // let addr = EndpointAddr::new(node_id).with_relay_url(relay_url);
-    _relay_url: Option<String>,
+    relay_url: Option<String>,
 ) -> Result<(), String> {
     let mut ep_lock = state.endpoint.lock().await;
     if ep_lock.is_none() {
@@ -70,10 +72,14 @@ async fn connect_to_daemon(
     let endpoint = ep_lock.as_ref().unwrap();
     let node_id: iroh::EndpointId = node_id.parse().map_err(|e: iroh::KeyParsingError| e.to_string())?;
 
-    let connection = endpoint
-        .connect(node_id, nsh_proto::ALPN)
-        .await
-        .map_err(|e| e.to_string())?;
+    let connection = if let Some(ref relay) = relay_url {
+        let relay_parsed: url::Url = relay.parse().map_err(|e: url::ParseError| e.to_string())?;
+        let addr = iroh::endpoint::NodeAddr::new(node_id).with_relay_url(relay_parsed);
+        endpoint.connect(addr, nsh_proto::ALPN).await
+    } else {
+        endpoint.connect(node_id, nsh_proto::ALPN).await
+    }
+    .map_err(|e| e.to_string())?;
 
     *state.connected_node.lock().await = Some(node_id);
     *state.active_connection.lock().await = Some(connection);
@@ -148,11 +154,16 @@ async fn attach_session(
     *state.active_send.lock().await = Some(send);
     *state.active_session_id.lock().await = Some(session_id.clone());
 
+    // Abort previous reader task if any
+    if let Some(handle) = state.reader_task.lock().await.take() {
+        handle.abort();
+    }
+
     // Spawn background task to stream terminal data to frontend
     let app_clone = app.clone();
     let seq_map = Arc::clone(&state.last_seq_map);
     let sid = session_id;
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
             {
@@ -182,6 +193,7 @@ async fn attach_session(
             }
         }
     });
+    *state.reader_task.lock().await = Some(handle);
 
     Ok(initial_screen)
 }
@@ -217,10 +229,15 @@ async fn resume_session(
     *state.active_send.lock().await = Some(send);
     *state.active_session_id.lock().await = Some(session_id.clone());
 
+    // Abort previous reader task if any
+    if let Some(handle) = state.reader_task.lock().await.take() {
+        handle.abort();
+    }
+
     let app_clone = app.clone();
     let seq_map = Arc::clone(&state.last_seq_map);
     let sid = session_id;
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
             {
@@ -250,6 +267,7 @@ async fn resume_session(
             }
         }
     });
+    *state.reader_task.lock().await = Some(handle);
 
     Ok(initial_screen)
 }
@@ -282,6 +300,40 @@ async fn resize_terminal(
 }
 
 #[tauri::command]
+async fn send_query(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    query: String,
+    think: bool,
+) -> Result<String, String> {
+    let conn = state.active_connection.lock().await;
+    let conn = conn.as_ref().ok_or("not connected")?;
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+
+    let req = nsh_proto::RemoteRequest::Query {
+        query,
+        session_id,
+        think,
+        private: false,
+    };
+    nsh_proto::framing::write_message(&mut send, &req)
+        .await
+        .map_err(|e| e.to_string())?;
+    send.finish().map_err(|e| e.to_string())?;
+
+    let resp: nsh_proto::RemoteResponse = nsh_proto::framing::read_message(&mut recv)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match resp {
+        nsh_proto::RemoteResponse::QueryComplete { response } => Ok(response),
+        nsh_proto::RemoteResponse::QueryError { message } => Err(message),
+        nsh_proto::RemoteResponse::Error { message } => Err(message),
+        _ => Err("unexpected response".into()),
+    }
+}
+
+#[tauri::command]
 async fn detach_session(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
@@ -295,9 +347,9 @@ async fn detach_session(
     Ok(())
 }
 
+// SECURITY: File-based key storage is development-only.
+// Production builds MUST use tauri-plugin-stronghold (iOS Keychain / Android Keystore).
 fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretKey> {
-    // In production: use iOS Keychain / Android Keystore via tauri-plugin-stronghold.
-    // For development: persist in app data directory.
     let data_dir = app.path().app_data_dir()?;
     let key_path = data_dir.join("device_key");
     if key_path.exists() {
@@ -305,7 +357,7 @@ fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretK
         if bytes.len() != 32 {
             // Regenerate corrupt key
             let key = iroh::SecretKey::generate(&mut rand::rng());
-            std::fs::write(&key_path, key.to_bytes())?;
+            write_key_file(&key_path, &key.to_bytes())?;
             return Ok(key);
         }
         let mut key_bytes = [0u8; 32];
@@ -314,7 +366,17 @@ fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretK
     } else {
         std::fs::create_dir_all(&data_dir)?;
         let key = iroh::SecretKey::generate(&mut rand::rng());
-        std::fs::write(&key_path, key.to_bytes())?;
+        write_key_file(&key_path, &key.to_bytes())?;
         Ok(key)
     }
+}
+
+fn write_key_file(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+    std::fs::write(path, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }

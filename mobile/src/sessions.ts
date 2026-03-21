@@ -22,3 +22,11 @@ export async function connectToDaemon(
 export async function listSessions(): Promise<RemoteSessionInfo[]> {
   return await invoke('list_sessions');
 }
+
+export async function sendQuery(
+  sessionId: string,
+  query: string,
+  think: boolean = false,
+): Promise<string> {
+  return await invoke('send_query', { sessionId, query, think });
+}

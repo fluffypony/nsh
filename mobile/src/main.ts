@@ -1,11 +1,43 @@
 import { connectToDaemon, listSessions } from './sessions';
 import { initTerminal, disposeTerminal } from './terminal';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { sendNotification } from '@tauri-apps/plugin-notification';
 
 // App entry point — renders based on current state
 let currentView: 'pair' | 'sessions' | 'terminal' = 'pair';
 
-document.addEventListener('DOMContentLoaded', () => {
+function parseConnectionPayload(input: string): {
+  nodeId: string;
+  relayUrl?: string;
+} {
+  if (input.startsWith('nsh://')) {
+    const path = input.slice('nsh://'.length);
+    const slashIdx = path.indexOf('/');
+    if (slashIdx > 0) {
+      return {
+        nodeId: path.slice(0, slashIdx),
+        relayUrl: path.slice(slashIdx + 1),
+      };
+    }
+    return { nodeId: path };
+  }
+  return { nodeId: input };
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  // Listen for session updates to refresh session list
+  await listen('session-update', () => {
+    if (currentView === 'sessions') {
+      renderSessionsView();
+    }
+  });
+
+  // Wire push notifications to native notification API
+  await listen('push-notification', (e: any) => {
+    sendNotification({ title: e.payload.title, body: e.payload.body });
+  });
+
   renderPairView();
 });
 
@@ -23,14 +55,15 @@ function renderPairView() {
   `;
 
   document.getElementById('connect-btn')!.addEventListener('click', async () => {
-    const nodeId = (document.getElementById('node-id-input') as HTMLInputElement).value.trim();
-    if (!nodeId) return;
+    const rawInput = (document.getElementById('node-id-input') as HTMLInputElement).value.trim();
+    if (!rawInput) return;
 
     const statusMsg = document.getElementById('status-msg')!;
     statusMsg.textContent = 'Connecting...';
 
     try {
-      await connectToDaemon(nodeId);
+      const { nodeId, relayUrl } = parseConnectionPayload(rawInput);
+      await connectToDaemon(nodeId, relayUrl);
       statusMsg.textContent = 'Connected!';
       renderSessionsView();
     } catch (e) {
