@@ -388,8 +388,9 @@ async fn detach_session(
 // Production builds MUST use tauri-plugin-stronghold (iOS Keychain / Android Keystore).
 #[cfg(not(debug_assertions))]
 compile_error!(
-    "Production builds must use secure key storage (tauri-plugin-stronghold). \
-     See mobile/README.md for setup instructions."
+    "Production builds must use secure key storage (tauri-plugin-stronghold \
+     for iOS Keychain / Android Keystore). Replace load_or_generate_mobile_key \
+     with a Stronghold-backed implementation before shipping."
 );
 
 fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretKey> {
