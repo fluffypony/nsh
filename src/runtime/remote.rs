@@ -208,6 +208,17 @@ async fn handle_remote_stream(
         }
 
         RemoteRequest::Resume {
+            ref session_id, ..
+        } if !validate_session_id(session_id) => {
+            let err = RemoteResponse::Error {
+                message: "invalid session_id format".into(),
+            };
+            nsh_proto::framing::write_message(&mut send, &err)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
+        RemoteRequest::Resume {
             session_id,
             last_seq,
         } => {
