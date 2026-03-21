@@ -7,6 +7,8 @@ import { listen } from '@tauri-apps/api/event';
 
 let term: Terminal;
 let fitAddon: FitAddon;
+let terminalDataUnlisten: (() => void) | null = null;
+let resizeObserver: ResizeObserver | null = null;
 
 export async function initTerminal(containerId: string, sessionId: string) {
   const container = document.getElementById(containerId)!;
@@ -46,14 +48,14 @@ export async function initTerminal(containerId: string, sessionId: string) {
     invoke('send_input', { bytes });
   });
 
-  // Listen for terminal output from daemon
-  await listen('terminal-data', (event) => {
+  // Listen for terminal output from daemon (store unlisten handle)
+  terminalDataUnlisten = await listen('terminal-data', (event) => {
     const bytes = new Uint8Array(event.payload as number[]);
     term.write(bytes);
   });
 
-  // Handle resize
-  const resizeObserver = new ResizeObserver(() => {
+  // Handle resize (store observer for cleanup)
+  resizeObserver = new ResizeObserver(() => {
     fitAddon.fit();
     const dims = fitAddon.proposeDimensions();
     if (dims) {
@@ -71,5 +73,13 @@ export async function initTerminal(containerId: string, sessionId: string) {
 
 export function disposeTerminal() {
   invoke('detach_session');
+  if (terminalDataUnlisten) {
+    terminalDataUnlisten();
+    terminalDataUnlisten = null;
+  }
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
   term?.dispose();
 }

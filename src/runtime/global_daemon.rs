@@ -2649,6 +2649,13 @@ fn is_write_request(req: &DaemonRequest) -> bool {
 fn detect_project_root_fast(cwd: &str) -> Option<String> {
     use std::path::Path;
 
+    // Skip project detection for paths under ~/.nsh/ (skills, config, etc.)
+    if let Some(nsh_dir) = dirs::home_dir().map(|h| h.join(".nsh")) {
+        if Path::new(cwd).starts_with(&nsh_dir) {
+            return None;
+        }
+    }
+
     let markers = [
         ".git",
         "Cargo.toml",

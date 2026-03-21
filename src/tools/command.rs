@@ -640,9 +640,10 @@ pub(crate) fn reject_reason_for_generated_command(
     if cmd_lower == query_lower && !cmd_lower.contains('/') && !cmd_lower.starts_with("cd ") {
         let first_word = cmd_lower.split_whitespace().next().unwrap_or("");
         if !first_word.is_empty() {
+            let path_sep = if cfg!(windows) { ';' } else { ':' };
             let found_in_path = std::env::var("PATH")
                 .unwrap_or_default()
-                .split(':')
+                .split(path_sep)
                 .any(|dir| std::path::Path::new(dir).join(first_word).exists());
             if !found_in_path {
                 return Some(

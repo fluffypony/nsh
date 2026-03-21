@@ -1,5 +1,6 @@
 import { connectToDaemon, listSessions } from './sessions';
 import { initTerminal, disposeTerminal } from './terminal';
+import { invoke } from '@tauri-apps/api/core';
 
 // App entry point — renders based on current state
 let currentView: 'pair' | 'sessions' | 'terminal' = 'pair';
@@ -14,7 +15,7 @@ function renderPairView() {
   app.innerHTML = `
     <div class="pair-view">
       <h1>nsh Remote</h1>
-      <p>Enter your computer's EndpointId or scan the QR code.</p>
+      <p>Enter your computer's EndpointId.</p>
       <input type="text" id="node-id-input" placeholder="EndpointId" />
       <button id="connect-btn">Connect</button>
       <p id="status-msg"></p>
@@ -49,7 +50,8 @@ async function renderSessionsView() {
     </div>
   `;
 
-  document.getElementById('back-btn')!.addEventListener('click', () => {
+  document.getElementById('back-btn')!.addEventListener('click', async () => {
+    await invoke('disconnect_from_daemon');
     renderPairView();
   });
 

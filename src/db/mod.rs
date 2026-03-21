@@ -94,6 +94,17 @@ impl Db {
         };
         Ok(db)
     }
+
+    /// Create an in-memory database for testing.
+    #[cfg(test)]
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        schema::init_db(&conn, 10000)?;
+        Ok(Self {
+            conn,
+            max_output_bytes: 32768,
+        })
+    }
 }
 
 pub(crate) fn gethostname() -> String {

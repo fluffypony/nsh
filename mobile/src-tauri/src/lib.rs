@@ -9,6 +9,8 @@ struct AppState {
     active_connection: Arc<Mutex<Option<iroh::endpoint::Connection>>>,
     /// Active QUIC send stream for the attached session (for input/resize/detach).
     active_send: Arc<Mutex<Option<iroh::endpoint::SendStream>>>,
+    /// Last seen sequence number for resume support.
+    last_seq: Arc<Mutex<u64>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -23,12 +25,14 @@ pub fn run() {
                 connected_node: Arc::new(Mutex::new(None)),
                 active_connection: Arc::new(Mutex::new(None)),
                 active_send: Arc::new(Mutex::new(None)),
+                last_seq: Arc::new(Mutex::new(0)),
             };
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             connect_to_daemon,
+            disconnect_from_daemon,
             list_sessions,
             attach_session,
             send_input,
@@ -66,6 +70,16 @@ async fn connect_to_daemon(
     *state.connected_node.lock().await = Some(node_id);
     *state.active_connection.lock().await = Some(connection);
 
+    Ok(())
+}
+
+#[tauri::command]
+async fn disconnect_from_daemon(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    *state.active_send.lock().await = None;
+    *state.active_connection.lock().await = None;
+    *state.connected_node.lock().await = None;
     Ok(())
 }
 
@@ -126,11 +140,13 @@ async fn attach_session(
 
     // Spawn background task to stream terminal data to frontend
     let app_clone = app.clone();
+    let last_seq = Arc::clone(&state.last_seq);
     tokio::spawn(async move {
         loop {
             match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
             {
-                Ok(nsh_proto::RemoteResponse::TerminalData { bytes, .. }) => {
+                Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
+                    *last_seq.lock().await = seq;
                     let _ = app_clone.emit("terminal-data", bytes);
                 }
                 Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
@@ -191,6 +207,12 @@ fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretK
     let key_path = data_dir.join("device_key");
     if key_path.exists() {
         let bytes = std::fs::read(&key_path)?;
+        if bytes.len() != 32 {
+            // Regenerate corrupt key
+            let key = iroh::SecretKey::generate(&mut rand::rng());
+            std::fs::write(&key_path, key.to_bytes())?;
+            return Ok(key);
+        }
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&bytes);
         Ok(iroh::SecretKey::from(key_bytes))

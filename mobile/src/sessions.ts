@@ -8,6 +8,8 @@ export interface RemoteSessionInfo {
   label: string | null;
   last_cwd: string | null;
   last_command: string | null;
+  git_branch: string | null;
+  running_command: string | null;
 }
 
 export async function connectToDaemon(
