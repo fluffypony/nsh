@@ -619,8 +619,8 @@ pub struct SearchResult {
 
 // ── Detected Secret ──
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DetectedSecret {
     pub label: String,
     pub value: String,

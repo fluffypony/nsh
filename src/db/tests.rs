@@ -2,16 +2,6 @@ use super::*;
 use crate::test_support::EnvVarGuard;
 use rusqlite::params;
 
-    type UsageRow = (
-        String,
-        String,
-        Option<u32>,
-        Option<u32>,
-        Option<f64>,
-        Option<String>,
-        Option<String>,
-    );
-
     fn test_db() -> Db {
         Db::open_in_memory().expect("in-memory db")
     }
@@ -2142,7 +2132,7 @@ use rusqlite::params;
             .unwrap();
         assert!(id > 0);
 
-        let (model, provider, input, output, cost, gen_id, query): UsageRow = db.conn.query_row(
+        let (model, provider, input, output, cost, gen_id, query): (String, String, Option<u32>, Option<u32>, Option<f64>, Option<String>, Option<String>) = db.conn.query_row(
             "SELECT model, provider, input_tokens, output_tokens, cost_usd, generation_id, query_text FROM usage WHERE id = ?",
             params![id], |row| Ok((
                 row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
@@ -3952,9 +3942,6 @@ use rusqlite::params;
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].command, "deploy app");
     }
-
-    // #[test]
-    // fn test_delete_memory_nonexistent() {}
 
     #[test]
     fn test_command_count_after_prune() {
@@ -6699,10 +6686,6 @@ use rusqlite::params;
         assert_eq!(results.len(), 1);
         assert!(results[0].command.contains("fts_target"));
     }
-
-    // #[test]
-
-    // #[test]
 
     #[test]
     fn test_conversation_exchange_to_tool_result_chat_with_exit_code() {

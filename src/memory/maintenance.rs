@@ -114,7 +114,7 @@ impl<'a> MemoryMaintenance<'a> {
             if content.len() > 50_000 {
                 continue;
             }
-            let (redacted, _) = crate::memory::privacy::redact_secrets_for_memory(&content);
+            let redacted = crate::memory::privacy::redact_secrets_for_memory(&content);
             let prompt = format!(
                 "Summarize this config file in 2-3 sentences. What tools, settings, and preferences does it reveal?\n\nFile: {filename} ({description})\n\n```\n{redacted}\n```\n\nAlso provide 5-10 search keywords as a space-separated string.\n\nRespond with JSON: {{\"summary\": \"...\", \"keywords\": \"...\"}}"
             );

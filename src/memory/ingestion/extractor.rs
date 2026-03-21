@@ -71,7 +71,7 @@ fn build_extraction_prompt(
         prompt.push_str(&format!("### Event {}\n", i + 1));
         prompt.push_str(&format!("Type: {}\n", event.event_type.as_str()));
         if let Some(ref cmd) = event.command {
-            let (redacted_cmd, _) = crate::memory::privacy::redact_secrets_for_memory(cmd);
+            let redacted_cmd = crate::memory::privacy::redact_secrets_for_memory(cmd);
             prompt.push_str(&format!("Command: {redacted_cmd}\n"));
         }
         if let Some(exit) = event.exit_code {
@@ -83,7 +83,7 @@ fn build_extraction_prompt(
                 event.exit_code,
                 2000,
             );
-            let (redacted, _) = crate::memory::privacy::redact_secrets_for_memory(&truncated);
+            let redacted = crate::memory::privacy::redact_secrets_for_memory(&truncated);
             prompt.push_str(&format!("Output:\n```\n{redacted}\n```\n"));
         }
         if let Some(ref cwd) = event.working_dir {

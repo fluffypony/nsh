@@ -1,5 +1,3 @@
-use crate::memory::types::DetectedSecret;
-
 pub fn is_ignored_path(path: &str, patterns: &[String]) -> bool {
     for pattern in patterns {
         if let Ok(glob_pattern) = glob::Pattern::new(pattern)
@@ -27,33 +25,14 @@ pub fn load_ignore_patterns() -> Vec<String> {
     }
 }
 
-pub fn redact_secrets_for_memory(text: &str) -> (String, Vec<DetectedSecret>) {
+pub fn redact_secrets_for_memory(text: &str) -> String {
     let config = crate::config::RedactionConfig {
         enabled: true,
         patterns: vec![],
         replacement: String::new(),
         disable_builtin: false,
     };
-    let redacted = crate::redact::redact_secrets(text, &config);
-
-    let mut detected = Vec::new();
-    let mut search_start = 0;
-    while let Some(start) = redacted[search_start..].find("[REDACTED:") {
-        let abs_start = search_start + start;
-        if let Some(end) = redacted[abs_start..].find(']') {
-            let label = redacted[abs_start + 10..abs_start + end].to_string();
-            detected.push(DetectedSecret {
-                label,
-                value: String::new(), // don't store the actual value here
-                position: abs_start,
-            });
-            search_start = abs_start + end + 1;
-        } else {
-            break;
-        }
-    }
-
-    (redacted, detected)
+    crate::redact::redact_secrets(text, &config)
 }
 
 pub fn should_skip_output(output: &str) -> bool {
@@ -119,7 +98,7 @@ mod tests {
 
     #[test]
     fn redact_secrets_detects_patterns() {
-        let (redacted, _secrets) = redact_secrets_for_memory("just normal text");
+        let redacted = redact_secrets_for_memory("just normal text");
         assert_eq!(redacted, "just normal text");
     }
 
@@ -159,8 +138,7 @@ mod tests {
 
     #[test]
     fn redact_preserves_non_secret_text() {
-        let (redacted, secrets) = redact_secrets_for_memory("Hello, world! Just regular text.");
+        let redacted = redact_secrets_for_memory("Hello, world! Just regular text.");
         assert_eq!(redacted, "Hello, world! Just regular text.");
-        assert!(secrets.is_empty());
     }
 }

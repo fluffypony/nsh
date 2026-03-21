@@ -93,10 +93,7 @@ impl Db {
     pub fn conn_execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
         self.conn.execute_batch(sql)
     }
-}
 
-// Re-use init_db for the test helper
-impl Db {
     #[cfg(test)]
     pub fn open_in_memory() -> anyhow::Result<Self> {
         let conn = rusqlite::Connection::open_in_memory()?;
