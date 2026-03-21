@@ -98,13 +98,8 @@ fn handle_status() -> anyhow::Result<()> {
         eprintln!("EndpointId: not generated (run `nsh remote pair`)");
     }
 
-    eprintln!("Relay: https://relay.iroh.network");
-    eprintln!("Allowed keys ({}):", config.remote.allowed_keys.len());
-    for key in &config.remote.allowed_keys {
-        eprintln!("  {key}");
-    }
-
-    // Query daemon for live status
+    // Query daemon for live status (relay URL, peer counts)
+    let mut relay_displayed = false;
     #[cfg(unix)]
     {
         if let Ok(resp) = crate::daemon_client::send_to_global(
@@ -114,6 +109,10 @@ fn handle_status() -> anyhow::Result<()> {
                 data: Some(d),
             } = resp
             {
+                if let Some(relay) = d.get("relay_url").and_then(|v| v.as_str()) {
+                    eprintln!("Relay: {relay}");
+                    relay_displayed = true;
+                }
                 if let Some(peers) = d.get("connected_peers").and_then(|v| v.as_u64()) {
                     eprintln!("Connected peers: {peers}");
                 }
@@ -122,6 +121,14 @@ fn handle_status() -> anyhow::Result<()> {
                 }
             }
         }
+    }
+    if !relay_displayed {
+        eprintln!("Relay: https://relay.iroh.network (default, daemon not running)");
+    }
+
+    eprintln!("Allowed keys ({}):", config.remote.allowed_keys.len());
+    for key in &config.remote.allowed_keys {
+        eprintln!("  {key}");
     }
 
     Ok(())
