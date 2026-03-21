@@ -48,10 +48,43 @@ pub fn spawn_iroh_endpoint(
     Ok(handle)
 }
 
+/// QUIC-layer auth hook: reject connections from unknown peers before
+/// protocol handling, as defense-in-depth alongside the per-connection
+/// auth check in NshRemoteHandler::accept.
+#[derive(Debug)]
+struct NshAuthHook;
+
+impl iroh::endpoint::EndpointHooks for NshAuthHook {
+    fn after_handshake<'a>(
+        &'a self,
+        info: &'a iroh::endpoint::ConnectionInfo,
+    ) -> impl std::future::Future<Output = iroh::endpoint::AfterHandshakeOutcome> + Send + 'a {
+        async move {
+            let remote_id = info.remote_id();
+            let allowed_keys = crate::config::Config::load()
+                .map(|c| c.remote.allowed_keys)
+                .unwrap_or_default();
+            if crate::runtime::remote_key::is_key_allowed(&remote_id, &allowed_keys) {
+                iroh::endpoint::AfterHandshakeOutcome::accept()
+            } else {
+                crate::runtime::global_daemon::log_daemon(
+                    "iroh.rejected_hook",
+                    &remote_id.to_string(),
+                );
+                iroh::endpoint::AfterHandshakeOutcome::Reject {
+                    error_code: 1u32.into(),
+                    reason: b"unauthorized".to_vec(),
+                }
+            }
+        }
+    }
+}
+
 async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key)
         .alpns(vec![ALPN.to_vec()])
+        .hooks(NshAuthHook)
         .bind()
         .await?;
 
@@ -88,13 +121,17 @@ impl iroh::protocol::ProtocolHandler for NshRemoteHandler {
         let remote_id = connection.remote_id();
         let remote_id_str = remote_id.to_string();
 
-        // Auth check: reload config on every connection to pick up
-        // newly paired or revoked keys without restarting the daemon.
+        // Defense-in-depth: the QUIC-layer NshAuthHook should have already
+        // rejected unauthorized peers. This check catches edge cases where
+        // config was updated between hook check and protocol handling.
         let allowed_keys = crate::config::Config::load()
             .map(|c| c.remote.allowed_keys)
             .unwrap_or_default();
         if !crate::runtime::remote_key::is_key_allowed(&remote_id, &allowed_keys) {
-            crate::runtime::global_daemon::log_daemon("iroh.rejected", &remote_id_str);
+            crate::runtime::global_daemon::log_daemon(
+                "iroh.rejected.defense_in_depth",
+                &remote_id_str,
+            );
             connection.close(1u32.into(), b"unauthorized");
             return Ok(());
         }

@@ -392,6 +392,8 @@ pub enum RemoteAction {
         /// EndpointId to revoke (prefix match accepted)
         node_id: String,
     },
+    /// Discover nearby nsh instances on the local network
+    Discover,
 }
 
 #[cfg(test)]

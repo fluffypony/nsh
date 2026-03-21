@@ -5,6 +5,7 @@ pub fn handle_remote_command(action: RemoteAction) -> anyhow::Result<()> {
         RemoteAction::Pair => handle_pair(),
         RemoteAction::Status => handle_status(),
         RemoteAction::Revoke { node_id } => handle_revoke(&node_id),
+        RemoteAction::Discover => handle_discover(),
     }
 }
 
@@ -116,6 +117,9 @@ fn handle_status() -> anyhow::Result<()> {
                 if let Some(peers) = d.get("connected_peers").and_then(|v| v.as_u64()) {
                     eprintln!("Connected peers: {peers}");
                 }
+                if let Some(sessions) = d.get("attached_sessions").and_then(|v| v.as_u64()) {
+                    eprintln!("Attached sessions: {sessions}");
+                }
             }
         }
     }
@@ -124,20 +128,116 @@ fn handle_status() -> anyhow::Result<()> {
 }
 
 fn handle_revoke(node_id: &str) -> anyhow::Result<()> {
-    if crate::config::remove_remote_allowed_key(node_id)? {
-        eprintln!("Revoked: {node_id}");
-        // Signal daemon to disconnect active sessions from that peer
-        #[cfg(unix)]
-        {
-            let _ = crate::daemon_client::send_to_global(
-                &crate::daemon::DaemonRequest::RemoteRevoke {
-                    node_id: node_id.to_string(),
-                },
-            );
+    let config = crate::config::Config::load().unwrap_or_default();
+
+    // Support prefix matching
+    let matching: Vec<&String> = config
+        .remote
+        .allowed_keys
+        .iter()
+        .filter(|k| {
+            k.starts_with(node_id)
+                || k.strip_prefix("ed25519:")
+                    .unwrap_or(k)
+                    .starts_with(node_id)
+        })
+        .collect();
+
+    match matching.len() {
+        0 => {
+            eprintln!("Key not found: {node_id}");
         }
-    } else {
-        eprintln!("Key not found: {node_id}");
+        1 => {
+            let full_key = matching[0].clone();
+            if crate::config::remove_remote_allowed_key(&full_key)? {
+                eprintln!("Revoked: {full_key}");
+                #[cfg(unix)]
+                {
+                    let _ = crate::daemon_client::send_to_global(
+                        &crate::daemon::DaemonRequest::RemoteRevoke {
+                            node_id: full_key,
+                        },
+                    );
+                }
+            }
+        }
+        _ => {
+            eprintln!("Ambiguous prefix '{node_id}'. Matches:");
+            for key in matching {
+                eprintln!("  {key}");
+            }
+        }
     }
+    Ok(())
+}
+
+fn handle_discover() -> anyhow::Result<()> {
+    let key = crate::remote_key::load_or_create_secret_key()?;
+    let node_id = key.public();
+    let node_id_str = node_id.to_string();
+
+    // Compute a verification code from our node ID
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(node_id_str.as_bytes());
+    let hash = hasher.finalize();
+    let sas_code = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 1_000_000;
+
+    eprintln!();
+    eprintln!("nsh LAN discovery mode");
+    eprintln!("Verification code: {:06}", sas_code);
+    eprintln!("Share this code with the connecting device.");
+    eprintln!("Waiting for connections... (Ctrl-C to cancel)");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(key)
+            .alpns(vec![nsh_proto::ALPN.to_vec()])
+            .bind()
+            .await?;
+
+        let incoming = match endpoint.accept().await {
+            Some(inc) => inc,
+            None => return Ok(()),
+        };
+        let connecting = incoming.accept()?;
+        let connection = connecting.await?;
+        let remote_id = connection.remote_id();
+        let remote_id_str = remote_id.to_string();
+
+        // Compute SAS from both IDs (order-independent)
+        let mut hasher = Sha256::new();
+        let (min, max) = if node_id_str < remote_id_str {
+            (&node_id_str, &remote_id_str)
+        } else {
+            (&remote_id_str, &node_id_str)
+        };
+        hasher.update(min.as_bytes());
+        hasher.update(max.as_bytes());
+        let hash = hasher.finalize();
+        let pair_code = u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]) % 1_000_000;
+
+        eprintln!();
+        eprintln!("Incoming connection from: {remote_id_str}");
+        eprintln!("Verification code (SAS): {:06}", pair_code);
+
+        if crate::tools::prompt_tty_confirmation(
+            "Does the mobile app show the exact same code? Allow this device? [y/N] ",
+        )? {
+            crate::config::add_remote_allowed_key(&remote_id_str)?;
+            eprintln!("Device paired via LAN discovery.");
+        } else {
+            connection.close(1u32.into(), b"rejected");
+            eprintln!("Pairing rejected.");
+        }
+
+        Ok::<_, anyhow::Error>(())
+    })?;
+
     Ok(())
 }
 
@@ -164,6 +264,7 @@ fn render_qr_terminal(code: &qrcode::QrCode) {
                 (Color::Light, Color::Light) => eprint!(" "),
             }
         }
+        eprint!(" "); // right quiet zone
         eprintln!();
     }
 }
