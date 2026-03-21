@@ -368,6 +368,125 @@ async fn bridge_to_session(
     Ok(())
 }
 
+/// Detect the foreground command running in the shell with the given PID.
+fn detect_running_command(shell_pid: i64) -> Option<String> {
+    if shell_pid <= 0 {
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Read /proc/{pid}/stat to get tpgid (terminal foreground process group)
+        let stat_path = format!("/proc/{shell_pid}/stat");
+        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+            // comm field (field 2) can contain spaces and parens; split after last ')'
+            if let Some(after_comm) = stat.rsplit(')').next() {
+                let fields: Vec<&str> = after_comm.split_whitespace().collect();
+                // fields[0]=state, [1]=ppid, [2]=pgrp, [3]=session, [4]=tty_nr, [5]=tpgid
+                if let Some(tpgid_str) = fields.get(5) {
+                    if let Ok(tpgid) = tpgid_str.parse::<i64>() {
+                        if tpgid > 0 && tpgid != shell_pid {
+                            let fg_cmdline = format!("/proc/{tpgid}/cmdline");
+                            if let Ok(bytes) = std::fs::read(&fg_cmdline) {
+                                let cmd: String = bytes
+                                    .split(|&b| b == 0)
+                                    .filter(|s| !s.is_empty())
+                                    .filter_map(|s| std::str::from_utf8(s).ok())
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                if !cmd.is_empty() {
+                                    return Some(cmd);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: read /proc/{pid}/task/{pid}/children
+        let children_path = format!("/proc/{shell_pid}/task/{shell_pid}/children");
+        if let Ok(children) = std::fs::read_to_string(&children_path) {
+            if let Some(child_pid) = children.split_whitespace().last() {
+                let child_cmdline = format!("/proc/{child_pid}/cmdline");
+                if let Ok(bytes) = std::fs::read(&child_cmdline) {
+                    let args: Vec<&str> = bytes
+                        .split(|&b| b == 0)
+                        .filter(|s| !s.is_empty())
+                        .filter_map(|s| std::str::from_utf8(s).ok())
+                        .collect();
+                    if !args.is_empty() {
+                        let base = args[0].rsplit('/').next().unwrap_or(args[0]);
+                        if !matches!(base, "bash" | "zsh" | "fish" | "sh" | "dash") {
+                            return Some(args.join(" "));
+                        }
+                    }
+                }
+            }
+        }
+
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["-o", "pid=,command=", "-p"])
+            .arg(format!("{shell_pid}"))
+            .output()
+        {
+            // ps on macOS: find children via separate call
+            if let Ok(children_output) = std::process::Command::new("pgrep")
+                .args(["-P", &shell_pid.to_string()])
+                .output()
+            {
+                if children_output.status.success() {
+                    let text = String::from_utf8_lossy(&children_output.stdout);
+                    for child_pid in text.lines() {
+                        let child_pid = child_pid.trim();
+                        if child_pid.is_empty() {
+                            continue;
+                        }
+                        if let Ok(cmd_output) = std::process::Command::new("ps")
+                            .args(["-o", "command=", "-p", child_pid])
+                            .output()
+                        {
+                            if cmd_output.status.success() {
+                                let cmd = String::from_utf8_lossy(&cmd_output.stdout)
+                                    .trim()
+                                    .to_string();
+                                let base = cmd
+                                    .split_whitespace()
+                                    .next()
+                                    .unwrap_or("")
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or("");
+                                if !cmd.is_empty()
+                                    && !matches!(
+                                        base,
+                                        "bash" | "zsh" | "fish" | "sh" | "dash" | "-bash"
+                                            | "-zsh" | "-fish"
+                                    )
+                                {
+                                    return Some(cmd);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = output; // suppress unused warning
+        }
+        return None;
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 fn list_active_sessions() -> anyhow::Result<Vec<RemoteSessionInfo>> {
     let db = crate::db::Db::open()?;
     let nsh_dir = crate::config::Config::nsh_dir();
@@ -405,16 +524,18 @@ fn list_active_sessions() -> anyhow::Result<Vec<RemoteSessionInfo>> {
                 }
             });
 
+            let pid: i64 = row.get(3)?;
+            let running_command = detect_running_command(pid);
             Ok(RemoteSessionInfo {
                 session_id: row.get(0)?,
                 tty,
                 shell: row.get(2)?,
-                pid: row.get(3)?,
+                pid,
                 label: row.get(4)?,
                 last_cwd: effective_cwd,
                 last_command: row.get(6)?,
                 git_branch,
-                running_command: None,
+                running_command,
             })
         })?
         .filter_map(|r| r.ok())
