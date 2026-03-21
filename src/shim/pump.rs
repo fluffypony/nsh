@@ -309,6 +309,11 @@ pub struct PtyRemoteState {
     pub capture: Arc<Mutex<CaptureEngine>>,
     /// Sequence-numbered ring buffer for reconnection replay.
     pub replay_buffer: Mutex<ReplayBuffer>,
+    /// Current remote control lease holder (if any).
+    /// When set, only this peer can send input/resize; observer mode is read-only.
+    pub control_lease: Mutex<Option<String>>,
+    /// Original terminal size, saved before first remote resize so it can be restored on detach.
+    pub original_winsize: Mutex<Option<libc::winsize>>,
 }
 
 /// Ring buffer for reconnection replay.
@@ -569,6 +574,8 @@ pub fn pump_loop(
         pty_master_fd: pty_master_raw,
         capture: Arc::clone(&capture),
         replay_buffer: Mutex::new(ReplayBuffer::new(1024 * 1024)), // 1 MB ring buffer
+        control_lease: Mutex::new(None),
+        original_winsize: Mutex::new(None),
     });
 
     let nsh_dir = crate::config::Config::nsh_dir();
@@ -1078,9 +1085,35 @@ fn handle_stream_attach(
                             let _ = remote_state_clone.inject_input(&bytes);
                         }
                         Ok(crate::daemon::DaemonRequest::StreamResize { cols, rows }) => {
+                            // Save original terminal size before the first remote resize
+                            if let Ok(mut orig) = remote_state_clone.original_winsize.lock() {
+                                if orig.is_none() {
+                                    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+                                    let ret = unsafe {
+                                        libc::ioctl(
+                                            remote_state_clone.pty_master_fd,
+                                            libc::TIOCGWINSZ,
+                                            &mut ws,
+                                        )
+                                    };
+                                    if ret == 0 {
+                                        *orig = Some(ws);
+                                    }
+                                }
+                            }
                             let _ = remote_state_clone.resize(cols, rows);
                         }
                         Ok(crate::daemon::DaemonRequest::StreamDetach) => {
+                            // Restore original terminal size if it was saved
+                            if let Ok(mut orig) = remote_state_clone.original_winsize.lock() {
+                                if let Some(ws) = orig.take() {
+                                    let _ = remote_state_clone.resize(ws.ws_col, ws.ws_row);
+                                }
+                            }
+                            // Release control lease if held
+                            if let Ok(mut lease) = remote_state_clone.control_lease.lock() {
+                                *lease = None;
+                            }
                             break;
                         }
                         _ => {} // Unknown command, ignore
