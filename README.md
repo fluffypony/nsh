@@ -570,8 +570,7 @@ All data is stored in `~/.nsh/`:
 | `nsh.db` | SQLite database (sessions, commands, conversations, usage) |
 | `audit.log` | JSON-line audit log of tool calls |
 | `skills/*.toml` | Custom skill definitions |
-| `pending_cmd_<session>` | Command prefill buffer |
-| `pending_flag_<session>` | Multi-step continuation marker |
+| `pending_<session>.json` | Atomic command prefill payload (command, pending flag, autorun flag) |
 | `scrollback_<session>` | Scrollback capture buffer |
 | `daemon_<session>.sock` | Daemon Unix socket |
 | `update_pending` | Staged self-update metadata |
