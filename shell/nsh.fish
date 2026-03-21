@@ -275,8 +275,14 @@ function __nsh_check_pending --on-event fish_prompt
             or set -l cmd (printf '%s' "$raw" | command sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
             set -l autorun (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)
             or set autorun "false"
+            set -l pending (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('pending',False))" 2>/dev/null)
+            or set pending "false"
             if test -z "$cmd"; return; end
             set -g __nsh_pending_cmd $cmd
+            # Write pending_flag_ marker so postcmd continuation works
+            if test "$pending" = "True" -o "$pending" = "true"
+                printf '1' > "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" 2>/dev/null
+            end
             if test "$autorun" = "True" -o "$autorun" = "true"
                 builtin history append -- "$cmd" 2>/dev/null
                 builtin eval -- "$cmd"

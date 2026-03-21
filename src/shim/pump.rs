@@ -1153,7 +1153,7 @@ fn handle_stream_attach(
     // Subscribe to raw output broadcast
     let output_rx = remote_state.subscribe();
 
-    // If resuming, replay buffered frames first
+    // If resuming, send JSON handshake first, then replay buffered frames
     if let Some(seq) = resume_from_seq {
         let history = remote_state
             .replay_buffer
@@ -1161,26 +1161,27 @@ fn handle_stream_attach(
             .map(|rb| rb.replay_from(seq))
             .unwrap_or_default();
 
-        let mut writer = &stream;
-        for (fseq, fbytes) in &history {
-            let mut header = [0u8; 12];
-            header[0..8].copy_from_slice(&fseq.to_be_bytes());
-            header[8..12].copy_from_slice(&(fbytes.len() as u32).to_be_bytes());
-            if writer.write_all(&header).is_err() || writer.write_all(fbytes).is_err() {
-                remote_state.unsubscribe();
-                return;
-            }
-        }
-
-        // For resume, send a minimal OK
+        // Send JSON handshake response FIRST (remote handler expects this)
         let response = crate::daemon::DaemonResponse::ok_with_payload(
             serde_json::json!({ "resumed": true }),
         );
+        let mut writer = &stream;
         if let Ok(json) = serde_json::to_string(&response) {
             if writer.write_all(json.as_bytes()).is_err()
                 || writer.write_all(b"\n").is_err()
                 || writer.flush().is_err()
             {
+                remote_state.unsubscribe();
+                return;
+            }
+        }
+
+        // Then replay buffered frames as binary
+        for (fseq, fbytes) in &history {
+            let mut header = [0u8; 12];
+            header[0..8].copy_from_slice(&fseq.to_be_bytes());
+            header[8..12].copy_from_slice(&(fbytes.len() as u32).to_be_bytes());
+            if writer.write_all(&header).is_err() || writer.write_all(fbytes).is_err() {
                 remote_state.unsubscribe();
                 return;
             }

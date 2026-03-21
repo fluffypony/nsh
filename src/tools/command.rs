@@ -1234,13 +1234,13 @@ mod tests {
         assert!(matches!(outcome, CommandExecutionOutcome::Terminal));
 
         let nsh_dir = crate::config::Config::nsh_dir();
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
-        let autorun_file = nsh_dir.join(format!("pending_autorun_{session}"));
-        assert!(cmd_file.exists());
-        assert!(autorun_file.exists());
-        assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "cd /tmp");
-        let _ = std::fs::remove_file(&cmd_file);
-        let _ = std::fs::remove_file(&autorun_file);
+        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        assert!(json_file.exists());
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&json_file).unwrap()).unwrap();
+        assert_eq!(payload["command"].as_str().unwrap(), "cd /tmp");
+        assert_eq!(payload["autorun"].as_bool().unwrap(), true);
+        let _ = std::fs::remove_file(&json_file);
     }
 
     #[test]
@@ -1268,14 +1268,13 @@ mod tests {
         )
         .unwrap();
         let nsh_dir = crate::config::Config::nsh_dir();
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
-        let flag_file = nsh_dir.join(format!("pending_flag_{session}"));
-        assert!(cmd_file.exists());
-        assert_eq!(std::fs::read_to_string(&cmd_file).unwrap(), "echo hello");
-        assert!(flag_file.exists());
-        assert_eq!(std::fs::read_to_string(&flag_file).unwrap(), "1");
-        let _ = std::fs::remove_file(&cmd_file);
-        let _ = std::fs::remove_file(&flag_file);
+        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        assert!(json_file.exists());
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&json_file).unwrap()).unwrap();
+        assert_eq!(payload["command"].as_str().unwrap(), "echo hello");
+        assert_eq!(payload["pending"].as_bool().unwrap(), true);
+        let _ = std::fs::remove_file(&json_file);
     }
 
     #[test]
@@ -1307,8 +1306,9 @@ mod tests {
         )
         .unwrap();
         assert!(!flag_file.exists());
-        let cmd_file = nsh_dir.join(format!("pending_cmd_{session}"));
-        let _ = std::fs::remove_file(&cmd_file);
+        // Clean up JSON file written by execute
+        let json_file = nsh_dir.join(format!("pending_{session}.json"));
+        let _ = std::fs::remove_file(&json_file);
     }
 
     #[test]

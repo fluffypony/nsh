@@ -281,13 +281,19 @@ __nsh_check_pending() {
         raw="$(command cat "$payload_file")"
         command rm -f "$payload_file"
         if [[ -n "$raw" ]]; then
-            local cmd autorun
+            local cmd autorun pending
             cmd="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)" || \
                 cmd="$(printf '%s' "$raw" | command sed -n 's/.*"command":"\([^"]*\)".*/\1/p')"
             autorun="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)" || \
                 autorun="false"
+            pending="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('pending',False))" 2>/dev/null)" || \
+                pending="false"
             if [[ -z "$cmd" ]]; then return; fi
             __nsh_pending_cmd="$cmd"
+            # Write pending_flag_ marker so postcmd continuation works
+            if [[ "$pending" == "True" || "$pending" == "true" ]]; then
+                printf '1' > "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" 2>/dev/null
+            fi
             if [[ "$autorun" == "True" || "$autorun" == "true" ]]; then
                 history -s -- "$cmd"
                 builtin eval -- "$cmd"

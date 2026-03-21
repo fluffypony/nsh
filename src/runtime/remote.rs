@@ -276,7 +276,7 @@ async fn bridge_to_session(
     ATTACHED_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Task 1: Unix socket (binary-framed PTY output) -> QUIC (TerminalData)
-    let output_task = tokio::spawn(async move {
+    let mut output_task = tokio::spawn(async move {
         loop {
             // Read binary frame header: [8-byte seq][4-byte len]
             let mut header = [0u8; 12];
@@ -312,7 +312,7 @@ async fn bridge_to_session(
     });
 
     // Task 2: QUIC (RemoteRequest) -> Unix socket (length-prefixed commands)
-    let input_task = tokio::spawn(async move {
+    let mut input_task = tokio::spawn(async move {
         loop {
             match nsh_proto::framing::read_message::<RemoteRequest, _>(&mut recv).await {
                 Ok(RemoteRequest::Input { bytes }) => {
@@ -361,9 +361,10 @@ async fn bridge_to_session(
         }
     });
 
+    // Wait for either side to finish, then abort the other
     tokio::select! {
-        _ = output_task => {}
-        _ = input_task => {}
+        _ = &mut output_task => { input_task.abort(); }
+        _ = &mut input_task => { output_task.abort(); }
     }
 
     ATTACHED_SESSIONS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -391,15 +392,20 @@ fn list_active_sessions() -> anyhow::Result<Vec<RemoteSessionInfo>> {
                 .filter(|s| !s.is_empty());
             let effective_cwd = fs_cwd.or(db_cwd);
 
-            // Detect git branch from CWD
+            // Detect git branch from CWD (walk up to find .git)
             let git_branch = effective_cwd.as_deref().and_then(|cwd| {
-                let head = std::path::Path::new(cwd).join(".git/HEAD");
-                let content = std::fs::read_to_string(head).ok()?;
-                content
-                    .trim()
-                    .strip_prefix("ref: refs/heads/")
-                    .map(|b| b.trim().to_string())
-                    .or_else(|| Some(content.trim().chars().take(8).collect()))
+                let mut dir = std::path::Path::new(cwd);
+                loop {
+                    let head = dir.join(".git/HEAD");
+                    if let Ok(content) = std::fs::read_to_string(&head) {
+                        return content
+                            .trim()
+                            .strip_prefix("ref: refs/heads/")
+                            .map(|b| b.trim().to_string())
+                            .or_else(|| Some(content.trim().chars().take(8).collect()));
+                    }
+                    dir = dir.parent()?;
+                }
             });
 
             Ok(RemoteSessionInfo {
