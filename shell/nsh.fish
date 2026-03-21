@@ -198,17 +198,6 @@ function __nsh_postexec --on-event fish_postexec
         disown 2>/dev/null
     end
 
-    # Auto-continue pending multi-step task
-    set -l pending_flag "$HOME/.nsh/pending_flag_$NSH_SESSION_ID"
-    if test -f $pending_flag
-        if test -n "$__nsh_pending_cmd" -a "$cmd" = "$__nsh_pending_cmd"
-            command rm -f $pending_flag
-            set -g __nsh_pending_cmd ""
-            printf '\x1b[2m  nsh: continuing task...\x1b[0m\n' >&2
-            command nsh query -- "__NSH_CONTINUE__"
-        end
-    end
-
     # --- Update notifications ---
     set -l msg_file "$HOME/.nsh/nsh_msg_$NSH_SESSION_ID"
     if test -f $msg_file
@@ -274,10 +263,6 @@ function __nsh_check_pending --on-event fish_prompt
             or set pending "false"
             if test -z "$cmd"; return; end
             set -g __nsh_pending_cmd $cmd
-            # Write pending_flag_ marker so postcmd continuation works
-            if test "$pending" = "True" -o "$pending" = "true"
-                printf '1' > "$HOME/.nsh/pending_flag_$NSH_SESSION_ID" 2>/dev/null
-            end
             if test "$autorun" = "True" -o "$autorun" = "true"
                 builtin history append -- "$cmd" 2>/dev/null
                 builtin eval -- "$cmd"

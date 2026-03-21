@@ -320,17 +320,6 @@ __nsh_precmd() {
         nsh daemon-send heartbeat --session "$NSH_SESSION_ID" >/dev/null 2>&1 &!
     fi
 
-    # Auto-continue pending multi-step task
-    local pending_flag="$HOME/.nsh/pending_flag_${NSH_SESSION_ID}"
-    if [[ -f "$pending_flag" ]]; then
-        if [[ -n "${__NSH_PENDING_CMD:-}" && "$cmd" == "$__NSH_PENDING_CMD" ]]; then
-            command rm -f "$pending_flag"
-            __NSH_PENDING_CMD=""
-            printf '\x1b[2m  nsh: continuing task...\x1b[0m\n' >&2
-            command nsh query -- "__NSH_CONTINUE__"
-        fi
-    fi
-
     # --- Update notifications ---
     local msg_file="$HOME/.nsh/nsh_msg_${NSH_SESSION_ID}"
     if [[ -f "$msg_file" ]]; then
@@ -415,10 +404,6 @@ __nsh_check_pending() {
                 pending="false"
             if [[ -z "$cmd" ]]; then return; fi
             __NSH_PENDING_CMD="$cmd"
-            # Write pending_flag_ marker so postcmd continuation works
-            if [[ "$pending" == "True" || "$pending" == "true" ]]; then
-                printf '1' > "$HOME/.nsh/pending_flag_${NSH_SESSION_ID}" 2>/dev/null
-            fi
             if [[ "$autorun" == "True" || "$autorun" == "true" ]]; then
                 print -s -- "$cmd"
                 builtin eval -- "$cmd"
