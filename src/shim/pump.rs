@@ -300,6 +300,8 @@ impl CaptureEngine {
 pub struct PtyRemoteState {
     /// Raw PTY output subscribers. The pump loop sends; handler threads receive.
     pub output_subscribers: Mutex<Vec<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    /// Explicit count of attached clients (incremented on subscribe, decremented on unsubscribe).
+    pub subscriber_count: std::sync::atomic::AtomicUsize,
     /// Write end of the remote input pipe. Handler threads write here;
     /// the pump loop has the read end in its poll_fds.
     pub remote_input_write: std::os::fd::RawFd,
@@ -364,7 +366,15 @@ impl PtyRemoteState {
         if let Ok(mut subs) = self.output_subscribers.lock() {
             subs.push(tx);
         }
+        self.subscriber_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         rx
+    }
+
+    /// Decrement the subscriber count. Called when a client disconnects.
+    pub fn unsubscribe(&self) {
+        self.subscriber_count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn broadcast(&self, data: &[u8]) {
@@ -398,20 +408,20 @@ impl PtyRemoteState {
     }
 
     /// Clean up after a remote client disconnects (explicit detach or unclean EOF).
+    /// Must be called AFTER unsubscribe() so the count is accurate.
     /// Clears control_lease unconditionally. Restores original_winsize only when
-    /// no other output subscribers remain (i.e. this was the last attached client).
+    /// no other subscribers remain (i.e. this was the last attached client).
     pub fn cleanup_on_disconnect(&self) {
         // Always release control lease
         if let Ok(mut lease) = self.control_lease.lock() {
             *lease = None;
         }
         // Only restore terminal size when no subscribers are left
-        let remaining = self
-            .output_subscribers
-            .lock()
-            .map(|subs| subs.len())
-            .unwrap_or(0);
-        if remaining == 0 {
+        if self
+            .subscriber_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
             if let Ok(mut orig) = self.original_winsize.lock() {
                 if let Some(ws) = orig.take() {
                     let _ = self.resize(ws.ws_col, ws.ws_row);
@@ -593,6 +603,7 @@ pub fn pump_loop(
 
     let remote_state = Arc::new(PtyRemoteState {
         output_subscribers: Mutex::new(Vec::new()),
+        subscriber_count: std::sync::atomic::AtomicUsize::new(0),
         remote_input_write: std::os::fd::AsRawFd::as_raw_fd(&remote_input_write),
         pty_master_fd: pty_master_raw,
         capture: Arc::clone(&capture),
@@ -1095,7 +1106,12 @@ fn handle_stream_attach(
     };
     let remote_state_clone = Arc::clone(remote_state);
 
-    // Spawn input thread: reads length-prefixed commands from the socket
+    // Shared stop flag: set by the input thread when it exits (detach or error)
+    // so the output relay can notice and stop promptly.
+    let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_flag_clone = Arc::clone(&stop_flag);
+
+    // Spawn input thread: reads length-prefixed commands from the socket.
     let input_thread = std::thread::Builder::new()
         .name("remote-input".into())
         .spawn(move || {
@@ -1150,6 +1166,8 @@ fn handle_stream_attach(
                     Err(_) => break, // Socket closed or error
                 }
             }
+            // Signal the output relay to stop
+            stop_flag_clone.store(true, std::sync::atomic::Ordering::Relaxed);
         });
 
     let input_thread = match input_thread {
@@ -1157,34 +1175,28 @@ fn handle_stream_attach(
         Err(_) => return,
     };
 
-    // Main thread: reads from output subscriber, writes raw bytes to socket
+    // Main thread: reads from output subscriber, writes raw bytes to socket.
+    // Uses recv_timeout so it can check the stop flag when the PTY is idle.
     let mut writer = stream;
     loop {
-        match output_rx.recv() {
+        if stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        match output_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(bytes) if !bytes.is_empty() => {
                 if writer.write_all(&bytes).is_err() {
                     break;
                 }
             }
-            _ => break, // Channel closed
+            Ok(_) => {} // Empty bytes, skip
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    // Clean up: drop the output receiver first so its matching sender
-    // becomes disconnected, then prune disconnected senders from the
-    // subscriber list so the count is accurate, then run cleanup
-    // (which only restores winsize when no subscribers remain).
-    drop(output_rx);
-    if let Ok(mut subs) = remote_state.output_subscribers.lock() {
-        subs.retain(|tx| {
-            // Keep senders that are still connected (ok or full but alive)
-            match tx.try_send(Vec::new()) {
-                Ok(()) => true,
-                Err(std::sync::mpsc::TrySendError::Full(_)) => true,
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
-            }
-        });
-    }
+    // Clean up: decrement subscriber count, join input thread, then run
+    // cleanup (which restores winsize only when count reaches 0).
+    remote_state.unsubscribe();
     input_thread.join().ok();
     remote_state.cleanup_on_disconnect();
 }
