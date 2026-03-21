@@ -1,0 +1,120 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0a0a1a;
+  color: #e0e0e0;
+  min-height: 100vh;
+}
+
+#app {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.pair-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  padding: 2rem;
+  gap: 1rem;
+}
+
+.pair-view h1 {
+  font-size: 2rem;
+  color: #36d7b7;
+}
+
+.pair-view input {
+  width: 100%;
+  max-width: 400px;
+  padding: 0.75rem 1rem;
+  font-size: 1rem;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+
+.pair-view button,
+.sessions-view button {
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+  border: none;
+  border-radius: 8px;
+  background: #36d7b7;
+  color: #0a0a1a;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.sessions-view {
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.session-card {
+  padding: 1rem;
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.session-card:active {
+  background: #2a2a4e;
+}
+
+.session-detail {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+.session-cwd {
+  font-size: 0.8rem;
+  color: #36d7b7;
+  font-family: monospace;
+}
+
+.terminal-view {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: #1a1a2e;
+  border-bottom: 1px solid #333;
+}
+
+.terminal-toolbar button {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.9rem;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: transparent;
+  color: #e0e0e0;
+  cursor: pointer;
+}
+
+#terminal-container {
+  flex: 1;
+  overflow: hidden;
+}

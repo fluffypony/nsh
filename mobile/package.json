@@ -1,0 +1,25 @@
+{
+  "name": "nsh-mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@xterm/xterm": "^5",
+    "@xterm/addon-fit": "^0.10",
+    "@xterm/addon-webgl": "^0.18",
+    "@xterm/addon-web-links": "^0.11",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-biometric": "^2",
+    "@tauri-apps/plugin-barcode-scanner": "^2"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vite": "^6"
+  }
+}
