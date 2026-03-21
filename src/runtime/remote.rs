@@ -5,18 +5,15 @@
 //! in the shim. The iroh handler bridges between QUIC streams and
 //! per-session Unix sockets via the StreamAttach protocol.
 
-use std::collections::HashSet;
 use std::fmt;
-use std::sync::Arc;
 
 use nsh_proto::{ALPN, RemoteRequest, RemoteResponse, RemoteSessionInfo};
 
 /// Start the iroh remote endpoint in a background thread.
 pub fn spawn_iroh_endpoint(
-    config: &crate::config::Config,
+    _config: &crate::config::Config,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let secret_key = crate::runtime::remote_key::load_or_create_secret_key()?;
-    let allowed_keys: HashSet<String> = config.remote.allowed_keys.iter().cloned().collect();
 
     let handle = std::thread::Builder::new()
         .name("nshd-iroh".into())
@@ -28,7 +25,7 @@ pub fn spawn_iroh_endpoint(
                 .expect("iroh tokio runtime");
 
             rt.block_on(async move {
-                if let Err(e) = run_iroh_endpoint(secret_key, allowed_keys).await {
+                if let Err(e) = run_iroh_endpoint(secret_key).await {
                     crate::runtime::global_daemon::log_daemon("iroh.error", &e.to_string());
                 }
             });
@@ -37,10 +34,7 @@ pub fn spawn_iroh_endpoint(
     Ok(handle)
 }
 
-async fn run_iroh_endpoint(
-    secret_key: iroh::SecretKey,
-    allowed_keys: HashSet<String>,
-) -> anyhow::Result<()> {
+async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
         .secret_key(secret_key)
         .alpns(vec![ALPN.to_vec()])
@@ -50,9 +44,7 @@ async fn run_iroh_endpoint(
     let node_id = endpoint.id();
     crate::runtime::global_daemon::log_daemon("iroh.started", &format!("EndpointId: {node_id}"));
 
-    let handler = NshRemoteHandler {
-        allowed_keys: Arc::new(allowed_keys),
-    };
+    let handler = NshRemoteHandler;
 
     let router = iroh::protocol::Router::builder(endpoint)
         .accept(ALPN.to_vec(), handler)
@@ -66,15 +58,11 @@ async fn run_iroh_endpoint(
     Ok(())
 }
 
-struct NshRemoteHandler {
-    allowed_keys: Arc<HashSet<String>>,
-}
+struct NshRemoteHandler;
 
 impl fmt::Debug for NshRemoteHandler {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NshRemoteHandler")
-            .field("allowed_keys_count", &self.allowed_keys.len())
-            .finish()
+        f.debug_struct("NshRemoteHandler").finish()
     }
 }
 
@@ -86,11 +74,12 @@ impl iroh::protocol::ProtocolHandler for NshRemoteHandler {
         let remote_id = connection.remote_id();
         let remote_id_str = remote_id.to_string();
 
-        // Auth check
-        if !crate::runtime::remote_key::is_key_allowed(
-            &remote_id,
-            &self.allowed_keys.iter().cloned().collect::<Vec<_>>(),
-        ) {
+        // Auth check: reload config on every connection to pick up
+        // newly paired or revoked keys without restarting the daemon.
+        let allowed_keys = crate::config::Config::load()
+            .map(|c| c.remote.allowed_keys)
+            .unwrap_or_default();
+        if !crate::runtime::remote_key::is_key_allowed(&remote_id, &allowed_keys) {
             crate::runtime::global_daemon::log_daemon("iroh.rejected", &remote_id_str);
             connection.close(1u32.into(), b"unauthorized");
             return Ok(());

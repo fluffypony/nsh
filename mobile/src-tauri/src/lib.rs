@@ -7,6 +7,8 @@ struct AppState {
     secret_key: iroh::SecretKey,
     connected_node: Arc<Mutex<Option<iroh::EndpointId>>>,
     active_connection: Arc<Mutex<Option<iroh::endpoint::Connection>>>,
+    /// Active QUIC send stream for the attached session (for input/resize/detach).
+    active_send: Arc<Mutex<Option<iroh::endpoint::SendStream>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -20,6 +22,7 @@ pub fn run() {
                 secret_key: key,
                 connected_node: Arc::new(Mutex::new(None)),
                 active_connection: Arc::new(Mutex::new(None)),
+                active_send: Arc::new(Mutex::new(None)),
             };
             app.manage(state);
             Ok(())
@@ -118,6 +121,9 @@ async fn attach_session(
         _ => return Err("unexpected response".into()),
     };
 
+    // Store send stream for input/resize/detach commands
+    *state.active_send.lock().await = Some(send);
+
     // Spawn background task to stream terminal data to frontend
     let app_clone = app.clone();
     tokio::spawn(async move {
@@ -135,37 +141,47 @@ async fn attach_session(
         }
     });
 
-    // TODO: Store send stream in shared state for input forwarding
-    // For now, input forwarding requires additional state management
-
     Ok(initial_screen)
 }
 
 #[tauri::command]
 async fn send_input(
-    _state: tauri::State<'_, AppState>,
-    _bytes: Vec<u8>,
+    state: tauri::State<'_, AppState>,
+    bytes: Vec<u8>,
 ) -> Result<(), String> {
-    // TODO: write RemoteRequest::Input to the active QUIC send stream
-    Err("send_input not yet wired to active stream".into())
+    let mut send_lock = state.active_send.lock().await;
+    let send = send_lock.as_mut().ok_or("no active session")?;
+    let req = nsh_proto::RemoteRequest::Input { bytes };
+    nsh_proto::framing::write_message(send, &req)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn resize_terminal(
-    _state: tauri::State<'_, AppState>,
-    _cols: u16,
-    _rows: u16,
+    state: tauri::State<'_, AppState>,
+    cols: u16,
+    rows: u16,
 ) -> Result<(), String> {
-    // TODO: write RemoteRequest::Resize to the active QUIC send stream
-    Err("resize_terminal not yet wired to active stream".into())
+    let mut send_lock = state.active_send.lock().await;
+    let send = send_lock.as_mut().ok_or("no active session")?;
+    let req = nsh_proto::RemoteRequest::Resize { cols, rows };
+    nsh_proto::framing::write_message(send, &req)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn detach_session(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    // TODO: write RemoteRequest::Detach to the active QUIC send stream
-    Err("detach_session not yet wired to active stream".into())
+    let mut send_lock = state.active_send.lock().await;
+    if let Some(send) = send_lock.as_mut() {
+        let req = nsh_proto::RemoteRequest::Detach;
+        let _ = nsh_proto::framing::write_message(send, &req).await;
+    }
+    *send_lock = None;
+    Ok(())
 }
 
 fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretKey> {
