@@ -881,6 +881,29 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
     let last_activity = Arc::new(Mutex::new(Instant::now()));
     let restart_pending = Arc::new(AtomicBool::new(false));
 
+    // Start iroh remote endpoint if enabled
+    #[cfg(feature = "remote")]
+    let _iroh_handle = if config.remote.enabled {
+        match crate::runtime::remote::spawn_iroh_endpoint(&config) {
+            Ok(handle) => {
+                let node_id_str = crate::runtime::remote_key::load_or_create_secret_key()
+                    .map(|k| k.public().to_string())
+                    .unwrap_or_else(|_| "unknown".into());
+                log_daemon(
+                    "server.lifecycle",
+                    &format!("iroh remote enabled, EndpointId: {node_id_str}"),
+                );
+                Some(handle)
+            }
+            Err(e) => {
+                log_daemon("iroh.startup_error", &e.to_string());
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     spawn_background_monitors(Arc::clone(&restart_pending), Arc::clone(&active_sessions))?;
     run_global_accept_loop(
         &listener,
@@ -2543,6 +2566,30 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
                     }
                 });
             Some(DaemonResponse::ok())
+        }
+        #[cfg(feature = "remote")]
+        DaemonRequest::RemoteStatus => {
+            let config = crate::config::Config::load().unwrap_or_default();
+            let node_id = crate::runtime::remote_key::load_or_create_secret_key()
+                .ok()
+                .map(|k| k.public().to_string());
+            Some(DaemonResponse::ok_with_payload(
+                crate::runtime::remote::RemoteStatusPayload {
+                    enabled: config.remote.enabled,
+                    node_id,
+                    relay_url: Some("https://relay.iroh.network".into()),
+                    connected_peers: 0,
+                    attached_sessions: 0,
+                },
+            ))
+        }
+        #[cfg(feature = "remote")]
+        DaemonRequest::RemoteRevoke { node_id } => {
+            match crate::config::remove_remote_allowed_key(node_id) {
+                Ok(true) => Some(DaemonResponse::ok()),
+                Ok(false) => Some(DaemonResponse::error("key not found")),
+                Err(e) => Some(DaemonResponse::error(e.to_string())),
+            }
         }
         _ => None,
     }
