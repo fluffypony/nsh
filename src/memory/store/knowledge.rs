@@ -119,7 +119,7 @@ pub fn list_all(conn: &Connection) -> anyhow::Result<Vec<KnowledgeEntry>> {
     Ok(results)
 }
 
-#[cfg(test)]
+/// Retrieve and decrypt a single secret by ID.
 pub fn retrieve_secret(conn: &Connection, id: &str) -> anyhow::Result<String> {
     let encrypted: String = conn.query_row(
         "SELECT secret_value FROM knowledge_vault WHERE id = ?",

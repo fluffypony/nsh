@@ -16,7 +16,6 @@ pub fn encrypt_secret(plaintext: &str) -> anyhow::Result<String> {
     Ok(hex::encode(&combined))
 }
 
-#[cfg(test)]
 pub fn decrypt_secret(hex_data: &str) -> anyhow::Result<String> {
     use aes_gcm::Nonce;
 

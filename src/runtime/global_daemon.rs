@@ -2259,11 +2259,20 @@ fn execute_read(
                     let json: Vec<serde_json::Value> = results
                         .iter()
                         .map(|r| {
+                            let decrypted = if !r.secret_value.is_empty() {
+                                crate::memory::store::knowledge_crypto::decrypt_secret(
+                                    &r.secret_value,
+                                )
+                                .unwrap_or_else(|_| "[Decryption Failed]".into())
+                            } else {
+                                String::new()
+                            };
                             serde_json::json!({
                                 "id": r.id,
                                 "caption": r.caption,
                                 "entry_type": r.entry_type,
                                 "sensitivity": r.sensitivity.as_str(),
+                                "secret_value": decrypted,
                             })
                         })
                         .collect();
