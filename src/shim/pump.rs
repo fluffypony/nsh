@@ -333,7 +333,7 @@ impl ReplayBuffer {
     pub fn new(max_bytes: usize) -> Self {
         Self {
             buffer: std::collections::VecDeque::new(),
-            next_seq: 0,
+            next_seq: 1,  // Start at 1 so that last_seq=0 means "replay everything"
             max_bytes,
             current_bytes: 0,
         }
@@ -356,6 +356,7 @@ impl ReplayBuffer {
     }
 
     /// Get all entries after `last_seq`.
+    /// A `last_seq` of 0 means "replay everything" (seq numbers start at 1).
     pub fn replay_from(&self, last_seq: u64) -> Vec<(u64, Vec<u8>)> {
         self.buffer
             .iter()
