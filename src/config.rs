@@ -3454,6 +3454,8 @@ model = "gpt-4"
             "capture",
             "execution",
             "db",
+            "memory",
+            "remote",
         ] {
             assert!(
                 xml.contains(&format!("name=\"{section}\"")),
