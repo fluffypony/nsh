@@ -298,8 +298,8 @@ impl CaptureEngine {
 /// Shared state for remote client attachment to a PTY session.
 #[cfg(unix)]
 pub struct PtyRemoteState {
-    /// Raw PTY output subscribers. The pump loop sends; handler threads receive.
-    pub output_subscribers: Mutex<Vec<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    /// Raw PTY output subscribers with sequence numbers. The pump loop sends; handler threads receive.
+    pub output_subscribers: Mutex<Vec<std::sync::mpsc::SyncSender<(u64, Vec<u8>)>>>,
     /// Explicit count of attached clients (incremented on subscribe, decremented on unsubscribe).
     pub subscriber_count: std::sync::atomic::AtomicUsize,
     /// Write end of the remote input pipe. Handler threads write here;
@@ -340,6 +340,9 @@ impl ReplayBuffer {
     }
 
     pub fn push(&mut self, bytes: Vec<u8>) -> u64 {
+        if bytes.is_empty() {
+            return self.next_seq;
+        }
         let seq = self.next_seq;
         self.next_seq += 1;
         self.current_bytes += bytes.len();
@@ -364,7 +367,7 @@ impl ReplayBuffer {
 
 #[cfg(unix)]
 impl PtyRemoteState {
-    pub fn subscribe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    pub fn subscribe(&self) -> std::sync::mpsc::Receiver<(u64, Vec<u8>)> {
         let (tx, rx) = std::sync::mpsc::sync_channel(512);
         if let Ok(mut subs) = self.output_subscribers.lock() {
             subs.push(tx);
@@ -381,11 +384,14 @@ impl PtyRemoteState {
     }
 
     pub fn broadcast(&self, data: &[u8]) {
+        // Push to replay buffer first to get the authoritative sequence number
+        let seq = if let Ok(mut rb) = self.replay_buffer.lock() {
+            rb.push(data.to_vec())
+        } else {
+            0
+        };
         if let Ok(mut subs) = self.output_subscribers.lock() {
-            subs.retain(|tx| tx.try_send(data.to_vec()).is_ok());
-        }
-        if let Ok(mut rb) = self.replay_buffer.lock() {
-            rb.push(data.to_vec());
+            subs.retain(|tx| tx.try_send((seq, data.to_vec())).is_ok());
         }
     }
 
@@ -414,10 +420,12 @@ impl PtyRemoteState {
     /// Must be called AFTER unsubscribe() so the count is accurate.
     /// Clears control_lease unconditionally. When no subscribers remain and a remote
     /// client had resized the PTY, re-syncs the PTY to the local terminal's current size.
-    pub fn cleanup_on_disconnect(&self) {
-        // Always release control lease
+    pub fn cleanup_on_disconnect(&self, peer_id: Option<&str>) {
+        // Only clear lease if the disconnecting peer owns it
         if let Ok(mut lease) = self.control_lease.lock() {
-            *lease = None;
+            if peer_id.is_none() || lease.as_deref() == peer_id {
+                *lease = None;
+            }
         }
         // When the last client disconnects and a remote resize happened,
         // re-sync PTY size from the real terminal (stdin) to undo remote resize.
@@ -987,12 +995,57 @@ fn handle_daemon_connection_inner(
                     crate::daemon::DAEMON_PROTOCOL_VERSION
                 );
             }
-            // Check for StreamAttach before consuming stream into dispatch
-            if raw.get("type").and_then(|v| v.as_str()) == Some("stream_attach") {
-                // Drop the reader and reclaim the original stream for streaming mode
-                drop(reader);
-                handle_stream_attach(stream, remote_state);
-                return; // Don't send a normal response
+            // Check for streaming mode requests before consuming stream into dispatch
+            match raw.get("type").and_then(|v| v.as_str()) {
+                Some("stream_attach") => {
+                    let peer_id = raw.get("peer_id").and_then(|v| v.as_str()).map(String::from);
+                    drop(reader);
+                    handle_stream_attach(stream, remote_state, peer_id, None);
+                    return;
+                }
+                Some("stream_resume") => {
+                    let last_seq = raw.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let peer_id = raw.get("peer_id").and_then(|v| v.as_str()).map(String::from);
+                    drop(reader);
+                    handle_stream_attach(stream, remote_state, peer_id, Some(last_seq));
+                    return;
+                }
+                Some("stream_replay") => {
+                    let last_seq = raw.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let frames = if let Ok(rb) = remote_state.replay_buffer.lock() {
+                        rb.replay_from(last_seq)
+                    } else {
+                        vec![]
+                    };
+                    use base64::Engine;
+                    let frames_json: Vec<serde_json::Value> = frames
+                        .iter()
+                        .map(|(seq, bytes)| {
+                            serde_json::json!({
+                                "seq": seq,
+                                "data": base64::engine::general_purpose::STANDARD.encode(bytes)
+                            })
+                        })
+                        .collect();
+                    let next_seq = remote_state
+                        .replay_buffer
+                        .lock()
+                        .map(|rb| rb.next_seq)
+                        .unwrap_or(0);
+                    let resp = crate::daemon::DaemonResponse::ok_with_payload(serde_json::json!({
+                        "frames": frames_json,
+                        "next_seq": next_seq,
+                    }));
+                    drop(reader);
+                    if let Ok(json) = serde_json::to_string(&resp) {
+                        let mut writer = stream;
+                        let _ = writer.write_all(json.as_bytes());
+                        let _ = writer.write_all(b"\n");
+                        let _ = writer.flush();
+                    }
+                    return;
+                }
+                _ => {}
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
                 Ok(request) => {
@@ -1072,10 +1125,15 @@ fn read_length_prefixed_frame<R: std::io::Read>(r: &mut R) -> std::io::Result<Ve
 /// Handle a StreamAttach request: switch the Unix socket to streaming mode.
 /// After sending the initial snapshot, this function relays raw PTY output
 /// to the client and reads length-prefixed commands back.
+///
+/// Output uses binary framing: `[8-byte seq BE][4-byte len BE][payload]`
+/// so the remote handler can forward authoritative sequence numbers.
 #[cfg(unix)]
 fn handle_stream_attach(
     stream: std::os::unix::net::UnixStream,
     remote_state: &Arc<PtyRemoteState>,
+    peer_id: Option<String>,
+    resume_from_seq: Option<u64>,
 ) {
     use std::io::Write;
 
@@ -1083,26 +1141,69 @@ fn handle_stream_attach(
     stream.set_read_timeout(None).ok();
     stream.set_write_timeout(None).ok();
 
-    // Get screen snapshot for initial state
-    let snapshot = remote_state.get_screen_snapshot();
+    // Set control lease if peer_id provided and no current holder
+    if let Some(ref pid) = peer_id {
+        if let Ok(mut lease) = remote_state.control_lease.lock() {
+            if lease.is_none() {
+                *lease = Some(pid.clone());
+            }
+        }
+    }
 
     // Subscribe to raw output broadcast
     let output_rx = remote_state.subscribe();
 
-    // Send OK response with snapshot (using existing newline-delimited JSON)
-    use base64::Engine;
-    let snapshot_b64 = base64::engine::general_purpose::STANDARD.encode(&snapshot);
-    let response = crate::daemon::DaemonResponse::ok_with_payload(
-        serde_json::json!({ "snapshot": snapshot_b64 }),
-    );
-    if let Ok(json) = serde_json::to_string(&response) {
+    // If resuming, replay buffered frames first
+    if let Some(seq) = resume_from_seq {
+        let history = remote_state
+            .replay_buffer
+            .lock()
+            .map(|rb| rb.replay_from(seq))
+            .unwrap_or_default();
+
         let mut writer = &stream;
-        if writer.write_all(json.as_bytes()).is_err()
-            || writer.write_all(b"\n").is_err()
-            || writer.flush().is_err()
-        {
-            remote_state.unsubscribe();
-            return;
+        for (fseq, fbytes) in &history {
+            let mut header = [0u8; 12];
+            header[0..8].copy_from_slice(&fseq.to_be_bytes());
+            header[8..12].copy_from_slice(&(fbytes.len() as u32).to_be_bytes());
+            if writer.write_all(&header).is_err() || writer.write_all(fbytes).is_err() {
+                remote_state.unsubscribe();
+                return;
+            }
+        }
+
+        // For resume, send a minimal OK
+        let response = crate::daemon::DaemonResponse::ok_with_payload(
+            serde_json::json!({ "resumed": true }),
+        );
+        if let Ok(json) = serde_json::to_string(&response) {
+            if writer.write_all(json.as_bytes()).is_err()
+                || writer.write_all(b"\n").is_err()
+                || writer.flush().is_err()
+            {
+                remote_state.unsubscribe();
+                return;
+            }
+        }
+    } else {
+        // Get screen snapshot for initial state
+        let snapshot = remote_state.get_screen_snapshot();
+
+        // Send OK response with snapshot (using existing newline-delimited JSON)
+        use base64::Engine;
+        let snapshot_b64 = base64::engine::general_purpose::STANDARD.encode(&snapshot);
+        let response = crate::daemon::DaemonResponse::ok_with_payload(
+            serde_json::json!({ "snapshot": snapshot_b64 }),
+        );
+        if let Ok(json) = serde_json::to_string(&response) {
+            let mut writer = &stream;
+            if writer.write_all(json.as_bytes()).is_err()
+                || writer.write_all(b"\n").is_err()
+                || writer.flush().is_err()
+            {
+                remote_state.unsubscribe();
+                return;
+            }
         }
     }
 
@@ -1117,6 +1218,7 @@ fn handle_stream_attach(
         }
     };
     let remote_state_clone = Arc::clone(remote_state);
+    let peer_id_for_input = peer_id.clone();
 
     // Shared stop flag: set by the input thread when it exits (detach or error)
     // so the output relay can notice and stop promptly.
@@ -1137,7 +1239,10 @@ fn handle_stream_attach(
                             let allowed = remote_state_clone
                                 .control_lease
                                 .lock()
-                                .map(|l| l.is_none())
+                                .map(|l| {
+                                    l.is_none()
+                                        || l.as_deref() == peer_id_for_input.as_deref()
+                                })
                                 .unwrap_or(true);
                             if allowed {
                                 let _ = remote_state_clone.inject_input(&bytes);
@@ -1148,7 +1253,10 @@ fn handle_stream_attach(
                             let allowed = remote_state_clone
                                 .control_lease
                                 .lock()
-                                .map(|l| l.is_none())
+                                .map(|l| {
+                                    l.is_none()
+                                        || l.as_deref() == peer_id_for_input.as_deref()
+                                })
                                 .unwrap_or(true);
                             if allowed {
                                 // Mark that a remote resize occurred (for restore on disconnect)
@@ -1179,7 +1287,8 @@ fn handle_stream_attach(
         }
     };
 
-    // Main thread: reads from output subscriber, writes raw bytes to socket.
+    // Main thread: reads from output subscriber, writes binary-framed data to socket.
+    // Binary frame: [8-byte seq BE][4-byte len BE][payload]
     // Uses recv_timeout so it can check the stop flag when the PTY is idle.
     let mut writer = stream;
     loop {
@@ -1187,8 +1296,11 @@ fn handle_stream_attach(
             break;
         }
         match output_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(bytes) if !bytes.is_empty() => {
-                if writer.write_all(&bytes).is_err() {
+            Ok((seq, bytes)) if !bytes.is_empty() => {
+                let mut header = [0u8; 12];
+                header[0..8].copy_from_slice(&seq.to_be_bytes());
+                header[8..12].copy_from_slice(&(bytes.len() as u32).to_be_bytes());
+                if writer.write_all(&header).is_err() || writer.write_all(&bytes).is_err() {
                     break;
                 }
             }
@@ -1202,7 +1314,7 @@ fn handle_stream_attach(
     // cleanup (which restores winsize only when count reaches 0).
     remote_state.unsubscribe();
     input_thread.join().ok();
-    remote_state.cleanup_on_disconnect();
+    remote_state.cleanup_on_disconnect(peer_id.as_deref());
 }
 
 #[cfg(unix)]

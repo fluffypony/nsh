@@ -49,6 +49,10 @@ pub struct RemoteSessionInfo {
     pub label: Option<String>,
     pub last_cwd: Option<String>,
     pub last_command: Option<String>,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub running_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +61,19 @@ pub enum SessionEvent {
     Added(RemoteSessionInfo),
     Removed { session_id: String },
     Updated(RemoteSessionInfo),
+    CommandCompleted {
+        session_id: String,
+        command: String,
+        exit_code: i32,
+    },
+    AwaitingInput {
+        session_id: String,
+        prompt: String,
+    },
+    SecurityPrompt {
+        session_id: String,
+        message: String,
+    },
 }
 
 /// Length-prefixed binary framing for QUIC streams.

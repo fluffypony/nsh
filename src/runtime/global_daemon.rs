@@ -2573,13 +2573,14 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
             let node_id = crate::runtime::remote_key::load_or_create_secret_key()
                 .ok()
                 .map(|k| k.public().to_string());
+            let (peers, sessions) = crate::runtime::remote::live_peer_counts();
             Some(DaemonResponse::ok_with_payload(
                 crate::runtime::remote::RemoteStatusPayload {
                     enabled: config.remote.enabled,
                     node_id,
                     relay_url: Some("https://relay.iroh.network".into()),
-                    connected_peers: 0,
-                    attached_sessions: 0,
+                    connected_peers: peers,
+                    attached_sessions: sessions,
                 },
             ))
         }
