@@ -287,6 +287,120 @@ pub fn truncate_for_storage(output: &str, max_bytes: usize) -> String {
     }
 }
 
+impl CaptureEngine {
+    /// Return current visible screen as formatted VT100 bytes.
+    /// Used for the initial snapshot on remote attach.
+    pub fn get_screen_snapshot(&self) -> Vec<u8> {
+        self.parser.screen().contents_formatted()
+    }
+}
+
+/// Shared state for remote client attachment to a PTY session.
+#[cfg(unix)]
+pub struct PtyRemoteState {
+    /// Raw PTY output subscribers. The pump loop sends; handler threads receive.
+    pub output_subscribers: Mutex<Vec<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    /// Write end of the remote input pipe. Handler threads write here;
+    /// the pump loop has the read end in its poll_fds.
+    pub remote_input_write: std::os::fd::RawFd,
+    /// PTY master fd for resize ioctl.
+    pub pty_master_fd: std::os::fd::RawFd,
+    /// CaptureEngine for screen snapshots.
+    pub capture: Arc<Mutex<CaptureEngine>>,
+    /// Sequence-numbered ring buffer for reconnection replay.
+    pub replay_buffer: Mutex<ReplayBuffer>,
+}
+
+/// Ring buffer for reconnection replay.
+pub struct ReplayBuffer {
+    pub buffer: std::collections::VecDeque<(u64, Vec<u8>)>,
+    pub next_seq: u64,
+    pub max_bytes: usize,
+    pub current_bytes: usize,
+}
+
+impl ReplayBuffer {
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            buffer: std::collections::VecDeque::new(),
+            next_seq: 0,
+            max_bytes,
+            current_bytes: 0,
+        }
+    }
+
+    pub fn push(&mut self, bytes: Vec<u8>) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.current_bytes += bytes.len();
+        self.buffer.push_back((seq, bytes));
+        while self.current_bytes > self.max_bytes && !self.buffer.is_empty() {
+            if let Some((_, old)) = self.buffer.pop_front() {
+                self.current_bytes -= old.len();
+            }
+        }
+        seq
+    }
+
+    /// Get all entries after `last_seq`.
+    pub fn replay_from(&self, last_seq: u64) -> Vec<(u64, Vec<u8>)> {
+        self.buffer
+            .iter()
+            .filter(|(seq, _)| *seq > last_seq)
+            .cloned()
+            .collect()
+    }
+}
+
+#[cfg(unix)]
+impl PtyRemoteState {
+    pub fn subscribe(&self) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(512);
+        if let Ok(mut subs) = self.output_subscribers.lock() {
+            subs.push(tx);
+        }
+        rx
+    }
+
+    pub fn broadcast(&self, data: &[u8]) {
+        if let Ok(mut subs) = self.output_subscribers.lock() {
+            subs.retain(|tx| tx.try_send(data.to_vec()).is_ok());
+        }
+        if let Ok(mut rb) = self.replay_buffer.lock() {
+            rb.push(data.to_vec());
+        }
+    }
+
+    pub fn inject_input(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(self.remote_input_write) };
+        rustix::io::write(fd, bytes)
+            .map(|_| ())
+            .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let ret = unsafe { libc::ioctl(self.pty_master_fd, libc::TIOCSWINSZ, &ws) };
+        if ret < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn get_screen_snapshot(&self) -> Vec<u8> {
+        if let Ok(eng) = self.capture.lock() {
+            eng.get_screen_snapshot()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 fn sanitize_input(bytes: &[u8]) -> Vec<u8> {
     bytes
         .iter()
@@ -432,6 +546,31 @@ pub fn pump_loop(
         .or_else(|_| std::env::var("NSH_SESSION_ID"))
         .unwrap_or_else(|_| "default".into());
 
+    // Create remote input pipe for remote clients to inject keystrokes
+    let (remote_input_read, remote_input_write) = rustix::pipe::pipe().expect("remote input pipe");
+    {
+        use std::os::fd::AsRawFd;
+        // Set read end to non-blocking
+        let flags = unsafe { libc::fcntl(remote_input_read.as_raw_fd(), libc::F_GETFL) };
+        if flags >= 0 {
+            unsafe {
+                libc::fcntl(
+                    remote_input_read.as_raw_fd(),
+                    libc::F_SETFL,
+                    flags | libc::O_NONBLOCK,
+                );
+            }
+        }
+    }
+
+    let remote_state = Arc::new(PtyRemoteState {
+        output_subscribers: Mutex::new(Vec::new()),
+        remote_input_write: std::os::fd::AsRawFd::as_raw_fd(&remote_input_write),
+        pty_master_fd: pty_master_raw,
+        capture: Arc::clone(&capture),
+        replay_buffer: Mutex::new(ReplayBuffer::new(1024 * 1024)), // 1 MB ring buffer
+    });
+
     let nsh_dir = crate::config::Config::nsh_dir();
     let _ = std::fs::create_dir_all(&nsh_dir);
 
@@ -512,6 +651,13 @@ pub fn pump_loop(
             PollFd::new(&pty_master, pty_flags),
         ];
 
+        // Remote input pipe: index 2
+        let remote_input_idx = poll_fds.len();
+        poll_fds.push(PollFd::from_borrowed_fd(
+            unsafe { BorrowedFd::borrow_raw(remote_input_read.as_raw_fd()) },
+            PollFlags::IN,
+        ));
+
         let daemon_idx = daemon_listener.as_ref().map(|l| {
             let idx = poll_fds.len();
             poll_fds.push(PollFd::from_borrowed_fd(
@@ -538,6 +684,7 @@ pub fn pump_loop(
                     &pty_master,
                     &mut buf,
                     &capture,
+                    &remote_state,
                     &mut last_activity,
                     &mut last_flush,
                     &scrollback_path,
@@ -545,6 +692,20 @@ pub fn pump_loop(
                     &mut pending_pty_write,
                 ) {
                     break;
+                }
+
+                // Read remote input from pipe (injected by remote clients)
+                if poll_fds[remote_input_idx].revents().contains(PollFlags::IN) {
+                    let mut remote_buf = [0u8; 4096];
+                    match rustix::io::read(
+                        unsafe { BorrowedFd::borrow_raw(remote_input_read.as_raw_fd()) },
+                        &mut remote_buf,
+                    ) {
+                        Ok(n) if n > 0 => {
+                            pending_pty_write.extend_from_slice(&remote_buf[..n]);
+                        }
+                        _ => {}
+                    }
                 }
 
                 if let (Some(idx), Some(l)) = (daemon_idx, daemon_listener.as_ref())
@@ -556,6 +717,7 @@ pub fn pump_loop(
                         max_output_bytes,
                         &active_conns,
                         &session_id,
+                        &remote_state,
                     );
                 }
             }
@@ -584,6 +746,7 @@ fn handle_io(
     pty_master: &BorrowedFd,
     buf: &mut [u8],
     capture: &Mutex<CaptureEngine>,
+    remote_state: &Arc<PtyRemoteState>,
     last_activity: &mut Instant,
     last_flush: &mut Instant,
     scrollback_path: &std::path::Path,
@@ -635,6 +798,11 @@ fn handle_io(
             Ok(0) => return true,
             Ok(n) => {
                 let _ = write_all(real_stdout, &buf[..n]);
+
+                // Broadcast raw bytes to remote subscribers BEFORE capture processing.
+                // This preserves full terminal fidelity (alt-screen, escape sequences).
+                remote_state.broadcast(&buf[..n]);
+
                 *last_activity = Instant::now();
                 let redacting = redact_active_path.exists();
                 if !redacting && let Ok(mut eng) = capture.lock() {
@@ -680,6 +848,7 @@ fn handle_daemon_connection(
     max_output_bytes: usize,
     active_conns: &Arc<AtomicUsize>,
     session_id: &str,
+    remote_state: &Arc<PtyRemoteState>,
 ) {
     const MAX_CONCURRENT: usize = 8;
 
@@ -695,6 +864,7 @@ fn handle_daemon_connection(
 
         let capture = Arc::clone(capture);
         let active = Arc::clone(active_conns);
+        let remote = Arc::clone(remote_state);
         active.fetch_add(1, Ordering::Relaxed);
 
         match std::thread::Builder::new()
@@ -702,7 +872,13 @@ fn handle_daemon_connection(
             .spawn({
                 let session = session_id.to_string();
                 move || {
-                    handle_daemon_connection_inner(stream, &capture, max_output_bytes, &session);
+                    handle_daemon_connection_inner(
+                        stream,
+                        &capture,
+                        max_output_bytes,
+                        &session,
+                        &remote,
+                    );
                     active.fetch_sub(1, Ordering::Relaxed);
                 }
             }) {
@@ -721,6 +897,7 @@ fn handle_daemon_connection_inner(
     capture: &Mutex<CaptureEngine>,
     max_output_bytes: usize,
     session_id: &str,
+    remote_state: &Arc<PtyRemoteState>,
 ) {
     use std::io::{BufRead, BufReader, Read, Write};
 
@@ -760,6 +937,13 @@ fn handle_daemon_connection_inner(
                     "daemon: client protocol version {client_version} > server {}",
                     crate::daemon::DAEMON_PROTOCOL_VERSION
                 );
+            }
+            // Check for StreamAttach before consuming stream into dispatch
+            if raw.get("type").and_then(|v| v.as_str()) == Some("stream_attach") {
+                // Drop the reader and reclaim the original stream for streaming mode
+                drop(reader);
+                handle_stream_attach(stream, remote_state);
+                return; // Don't send a normal response
             }
             match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
                 Ok(request) => {
@@ -816,6 +1000,98 @@ fn handle_daemon_connection_inner(
             let _ = writer.shutdown(std::net::Shutdown::Write);
         }
     }
+}
+
+/// Handle a StreamAttach request: switch the Unix socket to streaming mode.
+/// After sending the initial snapshot, this function relays raw PTY output
+/// to the client and reads length-prefixed commands back.
+#[cfg(unix)]
+fn handle_stream_attach(
+    stream: std::os::unix::net::UnixStream,
+    remote_state: &Arc<PtyRemoteState>,
+) {
+    use std::io::Write;
+
+    // Remove timeouts for streaming mode
+    stream.set_read_timeout(None).ok();
+    stream.set_write_timeout(None).ok();
+
+    // Get screen snapshot for initial state
+    let snapshot = remote_state.get_screen_snapshot();
+
+    // Subscribe to raw output broadcast
+    let output_rx = remote_state.subscribe();
+
+    // Send OK response with snapshot (using existing newline-delimited JSON)
+    use base64::Engine;
+    let snapshot_b64 = base64::engine::general_purpose::STANDARD.encode(&snapshot);
+    let response = crate::daemon::DaemonResponse::ok_with_payload(
+        serde_json::json!({ "snapshot": snapshot_b64 }),
+    );
+    if let Ok(json) = serde_json::to_string(&response) {
+        let mut writer = &stream;
+        if writer.write_all(json.as_bytes()).is_err()
+            || writer.write_all(b"\n").is_err()
+            || writer.flush().is_err()
+        {
+            return;
+        }
+    }
+
+    // === Protocol mode switch: now streaming ===
+
+    // Clone the stream for the input-reading thread
+    let stream_clone = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let remote_state_clone = Arc::clone(remote_state);
+
+    // Spawn input thread: reads length-prefixed commands from the socket
+    let input_thread = std::thread::Builder::new()
+        .name("remote-input".into())
+        .spawn(move || {
+            let mut reader = stream_clone;
+            loop {
+                match nsh_proto::sync_framing::read_frame(&mut reader) {
+                    Ok(data) => match serde_json::from_slice::<crate::daemon::DaemonRequest>(&data)
+                    {
+                        Ok(crate::daemon::DaemonRequest::StreamInput { bytes }) => {
+                            let _ = remote_state_clone.inject_input(&bytes);
+                        }
+                        Ok(crate::daemon::DaemonRequest::StreamResize { cols, rows }) => {
+                            let _ = remote_state_clone.resize(cols, rows);
+                        }
+                        Ok(crate::daemon::DaemonRequest::StreamDetach) => {
+                            break;
+                        }
+                        _ => {} // Unknown command, ignore
+                    },
+                    Err(_) => break, // Socket closed or error
+                }
+            }
+        });
+
+    let input_thread = match input_thread {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+
+    // Main thread: reads from output subscriber, writes raw bytes to socket
+    let mut writer = stream;
+    loop {
+        match output_rx.recv() {
+            Ok(bytes) if !bytes.is_empty() => {
+                if writer.write_all(&bytes).is_err() {
+                    break;
+                }
+            }
+            _ => break, // Channel closed
+        }
+    }
+
+    // Clean up
+    input_thread.join().ok();
 }
 
 #[cfg(unix)]

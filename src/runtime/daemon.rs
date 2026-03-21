@@ -341,6 +341,32 @@ pub enum DaemonRequest {
     CLIProxyApiRestart,
     StopCLIProxyApi,
     CheckForUpdates,
+    // ── Remote access (PTY streaming) ─────────────────────
+    /// Upgrade this Unix socket connection to a bidirectional PTY stream.
+    /// After the OK response, the protocol switches to streaming mode.
+    StreamAttach {
+        #[serde(rename = "session_id", alias = "session")]
+        session: String,
+    },
+    /// (Post-StreamAttach) Inject input bytes into the PTY.
+    StreamInput {
+        bytes: Vec<u8>,
+    },
+    /// (Post-StreamAttach) Resize the PTY.
+    StreamResize {
+        cols: u16,
+        rows: u16,
+    },
+    /// (Post-StreamAttach) End the streaming session.
+    StreamDetach,
+    /// Control-plane request: get remote endpoint status.
+    #[cfg(feature = "remote")]
+    RemoteStatus,
+    /// Control-plane request: revoke a paired device.
+    #[cfg(feature = "remote")]
+    RemoteRevoke {
+        node_id: String,
+    },
 }
 
 fn default_max_lines() -> usize {
