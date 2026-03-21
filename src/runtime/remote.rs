@@ -18,6 +18,9 @@ static ATTACHED_SESSIONS: std::sync::LazyLock<Arc<AtomicU32>> =
 static ACTIVE_CONNECTIONS: std::sync::LazyLock<
     Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
 > = std::sync::LazyLock::new(|| Arc::new(std::sync::Mutex::new(Vec::new())));
+/// Cached relay URL from the iroh endpoint, populated at startup.
+static HOME_RELAY_URL: std::sync::LazyLock<std::sync::Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// Send a best-effort state push to all connected peers via unreliable datagrams.
 pub fn broadcast_datagram(payload: &[u8]) {
@@ -31,6 +34,11 @@ pub fn live_peer_counts() -> (u32, u32) {
         CONNECTED_PEERS.load(Ordering::Relaxed),
         ATTACHED_SESSIONS.load(Ordering::Relaxed),
     )
+}
+
+/// Return the cached home relay URL, populated when the iroh endpoint starts.
+pub fn home_relay_url() -> Option<String> {
+    HOME_RELAY_URL.lock().ok().and_then(|g| g.clone())
 }
 
 /// Start the iroh remote endpoint in a background thread.
@@ -100,6 +108,12 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
         .await?;
 
     let node_id = endpoint.id();
+    // Cache the home relay URL for status reporting
+    if let Some(relay) = endpoint.addr().relay_urls().next() {
+        if let Ok(mut cached) = HOME_RELAY_URL.lock() {
+            *cached = Some(relay.to_string());
+        }
+    }
     crate::runtime::global_daemon::log_daemon("iroh.started", &format!("EndpointId: {node_id}"));
 
     let handler = NshRemoteHandler;

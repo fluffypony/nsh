@@ -904,6 +904,34 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         None
     };
 
+    // Initialize memory sync engine if remote is enabled (scaffolding — engine is a placeholder)
+    #[cfg(feature = "remote")]
+    let _memory_sync = if config.remote.enabled {
+        match crate::runtime::remote_key::load_or_create_secret_key() {
+            Ok(secret_key) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build();
+                match rt {
+                    Ok(rt) => match rt.block_on(crate::memory::sync::MemorySyncEngine::new(&secret_key)) {
+                        Ok(engine) => Some(engine),
+                        Err(e) => {
+                            tracing::warn!("memory sync init failed: {e}");
+                            None
+                        }
+                    },
+                    Err(_) => None,
+                }
+            }
+            Err(e) => {
+                tracing::warn!("memory sync key load failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     spawn_background_monitors(Arc::clone(&restart_pending), Arc::clone(&active_sessions))?;
     run_global_accept_loop(
         &listener,
@@ -2588,7 +2616,7 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
                 crate::runtime::remote::RemoteStatusPayload {
                     enabled: config.remote.enabled,
                     node_id,
-                    relay_url: Some("https://relay.iroh.network".into()),
+                    relay_url: crate::runtime::remote::home_relay_url(),
                     connected_peers: peers,
                     attached_sessions: sessions,
                 },
