@@ -67,7 +67,7 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
                 .create_new(true)
                 .mode(0o600)
                 .open(&key_path)
-                .map(|mut f| { let _ = f.write_all(&key); })
+                .and_then(|mut f| f.write_all(&key))
         }
         #[cfg(not(unix))]
         {
@@ -76,11 +76,11 @@ fn get_or_create_key() -> anyhow::Result<[u8; 32]> {
                 .write(true)
                 .create_new(true)
                 .open(&key_path)
-                .map(|mut f| {
-                    let _ = f.write_all(&key);
-                    let mut perms = std::fs::metadata(&key_path).unwrap().permissions();
+                .and_then(|mut f| {
+                    f.write_all(&key)?;
+                    let mut perms = std::fs::metadata(&key_path)?.permissions();
                     perms.set_readonly(true);
-                    let _ = std::fs::set_permissions(&key_path, perms);
+                    std::fs::set_permissions(&key_path, perms)
                 })
         }
     };

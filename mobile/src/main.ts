@@ -147,10 +147,12 @@ function renderTerminalView(sessionId: string) {
   });
 
   document.getElementById('reconnect-btn')!.addEventListener('click', async () => {
-    disposeTerminal();
     try {
-      await invoke('resume_session', { sessionId });
-      initTerminal('terminal-container', sessionId);
+      // Detach current session first
+      await invoke('detach_session');
+      disposeTerminal();
+      // Re-attach fresh (resume uses last_seq internally)
+      renderTerminalView(sessionId);
     } catch (e) {
       console.error('Reconnect failed:', e);
       renderSessionsView();

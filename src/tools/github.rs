@@ -354,7 +354,7 @@ mod tests {
 
         assert_eq!(owner, "openai");
         assert_eq!(repo, "openai-rust");
-        assert_eq!(path.as_deref(), Some("main/README.md"));
+        assert_eq!(path.as_deref(), Some("README.md"));
     }
 
     #[test]

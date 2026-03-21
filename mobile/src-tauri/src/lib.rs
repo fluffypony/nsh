@@ -16,6 +16,8 @@ struct AppState {
     last_seq_map: Arc<Mutex<HashMap<String, u64>>>,
     /// Background reader task handle — aborted before spawning a new one.
     reader_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Background datagram receiver task — aborted on disconnect.
+    datagram_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -34,6 +36,7 @@ pub fn run() {
                 active_session_id: Arc::new(Mutex::new(None)),
                 last_seq_map: Arc::new(Mutex::new(HashMap::new())),
                 reader_task: Arc::new(Mutex::new(None)),
+                datagram_task: Arc::new(Mutex::new(None)),
             };
             app.manage(state);
             Ok(())
@@ -82,10 +85,15 @@ async fn connect_to_daemon(
     }
     .map_err(|e| e.to_string())?;
 
+    // Abort previous datagram task if reconnecting
+    if let Some(handle) = state.datagram_task.lock().await.take() {
+        handle.abort();
+    }
+
     // Spawn datagram receiver for real-time state pushes
     let conn_for_datagrams = connection.clone();
     let app_dg = app.clone();
-    tokio::spawn(async move {
+    let dg_handle = tokio::spawn(async move {
         loop {
             match conn_for_datagrams.read_datagram().await {
                 Ok(bytes) => {
@@ -99,6 +107,7 @@ async fn connect_to_daemon(
             }
         }
     });
+    *state.datagram_task.lock().await = Some(dg_handle);
 
     *state.connected_node.lock().await = Some(node_id);
     *state.active_connection.lock().await = Some(connection);
@@ -110,9 +119,18 @@ async fn connect_to_daemon(
 async fn disconnect_from_daemon(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    // Abort background tasks before dropping connection
+    if let Some(handle) = state.reader_task.lock().await.take() {
+        handle.abort();
+    }
+    if let Some(handle) = state.datagram_task.lock().await.take() {
+        handle.abort();
+    }
     *state.active_send.lock().await = None;
     *state.active_session_id.lock().await = None;
-    *state.active_connection.lock().await = None;
+    if let Some(conn) = state.active_connection.lock().await.take() {
+        conn.close(0u32.into(), b"disconnect");
+    }
     *state.connected_node.lock().await = None;
     Ok(())
 }
