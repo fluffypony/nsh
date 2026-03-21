@@ -14,6 +14,15 @@ pub enum RemoteRequest {
     Detach,
     /// Warm reconnect: resume from a known sequence number.
     Resume { session_id: String, last_seq: u64 },
+    /// Execute a natural-language query from the mobile app.
+    Query {
+        session_id: String,
+        query: String,
+        #[serde(default)]
+        think: bool,
+        #[serde(default)]
+        private: bool,
+    },
 }
 
 /// Messages sent from the daemon to the mobile app over QUIC.
@@ -38,6 +47,12 @@ pub enum RemoteResponse {
         message: String,
     },
     Ok,
+    QueryComplete {
+        response: String,
+    },
+    QueryError {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

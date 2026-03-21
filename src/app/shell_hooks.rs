@@ -1,4 +1,21 @@
 //! Shell hook-related constants and helpers.
+//!
+//! ## Future Architecture: Persistent Socket Event Subscription
+//!
+//! The current `pending_{session}.json` file approach can be replaced with
+//! a persistent Unix socket subscription from the shell process to the
+//! per-session daemon. The shell would connect once at init and receive
+//! push-based events (pending commands, hook reload notices, notifications)
+//! as framed messages, eliminating filesystem polling and race conditions.
+//!
+//! Protocol sketch:
+//!   - Shell connects to `~/.nsh/events_{session_id}.sock` at init
+//!   - Daemon pushes: `{"type":"pending_command","command":"...","autorun":true}`
+//!   - Shell reads from fd in prompt hook (non-blocking)
+//!   - Bash: coproc; Zsh: zpty/zle -F; Fish: background job
+//!
+//! This naturally evolves the JSON file approach without requiring a
+//! separate transport layer for each future real-time feature.
 
 /// Clean up pending files for a session.
 pub fn cleanup_pending_files(session_id: &str) {

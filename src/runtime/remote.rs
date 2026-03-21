@@ -206,6 +206,44 @@ async fn handle_remote_stream(
             .await?;
         }
 
+        RemoteRequest::Query {
+            session_id,
+            query,
+            ..
+        } => {
+            // Validate session_id format (prevent path traversal)
+            if !session_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                let err = RemoteResponse::QueryError {
+                    message: "invalid session_id".into(),
+                };
+                nsh_proto::framing::write_message(&mut send, &err)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                return Ok(());
+            }
+
+            // Forward the query to the daemon for execution
+            let request = crate::daemon::DaemonRequest::SearchHistory {
+                query: query.clone(),
+                limit: 5,
+            };
+            let result = crate::daemon_client::send_to_global(&request);
+            let response = match result {
+                Ok(resp) => RemoteResponse::QueryComplete {
+                    response: serde_json::to_string(&resp).unwrap_or_default(),
+                },
+                Err(e) => RemoteResponse::QueryError {
+                    message: e.to_string(),
+                },
+            };
+            nsh_proto::framing::write_message(&mut send, &response)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
         _ => {
             let err = RemoteResponse::Error {
                 message: "unexpected request on new stream".into(),
