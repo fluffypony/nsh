@@ -530,12 +530,12 @@ pub(crate) fn detect_machine_info() -> MachineDetails {
 fn detect_cpu_model() -> String {
     #[cfg(target_os = "macos")]
     {
-        return run_command_with_timeout(
+        run_command_with_timeout(
             "sysctl",
             &["-n", "machdep.cpu.brand_string"],
             Duration::from_secs(2),
         )
-        .unwrap_or_default();
+        .unwrap_or_default()
     }
     #[cfg(target_os = "linux")]
     {
@@ -609,7 +609,7 @@ fn detect_gpu_info() -> String {
                 return chipset;
             }
         }
-        return String::new();
+        String::new()
     }
     #[cfg(target_os = "linux")]
     {
@@ -734,7 +734,7 @@ pub(crate) fn detect_disk_info() -> Vec<DiskInfo> {
                 });
             }
         }
-        return out;
+        out
     }
     #[cfg(target_os = "windows")]
     {
@@ -848,11 +848,11 @@ fn detect_memory_usage() -> MemoryUsage {
             available = pages.saturating_mul(page_size);
         }
         let used = total.saturating_sub(available);
-        return MemoryUsage {
+        MemoryUsage {
             total: format_size_human(total),
             used: format_size_human(used),
             available: format_size_human(available),
-        };
+        }
     }
     #[cfg(target_os = "windows")]
     {
@@ -1019,7 +1019,7 @@ fn detect_network_info() -> Vec<NetworkInterface> {
             }
         }
         entries.truncate(5);
-        return entries;
+        entries
     }
     #[cfg(target_os = "windows")]
     {
@@ -1079,7 +1079,7 @@ pub(crate) fn detect_locale_detail() -> String {
                 Some(format!("{key}={value}"))
             })
             .collect::<Vec<_>>();
-        return parts.join(" ");
+        parts.join(" ")
     }
     #[cfg(target_os = "windows")]
     {
