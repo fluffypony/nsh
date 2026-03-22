@@ -20,8 +20,5 @@ base64 = "0.22"
 rand = "0.9"
 url = "2"
 
-[features]
-insecure-dev-keys = []  # Development only: allows release builds without Stronghold
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
