@@ -244,34 +244,46 @@ pub fn ensure_daemon_version_matches() -> anyhow::Result<()> {
     let our_version = env!("CARGO_PKG_VERSION");
     let our_build = env!("NSH_BUILD_VERSION");
     let our_fingerprint = env!("NSH_BUILD_FINGERPRINT");
-    if let Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) =
-        send_to_global(&crate::daemon::DaemonRequest::Status)
-    {
-        let daemon_ver = d.get("version").and_then(|v| v.as_str());
-        let daemon_build = d.get("build_version").and_then(|v| v.as_str());
-        let daemon_fingerprint = d.get("build_fingerprint").and_then(|v| v.as_str());
+    match send_to_global(&crate::daemon::DaemonRequest::Status) {
+        Ok(crate::daemon::DaemonResponse::Ok { data: Some(d) }) => {
+            let daemon_ver = d.get("version").and_then(|v| v.as_str());
+            let daemon_build = d.get("build_version").and_then(|v| v.as_str());
+            let daemon_fingerprint = d.get("build_fingerprint").and_then(|v| v.as_str());
 
-        let version_mismatch = daemon_ver != Some(our_version);
-        let build_mismatch = match daemon_build {
-            Some(b) => b != our_build,
-            None => false, // if build not reported, don't flap; version check still applies
-        };
-        let fingerprint_mismatch = match daemon_fingerprint {
-            Some(f) => f != our_fingerprint,
-            None => true, // Missing fingerprint = assume mismatch (old daemon)
-        };
+            let version_mismatch = daemon_ver != Some(our_version);
+            let build_mismatch = match daemon_build {
+                Some(b) => b != our_build,
+                None => false,
+            };
+            let fingerprint_mismatch = match daemon_fingerprint {
+                Some(f) => f != our_fingerprint,
+                None => true,
+            };
 
-        if version_mismatch || build_mismatch || fingerprint_mismatch {
+            if version_mismatch || build_mismatch || fingerprint_mismatch {
+                tracing::info!(
+                    "daemon version/build mismatch detected, performing stop+restart (ver={} build={} fp={})",
+                    version_mismatch,
+                    build_mismatch,
+                    fingerprint_mismatch,
+                );
+                stop_global_daemon();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                ensure_global_daemon_running()?;
+            }
+        }
+        Err(e) if is_global_daemon_running() => {
+            // Daemon is running but we can't parse its response — likely an older
+            // JSON-speaking daemon that's incompatible with our MessagePack framing.
+            // Restart it so it upgrades to the current binary.
             tracing::info!(
-                "daemon version/build mismatch detected, performing stop+restart (ver={} build={} fp={})",
-                version_mismatch,
-                build_mismatch,
-                fingerprint_mismatch,
+                "daemon communication failed ({e}), likely protocol mismatch — restarting"
             );
             stop_global_daemon();
             std::thread::sleep(std::time::Duration::from_millis(500));
             ensure_global_daemon_running()?;
         }
+        _ => {}
     }
     Ok(())
 }
