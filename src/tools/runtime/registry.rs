@@ -684,9 +684,8 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             description: "End the autonomous loop. This is the ONLY tool that stops \
                           execution. You MUST call this when the task is complete or \
                           when you've decided further progress is not possible. \
-                          Provide a reason: explain what was accomplished (success) \
-                          or why you cannot continue (failure). Never call other \
-                          tools after calling done in the same turn."
+                          Provide a structured summary of what was done. Never call \
+                          other tools after calling done in the same turn."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -695,6 +694,26 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description": "Why the loop is ending: what was accomplished, \
                                         or why you cannot proceed further"
+                    },
+                    "completed_items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of items from the user's request that were completed"
+                    },
+                    "deferred_items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Items that were identified but deferred as out of scope"
+                    },
+                    "decisions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Key decisions made during execution (e.g., which alternative was chosen)"
+                    },
+                    "files_changed": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of files that were created or modified"
                     }
                 },
                 "required": ["result"]
