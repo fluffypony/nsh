@@ -1004,9 +1004,9 @@ mod tests {
     }
 
     #[test]
-    fn thinking_model_name_gemini_3_not_affected() {
+    fn thinking_model_name_gemini_3_think() {
         let result = thinking_model_name("google/gemini-3-pro", true);
-        assert_eq!(result, "google/gemini-3-pro");
+        assert_eq!(result, "google/gemini-3-pro:thinking");
     }
 
     #[test]
