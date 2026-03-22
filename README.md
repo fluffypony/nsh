@@ -233,7 +233,7 @@ disable_tools = ["legacy_", "danger_"]
 inject_data = "cf_inject_data"
 ```
 
-**As a server:** `nsh mcp-serve` runs nsh as a JSON-RPC 2.0 MCP server over stdio, exposing a read-only subset of tools to external clients like Claude Desktop, Cursor, VS Code Copilot, or Windsurf. The exposed tools are: `search_history`, `search_memory`, `read_file`, `grep_file`, `list_directory`, `glob`, `man_page`, `skill_exists`, and `run_command`.
+**As a server:** `nsh mcp-serve` runs nsh as a JSON-RPC 2.0 MCP server over stdio, exposing a restricted subset of tools to external clients like Claude Desktop, Cursor, VS Code Copilot, or Windsurf. The exposed tools are: `search_history`, `search_memory`, `read_file`, `grep_file`, `list_directory`, `glob`, `man_page`, `skill_exists`, and `run_command`.
 
 ### Custom skills
 
