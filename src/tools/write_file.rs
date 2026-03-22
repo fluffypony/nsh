@@ -141,39 +141,20 @@ pub(crate) fn backup_to_trash(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub(crate) fn print_diff(old: &str, new: &str) {
-    let red = "\x1b[31m";
-    let green = "\x1b[32m";
-    let reset = "\x1b[0m";
-
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    let max = old_lines.len().max(new_lines.len()).min(100);
-
-    for i in 0..max {
-        let ol = old_lines.get(i).copied();
-        let nl = new_lines.get(i).copied();
-
-        match (ol, nl) {
-            (Some(o), Some(n)) if o == n => {
-                eprintln!("  {o}");
-            }
-            (Some(o), Some(n)) => {
-                eprintln!("{red}- {o}{reset}");
-                eprintln!("{green}+ {n}{reset}");
-            }
-            (Some(o), None) => {
-                eprintln!("{red}- {o}{reset}");
-            }
-            (None, Some(n)) => {
-                eprintln!("{green}+ {n}{reset}");
-            }
-            (None, None) => {}
+    let diff = similar::TextDiff::from_lines(old, new);
+    let mut printed = 0;
+    for change in diff.iter_all_changes() {
+        if printed >= 100 {
+            eprintln!("  ... (diff truncated)");
+            break;
         }
-    }
-
-    let total = old_lines.len().max(new_lines.len());
-    if total > 100 {
-        eprintln!("  ... ({} more lines)", total - 100);
+        let (color, sign) = match change.tag() {
+            similar::ChangeTag::Delete => ("\x1b[31m", "- "),
+            similar::ChangeTag::Insert => ("\x1b[32m", "+ "),
+            similar::ChangeTag::Equal => ("\x1b[0m", "  "),
+        };
+        eprint!("{}{}{}\x1b[0m", color, sign, change);
+        printed += 1;
     }
 }
 

@@ -77,6 +77,9 @@ hex = "0.4"
 # String similarity (episodic dedup)
 strsim = "0.11"
 
+# Myers diff for write_file
+similar = "2"
+
 # Token counting (cl100k_base)
 tiktoken-rs = "0.9"
 
