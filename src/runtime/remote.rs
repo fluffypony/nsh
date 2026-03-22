@@ -159,10 +159,10 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
                         git_branch: truncate(session.git_branch.clone(), 100),
                         running_command: truncate(session.running_command.clone(), 200),
                     };
-                    if let Ok(bytes) = rmp_serde::to_vec_named(&update) {
-                        if bytes.len() < 1200 {
-                            broadcast_datagram(&bytes);
-                        }
+                    if let Ok(bytes) = rmp_serde::to_vec_named(&update)
+                        && bytes.len() < 1200
+                    {
+                        broadcast_datagram(&bytes);
                     }
                 }
             }

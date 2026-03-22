@@ -2132,6 +2132,7 @@ use rusqlite::params;
             .unwrap();
         assert!(id > 0);
 
+        #[allow(clippy::type_complexity)]
         let (model, provider, input, output, cost, gen_id, query): (String, String, Option<u32>, Option<u32>, Option<f64>, Option<String>, Option<String>) = db.conn.query_row(
             "SELECT model, provider, input_tokens, output_tokens, cost_usd, generation_id, query_text FROM usage WHERE id = ?",
             params![id], |row| Ok((

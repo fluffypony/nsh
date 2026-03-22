@@ -68,6 +68,7 @@ impl CoreLabel {
 
     /// All core blocks share the same character limit.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn default_limit(&self) -> usize {
         5000
     }

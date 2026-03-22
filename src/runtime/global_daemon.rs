@@ -669,6 +669,7 @@ fn spawn_sidecar_update_checker() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_global_accept_loop(
     listener: &std::os::unix::net::UnixListener,
     write_tx: &mpsc::Sender<WriteCommand>,

@@ -81,10 +81,10 @@ impl OpenAICompatProvider {
                     if let Some(func) = tool.get_mut("function") {
                         func["strict"] = json!(true);
                         // OpenAI strict mode requires additionalProperties: false
-                        if let Some(params) = func.get_mut("parameters") {
-                            if params.get("additionalProperties").is_none() {
-                                params["additionalProperties"] = json!(false);
-                            }
+                        if let Some(params) = func.get_mut("parameters")
+                            && params.get("additionalProperties").is_none()
+                        {
+                            params["additionalProperties"] = json!(false);
                         }
                     }
                 }

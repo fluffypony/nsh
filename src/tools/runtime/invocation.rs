@@ -77,6 +77,7 @@ impl ToolInvocationResult {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn failure(content: impl Into<String>) -> Self {
         Self::Continue(ToolInvocationOutcome::failure(content))
     }

@@ -39,6 +39,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn execute_with_access(
     input: &serde_json::Value,
     sensitive_file_access: SensitiveFileAccess,

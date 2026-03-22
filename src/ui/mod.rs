@@ -5,6 +5,7 @@
 // Note: Avoid importing std::io::Write here to prevent unused import warnings.
 
 // ─── ANSI Style Constants ────────────────────────────────────────────
+#[cfg(test)]
 pub mod display;
 pub mod json_display;
 pub mod stream_consumer;

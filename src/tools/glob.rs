@@ -18,6 +18,7 @@ pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn execute_outcome(input: &serde_json::Value) -> anyhow::Result<ToolInvocationOutcome> {
     execute_outcome_with_access(input, SensitiveFileAccess::Block)
 }

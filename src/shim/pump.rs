@@ -118,10 +118,10 @@ impl CaptureEngine {
             b'D' => {
                 // Command finished; parse optional exit code after semicolon
                 self.osc133_in_command_output = false;
-                if payload.len() > 2 && payload[1] == b';' {
-                    if let Ok(s) = std::str::from_utf8(&payload[2..]) {
-                        self.osc133_last_exit_code = s.trim().parse().ok();
-                    }
+                if payload.len() > 2 && payload[1] == b';'
+                    && let Ok(s) = std::str::from_utf8(&payload[2..])
+                {
+                    self.osc133_last_exit_code = s.trim().parse().ok();
                 }
             }
             b'A' => {
