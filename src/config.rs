@@ -1970,7 +1970,7 @@ mod tests {
         assert_eq!(config.provider.default, "openrouter");
         assert_eq!(
             config.provider.model,
-            "google/gemini-3.1-flash-lite-preview"
+            "google/gemini-3-flash-preview"
         );
         assert_eq!(config.provider.web_search_model, "perplexity/sonar");
         assert_eq!(
@@ -1995,7 +1995,7 @@ default = "openrouter"
         assert_eq!(config.provider.default, "openrouter");
         assert_eq!(
             config.provider.model,
-            "google/gemini-3.1-flash-lite-preview"
+            "google/gemini-3-flash-preview"
         );
     }
 
@@ -2204,7 +2204,7 @@ chat_color = "red"
         assert_eq!(config.provider.default, "openrouter");
         assert_eq!(
             config.provider.model,
-            "google/gemini-3.1-flash-lite-preview"
+            "google/gemini-3-flash-preview"
         );
         assert_eq!(config.context.history_limit, 20);
         assert!(config.redaction.enabled);
@@ -4250,7 +4250,7 @@ key = "value"
     fn test_provider_config_defaults() {
         let p = ProviderConfig::default();
         assert_eq!(p.default, "openrouter");
-        assert_eq!(p.model, "google/gemini-3.1-flash-lite-preview");
+        assert_eq!(p.model, "google/gemini-3-flash-preview");
         assert_eq!(
             p.fallback_model.as_deref(),
             Some("anthropic/claude-sonnet-4.6")
