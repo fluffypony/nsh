@@ -6,6 +6,11 @@ pub fn handle_remote_command(action: RemoteAction) -> anyhow::Result<()> {
         RemoteAction::Status => handle_status(),
         RemoteAction::Revoke { node_id } => handle_revoke(&node_id),
         RemoteAction::Discover => handle_discover(),
+        RemoteAction::Connect {
+            node_id,
+            session,
+            relay_url,
+        } => handle_connect(&node_id, session.as_deref(), relay_url.as_deref()),
     }
 }
 
@@ -270,6 +275,261 @@ fn handle_discover() -> anyhow::Result<()> {
     let _ = mdns.shutdown();
 
     result
+}
+
+fn handle_connect(
+    node_id_input: &str,
+    target_session: Option<&str>,
+    relay_url_override: Option<&str>,
+) -> anyhow::Result<()> {
+    // Parse nsh:// URI format (same format as QR payload and mobile app)
+    let (node_id_str, uri_relay) = if let Some(path) = node_id_input.strip_prefix("nsh://") {
+        if let Some(slash_idx) = path.find('/') {
+            (&path[..slash_idx], Some(&path[slash_idx + 1..]))
+        } else {
+            (path, None)
+        }
+    } else {
+        (node_id_input, None)
+    };
+
+    let relay = relay_url_override
+        .or(uri_relay)
+        .unwrap_or("https://relay.iroh.network");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        // Use ephemeral key so this works without any nsh setup on the client machine
+        let key = iroh::SecretKey::generate(&mut rand::rng());
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(key)
+            .bind()
+            .await?;
+
+        let remote_id: iroh::EndpointId = node_id_str
+            .parse()
+            .map_err(|e: iroh::KeyParsingError| anyhow::anyhow!("Invalid EndpointId: {e}"))?;
+        let relay_parsed: iroh::RelayUrl = relay.parse()?;
+        let addr = iroh::EndpointAddr::new(remote_id).with_relay_url(relay_parsed);
+
+        let short_id = &node_id_str[..16.min(node_id_str.len())];
+        eprintln!("Connecting to {short_id}...");
+        let connection = endpoint.connect(addr, nsh_proto::ALPN).await?;
+        eprintln!("Connected.");
+
+        if let Some(sid) = target_session {
+            // Direct attach mode
+            eprintln!("\nAttaching to {sid}. Press Ctrl-] to detach.\n");
+            run_remote_pty(&connection, sid).await
+        } else {
+            // List sessions, let user pick
+            let (mut send, mut recv) = connection.open_bi().await?;
+            nsh_proto::framing::write_message(&mut send, &nsh_proto::RemoteRequest::ListSessions)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            send.finish().map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            let resp: nsh_proto::RemoteResponse =
+                nsh_proto::framing::read_message(&mut recv)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            let sessions = match resp {
+                nsh_proto::RemoteResponse::SessionList { sessions } => sessions,
+                nsh_proto::RemoteResponse::Error { message } => {
+                    anyhow::bail!("Remote error: {message}");
+                }
+                _ => anyhow::bail!("Unexpected response from remote"),
+            };
+
+            if sessions.is_empty() {
+                eprintln!("No active sessions on the remote node.");
+                return Ok(());
+            }
+
+            eprintln!("\nActive sessions:");
+            for (i, s) in sessions.iter().enumerate() {
+                let label = s.label.as_deref().unwrap_or(&s.session_id);
+                let cwd = s.last_cwd.as_deref().unwrap_or("");
+                let cmd = s
+                    .running_command
+                    .as_deref()
+                    .or(s.last_command.as_deref())
+                    .unwrap_or("");
+                eprintln!("  {}) {} ({}) {} {}", i + 1, label, s.shell, cwd, cmd);
+            }
+
+            eprint!("\nSelect session to attach (1-{}), or 0 to exit: ", sessions.len());
+            std::io::Write::flush(&mut std::io::stderr())?;
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+            let choice: usize = input.trim().parse().unwrap_or(0);
+
+            if choice == 0 || choice > sessions.len() {
+                eprintln!("Exiting.");
+                connection.close(0u32.into(), b"done");
+                return Ok(());
+            }
+
+            let selected = &sessions[choice - 1];
+            eprintln!(
+                "\nAttaching to {}. Press Ctrl-] to detach.\n",
+                selected.session_id
+            );
+
+            run_remote_pty(&connection, &selected.session_id).await
+        }
+    })
+}
+
+async fn run_remote_pty(
+    connection: &iroh::endpoint::Connection,
+    session_id: &str,
+) -> anyhow::Result<()> {
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let req = nsh_proto::RemoteRequest::Attach {
+        session_id: session_id.to_string(),
+    };
+    nsh_proto::framing::write_message(&mut send, &req)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let resp: nsh_proto::RemoteResponse = nsh_proto::framing::read_message(&mut recv)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let initial_screen = match resp {
+        nsh_proto::RemoteResponse::AttachOk { initial_screen } => initial_screen,
+        nsh_proto::RemoteResponse::Error { message } => {
+            anyhow::bail!("Attach failed: {message}");
+        }
+        _ => anyhow::bail!("Unexpected response to Attach"),
+    };
+
+    // Write initial screen snapshot
+    {
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        stdout.write_all(&initial_screen)?;
+        stdout.flush()?;
+    }
+
+    // Enter raw mode with RAII cleanup
+    crossterm::terminal::enable_raw_mode()?;
+    struct RawGuard;
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+    }
+    let _guard = RawGuard;
+
+    // Send initial terminal size
+    if let Ok((cols, rows)) = crossterm::terminal::size() {
+        let resize_req = nsh_proto::RemoteRequest::Resize { cols, rows };
+        let _ = nsh_proto::framing::write_message(&mut send, &resize_req).await;
+    }
+
+    // Channels for stdin input and resize events
+    let (tx_in, mut rx_in) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+    let (tx_resize, mut rx_resize) = tokio::sync::mpsc::channel::<(u16, u16)>(4);
+
+    // Spawn blocking stdin reader thread
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut stdin = std::io::stdin();
+        let mut buf = [0u8; 1024];
+        loop {
+            match stdin.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx_in.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Handle SIGWINCH on Unix for resize detection
+    #[cfg(unix)]
+    {
+        let tx_resize_sig = tx_resize.clone();
+        if let Ok(mut signals) =
+            signal_hook::iterator::Signals::new([signal_hook::consts::SIGWINCH])
+        {
+            std::thread::spawn(move || {
+                for _ in signals.forever() {
+                    if let Ok(size) = crossterm::terminal::size() {
+                        let _ = tx_resize_sig.blocking_send(size);
+                    }
+                }
+            });
+        }
+    }
+
+    // Polling-based resize fallback (cross-platform)
+    std::thread::spawn(move || {
+        let mut last_size = crossterm::terminal::size().unwrap_or((80, 24));
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if let Ok(size) = crossterm::terminal::size() {
+                if size != last_size {
+                    last_size = size;
+                    let _ = tx_resize.blocking_send(size);
+                }
+            }
+        }
+    });
+
+    // Main I/O loop
+    let mut stdout = std::io::stdout();
+    loop {
+        tokio::select! {
+            // Remote output → local stdout
+            msg = nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv) => {
+                match msg {
+                    Ok(nsh_proto::RemoteResponse::TerminalData { bytes, .. }) => {
+                        use std::io::Write;
+                        if stdout.write_all(&bytes).is_err() || stdout.flush().is_err() {
+                            break;
+                        }
+                    }
+                    Ok(nsh_proto::RemoteResponse::SessionUpdate { .. }) => {
+                        // Ignore session updates in PTY mode
+                    }
+                    Ok(nsh_proto::RemoteResponse::Detached) | Err(_) => break,
+                    _ => {}
+                }
+            }
+            // Local stdin → remote input
+            Some(bytes) = rx_in.recv() => {
+                // Check for Ctrl-] (0x1D) detach sequence
+                if bytes.len() == 1 && bytes[0] == 0x1D {
+                    let _ = nsh_proto::framing::write_message(
+                        &mut send,
+                        &nsh_proto::RemoteRequest::Detach,
+                    ).await;
+                    break;
+                }
+                let input_req = nsh_proto::RemoteRequest::Input { bytes };
+                if nsh_proto::framing::write_message(&mut send, &input_req).await.is_err() {
+                    break;
+                }
+            }
+            // Resize events
+            Some((cols, rows)) = rx_resize.recv() => {
+                let resize_req = nsh_proto::RemoteRequest::Resize { cols, rows };
+                let _ = nsh_proto::framing::write_message(&mut send, &resize_req).await;
+            }
+        }
+    }
+
+    // RawGuard drop restores terminal automatically
+    Ok(())
 }
 
 /// Render a QR code using Unicode half-block characters.

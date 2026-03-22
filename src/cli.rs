@@ -405,6 +405,17 @@ pub enum RemoteAction {
     },
     /// Discover nearby nsh instances on the local network
     Discover,
+    /// Connect to a remote nsh instance as a terminal client
+    Connect {
+        /// EndpointId or nsh:// URI of the remote host
+        node_id: String,
+        /// Optional session ID to attach to directly (skips session list)
+        #[arg(long)]
+        session: Option<String>,
+        /// Relay URL (defaults to https://relay.iroh.network)
+        #[arg(long)]
+        relay_url: Option<String>,
+    },
 }
 
 #[cfg(test)]

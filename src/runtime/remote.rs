@@ -344,9 +344,7 @@ async fn handle_remote_stream(
                     rusqlite::params![&session_id],
                     |row| row.get::<_, Option<String>>(0),
                 ) {
-                    if let Some(ref cwd) = cwd {
-                        cmd.current_dir(cwd);
-                    }
+                    cmd.current_dir(&cwd);
                 }
             }
 
