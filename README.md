@@ -68,7 +68,7 @@ The `pending` flag on command suggestions enables autonomous multi-step sequence
 
 ### Coding agent
 
-The `code` tool delegates programming tasks to a sandboxed sub-agent that uses a more capable model. The sub-agent can read and write files, search the codebase with grep and glob, and run shell commands (build, test, lint) to verify its work. It operates in its own tool loop with up to 30 iterations.
+The `code` tool delegates programming tasks to a working-directory-constrained sub-agent that uses a more capable model. The sub-agent can read and write files, search the codebase with grep and glob, and run shell commands (build, test, lint) to verify its work. It operates in its own tool loop with up to 30 iterations.
 
 Use it for writing new code, refactoring, fixing bugs, running tests and fixing failures, debugging, or code reviews. The sub-agent gets the same project context and memory as the main agent.
 
@@ -78,7 +78,7 @@ nsh: [launches coding agent] -> [reads existing code] -> [writes changes]
      -> [runs tests] -> [fixes failing test] -> [done]
 ```
 
-### 26 built-in tools
+### Built-in tools
 
 | Tool | What it does |
 |---|---|
@@ -94,7 +94,7 @@ nsh: [launches coding agent] -> [reads existing code] -> [writes changes]
 | `github` | Fetch READMEs, file trees, or specific files from GitHub repos |
 | `run_command` | Execute safe, allowlisted commands silently |
 | `ask_user` | Ask a clarifying question while keeping the loop active |
-| `code` | Launch a sandboxed coding sub-agent for multi-step file editing |
+| `code` | Launch a working-directory-constrained coding sub-agent for multi-step file editing |
 | `write_file` | Create or overwrite files (with diff preview and trash backup) |
 | `patch_file` | Surgical find-and-replace in files (with diff preview) |
 | `man_page` | Retrieve man pages for commands |
@@ -169,19 +169,20 @@ nsh config edit   # set memory.incognito = true
 
 nsh supports P2P remote access using [iroh](https://iroh.computer), allowing you to connect to your shell sessions from a mobile device or another machine.
 
-**Pairing.** Run `nsh remote pair` on your desktop. This generates a keypair (stored in `~/.nsh/remote_key`) and displays a QR code containing your endpoint ID and relay URL. Scan the QR code with the mobile app or enter the endpoint ID manually.
+**Pairing (mobile).** Run `nsh remote pair` on your desktop. This generates a keypair (stored in `~/.nsh/remote_key`) and displays a QR code containing your endpoint ID and relay URL. Enter the endpoint ID in the mobile app (or use LAN discovery). The desktop shows a connection request; confirm it, and the device is added to your allowed keys list.
 
-The desktop shows a connection request with a 6-digit SAS verification code (derived from a SHA256 hash of the connecting device's endpoint ID). Confirm the code matches, and the device is added to your allowed keys list.
+**Connecting from another computer.** You don't need a full nsh install on the client side. Download the binary and run `nsh remote connect <endpoint-id>`. It connects to your node, lists active sessions, and drops you into the terminal. Press Ctrl-] to detach.
 
-**Security model.** Connections are end-to-end encrypted over QUIC. Unknown peers are rejected at the QUIC layer before any protocol handling begins. Each connection is also verified against the allowed keys list at the handler level. Device revocation is immediate via `nsh remote revoke`.
+**LAN discovery.** `nsh remote discover` advertises your instance via mDNS on the local network, so nearby devices can find it without exchanging endpoint IDs manually. A 6-digit SAS verification code confirms both sides are talking to each other.
 
-**LAN discovery.** `nsh remote discover` advertises your instance via mDNS on the local network, so the mobile app can find it without scanning a QR code. SAS verification still applies.
+**Security model.** Connections are end-to-end encrypted over QUIC via iroh. Unknown peers are rejected at the QUIC layer before any protocol handling begins. Each connection is also verified against the allowed keys list at the handler level. Device revocation is immediate via `nsh remote revoke`.
 
 ```bash
 nsh remote pair              # show QR code for mobile pairing
 nsh remote status            # endpoint ID, relay, connected peers, allowed keys
 nsh remote revoke <id>       # remove a paired device (prefix match)
 nsh remote discover          # LAN discovery via mDNS
+nsh remote connect <id>      # connect to a remote nsh instance
 ```
 
 ### Mobile app
@@ -195,7 +196,7 @@ What it does:
 - **Command history** - per-session history viewer showing each command's exit code, working directory, duration, and output preview
 - **Notifications** - command completion, error alerts (non-zero exit), and input prompts (password/confirmation requests)
 
-The app has four views: pairing (QR scanner + manual ID entry), sessions (list with inline history), terminal (full screen with back/reconnect), and history (scrollable command log).
+The app has four views: pairing (manual ID entry), sessions (list with inline history), terminal (full screen with back/reconnect), and history (scrollable command log).
 
 ### MCP integration
 
@@ -287,13 +288,17 @@ Notes:
 - Markdown-based skills (`SKILL.md`, `skill.md`, or `README.md` in subdirectories) are also supported.
 - Skills from other AI ecosystems (Claude Code, LangChain, OpenAI Agents, Cursor) work too - clone the repo and nsh reads the skill documents directly.
 
-Installing from a git repo:
+Installing from a git repo (via the AI tool or manually):
 
 ```bash
-nsh tools install_skill --repo https://github.com/owner/skill-repo.git
+# Ask the AI to install it:
+? install this skill: https://github.com/owner/skill-repo.git
+
+# Or clone manually:
+git clone https://github.com/owner/skill-repo.git ~/.nsh/skills/skill-repo
 ```
 
-Repos are cloned into `~/.nsh/skills/<repo>/` and auto-discovered if they contain `skill.toml`, `nsh.toml`, `SKILL.md`, or `README.md` at the repo root.
+Repos are cloned into `~/.nsh/skills/<name>/` and auto-discovered if they contain `skill.toml`, `nsh.toml`, `SKILL.md`, or `README.md` at the repo root.
 
 ### Multiple LLM providers
 
@@ -309,8 +314,8 @@ Model chains with automatic fallback on rate limits or errors:
 
 ```toml
 [models]
-main = ["google/gemini-2.5-flash", "anthropic/claude-sonnet-4.6"]
-fast = ["google/gemini-2.5-flash-lite", "anthropic/claude-haiku-4.5"]
+main = ["google/gemini-3-flash-preview", "anthropic/claude-sonnet-4.6"]
+fast = ["google/gemini-3.1-flash-lite-preview", "anthropic/claude-haiku-4.5"]
 ```
 
 ### CLIProxyAPI sidecar
@@ -337,7 +342,7 @@ The daemon also checks for sidecar updates hourly and restarts it when one is ap
 - **Self-update** - `nsh update` downloads and verifies new releases via DNS TXT records and SHA256
 - **Shell completions** - `nsh completions zsh|bash|fish` generates completion scripts
 - **Project-local config** - `.nsh.toml` or `.nsh/config.toml` for per-project overrides (restricted to `context` and `display` sections)
-- **Custom instructions** - global via `~/.nsh/instructions.md` or per-project via `.nsh/instructions.md`
+- **Custom instructions** - per-project via `.nsh/instructions.md` (and many other conventions like `CLAUDE.md`, `AGENTS.md`, etc.), or globally via `context.custom_instructions` in config.toml
 - **Hot-reloading config** - changes to `config.toml` take effect on the next query
 - **Session labels** - `nsh session label "my project work"` to tag sessions
 - **Redact next** - `nsh redact-next` skips capturing the next command's output
@@ -415,7 +420,7 @@ Or create `~/.nsh/config.toml` manually:
 ```toml
 [provider]
 default = "openrouter"
-model = "google/gemini-2.5-flash"
+model = "google/gemini-3-flash-preview"
 
 [provider.openrouter]
 api_key = "sk-or-v1-..."
@@ -430,22 +435,19 @@ Add to your shell rc file:
 
 ```bash
 # ~/.zshrc
-command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
 eval "$(nsh init zsh)"
 
 # ~/.bashrc
-command -v nsh >/dev/null && [[ -z "${NSH_PTY_ACTIVE:-}" ]] && nsh wrap
 eval "$(nsh init bash)"
 
 # fish: ~/.config/fish/conf.d/nsh.fish
-command -v nsh >/dev/null; and not set -q NSH_PTY_ACTIVE; and nsh wrap
 nsh init fish | source
 
 # PowerShell profile ($PROFILE)
 Invoke-Expression (nsh init powershell)
 ```
 
-`nsh wrap` runs your shell inside a PTY wrapper for scrollback capture. It's optional but recommended. The PTY wrapper lives in the stable `nsh` shim, so it never needs to be restarted for updates.
+`nsh init` handles everything: PTY wrapping for scrollback capture, shell hooks, session management, and the `?`/`??`/`?!` aliases. The PTY wrapper lives in the stable `nsh` shim, so it never needs to be restarted for updates.
 
 ### 3. Use it
 
@@ -518,6 +520,7 @@ Invoke-Expression (nsh init powershell)
 | `nsh remote status` | Endpoint ID, relay, connected peers, allowed keys |
 | `nsh remote revoke <id>` | Remove a paired device (prefix match) |
 | `nsh remote discover` | LAN discovery via mDNS |
+| `nsh remote connect <id>` | Connect to a remote nsh instance as a terminal client |
 
 ### Sidecar commands
 
@@ -552,7 +555,7 @@ Project-local overrides: `.nsh.toml` or `.nsh/config.toml` (restricted to `conte
 ```toml
 [provider]
 default = "openrouter"
-model = "google/gemini-2.5-flash"
+model = "google/gemini-3-flash-preview"
 fallback_model = "anthropic/claude-sonnet-4.6"
 web_search_model = "perplexity/sonar"
 timeout_seconds = 120
@@ -596,12 +599,12 @@ suppressed_exit_codes = [130, 137, 141, 143]
 
 [models]
 main = [
-  "google/gemini-2.5-flash",
   "google/gemini-3-flash-preview",
+  "google/gemini-3.1-flash-lite-preview",
   "anthropic/claude-sonnet-4.6",
 ]
 fast = [
-  "google/gemini-2.5-flash-lite",
+  "google/gemini-3.1-flash-lite-preview",
   "anthropic/claude-haiku-4.5",
 ]
 
@@ -828,7 +831,7 @@ $ nsh status
   Sidecar:    running on :8317 (6.6.80)
   Updates:    last_check=2026-02-22T12:00:03Z (2h ago) status=up_to_date
   Provider:   openrouter
-  Model:      google/gemini-2.5-flash
+  Model:      google/gemini-3-flash-preview
   DB path:    /Users/alice/.nsh/nsh.db
   DB size:    8.4 MB
 ```
