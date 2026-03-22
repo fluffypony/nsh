@@ -109,6 +109,9 @@ __nsh_debug_trap() {
 
         # Mark scrollback position for per-command output capture
         nsh daemon-send capture-mark --session "$NSH_SESSION_ID" 2>/dev/null
+
+        # OSC 133;C — command output start marker for capture engine
+        printf '\033]133;C\007'
     fi
 
     # Redact-next-command mechanism
@@ -131,6 +134,11 @@ __nsh_ensure_hooks() {
 
 __nsh_prompt_command() {
     local exit_code=$?
+
+    # OSC 133;D — command finished with exit code
+    printf '\033]133;D;%d\007' "$exit_code"
+    # OSC 133;A — prompt start
+    printf '\033]133;A\007'
 
     __nsh_ensure_hooks
 

@@ -27,11 +27,18 @@ function global:?? {
 
 $global:NshLastHistoryId = -1
 function global:prompt {
+    $ec = if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+
+    # OSC 133;D — command finished with exit code
+    [Console]::Write("`e]133;D;$ec`a")
+    # OSC 133;A — prompt start
+    [Console]::Write("`e]133;A`a")
+
     try {
         $h = Get-History -Count 1 -ErrorAction SilentlyContinue
         if ($h -and $h.Id -ne $global:NshLastHistoryId) {
             $global:NshLastHistoryId = $h.Id
-            nsh daemon-send record --session "$env:NSH_SESSION_ID" --command "$($h.CommandLine)" --cwd "$pwd" --exit-code 0 --started-at "$(Get-Date -Format o)" --tty "" --pid $PID --shell "pwsh" 2>$null
+            nsh daemon-send record --session "$env:NSH_SESSION_ID" --command "$($h.CommandLine)" --cwd "$pwd" --exit-code $ec --started-at "$(Get-Date -Format o)" --tty "" --pid $PID --shell "pwsh" 2>$null
         }
     } catch {}
 

@@ -28,6 +28,12 @@ pub struct CaptureEngine {
     prev_visible: Vec<String>,
     mark_state: Option<(usize, Vec<String>)>,
     alt_screen_mode: crate::config::AltScreenMode,
+    /// True when we're inside an OSC 133;C..D boundary (command output region).
+    osc133_in_command_output: bool,
+    /// Accumulated command output lines for the current OSC 133 region.
+    osc133_command_output: Vec<String>,
+    /// Last exit code from OSC 133;D.
+    osc133_last_exit_code: Option<i32>,
 }
 
 impl CaptureEngine {
@@ -72,7 +78,63 @@ impl CaptureEngine {
             prev_visible: Vec::new(),
             mark_state: None,
             alt_screen_mode,
+            osc133_in_command_output: false,
+            osc133_command_output: Vec::new(),
+            osc133_last_exit_code: None,
         }
+    }
+
+    /// Scan raw bytes for OSC 133 semantic prompt markers.
+    /// ESC ] 133 ; <type> [; <param>] BEL
+    fn parse_osc133_markers(&mut self, bytes: &[u8]) {
+        // Look for \x1b]133; sequences in the byte stream
+        let mut i = 0;
+        while i + 5 < bytes.len() {
+            if bytes[i] == 0x1b && bytes[i + 1] == b']' && bytes[i + 2] == b'1'
+                && bytes[i + 3] == b'3' && bytes[i + 4] == b'3' && bytes[i + 5] == b';'
+            {
+                // Find the BEL terminator
+                if let Some(end) = bytes[i + 6..].iter().position(|&b| b == 0x07) {
+                    let payload = &bytes[i + 6..i + 6 + end];
+                    self.handle_osc133_payload(payload);
+                    i = i + 6 + end + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn handle_osc133_payload(&mut self, payload: &[u8]) {
+        if payload.is_empty() {
+            return;
+        }
+        match payload[0] {
+            b'C' => {
+                // Command output start
+                self.osc133_in_command_output = true;
+                self.osc133_command_output.clear();
+            }
+            b'D' => {
+                // Command finished; parse optional exit code after semicolon
+                self.osc133_in_command_output = false;
+                if payload.len() > 2 && payload[1] == b';' {
+                    if let Ok(s) = std::str::from_utf8(&payload[2..]) {
+                        self.osc133_last_exit_code = s.trim().parse().ok();
+                    }
+                }
+            }
+            b'A' => {
+                // Prompt start — no special handling needed
+            }
+            _ => {}
+        }
+    }
+
+    /// Return the last exit code observed via OSC 133;D.
+    #[allow(dead_code)]
+    pub fn osc133_exit_code(&self) -> Option<i32> {
+        self.osc133_last_exit_code
     }
 
     fn push_history_line(&mut self, line: String) {
@@ -129,6 +191,10 @@ impl CaptureEngine {
             }
             return;
         }
+
+        // Parse OSC 133 semantic markers before passing to the VT100 parser.
+        // These markers are emitted by nsh shell hooks to delimit command output.
+        self.parse_osc133_markers(bytes);
 
         let sanitized = sanitize_input(bytes);
         self.parser.process(&sanitized);
