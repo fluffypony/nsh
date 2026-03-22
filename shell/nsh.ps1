@@ -15,6 +15,14 @@ if (-not $IsWindows -and -not $env:NSH_PTY_ACTIVE -and -not $env:NSH_NO_WRAP) {
 $env:NSH_HOOK_HASH = "__HOOK_HASH__"
 $env:NSH_HOOKS_VERSION = "__NSH_VERSION__"
 
+# Detect TTY for session tracking
+if ($IsWindows) {
+    $env:NSH_TTY = "console-$PID"
+} else {
+    $env:NSH_TTY = (tty 2>$null)
+    if (-not $env:NSH_TTY) { $env:NSH_TTY = "pty-$PID" }
+}
+
 function global:? {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$args)
     nsh query -- @args
@@ -23,6 +31,11 @@ function global:? {
 function global:?? {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$args)
     nsh query --think -- @args
+}
+
+function global:?! {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$args)
+    nsh query --private -- @args
 }
 
 $global:NshLastHistoryId = -1
@@ -38,7 +51,7 @@ function global:prompt {
         $h = Get-History -Count 1 -ErrorAction SilentlyContinue
         if ($h -and $h.Id -ne $global:NshLastHistoryId) {
             $global:NshLastHistoryId = $h.Id
-            nsh daemon-send record --session "$env:NSH_SESSION_ID" --command "$($h.CommandLine)" --cwd "$pwd" --exit-code $ec --started-at "$(Get-Date -Format o)" --tty "" --pid $PID --shell "pwsh" 2>$null
+            nsh daemon-send record --session "$env:NSH_SESSION_ID" --command "$($h.CommandLine)" --cwd "$pwd" --exit-code $ec --started-at "$(Get-Date -Format o)" --tty "$env:NSH_TTY" --pid $PID --shell "pwsh" 2>$null
         }
     } catch {}
 

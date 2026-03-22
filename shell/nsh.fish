@@ -218,9 +218,9 @@ function __nsh_postexec --on-event fish_postexec
     if test -f $notice_file; and not set -q _NSH_RELOADING
         # Atomically claim notice and guard against stale (>5 min)
         set -l _claimed "/tmp/.nsh_update_claimed."$$
-        if command mv -f $notice_file $_claimed ^/dev/null
+        if command mv -f $notice_file $_claimed 2>/dev/null
             set -l now (date +%s)
-            set -l mtime (stat -f %m $_claimed ^/dev/null; or echo 0)
+            set -l mtime (stat -f %m $_claimed 2>/dev/null; or echo 0)
             set -l age (math "$now - $mtime")
             if test $age -le 300
                 set -gx _NSH_RELOADING 1
@@ -232,7 +232,7 @@ function __nsh_postexec --on-event fish_postexec
                 printf '\x1b[2m  nsh: shell hooks updated — hooks reloaded automatically.\x1b[0m\n' >&2
                 set -e _NSH_RELOADING
             end
-            command rm -f $_claimed ^/dev/null
+            command rm -f $_claimed 2>/dev/null
         end
     end
 
