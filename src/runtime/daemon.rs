@@ -384,11 +384,6 @@ pub enum DaemonRequest {
     RemoteRevoke {
         node_id: String,
     },
-    /// Subscribe to session events over a persistent connection (scaffolding).
-    #[cfg(feature = "remote")]
-    SubscribeEvents {
-        session_id: String,
-    },
 }
 
 fn default_max_lines() -> usize {
