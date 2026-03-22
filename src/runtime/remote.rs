@@ -212,6 +212,7 @@ impl iroh::protocol::ProtocolHandler for NshRemoteHandler {
 
         CONNECTED_PEERS.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut conns) = ACTIVE_CONNECTIONS.lock() {
+            conns.retain(|c| c.close_reason().is_none());
             conns.push(connection.clone());
         }
 
@@ -404,7 +405,12 @@ async fn bridge_to_session(
     last_seq: Option<u64>,
 ) -> anyhow::Result<()> {
     let socket_path = crate::daemon::daemon_socket_path(session_id);
-    let unix_stream = tokio::net::UnixStream::connect(&socket_path).await?;
+    let unix_stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::UnixStream::connect(&socket_path),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timeout connecting to session socket"))??;
     let (unix_read, mut unix_write) = unix_stream.into_split();
 
     // Send handshake as a typed DaemonRequest (MessagePack-encoded)
@@ -547,6 +553,12 @@ async fn bridge_to_session(
 }
 
 /// Detect the foreground command running in the shell with the given PID.
+/// Shell binary names to filter out when detecting foreground commands.
+const SHELL_NAMES: &[&str] = &[
+    "bash", "zsh", "fish", "sh", "dash",
+    "-bash", "-zsh", "-fish", "-sh", "-dash",
+];
+
 fn detect_running_command(shell_pid: i64) -> Option<String> {
     if shell_pid <= 0 {
         return None;
@@ -595,7 +607,7 @@ fn detect_running_command(shell_pid: i64) -> Option<String> {
                         .collect();
                     if !args.is_empty() {
                         let base = args[0].rsplit('/').next().unwrap_or(args[0]);
-                        if !matches!(base, "bash" | "zsh" | "fish" | "sh" | "dash") {
+                        if !SHELL_NAMES.contains(&base) {
                             return Some(args.join(" "));
                         }
                     }
@@ -608,51 +620,38 @@ fn detect_running_command(shell_pid: i64) -> Option<String> {
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("ps")
-            .args(["-o", "pid=,command=", "-p"])
-            .arg(format!("{shell_pid}"))
+        // Find children via pgrep, then resolve each to a command
+        if let Ok(children_output) = std::process::Command::new("pgrep")
+            .args(["-P", &shell_pid.to_string()])
             .output()
+            && children_output.status.success()
         {
-            // ps on macOS: find children via separate call
-            if let Ok(children_output) = std::process::Command::new("pgrep")
-                .args(["-P", &shell_pid.to_string()])
-                .output()
-                && children_output.status.success()
-            {
-                let text = String::from_utf8_lossy(&children_output.stdout);
-                for child_pid in text.lines() {
-                    let child_pid = child_pid.trim();
-                    if child_pid.is_empty() {
-                        continue;
-                    }
-                    if let Ok(cmd_output) = std::process::Command::new("ps")
-                        .args(["-o", "command=", "-p", child_pid])
-                        .output()
-                        && cmd_output.status.success()
-                    {
-                        let cmd = String::from_utf8_lossy(&cmd_output.stdout)
-                            .trim()
-                            .to_string();
-                        let base = cmd
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or("")
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("");
-                        if !cmd.is_empty()
-                            && !matches!(
-                                base,
-                                "bash" | "zsh" | "fish" | "sh" | "dash" | "-bash"
-                                    | "-zsh" | "-fish"
-                            )
-                        {
-                            return Some(cmd);
-                        }
+            let text = String::from_utf8_lossy(&children_output.stdout);
+            for child_pid in text.lines() {
+                let child_pid = child_pid.trim();
+                if child_pid.is_empty() {
+                    continue;
+                }
+                if let Ok(cmd_output) = std::process::Command::new("ps")
+                    .args(["-o", "command=", "-p", child_pid])
+                    .output()
+                    && cmd_output.status.success()
+                {
+                    let cmd = String::from_utf8_lossy(&cmd_output.stdout)
+                        .trim()
+                        .to_string();
+                    let base = cmd
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("");
+                    if !cmd.is_empty() && !SHELL_NAMES.contains(&base) {
+                        return Some(cmd);
                     }
                 }
             }
-            let _ = output; // suppress unused warning
         }
         None
     }
@@ -670,6 +669,14 @@ static REMOTE_DB: std::sync::LazyLock<std::sync::Mutex<Option<crate::db::Db>>> =
 
 fn list_active_sessions() -> anyhow::Result<Vec<RemoteSessionInfo>> {
     let mut db_guard = REMOTE_DB.lock().unwrap_or_else(|e| e.into_inner());
+
+    // Health check: verify connection is still valid
+    if let Some(ref db) = *db_guard {
+        if db.conn.query_row("SELECT 1", [], |_| Ok(())).is_err() {
+            *db_guard = None; // Force reconnect
+        }
+    }
+
     if db_guard.is_none() {
         *db_guard = Some(crate::db::Db::open()?);
     }
