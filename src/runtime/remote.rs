@@ -159,7 +159,7 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
                         git_branch: truncate(session.git_branch.clone(), 100),
                         running_command: truncate(session.running_command.clone(), 200),
                     };
-                    if let Ok(bytes) = serde_json::to_vec(&update) {
+                    if let Ok(bytes) = rmp_serde::to_vec_named(&update) {
                         if bytes.len() < 1200 {
                             broadcast_datagram(&bytes);
                         }
@@ -276,7 +276,6 @@ async fn handle_remote_stream(
                 recv,
                 &session_id,
                 peer_id,
-                "stream_attach",
                 None,
             )
             .await?;
@@ -302,7 +301,6 @@ async fn handle_remote_stream(
                 recv,
                 &session_id,
                 peer_id,
-                "stream_resume",
                 Some(last_seq),
             )
             .await?;
@@ -403,40 +401,47 @@ async fn bridge_to_session(
     mut recv: iroh::endpoint::RecvStream,
     session_id: &str,
     peer_id: &str,
-    request_type: &str,
     last_seq: Option<u64>,
 ) -> anyhow::Result<()> {
     let socket_path = crate::daemon::daemon_socket_path(session_id);
     let unix_stream = tokio::net::UnixStream::connect(&socket_path).await?;
     let (unix_read, mut unix_write) = unix_stream.into_split();
 
-    // Send handshake (length-prefixed frame)
-    let mut handshake_req = serde_json::json!({
-        "v": crate::daemon::DAEMON_PROTOCOL_VERSION,
-        "type": request_type,
-        "session": session_id,
-        "peer_id": peer_id,
-    });
-    if let Some(seq) = last_seq {
-        handshake_req["last_seq"] = serde_json::json!(seq);
-    }
-    let req_bytes = serde_json::to_vec(&handshake_req)?;
+    // Send handshake as a typed DaemonRequest (MessagePack-encoded)
+    let handshake_req: crate::daemon::DaemonRequest = if let Some(seq) = last_seq {
+        crate::daemon::DaemonRequest::StreamResume {
+            session: session_id.to_string(),
+            last_seq: seq,
+            peer_id: Some(peer_id.to_string()),
+        }
+    } else {
+        crate::daemon::DaemonRequest::StreamAttach {
+            session: session_id.to_string(),
+            peer_id: Some(peer_id.to_string()),
+        }
+    };
+    let req_bytes = rmp_serde::to_vec_named(&handshake_req)?;
     nsh_proto::framing::write_frame(&mut unix_write, &req_bytes).await?;
 
-    // Read handshake response (length-prefixed frame)
+    // Read handshake response (MessagePack-encoded DaemonResponse)
     let mut unix_read = unix_read;
     let handshake_resp_bytes = nsh_proto::framing::read_frame(&mut unix_read).await?;
-    let handshake_resp: serde_json::Value = serde_json::from_slice(&handshake_resp_bytes)
+    let handshake_resp: crate::daemon::DaemonResponse = rmp_serde::from_slice(&handshake_resp_bytes)
         .map_err(|e| anyhow::anyhow!("handshake response decode: {e}"))?;
 
-    // Extract snapshot (attach) or resumed flag and send to mobile
-    let snapshot = handshake_resp["data"]["snapshot"]
-        .as_str()
-        .and_then(|s| {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.decode(s).ok()
-        })
-        .unwrap_or_default();
+    // Extract snapshot from the response payload
+    let snapshot = match &handshake_resp {
+        crate::daemon::DaemonResponse::Ok { data: Some(data) } => {
+            data.get("snapshot")
+                .and_then(|s| s.as_str())
+                .and_then(|s| {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.decode(s).ok()
+                })
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
 
     let attach_ok = RemoteResponse::AttachOk {
         initial_screen: snapshot,
@@ -493,11 +498,8 @@ async fn bridge_to_session(
         loop {
             match nsh_proto::framing::read_message::<RemoteRequest, _>(&mut recv).await {
                 Ok(RemoteRequest::Input { bytes }) => {
-                    let cmd = serde_json::json!({
-                        "type": "stream_input",
-                        "bytes": bytes,
-                    });
-                    let cmd_bytes = serde_json::to_vec(&cmd).unwrap();
+                    let cmd = crate::daemon::DaemonRequest::StreamInput { bytes };
+                    let cmd_bytes = rmp_serde::to_vec_named(&cmd).unwrap();
                     let len = (cmd_bytes.len() as u32).to_be_bytes();
                     if tokio::io::AsyncWriteExt::write_all(&mut unix_write, &len)
                         .await
@@ -513,20 +515,16 @@ async fn bridge_to_session(
                     }
                 }
                 Ok(RemoteRequest::Resize { cols, rows }) => {
-                    let cmd = serde_json::json!({
-                        "type": "stream_resize",
-                        "cols": cols,
-                        "rows": rows,
-                    });
-                    let cmd_bytes = serde_json::to_vec(&cmd).unwrap();
+                    let cmd = crate::daemon::DaemonRequest::StreamResize { cols, rows };
+                    let cmd_bytes = rmp_serde::to_vec_named(&cmd).unwrap();
                     let len = (cmd_bytes.len() as u32).to_be_bytes();
                     let _ = tokio::io::AsyncWriteExt::write_all(&mut unix_write, &len).await;
                     let _ =
                         tokio::io::AsyncWriteExt::write_all(&mut unix_write, &cmd_bytes).await;
                 }
                 Ok(RemoteRequest::Detach) | Err(_) => {
-                    let cmd = serde_json::json!({ "type": "stream_detach" });
-                    let cmd_bytes = serde_json::to_vec(&cmd).unwrap();
+                    let cmd = crate::daemon::DaemonRequest::StreamDetach;
+                    let cmd_bytes = rmp_serde::to_vec_named(&cmd).unwrap();
                     let len = (cmd_bytes.len() as u32).to_be_bytes();
                     let _ = tokio::io::AsyncWriteExt::write_all(&mut unix_write, &len).await;
                     let _ =

@@ -724,7 +724,7 @@ impl DbAccess for DaemonDb {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{memory_store_op, DaemonDb, DbAccess};
-    use crate::daemon::DaemonResponse;
+    use crate::daemon::{DaemonRequest, DaemonResponse};
     use crate::db::Db;
     use crate::memory::types::MemoryType;
     use crate::test_support::EnvVarGuard;
@@ -912,8 +912,9 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept connection");
             let payload = nsh_proto::sync_framing::read_frame(&mut stream)
                 .expect("read framed request");
-            let request_json: serde_json::Value =
-                serde_json::from_slice(&payload).expect("parse request json");
+            let req: DaemonRequest =
+                rmp_serde::from_slice(&payload).expect("parse msgpack request");
+            let request_json = serde_json::to_value(&req).expect("convert to json value");
             tx.send(request_json).expect("send captured request");
             nsh_proto::sync_framing::write_message(&mut stream, &response)
                 .expect("write framed response");
@@ -968,11 +969,10 @@ mod tests {
         assert_eq!(rows[1].result_exit_code, Some(0));
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "get_conversations");
-        assert_eq!(request["session_id"], "sess-1");
-        assert_eq!(request["limit"], 5);
-        assert_eq!(request["caller"]["session"], "caller-sess");
-        assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
+        assert_eq!(request["t"], "get_conversations");
+        assert_eq!(request["c"]["session_id"], "sess-1");
+        assert_eq!(request["c"]["limit"], 5);
+        assert_eq!(request["c"]["caller"]["session"], "caller-sess");
         handle.join().expect("join daemon thread");
     }
 
@@ -1004,7 +1004,7 @@ mod tests {
         );
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "get_conversations");
+        assert_eq!(request["t"], "get_conversations");
         handle.join().expect("join daemon thread");
     }
 
@@ -1028,11 +1028,11 @@ mod tests {
         assert!(result.contains("results"));
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "memory_retrieve_secret");
-        assert_eq!(request["caption_query"], "prod api");
-        assert_eq!(request["caller"]["session"], "caller-sess");
+        assert_eq!(request["t"], "memory_retrieve_secret");
+        assert_eq!(request["c"]["caption_query"], "prod api");
+        assert_eq!(request["c"]["caller"]["session"], "caller-sess");
         assert_eq!(
-            request["caller"]["explicit_user_request"],
+            request["c"]["caller"]["explicit_user_request"],
             "show me the production api key"
         );
         handle.join().expect("join daemon thread");
@@ -1085,13 +1085,13 @@ mod tests {
         assert_eq!(rows[0].output.as_deref(), Some("Permission denied"));
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "search_history_advanced");
-        assert_eq!(request["fts_query"], "ssh");
-        assert_eq!(request["regex_pattern"], "root@");
-        assert_eq!(request["failed_only"], true);
-        assert_eq!(request["session_filter"], "current");
-        assert_eq!(request["current_session"], "sess-9");
-        assert_eq!(request["limit"], 17);
+        assert_eq!(request["t"], "search_history_advanced");
+        assert_eq!(request["c"]["fts_query"], "ssh");
+        assert_eq!(request["c"]["regex_pattern"], "root@");
+        assert_eq!(request["c"]["failed_only"], true);
+        assert_eq!(request["c"]["session_filter"], "current");
+        assert_eq!(request["c"]["current_session"], "sess-9");
+        assert_eq!(request["c"]["limit"], 17);
         handle.join().expect("join daemon thread");
     }
 
@@ -1157,13 +1157,13 @@ mod tests {
         assert_eq!(rows[0].entity_type, "ssh_target");
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "search_command_entities");
-        assert_eq!(request["executable"], "ssh");
-        assert_eq!(request["entity"], "host");
-        assert_eq!(request["entity_type"], "ssh_target");
-        assert_eq!(request["session_filter"], "current");
-        assert_eq!(request["current_session"], "sess-entity");
-        assert_eq!(request["limit"], 12);
+        assert_eq!(request["t"], "search_command_entities");
+        assert_eq!(request["c"]["executable"], "ssh");
+        assert_eq!(request["c"]["entity"], "host");
+        assert_eq!(request["c"]["entity_type"], "ssh_target");
+        assert_eq!(request["c"]["session_filter"], "current");
+        assert_eq!(request["c"]["current_session"], "sess-entity");
+        assert_eq!(request["c"]["limit"], 12);
         handle.join().expect("join daemon thread");
     }
 
@@ -1226,8 +1226,7 @@ mod tests {
         assert!(prompt.contains("<core_memory>"));
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "memory_retrieve");
-        assert_eq!(request["v"], crate::daemon::DAEMON_PROTOCOL_VERSION);
+        assert_eq!(request["t"], "memory_retrieve");
         handle.join().expect("join daemon thread");
     }
 
@@ -1252,9 +1251,9 @@ mod tests {
         assert!(json.contains("sem_1234"));
 
         let request = request_rx.recv().expect("captured request");
-        assert_eq!(request["type"], "memory_search");
-        assert_eq!(request["query"], "cargo");
-        assert_eq!(request["limit"], 5);
+        assert_eq!(request["t"], "memory_search");
+        assert_eq!(request["c"]["query"], "cargo");
+        assert_eq!(request["c"]["limit"], 5);
         handle.join().expect("join daemon thread");
     }
 }

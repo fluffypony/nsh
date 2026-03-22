@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 /// ALPN identifier for the nsh remote protocol.
-/// Bumped from nsh/remote/0 to nsh/remote/1 (reduced MAX_FRAME_SIZE, SessionHistory, etc.).
+/// Bumped from nsh/remote/0 (JSON, internally-tagged) to nsh/remote/1
+/// (MessagePack via rmp_serde, adjacently-tagged enums, reduced MAX_FRAME_SIZE).
 pub const ALPN: &[u8] = b"nsh/remote/1";
 
 /// Messages sent from the mobile app to the daemon over QUIC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "t", content = "c", rename_all = "snake_case")]
 pub enum RemoteRequest {
     ListSessions,
     Attach { session_id: String },
@@ -45,7 +46,7 @@ pub struct SessionHistoryEntry {
 
 /// Messages sent from the daemon to the mobile app over QUIC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "t", content = "c", rename_all = "snake_case")]
 pub enum RemoteResponse {
     SessionList {
         sessions: Vec<RemoteSessionInfo>,
@@ -109,7 +110,7 @@ pub enum SessionEvent {
 }
 
 /// Length-prefixed binary framing for QUIC streams.
-/// Format: 4-byte big-endian length, then MessagePack payload.
+/// Format: 4-byte big-endian length, then MessagePack payload (rmp_serde).
 pub mod framing {
     use std::io;
 
@@ -146,7 +147,7 @@ pub mod framing {
         w: &mut W,
         msg: &impl serde::Serialize,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let data = serde_json::to_vec(msg)?;
+        let data = rmp_serde::to_vec_named(msg)?;
         write_frame(w, &data).await?;
         Ok(())
     }
@@ -155,12 +156,12 @@ pub mod framing {
         r: &mut R,
     ) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
         let data = read_frame(r).await?;
-        Ok(serde_json::from_slice(&data)?)
+        Ok(rmp_serde::from_slice(&data)?)
     }
 }
 
 /// Synchronous length-prefixed framing for Unix socket IPC.
-/// Format: 4-byte big-endian length, then MessagePack payload.
+/// Format: 4-byte big-endian length, then MessagePack payload (rmp_serde).
 pub mod sync_framing {
     use std::io::{self, Read, Write};
 
@@ -189,14 +190,14 @@ pub mod sync_framing {
     }
 
     pub fn write_message<W: Write>(w: &mut W, msg: &impl serde::Serialize) -> io::Result<()> {
-        let data = serde_json::to_vec(msg)
+        let data = rmp_serde::to_vec_named(msg)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_frame(w, &data)
     }
 
     pub fn read_message<T: serde::de::DeserializeOwned, R: Read>(r: &mut R) -> io::Result<T> {
         let data = read_frame(r)?;
-        serde_json::from_slice(&data)
+        rmp_serde::from_slice(&data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }
@@ -204,7 +205,7 @@ pub mod sync_framing {
 /// Lightweight state updates sent via unreliable datagrams.
 /// Best-effort: the receiver must tolerate missing updates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "t", content = "c", rename_all = "snake_case")]
 pub enum StatePush {
     SessionActivity {
         session_id: String,

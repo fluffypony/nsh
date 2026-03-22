@@ -1039,38 +1039,27 @@ fn handle_daemon_connection_inner(
         Ok(data) => data,
         Err(_) => return,
     };
-    let raw: serde_json::Value = match serde_json::from_slice(&payload) {
+    let request: crate::daemon::DaemonRequest = match rmp_serde::from_slice(&payload) {
         Ok(v) => v,
         Err(e) => {
-            let resp = crate::daemon::DaemonResponse::error(format!("invalid JSON: {e}"));
+            let resp = crate::daemon::DaemonResponse::error(format!("invalid request: {e}"));
             let _ = nsh_proto::sync_framing::write_message(&mut &stream, &resp);
             return;
         }
     };
-    let client_version = raw.get("v").and_then(|v| v.as_u64()).unwrap_or(1);
-    if client_version > crate::daemon::DAEMON_PROTOCOL_VERSION as u64 {
-        tracing::warn!(
-            "daemon: client protocol version {client_version} > server {}",
-            crate::daemon::DAEMON_PROTOCOL_VERSION
-        );
-    }
-    // Check for streaming mode requests before consuming stream into dispatch
-    match raw.get("type").and_then(|v| v.as_str()) {
-        Some("stream_attach") => {
-            let peer_id = raw.get("peer_id").and_then(|v| v.as_str()).map(String::from);
-            handle_stream_attach(stream, remote_state, peer_id, None);
+    // Route streaming mode requests directly
+    match &request {
+        crate::daemon::DaemonRequest::StreamAttach { peer_id, .. } => {
+            handle_stream_attach(stream, remote_state, peer_id.clone(), None);
             return;
         }
-        Some("stream_resume") => {
-            let last_seq = raw.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
-            let peer_id = raw.get("peer_id").and_then(|v| v.as_str()).map(String::from);
-            handle_stream_attach(stream, remote_state, peer_id, Some(last_seq));
+        crate::daemon::DaemonRequest::StreamResume { last_seq, peer_id, .. } => {
+            handle_stream_attach(stream, remote_state, peer_id.clone(), Some(*last_seq));
             return;
         }
-        Some("stream_replay") => {
-            let last_seq = raw.get("last_seq").and_then(|v| v.as_u64()).unwrap_or(0);
+        crate::daemon::DaemonRequest::StreamReplay { last_seq } => {
             let frames = if let Ok(rb) = remote_state.replay_buffer.lock() {
-                rb.replay_from(last_seq)
+                rb.replay_from(*last_seq)
             } else {
                 vec![]
             };
@@ -1098,54 +1087,31 @@ fn handle_daemon_connection_inner(
         }
         _ => {}
     }
-    let response = match serde_json::from_value::<crate::daemon::DaemonRequest>(raw) {
-        Ok(request) => {
-            match &request {
-                // Local capture operations — handle with CaptureEngine
-                crate::daemon::DaemonRequest::Scrollback { .. }
-                | crate::daemon::DaemonRequest::CaptureMark { .. }
-                | crate::daemon::DaemonRequest::CaptureRead { .. }
-                | crate::daemon::DaemonRequest::Status => {
-                    handle_local_capture_request(request, capture, max_output_bytes)
-                }
-                // Record needs special handling: capture output locally, then forward
-                crate::daemon::DaemonRequest::Record { output, .. } if output.is_none() => {
-                    let captured = capture
-                        .lock()
-                        .ok()
-                        .and_then(|mut eng| eng.capture_since_mark(max_output_bytes));
-                    let enriched = enrich_record_with_output(request, captured);
-                    forward_to_global_daemon(&enriched)
-                }
-                // All other requests → forward to global daemon
-                _ => forward_to_global_daemon(&request),
-            }
+    let response = match &request {
+        // Local capture operations — handle with CaptureEngine
+        crate::daemon::DaemonRequest::Scrollback { .. }
+        | crate::daemon::DaemonRequest::CaptureMark { .. }
+        | crate::daemon::DaemonRequest::CaptureRead { .. }
+        | crate::daemon::DaemonRequest::Status => {
+            handle_local_capture_request(request, capture, max_output_bytes)
         }
-        Err(e) => crate::daemon::DaemonResponse::error(format!("invalid request: {e}")),
+        // Record needs special handling: capture output locally, then forward
+        crate::daemon::DaemonRequest::Record { output, .. } if output.is_none() => {
+            let captured = capture
+                .lock()
+                .ok()
+                .and_then(|mut eng| eng.capture_since_mark(max_output_bytes));
+            let enriched = enrich_record_with_output(request, captured);
+            forward_to_global_daemon(&enriched)
+        }
+        // All other requests → forward to global daemon
+        _ => forward_to_global_daemon(&request),
     };
-    if let Ok(mut json_val) = serde_json::to_value(&response) {
-        if let serde_json::Value::Object(ref mut map) = json_val {
-            map.insert(
-                "v".into(),
-                serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
-            );
-            map.insert(
-                "daemon_version".into(),
-                serde_json::json!(env!("CARGO_PKG_VERSION")),
-            );
-            map.insert(
-                "daemon_fingerprint".into(),
-                serde_json::json!(env!("NSH_BUILD_FINGERPRINT")),
-            );
-        }
-        if let Ok(json_bytes) = serde_json::to_vec(&json_val) {
-            let mut writer = &stream;
-            if let Err(e) = nsh_proto::sync_framing::write_frame(&mut writer, &json_bytes) {
-                tracing::warn!("per-session daemon: failed to write response: {e}");
-            }
-            let _ = stream.shutdown(std::net::Shutdown::Write);
-        }
+    let mut writer = &stream;
+    if let Err(e) = nsh_proto::sync_framing::write_message(&mut writer, &response) {
+        tracing::warn!("per-session daemon: failed to write response: {e}");
     }
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
 
@@ -1248,7 +1214,7 @@ fn handle_stream_attach(
         .spawn(move || {
             let mut reader = stream_clone;
             while let Ok(data) = nsh_proto::sync_framing::read_frame(&mut reader) {
-                match serde_json::from_slice::<crate::daemon::DaemonRequest>(&data) {
+                match rmp_serde::from_slice::<crate::daemon::DaemonRequest>(&data) {
                     Ok(crate::daemon::DaemonRequest::StreamInput { bytes }) => {
                         // Only the control lease holder (or anyone if no lease) can send input
                         let allowed = remote_state_clone

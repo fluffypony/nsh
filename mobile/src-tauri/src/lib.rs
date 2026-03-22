@@ -106,7 +106,7 @@ async fn connect_to_daemon(
             match conn_for_datagrams.read_datagram().await {
                 Ok(bytes) => {
                     if let Ok(update) =
-                        serde_json::from_slice::<nsh_proto::StatePush>(&bytes)
+                        rmp_serde::from_slice::<nsh_proto::StatePush>(&bytes)
                     {
                         let _ = app_dg.emit("state-push", &update);
                     }

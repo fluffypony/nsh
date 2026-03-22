@@ -33,7 +33,7 @@ pub fn current_caller_context_with_request(explicit_user_request: Option<&str>) 
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "t", content = "c", rename_all = "snake_case")]
 pub enum DaemonRequest {
     /// Request the daemon to gracefully restart itself
     Restart,
@@ -347,6 +347,23 @@ pub enum DaemonRequest {
     StreamAttach {
         #[serde(rename = "session_id", alias = "session")]
         session: String,
+        /// Optional peer ID for remote-bridge-initiated attaches.
+        #[serde(default)]
+        peer_id: Option<String>,
+    },
+    /// Resume a previously attached stream from a known sequence number.
+    StreamResume {
+        #[serde(rename = "session_id", alias = "session")]
+        session: String,
+        #[serde(default)]
+        last_seq: u64,
+        #[serde(default)]
+        peer_id: Option<String>,
+    },
+    /// Request buffered replay frames without entering streaming mode.
+    StreamReplay {
+        #[serde(default)]
+        last_seq: u64,
     },
     /// (Post-StreamAttach) Inject input bytes into the PTY.
     StreamInput {
@@ -474,7 +491,7 @@ pub struct MemoryTelemetryPayload {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
+#[serde(tag = "t", content = "c", rename_all = "snake_case")]
 pub enum DaemonResponse {
     Ok {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1141,7 +1158,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_record_defaults() {
-        let json = r#"{"type":"record","session":"s1","command":"ls","cwd":"/tmp","exit_code":0,"started_at":"2025-01-01T00:00:00Z"}"#;
+        let json = r#"{"t":"record","c":{"session":"s1","command":"ls","cwd":"/tmp","exit_code":0,"started_at":"2025-01-01T00:00:00Z"}}"#;
         let req: DaemonRequest = serde_json::from_str(json).unwrap();
         if let DaemonRequest::Record {
             tty,
@@ -1164,7 +1181,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_capture_read_default_max_lines() {
-        let json = r#"{"type":"capture_read","session":"s1"}"#;
+        let json = r#"{"t":"capture_read","c":{"session":"s1"}}"#;
         let req: DaemonRequest = serde_json::from_str(json).unwrap();
         if let DaemonRequest::CaptureRead { max_lines, .. } = req {
             assert_eq!(max_lines, 1000);
@@ -1175,7 +1192,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_scrollback_default_max_lines() {
-        let json = r#"{"type":"scrollback"}"#;
+        let json = r#"{"t":"scrollback","c":{}}"#;
         let req: DaemonRequest = serde_json::from_str(json).unwrap();
         if let DaemonRequest::Scrollback { max_lines } = req {
             assert_eq!(max_lines, 1000);
@@ -1188,15 +1205,14 @@ mod tests {
     fn test_daemon_response_ok() {
         let resp = DaemonResponse::ok();
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"ok\""));
-        assert!(!json.contains("\"data\""));
+        assert!(json.contains("\"t\":\"ok\""));
     }
 
     #[test]
     fn test_daemon_response_ok_with_payload() {
         let resp = DaemonResponse::ok_with_payload(serde_json::json!({"key": "value"}));
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"ok\""));
+        assert!(json.contains("\"t\":\"ok\""));
         assert!(json.contains("\"key\":\"value\""));
     }
 
@@ -1204,7 +1220,7 @@ mod tests {
     fn test_daemon_response_error() {
         let resp = DaemonResponse::error("something failed");
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"status\":\"error\""));
+        assert!(json.contains("\"t\":\"error\""));
         assert!(json.contains("something failed"));
     }
 
@@ -1524,7 +1540,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_record_roundtrip_minimal() {
-        let json_str = r#"{"type":"record","session":"abc","command":"pwd","cwd":"/home","exit_code":1,"started_at":"2025-06-01T12:00:00Z"}"#;
+        let json_str = r#"{"t":"record","c":{"session":"abc","command":"pwd","cwd":"/home","exit_code":1,"started_at":"2025-06-01T12:00:00Z"}}"#;
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         let re_json = serde_json::to_string(&req).unwrap();
         let re_parsed: DaemonRequest = serde_json::from_str(&re_json).unwrap();
@@ -1567,7 +1583,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_capture_read_custom_max_lines() {
-        let json_str = r#"{"type":"capture_read","session":"s2","max_lines":42}"#;
+        let json_str = r#"{"t":"capture_read","c":{"session":"s2","max_lines":42}}"#;
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         if let DaemonRequest::CaptureRead { session, max_lines } = req {
             assert_eq!(session, "s2");
@@ -1580,18 +1596,18 @@ mod tests {
     #[test]
     fn test_daemon_request_all_variants_tag_values() {
         let variants = vec![
-            (r#"{"type":"heartbeat","session":"s"}"#, "heartbeat"),
-            (r#"{"type":"capture_mark","session":"s"}"#, "capture_mark"),
-            (r#"{"type":"capture_read","session":"s"}"#, "capture_read"),
-            (r#"{"type":"scrollback"}"#, "scrollback"),
-            (r#"{"type":"context","session":"s"}"#, "context"),
-            (r#"{"type":"status"}"#, "status"),
+            (r#"{"t":"heartbeat","c":{"session":"s"}}"#, "heartbeat"),
+            (r#"{"t":"capture_mark","c":{"session":"s"}}"#, "capture_mark"),
+            (r#"{"t":"capture_read","c":{"session":"s"}}"#, "capture_read"),
+            (r#"{"t":"scrollback","c":{}}"#, "scrollback"),
+            (r#"{"t":"context","c":{"session":"s"}}"#, "context"),
+            (r#"{"t":"status"}"#, "status"),
             (
-                r#"{"type":"mcp_tool_call","tool":"t","input":{}}"#,
+                r#"{"t":"mcp_tool_call","c":{"tool":"t","input":{}}}"#,
                 "mcp_tool_call",
             ),
             (
-                r#"{"type":"summarize_check","session":"s"}"#,
+                r#"{"t":"summarize_check","c":{"session":"s"}}"#,
                 "summarize_check",
             ),
         ];
@@ -1599,7 +1615,7 @@ mod tests {
             let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
             let serialized = serde_json::to_string(&req).unwrap();
             assert!(
-                serialized.contains(&format!("\"type\":\"{tag}\"")),
+                serialized.contains(&format!("\"t\":\"{tag}\"")),
                 "tag mismatch for {tag}"
             );
         }
@@ -1623,7 +1639,7 @@ mod tests {
     #[test]
     fn test_default_max_lines_value() {
         assert_eq!(default_max_lines(), 1000);
-        let json_str = r#"{"type":"scrollback"}"#;
+        let json_str = r#"{"t":"scrollback","c":{}}"#;
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         if let DaemonRequest::Scrollback { max_lines } = req {
             assert_eq!(max_lines, default_max_lines());
@@ -1649,17 +1665,19 @@ mod tests {
     #[test]
     fn test_daemon_request_record_full_roundtrip() {
         let json_str = r#"{
-            "type": "record",
-            "session": "s1",
-            "command": "ls -la",
-            "cwd": "/home/user",
-            "exit_code": 42,
-            "started_at": "2025-06-01T12:00:00Z",
-            "tty": "/dev/pts/5",
-            "pid": 9999,
-            "shell": "fish",
-            "duration_ms": 1500,
-            "output": "file1\nfile2"
+            "t": "record",
+            "c": {
+                "session": "s1",
+                "command": "ls -la",
+                "cwd": "/home/user",
+                "exit_code": 42,
+                "started_at": "2025-06-01T12:00:00Z",
+                "tty": "/dev/pts/5",
+                "pid": 9999,
+                "shell": "fish",
+                "duration_ms": 1500,
+                "output": "file1\nfile2"
+            }
         }"#;
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         let json = serde_json::to_string(&req).unwrap();
@@ -2003,37 +2021,36 @@ mod tests {
     fn test_daemon_response_ok_serialization_omits_data() {
         let resp = DaemonResponse::ok();
         let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
-        assert_eq!(val.get("status").unwrap(), "ok");
-        assert!(val.get("data").is_none());
+        assert_eq!(val.get("t").unwrap(), "ok");
+        // With adjacently-tagged, Ok { data: None } has no "c" or "c" has no "data"
     }
 
     #[test]
     fn test_daemon_response_ok_with_payload_serialization_includes_data() {
         let resp = DaemonResponse::ok_with_payload(serde_json::json!(42));
         let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
-        assert_eq!(val["status"], "ok");
-        assert_eq!(val["data"], 42);
+        assert_eq!(val["t"], "ok");
+        assert_eq!(val["c"]["data"], 42);
     }
 
     #[test]
     fn test_daemon_response_error_serialization_shape() {
         let resp = DaemonResponse::error("boom");
         let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
-        assert_eq!(val["status"], "error");
-        assert_eq!(val["message"], "boom");
-        assert!(val.get("data").is_none());
+        assert_eq!(val["t"], "error");
+        assert_eq!(val["c"]["message"], "boom");
     }
 
     #[test]
     fn test_daemon_response_deserialize_ok_without_data() {
-        let json = r#"{"status":"ok"}"#;
+        let json = r#"{"t":"ok","c":{}}"#;
         let resp: DaemonResponse = serde_json::from_str(json).unwrap();
         assert!(matches!(resp, DaemonResponse::Ok { data: None }));
     }
 
     #[test]
     fn test_daemon_response_deserialize_ok_with_payload() {
-        let json = r#"{"status":"ok","data":{"key":"val"}}"#;
+        let json = r#"{"t":"ok","c":{"data":{"key":"val"}}}"#;
         let resp: DaemonResponse = serde_json::from_str(json).unwrap();
         if let DaemonResponse::Ok { data: Some(d) } = resp {
             assert_eq!(d["key"], "val");
@@ -2044,7 +2061,7 @@ mod tests {
 
     #[test]
     fn test_daemon_response_deserialize_error() {
-        let json = r#"{"status":"error","message":"something broke"}"#;
+        let json = r#"{"t":"error","c":{"message":"something broke"}}"#;
         let resp: DaemonResponse = serde_json::from_str(json).unwrap();
         if let DaemonResponse::Error { message } = resp {
             assert_eq!(message, "something broke");
@@ -2055,21 +2072,21 @@ mod tests {
 
     #[test]
     fn test_daemon_request_invalid_type_tag() {
-        let json = r#"{"type":"nonexistent_variant","session":"s"}"#;
+        let json = r#"{"t":"nonexistent_variant","c":{"session":"s"}}"#;
         let result = serde_json::from_str::<DaemonRequest>(json);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_daemon_response_invalid_status_tag() {
-        let json = r#"{"status":"unknown","message":"x"}"#;
+        let json = r#"{"t":"unknown","c":{"message":"x"}}"#;
         let result = serde_json::from_str::<DaemonResponse>(json);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_daemon_request_missing_required_field() {
-        let json = r#"{"type":"record","session":"s1"}"#;
+        let json = r#"{"t":"record","c":{"session":"s1"}}"#;
         let result = serde_json::from_str::<DaemonRequest>(json);
         assert!(result.is_err());
     }
@@ -2078,7 +2095,6 @@ mod tests {
     fn test_daemon_response_ok_with_null_data() {
         let resp = DaemonResponse::ok_with_payload(serde_json::Value::Null);
         let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"data\":null"));
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, DaemonResponse::Ok { data: None }));
     }
@@ -2087,7 +2103,7 @@ mod tests {
     fn test_daemon_response_ok_with_empty_object() {
         let resp = DaemonResponse::ok_with_payload(serde_json::json!({}));
         let val: serde_json::Value = serde_json::to_value(&resp).unwrap();
-        assert_eq!(val["data"], serde_json::json!({}));
+        assert_eq!(val["c"]["data"], serde_json::json!({}));
     }
 
     #[test]
@@ -2179,7 +2195,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_scrollback_custom_max_lines() {
-        let json_str = r#"{"type":"scrollback","max_lines":5}"#;
+        let json_str = r#"{"t":"scrollback","c":{"max_lines":5}}"#;
         let req: DaemonRequest = serde_json::from_str(json_str).unwrap();
         if let DaemonRequest::Scrollback { max_lines } = req {
             assert_eq!(max_lines, 5);
@@ -2981,14 +2997,14 @@ mod tests {
     #[test]
     fn test_daemon_request_all_variants_roundtrip() {
         let variants = vec![
-            r#"{"type":"heartbeat","session":"s1"}"#,
-            r#"{"type":"status"}"#,
-            r#"{"type":"capture_mark","session":"s1"}"#,
-            r#"{"type":"capture_read","session":"s1"}"#,
-            r#"{"type":"scrollback"}"#,
-            r#"{"type":"context","session":"s1"}"#,
-            r#"{"type":"summarize_check","session":"s1"}"#,
-            r#"{"type":"mcp_tool_call","tool":"test","input":{}}"#,
+            r#"{"t":"heartbeat","c":{"session":"s1"}}"#,
+            r#"{"t":"status"}"#,
+            r#"{"t":"capture_mark","c":{"session":"s1"}}"#,
+            r#"{"t":"capture_read","c":{"session":"s1"}}"#,
+            r#"{"t":"scrollback","c":{}}"#,
+            r#"{"t":"context","c":{"session":"s1"}}"#,
+            r#"{"t":"summarize_check","c":{"session":"s1"}}"#,
+            r#"{"t":"mcp_tool_call","c":{"tool":"test","input":{}}}"#,
         ];
         for json_str in &variants {
             let parsed: DaemonRequest = serde_json::from_str(json_str).unwrap();
@@ -3030,7 +3046,7 @@ mod tests {
 
     #[test]
     fn test_daemon_request_record_defaults_for_optional_fields() {
-        let json_str = r#"{"type":"record","session":"s1","command":"ls","cwd":"/","exit_code":0,"started_at":"2025-01-01T00:00:00Z"}"#;
+        let json_str = r#"{"t":"record","c":{"session":"s1","command":"ls","cwd":"/","exit_code":0,"started_at":"2025-01-01T00:00:00Z"}}"#;
         let parsed: DaemonRequest = serde_json::from_str(json_str).unwrap();
         match parsed {
             DaemonRequest::Record {

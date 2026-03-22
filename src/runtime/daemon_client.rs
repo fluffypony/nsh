@@ -42,36 +42,21 @@ fn send_request_once(session_id: &str, request: &DaemonRequest) -> anyhow::Resul
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
 
-    let mut json_val = serde_json::to_value(request)?;
-    if let serde_json::Value::Object(ref mut map) = json_val {
-        map.insert(
-            "v".into(),
-            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
-        );
-    }
-    let json_bytes = serde_json::to_vec(&json_val)?;
     log_daemon_client(
         "client.send_request",
-        &format!(
-            "session={session_id}\nrequest={}",
-            String::from_utf8_lossy(&json_bytes)
-        ),
+        &format!("session={session_id}\nrequest={request:?}"),
     );
-    nsh_proto::sync_framing::write_frame(&mut stream, &json_bytes)?;
+    nsh_proto::sync_framing::write_message(&mut stream, request)?;
 
-    let response_bytes = nsh_proto::sync_framing::read_frame(&mut stream)?;
-    let json_val: serde_json::Value = serde_json::from_slice(&response_bytes)
-        .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
+    let response: DaemonResponse = nsh_proto::sync_framing::read_message(&mut stream)
+        .map_err(|e| anyhow::anyhow!("daemon response parse failed: {e}"))?;
 
     log_daemon_client(
         "client.send_request.response",
-        &format!(
-            "session={session_id}\nresponse={}",
-            String::from_utf8_lossy(&response_bytes)
-        ),
+        &format!("session={session_id}\nresponse={response:?}"),
     );
 
-    serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
+    Ok(response)
 }
 
 pub fn get_system_info() -> anyhow::Result<crate::context::SystemInfoBundle> {
@@ -169,30 +154,21 @@ fn send_to_global_once(request: &DaemonRequest) -> anyhow::Result<DaemonResponse
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
-    let mut json_val = serde_json::to_value(request)?;
-    if let serde_json::Value::Object(ref mut map) = json_val {
-        map.insert(
-            "v".into(),
-            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
-        );
-    }
-    let json_bytes = serde_json::to_vec(&json_val)?;
     log_daemon_client(
         "client.send_to_global",
-        &format!("request={}", String::from_utf8_lossy(&json_bytes)),
+        &format!("request={request:?}"),
     );
-    nsh_proto::sync_framing::write_frame(&mut stream, &json_bytes)?;
+    nsh_proto::sync_framing::write_message(&mut stream, request)?;
 
-    let response_bytes = nsh_proto::sync_framing::read_frame(&mut stream)?;
-    let json_val: serde_json::Value = serde_json::from_slice(&response_bytes)
-        .map_err(|e| anyhow::anyhow!("daemon response JSON parse failed: {e}"))?;
+    let response: DaemonResponse = nsh_proto::sync_framing::read_message(&mut stream)
+        .map_err(|e| anyhow::anyhow!("daemon response parse failed: {e}"))?;
 
     log_daemon_client(
         "client.send_to_global.response",
-        &format!("response={}", String::from_utf8_lossy(&response_bytes)),
+        &format!("response={response:?}"),
     );
 
-    serde_json::from_value(json_val).map_err(|e| anyhow::anyhow!("deserialize error: {e}"))
+    Ok(response)
 }
 
 #[cfg(not(unix))]
@@ -391,7 +367,7 @@ mod tests {
     #[cfg(unix)]
     mod unix_tests {
         use super::super::{is_daemon_running, send_request, try_send_request};
-        use crate::daemon::{DaemonRequest, DaemonResponse, DAEMON_PROTOCOL_VERSION};
+        use crate::daemon::{DaemonRequest, DaemonResponse};
         use crate::test_support::EnvVarGuard;
         use serial_test::serial;
         use std::os::unix::net::{UnixListener, UnixStream};
@@ -432,7 +408,8 @@ mod tests {
                 let payload = nsh_proto::sync_framing::read_frame(&mut stream).unwrap();
                 // Deserialize MessagePack into DaemonRequest, then convert to JSON Value
                 // for test assertions (MessagePack tagged enums don't round-trip via Value).
-                let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                let req: DaemonRequest = rmp_serde::from_slice(&payload).unwrap();
+                let request = serde_json::to_value(&req).unwrap();
                 handle_request(request, &mut stream);
             });
             (sock_path, handler)
@@ -465,8 +442,7 @@ mod tests {
             let (_home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
             let session_id = format!("pv-{}", std::process::id());
             let (sock_path, handler) = spawn_session_daemon(&session_id, |request, stream| {
-                assert_eq!(request["type"], "status");
-                assert_eq!(request["v"], DAEMON_PROTOCOL_VERSION);
+                assert_eq!(request["t"], "status");
                 write_mock_response(stream, DaemonResponse::ok());
             });
 
@@ -485,11 +461,11 @@ mod tests {
                 session: "sess-42".into(),
             };
             let (sock_path, handler) = spawn_session_daemon(&session_id, |parsed, stream| {
-                assert_eq!(parsed["type"], "heartbeat");
-                assert_eq!(parsed["session_id"], "sess-42");
+                assert_eq!(parsed["t"], "heartbeat");
+                assert_eq!(parsed["c"]["session_id"], "sess-42");
                 write_mock_response(
                     stream,
-                    DaemonResponse::ok_with_payload(serde_json::json!({"received": parsed["type"]})),
+                    DaemonResponse::ok_with_payload(serde_json::json!({"received": parsed["t"]})),
                 );
             });
 
@@ -557,9 +533,9 @@ mod tests {
             let handler = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 let payload = nsh_proto::sync_framing::read_frame(&mut stream).unwrap();
-                let parsed: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-                assert_eq!(parsed["type"], "status");
-                assert_eq!(parsed["v"], DAEMON_PROTOCOL_VERSION);
+                let req: DaemonRequest = rmp_serde::from_slice(&payload).unwrap();
+                let parsed = serde_json::to_value(&req).unwrap();
+                assert_eq!(parsed["t"], "status");
 
                 let resp = DaemonResponse::ok_with_payload(serde_json::json!({"mock": true}));
                 nsh_proto::sync_framing::write_message(&mut stream, &resp).unwrap();
@@ -618,8 +594,8 @@ mod tests {
                 let (mut stream, _) = listener.accept().unwrap();
                 let _payload = nsh_proto::sync_framing::read_frame(&mut stream).unwrap();
 
-                // Send invalid JSON as a framed payload
-                nsh_proto::sync_framing::write_frame(&mut stream, b"not valid json").unwrap();
+                // Send invalid MessagePack as a framed payload
+                nsh_proto::sync_framing::write_frame(&mut stream, b"not valid msgpack").unwrap();
             });
 
             let result = send_request(&session_id, &DaemonRequest::Status);
@@ -664,9 +640,10 @@ mod tests {
             let handler = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 let payload = nsh_proto::sync_framing::read_frame(&mut stream).unwrap();
-                let parsed: serde_json::Value = serde_json::from_slice(&payload).unwrap();
-                assert_eq!(parsed["type"], "heartbeat");
-                assert_eq!(parsed["session_id"], "mysess");
+                let req: DaemonRequest = rmp_serde::from_slice(&payload).unwrap();
+                let parsed = serde_json::to_value(&req).unwrap();
+                assert_eq!(parsed["t"], "heartbeat");
+                assert_eq!(parsed["c"]["session_id"], "mysess");
 
                 let resp = DaemonResponse::ok();
                 nsh_proto::sync_framing::write_message(&mut stream, &resp).unwrap();

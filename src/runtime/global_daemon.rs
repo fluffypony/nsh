@@ -2403,7 +2403,7 @@ fn handle_global_connection(
         Err(_) => return,
     };
 
-    let request: DaemonRequest = match serde_json::from_slice(&payload) {
+    let request: DaemonRequest = match rmp_serde::from_slice(&payload) {
         Ok(r) => r,
         Err(e) => {
             let resp = DaemonResponse::error(format!("parse error: {e}"));
@@ -2416,7 +2416,7 @@ fn handle_global_connection(
     };
     log_daemon(
         "server.connection.request",
-        &String::from_utf8_lossy(&payload),
+        &format!("{request:?}"),
     );
     // Track active session IDs for per-session notifications (in-memory)
     match &request {
@@ -2754,25 +2754,7 @@ fn write_response(
     resp: &DaemonResponse,
 ) -> std::io::Result<()> {
     let mut w = std::io::BufWriter::with_capacity(256 * 1024, stream);
-    let mut json_val =
-        serde_json::to_value(resp).unwrap_or_else(|_| serde_json::json!({"status":"error"}));
-    if let serde_json::Value::Object(ref mut map) = json_val {
-        map.insert(
-            "v".into(),
-            serde_json::json!(crate::daemon::DAEMON_PROTOCOL_VERSION),
-        );
-        map.insert(
-            "daemon_version".into(),
-            serde_json::json!(env!("CARGO_PKG_VERSION")),
-        );
-        map.insert(
-            "daemon_fingerprint".into(),
-            serde_json::json!(env!("NSH_BUILD_FINGERPRINT")),
-        );
-    }
-    let json_bytes = serde_json::to_vec(&json_val)
-        .unwrap_or_else(|_| br#"{"status":"error","message":"serialize error"}"#.to_vec());
-    nsh_proto::sync_framing::write_frame(&mut w, &json_bytes)
+    nsh_proto::sync_framing::write_message(&mut w, resp)
 }
 
 #[cfg(all(test, unix))]
@@ -2795,7 +2777,7 @@ mod tests {
         read_tx: mpsc::Sender<ReadCommand>,
         write_rx: mpsc::Receiver<WriteCommand>,
         read_rx: mpsc::Receiver<ReadCommand>,
-    ) -> (String, Option<WriteCommand>, Option<ReadCommand>) {
+    ) -> (DaemonResponse, Option<WriteCommand>, Option<ReadCommand>) {
         let (server, mut client) = UnixStream::pair().expect("unix stream pair");
         client
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -2808,9 +2790,11 @@ mod tests {
             handle_global_connection(server, write_tx, read_tx, sessions, state_bus);
         });
 
-        // Send request as length-prefixed frame
-        let req_bytes = request_line.as_bytes();
-        nsh_proto::sync_framing::write_frame(&mut client, req_bytes)
+        // Send request as length-prefixed MessagePack frame
+        let req: DaemonRequest =
+            serde_json::from_str(request_line).expect("parse test request JSON");
+        let msgpack_bytes = rmp_serde::to_vec_named(&req).expect("encode request as msgpack");
+        nsh_proto::sync_framing::write_frame(&mut client, &msgpack_bytes)
             .expect("write request to daemon conn");
 
         let write_cmd = write_rx.recv_timeout(Duration::from_millis(300)).ok();
@@ -2831,13 +2815,43 @@ mod tests {
                 })));
         }
 
-        // Read response as length-prefixed frame
+        // Read response as length-prefixed MessagePack frame
         let response_bytes = nsh_proto::sync_framing::read_frame(&mut client)
             .expect("read daemon response");
-        let response = String::from_utf8_lossy(&response_bytes).to_string();
+        let response: DaemonResponse =
+            rmp_serde::from_slice(&response_bytes).expect("parse daemon response msgpack");
 
         handler.join().expect("join daemon connection handler");
         (response, write_cmd, read_cmd)
+    }
+
+    fn send_raw_bytes_and_read_response(
+        raw_bytes: &[u8],
+        write_tx: mpsc::Sender<WriteCommand>,
+        read_tx: mpsc::Sender<ReadCommand>,
+    ) -> DaemonResponse {
+        let (server, mut client) = UnixStream::pair().expect("unix stream pair");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set read timeout");
+
+        let handler = std::thread::spawn(move || {
+            let sessions =
+                std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+            let state_bus = std::sync::Arc::new(crate::runtime::state_bus::StateBus::new());
+            handle_global_connection(server, write_tx, read_tx, sessions, state_bus);
+        });
+
+        nsh_proto::sync_framing::write_frame(&mut client, raw_bytes)
+            .expect("write raw bytes to daemon conn");
+
+        let response_bytes = nsh_proto::sync_framing::read_frame(&mut client)
+            .expect("read daemon response");
+        let response: DaemonResponse =
+            rmp_serde::from_slice(&response_bytes).expect("parse daemon response msgpack");
+
+        handler.join().expect("join daemon connection handler");
+        response
     }
 
     #[test]
@@ -2871,8 +2885,12 @@ mod tests {
 
         assert!(write_cmd.is_some(), "expected write command to be routed");
         assert!(read_cmd.is_none(), "did not expect read command");
-        assert!(response.contains("routed"));
-        assert!(response.contains("write"));
+        match response {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert_eq!(d["routed"], "write");
+            }
+            other => panic!("expected Ok with routed=write, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2886,23 +2904,29 @@ mod tests {
 
         assert!(write_cmd.is_none(), "did not expect write command");
         assert!(read_cmd.is_some(), "expected read command to be routed");
-        assert!(response.contains("routed"));
-        assert!(response.contains("read"));
+        match response {
+            DaemonResponse::Ok { data: Some(d) } => {
+                assert_eq!(d["routed"], "read");
+            }
+            other => panic!("expected Ok with routed=read, got {other:?}"),
+        }
     }
 
     #[test]
-    fn handle_global_connection_returns_parse_error_for_invalid_json() {
-        let (write_tx, write_rx) = mpsc::channel();
-        let (read_tx, read_rx) = mpsc::channel();
-        let (response, write_cmd, read_cmd) =
-            send_request_and_read_response("{not-json", write_tx, read_tx, write_rx, read_rx);
+    fn handle_global_connection_returns_parse_error_for_invalid_input() {
+        let (write_tx, _write_rx) = mpsc::channel();
+        let (read_tx, _read_rx) = mpsc::channel();
+        let response = send_raw_bytes_and_read_response(b"not valid msgpack", write_tx, read_tx);
 
-        assert!(write_cmd.is_none());
-        assert!(read_cmd.is_none());
-        assert!(
-            response.contains("parse error"),
-            "unexpected response: {response}"
-        );
+        match response {
+            DaemonResponse::Error { message } => {
+                assert!(
+                    message.contains("parse error"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected Error with parse error, got {other:?}"),
+        }
     }
 
     #[test]
