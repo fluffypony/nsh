@@ -56,7 +56,9 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             description: "Display a text message to the user. Does NOT end the loop — \
                           use this to explain findings, provide status updates, or \
                           share information while continuing to work. \
-                          Never use chat to ask questions (use ask_user instead). \
+                          NEVER include questions or offers in chat text (e.g. \
+                          'Would you like me to...', 'Should I...') — the user \
+                          CANNOT respond to chat. Use ask_user for ANY question. \
                           When all work is complete, call 'done' to end the loop."
                 .into(),
             parameters: json!({

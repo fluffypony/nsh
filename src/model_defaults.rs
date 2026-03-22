@@ -47,7 +47,7 @@ const GEMINI_CODING: &[&str] = &[
 ];
 
 const OPENROUTER_DEFAULTS: ProviderModelDefaults = ProviderModelDefaults {
-    default_model: "google/gemini-3.1-flash-lite-preview",
+    default_model: "google/gemini-3-flash-preview",
     main: OPENROUTER_MAIN,
     fast: OPENROUTER_FAST,
     coding: OPENROUTER_CODING,

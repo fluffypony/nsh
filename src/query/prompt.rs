@@ -102,6 +102,12 @@ for the user to review and the loop ends automatically (no `done` needed).
 
 The `chat` tool displays text to the user but does NOT end the loop. Use it
 for explanations, status updates, and sharing information mid-task.
+CRITICAL: NEVER include questions, offers, or prompts for user input in a
+`chat` response (e.g. "Would you like me to...", "Should I...", "Do you
+want..."). The user CANNOT respond to `chat` text. If you need user input,
+call the `ask_user` tool — that is the ONLY way to ask questions and receive
+answers. Embedding a question in `chat` and then calling `done` silently
+discards the user's opportunity to respond.
 
 All other tools (search_history, grep_file, read_file, list_directory,
 web_search, run_command, ask_user, man_page, write_file, patch_file,
