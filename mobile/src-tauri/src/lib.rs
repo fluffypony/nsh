@@ -169,6 +169,45 @@ async fn list_sessions(
     }
 }
 
+/// Spawn the shared reader task that streams terminal data and session updates to the frontend.
+fn spawn_reader_task(
+    app: tauri::AppHandle,
+    mut recv: iroh::endpoint::RecvStream,
+    seq_map: Arc<Mutex<HashMap<String, u64>>>,
+    sid: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
+            {
+                Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
+                    seq_map.lock().await.insert(sid.clone(), seq);
+                    let _ = app.emit("terminal-data", bytes);
+                }
+                Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
+                    let _ = app.emit("session-update", event.clone());
+                    match &event {
+                        nsh_proto::SessionEvent::CommandCompleted { command, exit_code, .. } => {
+                            let _ = app.emit("push-notification", serde_json::json!({
+                                "title": if *exit_code == 0 { "Command completed" } else { "Command failed" },
+                                "body": format!("{} (exit {})", command, exit_code),
+                            }));
+                        }
+                        nsh_proto::SessionEvent::AwaitingInput { prompt, .. } => {
+                            let _ = app.emit("push-notification", serde_json::json!({
+                                "title": "nsh: Awaiting input",
+                                "body": prompt,
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+                _ => break,
+            }
+        }
+    })
+}
+
 #[tauri::command]
 async fn attach_session(
     app: tauri::AppHandle,
@@ -204,40 +243,7 @@ async fn attach_session(
         handle.abort();
     }
 
-    // Spawn background task to stream terminal data to frontend
-    let app_clone = app.clone();
-    let seq_map = Arc::clone(&state.last_seq_map);
-    let sid = session_id;
-    let handle = tokio::spawn(async move {
-        loop {
-            match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
-            {
-                Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
-                    seq_map.lock().await.insert(sid.clone(), seq);
-                    let _ = app_clone.emit("terminal-data", bytes);
-                }
-                Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
-                    let _ = app_clone.emit("session-update", event.clone());
-                    match &event {
-                        nsh_proto::SessionEvent::CommandCompleted { command, exit_code, .. } => {
-                            let _ = app_clone.emit("push-notification", serde_json::json!({
-                                "title": if *exit_code == 0 { "Command completed" } else { "Command failed" },
-                                "body": format!("{} (exit {})", command, exit_code),
-                            }));
-                        }
-                        nsh_proto::SessionEvent::AwaitingInput { prompt, .. } => {
-                            let _ = app_clone.emit("push-notification", serde_json::json!({
-                                "title": "nsh: Awaiting input",
-                                "body": prompt,
-                            }));
-                        }
-                        _ => {}
-                    }
-                }
-                _ => break,
-            }
-        }
-    });
+    let handle = spawn_reader_task(app, recv, Arc::clone(&state.last_seq_map), session_id);
     *state.reader_task.lock().await = Some(handle);
 
     Ok(initial_screen)
@@ -279,39 +285,7 @@ async fn resume_session(
         handle.abort();
     }
 
-    let app_clone = app.clone();
-    let seq_map = Arc::clone(&state.last_seq_map);
-    let sid = session_id;
-    let handle = tokio::spawn(async move {
-        loop {
-            match nsh_proto::framing::read_message::<nsh_proto::RemoteResponse, _>(&mut recv).await
-            {
-                Ok(nsh_proto::RemoteResponse::TerminalData { seq, bytes }) => {
-                    seq_map.lock().await.insert(sid.clone(), seq);
-                    let _ = app_clone.emit("terminal-data", bytes);
-                }
-                Ok(nsh_proto::RemoteResponse::SessionUpdate { event }) => {
-                    let _ = app_clone.emit("session-update", event.clone());
-                    match &event {
-                        nsh_proto::SessionEvent::CommandCompleted { command, exit_code, .. } => {
-                            let _ = app_clone.emit("push-notification", serde_json::json!({
-                                "title": if *exit_code == 0 { "Command completed" } else { "Command failed" },
-                                "body": format!("{} (exit {})", command, exit_code),
-                            }));
-                        }
-                        nsh_proto::SessionEvent::AwaitingInput { prompt, .. } => {
-                            let _ = app_clone.emit("push-notification", serde_json::json!({
-                                "title": "nsh: Awaiting input",
-                                "body": prompt,
-                            }));
-                        }
-                        _ => {}
-                    }
-                }
-                _ => break,
-            }
-        }
-    });
+    let handle = spawn_reader_task(app, recv, Arc::clone(&state.last_seq_map), session_id);
     *state.reader_task.lock().await = Some(handle);
 
     Ok(initial_screen)
@@ -350,6 +324,7 @@ async fn send_query(
     session_id: String,
     query: String,
     think: bool,
+    private: Option<bool>,
 ) -> Result<String, String> {
     let conn = state.active_connection.lock().await;
     let conn = conn.as_ref().ok_or("not connected")?;
@@ -359,7 +334,7 @@ async fn send_query(
         query,
         session_id,
         think,
-        private: false,
+        private: private.unwrap_or(false),
     };
     nsh_proto::framing::write_message(&mut send, &req)
         .await

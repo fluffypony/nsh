@@ -6,7 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { sendNotification } from '@tauri-apps/plugin-notification';
 
 // App entry point — renders based on current state
-let currentView: 'pair' | 'sessions' | 'terminal' = 'pair';
+let currentView: 'pair' | 'sessions' | 'terminal' | 'history' = 'pair';
 /** Persisted sessionId of the currently viewed terminal (survives view transitions). */
 let activeSessionId: string | null = null;
 
@@ -73,6 +73,10 @@ function renderPairView() {
 
     try {
       const { nodeId, relayUrl } = parseConnectionPayload(rawInput);
+      if (!nodeId) {
+        statusMsg.textContent = 'Error: EndpointId is required';
+        return;
+      }
       await connectToDaemon(nodeId, relayUrl);
       statusMsg.textContent = 'Connected!';
       renderSessionsView();
@@ -180,6 +184,7 @@ function renderTerminalView(sessionId: string) {
 }
 
 async function renderHistoryView(sessionId: string) {
+  currentView = 'history';
   const app = document.getElementById('app')!;
   app.innerHTML = `
     <div class="history-view">
