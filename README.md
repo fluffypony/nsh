@@ -62,13 +62,13 @@ Every query includes context assembled automatically:
 
 ### Multi-step agent loop
 
-nsh can chain multiple tool calls per query (30 by default, configurable). It investigates before acting - searching history, reading files, running safe commands, querying the web, and asking clarifying questions when needed - then executes and verifies results.
+nsh can chain multiple tool calls per query (50 by default, configurable). It investigates before acting - searching history, reading files, running safe commands, querying the web, and asking clarifying questions when needed - then executes and verifies results.
 
 The `pending` flag on command suggestions enables autonomous multi-step sequences. Safe `pending=true` commands auto-execute by default and feed their output back into the same tool loop, so nsh can continue investigating, fixing, and verifying without stopping. If you prefer explicit approval for each intermediate step, set `execution.confirm_intermediate_steps = true`.
 
 ### Coding agent
 
-The `code` tool delegates programming tasks to a working-directory-constrained sub-agent that uses a more capable model. The sub-agent can read and write files, search the codebase with grep and glob, and run shell commands (build, test, lint) to verify its work. It operates in its own tool loop with up to 30 iterations.
+The `code` tool delegates programming tasks to a working-directory-constrained sub-agent that uses a more capable model. The sub-agent can read and write files, search the codebase with grep and glob, and run shell commands (build, test, lint) to verify its work. It shares the same iteration limit as the main agent (50 by default).
 
 Use it for writing new code, refactoring, fixing bugs, running tests and fixing failures, debugging, or code reviews. The sub-agent gets the same project context and memory as the main agent.
 
@@ -580,9 +580,9 @@ timeout_seconds = 120
 [context]
 scrollback_lines = 1000
 scrollback_pages = 10
-history_summaries = 100
+history_summaries = 20
 history_limit = 20
-other_tty_summaries = 10
+other_tty_summaries = 5
 max_other_ttys = 20
 project_files_limit = 100
 git_commits = 10
@@ -590,7 +590,7 @@ retention_days = 1095
 max_output_storage_bytes = 65536
 scrollback_rate_limit_bps = 10485760
 scrollback_pause_seconds = 2
-include_other_tty = false
+include_other_tty = true
 restore_last_cwd_per_tty = true
 # custom_instructions = "..."
 
@@ -607,6 +607,10 @@ fast = [
   "google/gemini-3.1-flash-lite-preview",
   "anthropic/claude-haiku-4.5",
 ]
+coding = [
+  "anthropic/claude-opus-4.6",
+  "anthropic/claude-sonnet-4.6",
+]
 
 [tools]
 run_command_allowlist = [
@@ -615,6 +619,14 @@ run_command_allowlist = [
   "df", "free", "python3 --version", "node --version",
   "git status", "git branch", "git log", "git diff",
   "pip list", "cargo --version",
+  "npm --version", "npm list -g --depth=0", "npm prefix -g",
+  "npm config get prefix",
+  "pipx --version", "pipx list",
+  "pip3 --version", "pip3 list", "pip3 show",
+  "brew --version", "brew list", "brew info", "brew --prefix",
+  "brew outdated",
+  "gem --version", "go version", "sw_vers", "type",
+  "explorer.exe", "wslview", "clip.exe", "cmd.exe /c ver",
 ]
 sensitive_file_access = "block"  # block | ask | allow
 
@@ -630,19 +642,19 @@ thinking_indicator = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 enabled = true
 replacement = "[REDACTED]"
 disable_builtin = false
-patterns = []  # custom regex patterns
+patterns = []  # additional custom regex patterns (built-in patterns are always active unless disable_builtin = true)
 
 [capture]
 mode = "vt100"
 alt_screen = "drop"  # drop | snapshot
 
 [db]
-busy_timeout_ms = 10000
+busy_timeout_ms = 5000
 
 [execution]
 mode = "prefill"  # prefill | confirm | autorun
 allow_unsafe_autorun = false
-max_tool_iterations = 30
+max_tool_iterations = 50
 confirm_intermediate_steps = false
 
 [memory]
