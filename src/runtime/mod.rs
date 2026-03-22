@@ -10,4 +10,5 @@ pub mod live_update;
 pub mod remote;
 #[cfg(feature = "remote")]
 pub mod remote_key;
+pub mod state_bus;
 pub mod update_checker;

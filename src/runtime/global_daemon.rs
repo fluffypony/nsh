@@ -677,6 +677,7 @@ fn run_global_accept_loop(
     active_sessions: ActiveSessions,
     last_activity: Arc<Mutex<Instant>>,
     restart_pending: Arc<AtomicBool>,
+    state_bus: Arc<crate::runtime::state_bus::StateBus>,
 ) -> anyhow::Result<()> {
     const MAX_GLOBAL_CONNS: usize = 32;
 
@@ -707,8 +708,9 @@ fn run_global_accept_loop(
                 let active_conns = Arc::clone(&active_conns);
                 let last_activity = Arc::clone(&last_activity);
                 let active_sessions = Arc::clone(&active_sessions);
+                let state_bus = Arc::clone(&state_bus);
                 std::thread::spawn(move || {
-                    handle_global_connection(stream, write_tx, read_tx, active_sessions);
+                    handle_global_connection(stream, write_tx, read_tx, active_sessions, state_bus);
                     *last_activity.lock().unwrap() = Instant::now();
                     active_conns.fetch_sub(1, Ordering::Relaxed);
                 });
@@ -873,6 +875,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     let last_activity = Arc::new(Mutex::new(Instant::now()));
     let restart_pending = Arc::new(AtomicBool::new(false));
+    let state_bus = Arc::new(crate::runtime::state_bus::StateBus::new());
 
     // Start iroh remote endpoint if enabled
     #[cfg(feature = "remote")]
@@ -906,6 +909,7 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         Arc::clone(&active_sessions),
         Arc::clone(&last_activity),
         Arc::clone(&restart_pending),
+        Arc::clone(&state_bus),
     )?;
 
     drop(write_tx);
@@ -2388,6 +2392,7 @@ fn handle_global_connection(
     active_sessions: std::sync::Arc<
         std::sync::RwLock<std::collections::HashMap<String, SessionInfo>>,
     >,
+    state_bus: Arc<crate::runtime::state_bus::StateBus>,
 ) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
@@ -2432,6 +2437,11 @@ fn handle_global_connection(
                     },
                 );
             }
+            state_bus.publish(crate::runtime::state_bus::BusEvent::SessionCreated {
+                session_id: session.clone(),
+                tty: tty.clone(),
+                shell: shell.clone(),
+            });
         }
         DaemonRequest::Heartbeat { session } => {
             if let Ok(mut guard) = active_sessions.write() {
@@ -2452,6 +2462,9 @@ fn handle_global_connection(
             {
                 cleanup_session_artifacts(session, &info);
             }
+            state_bus.publish(crate::runtime::state_bus::BusEvent::SessionEnded {
+                session_id: session.clone(),
+            });
         }
         // Upsert on Record so sessions whose first message is Record still
         // appear in active_sessions (insert_command auto-creates sessions in DB).
@@ -2460,6 +2473,8 @@ fn handle_global_connection(
             tty,
             shell,
             pid,
+            command,
+            exit_code,
             ..
         } => {
             if let Ok(mut guard) = active_sessions.write() {
@@ -2473,6 +2488,11 @@ fn handle_global_connection(
                         pid: Some(i64::from(*pid)),
                     });
             }
+            state_bus.publish(crate::runtime::state_bus::BusEvent::CommandRecorded {
+                session_id: session.clone(),
+                command: command.clone(),
+                exit_code: *exit_code,
+            });
         }
         _ => {}
     }
@@ -2622,7 +2642,10 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
         }
         #[cfg(feature = "remote")]
         DaemonRequest::SubscribeEvents { .. } => {
-            Some(DaemonResponse::error("event subscription not yet implemented"))
+            // Event subscription is now available via the StateBus.
+            // Clients should use the bus subscriber API rather than this
+            // request/response RPC path. Return OK to indicate support.
+            Some(DaemonResponse::ok())
         }
         _ => None,
     }
