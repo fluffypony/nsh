@@ -310,7 +310,8 @@ async fn handle_remote_stream(
         RemoteRequest::Query {
             session_id,
             query,
-            ..
+            think,
+            private,
         } => {
             if !validate_session_id(&session_id) {
                 let err = RemoteResponse::QueryError {
@@ -322,26 +323,50 @@ async fn handle_remote_stream(
                 return Ok(());
             }
 
-            // The full query pipeline requires terminal context, tool execution loop,
-            // and streaming responses — it cannot be forwarded through a simple RPC.
-            // Fall back to history search as a best-effort response for now.
-            let request = crate::daemon::DaemonRequest::SearchHistory {
-                query: query.clone(),
-                limit: 10,
-            };
-            let result = crate::daemon_client::send_to_global(&request);
-            let response = match result {
-                Ok(resp) => RemoteResponse::QueryComplete {
-                    response: format!(
-                        "Note: Remote query executes history search only (full LLM query pipeline \
-                         not yet available over remote). Results:\n{}",
-                        serde_json::to_string_pretty(&resp).unwrap_or_default()
-                    ),
-                },
+            // Delegate to the existing query pipeline via subprocess.
+            let exe = std::env::current_exe().unwrap_or_else(|_| "nsh".into());
+            let mut cmd = tokio::process::Command::new(exe);
+            cmd.arg("query");
+            if think {
+                cmd.arg("--think");
+            }
+            if private {
+                cmd.arg("--private");
+            }
+            cmd.arg("--").arg(&query);
+            cmd.env("NSH_SESSION_ID", &session_id);
+            cmd.env("NSH_NO_WRAP", "1");
+
+            // Set CWD to the session's last known working directory
+            if let Ok(db) = crate::db::Db::open() {
+                if let Ok(Some(cwd)) = db.conn.query_row(
+                    "SELECT cwd FROM commands WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
+                    rusqlite::params![&session_id],
+                    |row| row.get::<_, Option<String>>(0),
+                ) {
+                    if let Some(ref cwd) = cwd {
+                        cmd.current_dir(cwd);
+                    }
+                }
+            }
+
+            let response = match cmd.output().await {
+                Ok(out) => {
+                    let mut result = String::from_utf8_lossy(&out.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if !stderr.trim().is_empty() {
+                        if !result.is_empty() {
+                            result.push_str("\n\n");
+                        }
+                        result.push_str(&stderr);
+                    }
+                    RemoteResponse::QueryComplete { response: result }
+                }
                 Err(e) => RemoteResponse::QueryError {
                     message: e.to_string(),
                 },
             };
+
             nsh_proto::framing::write_message(&mut send, &response)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
