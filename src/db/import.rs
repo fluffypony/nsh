@@ -50,6 +50,14 @@ impl Db {
         let tx = self.conn.unchecked_transaction()?;
         let entries: serde_json::Value = serde_json::from_str(entries_json).unwrap_or_default();
         if let Some(array) = entries.as_array() {
+            let mut cmd_stmt = tx.prepare(
+                "INSERT OR IGNORE INTO commands (session_id, command, started_at) VALUES (?, ?, ?)",
+            )?;
+            let mut ent_stmt = tx.prepare(
+                "INSERT OR IGNORE INTO command_entities \
+                 (command_id, executable, entity, entity_norm, entity_type) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )?;
             for entry in array {
                 let command = entry
                     .get("cmd")
@@ -66,21 +74,14 @@ impl Db {
                     continue;
                 }
 
-                tx.execute(
-                    "INSERT OR IGNORE INTO commands (session_id, command, started_at)
-                     VALUES (?, ?, ?)",
-                    params![session_id, command, started_at],
-                )?;
+                cmd_stmt.execute(params![session_id, command, started_at])?;
                 let rowid = tx.last_insert_rowid();
                 if rowid == 0 {
                     continue;
                 }
 
                 for e in extract_command_entities(command) {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO command_entities \
-                         (command_id, executable, entity, entity_norm, entity_type) \
-                         VALUES (?, ?, ?, ?, ?)",
+                    ent_stmt.execute(
                         params![rowid, e.executable, e.entity, e.entity_norm, e.entity_type],
                     )?;
                 }

@@ -13,8 +13,6 @@ pub mod temporal;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod types;
-#[cfg(feature = "remote")]
-pub mod sync;
 
 #[cfg(test)]
 use std::path::Path;

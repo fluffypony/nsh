@@ -87,29 +87,12 @@ pub enum SessionEvent {
     },
 }
 
-/// Messages the remote side sends into the shim's Unix socket.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum RemoteToShim {
-    Input { bytes: Vec<u8> },
-    Resize { cols: u16, rows: u16 },
-    Detach,
-}
-
-/// Messages the shim emits back to the remote side.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ShimToRemote {
-    Output { seq: u64, bytes: Vec<u8> },
-    SessionUpdate { event: String },
-}
-
 /// Length-prefixed binary framing for QUIC streams.
 /// Format: 4-byte big-endian length, then JSON payload.
 pub mod framing {
     use std::io;
 
-    const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+    const MAX_FRAME_SIZE: usize = 1024 * 1024; // 1 MB // 10 MB
 
     pub async fn write_frame<W: tokio::io::AsyncWriteExt + Unpin>(
         w: &mut W,
@@ -160,7 +143,7 @@ pub mod framing {
 pub mod sync_framing {
     use std::io::{self, Read, Write};
 
-    const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024;
+    const MAX_FRAME_SIZE: usize = 1024 * 1024; // 1 MB
 
     pub fn write_frame<W: Write>(w: &mut W, data: &[u8]) -> io::Result<()> {
         let len = (data.len() as u32).to_be_bytes();

@@ -752,20 +752,27 @@ fn cleanup_cd_target_phrase(raw: &str) -> String {
         "dir",
     ];
 
-    let tokens: Vec<String> = trimmed
-        .split_whitespace()
-        .filter_map(|tok| {
-            let cleaned = tok.trim_matches(|c: char| c == ',' || c == '.');
-            let lower = cleaned.to_ascii_lowercase();
-            if FILLER_WORDS.contains(&lower.as_str()) {
-                return None;
-            }
-            if cleaned.is_empty() {
-                return None;
-            }
-            Some(cleaned.to_string())
-        })
-        .collect();
+    let raw_tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    // Only strip filler words when there are multiple tokens to avoid
+    // stripping literal directory/folder names like "directory" or "folder".
+    let tokens: Vec<String> = if raw_tokens.len() <= 1 {
+        raw_tokens.iter().map(|t| t.to_string()).collect()
+    } else {
+        raw_tokens
+            .iter()
+            .filter_map(|tok| {
+                let cleaned = tok.trim_matches(|c: char| c == ',' || c == '.');
+                let lower = cleaned.to_ascii_lowercase();
+                if FILLER_WORDS.contains(&lower.as_str()) {
+                    return None;
+                }
+                if cleaned.is_empty() {
+                    return None;
+                }
+                Some(cleaned.to_string())
+            })
+            .collect()
+    };
 
     if tokens.is_empty() {
         trimmed.to_string()

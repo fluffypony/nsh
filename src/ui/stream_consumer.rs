@@ -110,6 +110,7 @@ pub async fn consume_stream(
             name: current_tool_name.clone(),
             input: serde_json::json!({}),
         });
+        current_tool_name.clear();
     }
     if !current_tool_name.is_empty() && !current_tool_input.is_empty() {
         let input = serde_json::from_str::<serde_json::Value>(&current_tool_input)

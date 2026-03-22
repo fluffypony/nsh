@@ -168,7 +168,9 @@ pub(crate) struct ExtractedCommandEntity {
 pub(crate) fn extract_command_entities(command: &str) -> Vec<ExtractedCommandEntity> {
     let tokens = match shell_words::split(command) {
         Ok(t) => t,
-        Err(_) => return Vec::new(),
+        // Fall back to simple whitespace tokenization if shell_words fails
+        // (e.g. unclosed quotes in the command text).
+        Err(_) => command.split_whitespace().map(String::from).collect(),
     };
     if tokens.is_empty() {
         return Vec::new();

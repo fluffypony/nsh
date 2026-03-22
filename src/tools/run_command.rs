@@ -100,20 +100,25 @@ pub fn execute_outcome(cmd: &str, config: &Config) -> anyhow::Result<ToolInvocat
     let sensitive_suffix_hit = crate::security::SENSITIVE_DIR_SUFFIXES
         .iter()
         .any(|s| {
-            let needle = format!("/{s}");
-            for (i, _) in lower_cmd.match_indices(&needle) {
-                let after = i + needle.len();
-                if after >= lower_cmd.len() {
-                    return true; // at end of command
-                }
-                let next = lower_cmd.as_bytes()[after];
-                if next == b'/' || next == b' ' || next == b'\'' || next == b'"' {
-                    return true; // followed by separator, space, or quote
+            // Check both absolute paths (/{s}) and tilde-expanded paths (~/{s})
+            for needle in &[format!("/{s}"), format!("~/{s}")] {
+                for (i, _) in lower_cmd.match_indices(needle.as_str()) {
+                    let after = i + needle.len();
+                    if after >= lower_cmd.len() {
+                        return true; // at end of command
+                    }
+                    let next = lower_cmd.as_bytes()[after];
+                    if next == b'/' || next == b' ' || next == b'\'' || next == b'"' {
+                        return true; // followed by separator, space, or quote
+                    }
                 }
             }
             false
         });
-    let key_file_hit = lower_cmd.contains("/id_rsa") || lower_cmd.contains("/id_ed25519");
+    let key_file_hit = lower_cmd.contains("/id_rsa")
+        || lower_cmd.contains("/id_ed25519")
+        || lower_cmd.contains("~/id_rsa")
+        || lower_cmd.contains("~/id_ed25519");
     if sensitive_suffix_hit || key_file_hit {
         return Ok(ToolInvocationOutcome::failure(
             "DENIED: command references a sensitive path",

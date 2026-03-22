@@ -789,7 +789,7 @@ impl ToolsConfig {
         if trimmed.chars().any(|c| dangerous_chars.contains(&c)) {
             return false;
         }
-        if self.run_command_allowlist.contains(&"*".to_string()) {
+        if self.run_command_allowlist.iter().any(|s| s == "*") {
             return true;
         }
         let argv: Vec<&str> = trimmed.split_whitespace().collect();

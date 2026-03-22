@@ -327,20 +327,14 @@ fn pid_alive(pid: i64) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-fn tty_sanitized(tty: &str) -> String {
-    tty.replace('/', "_")
-}
-
-/// Cleanup per-TTY/session artifacts when a session ends or is pruned.
-fn cleanup_session_artifacts(session_id: &str, info: &SessionInfo) {
+/// Cleanup per-session artifacts when a session ends or is pruned.
+fn cleanup_session_artifacts(session_id: &str, _info: &SessionInfo) {
     let dir = crate::config::Config::nsh_dir();
     // Remove per-session message file if any
     let _ = std::fs::remove_file(dir.join(format!("nsh_msg_{}", session_id)));
-    // Remove per-TTY CWD file if we know TTY
-    if let Some(tty) = &info.tty {
-        let safe = tty_sanitized(tty);
-        let _ = std::fs::remove_file(dir.join(format!("cwd_{}", safe)));
-    }
+    // Do NOT delete the per-TTY CWD file here: if the user reuses the same
+    // terminal, the new session's CWD file would be deleted prematurely.
+    // Let it be naturally overwritten by the next active session on that TTY.
 }
 
 fn apply_restart_cooldown(restart_marker: &std::path::Path) {
@@ -903,56 +897,6 @@ pub fn run_global_daemon() -> anyhow::Result<()> {
         None
     };
 
-    // Initialize memory sync engine in a persistent background thread if remote is enabled.
-    // The thread keeps its own tokio runtime alive for the engine's async operations.
-    #[cfg(feature = "remote")]
-    let _memory_sync_handle = if config.remote.enabled {
-        match crate::runtime::remote_key::load_or_create_secret_key() {
-            Ok(secret_key) => {
-                let handle = std::thread::Builder::new()
-                    .name("nshd-memory-sync".into())
-                    .spawn(move || {
-                        let rt = match tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                        {
-                            Ok(rt) => rt,
-                            Err(e) => {
-                                tracing::warn!("memory sync runtime build failed: {e}");
-                                return;
-                            }
-                        };
-                        rt.block_on(async move {
-                            match crate::memory::sync::MemorySyncEngine::new(&secret_key).await {
-                                Ok(_engine) => {
-                                    // Engine initialized; keep runtime alive for future
-                                    // background sync operations (currently scaffolding).
-                                    // Park indefinitely until process exit.
-                                    std::future::pending::<()>().await;
-                                }
-                                Err(e) => {
-                                    tracing::warn!("memory sync init failed: {e}");
-                                }
-                            }
-                        });
-                    });
-                match handle {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        tracing::warn!("memory sync thread spawn failed: {e}");
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("memory sync key load failed: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     spawn_background_monitors(Arc::clone(&restart_pending), Arc::clone(&active_sessions))?;
     run_global_accept_loop(
         &listener,
@@ -1302,8 +1246,12 @@ fn try_execute_write(
                 return Err(rollback_failed_command_record(db, id, error));
             }
 
-            // Detect project switches via CWD change
-            if let Some(project_root) = detect_project_root_fast(&cwd) {
+            // Detect project switches via CWD change.
+            // Skip if the command itself is the shell hook's explicit project switch marker
+            // to avoid emitting duplicate ProjectSwitch events.
+            if command != "__nsh_project_switch"
+                && let Some(project_root) = detect_project_root_fast(&cwd)
+            {
                 let switched = match session_project_roots.get(&session) {
                     Some(prev) => prev != &project_root,
                     None => true, // first command in session, record but don't emit event
@@ -2503,6 +2451,27 @@ fn handle_global_connection(
                 && let Some(info) = guard.remove(session)
             {
                 cleanup_session_artifacts(session, &info);
+            }
+        }
+        // Upsert on Record so sessions whose first message is Record still
+        // appear in active_sessions (insert_command auto-creates sessions in DB).
+        DaemonRequest::Record {
+            session,
+            tty,
+            shell,
+            pid,
+            ..
+        } => {
+            if let Ok(mut guard) = active_sessions.write() {
+                guard
+                    .entry(session.clone())
+                    .and_modify(|info| info.last_seen = Instant::now())
+                    .or_insert(SessionInfo {
+                        last_seen: Instant::now(),
+                        tty: Some(tty.clone()),
+                        shell: Some(shell.clone()),
+                        pid: Some(i64::from(*pid)),
+                    });
             }
         }
         _ => {}

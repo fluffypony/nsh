@@ -85,11 +85,10 @@ fn execute(
         latest_only,
     ) {
         let raw_limit = if intent.latest_only || intent.entity.is_some() {
-            limit.saturating_mul(20).max(200)
+            limit.saturating_mul(20).max(200).min(500)
         } else {
-            limit.saturating_mul(10).max(100)
-        }
-        .min(MAX_SEARCH_RESULTS);
+            limit.saturating_mul(10).max(100).min(500)
+        };
         let entity_matches = match db.search_command_entities(
             intent.executable.as_deref(),
             intent.entity.as_deref(),

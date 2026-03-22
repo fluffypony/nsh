@@ -49,10 +49,41 @@ impl<'a> MemoryMaintenance<'a> {
             crate::memory::reflection::build_reflection_prompt(&unconsolidated, &core, &semantic, &procedural);
         let response = llm.complete_json(&prompt).await?;
         let Some(ops) = crate::memory::reflection::parse_reflection_response(&response) else {
-            // LLM response was unparseable — don't mark anything consolidated
-            // so these events are retried on the next reflection cycle.
+            // LLM response was unparseable. Track consecutive failures via memory_config
+            // and mark events as consolidated after 3 consecutive failures to prevent
+            // an infinite retry loop on persistently problematic events.
+            let conn = self.db.lock().unwrap();
+            let consecutive_failures: i64 = conn
+                .query_row(
+                    "SELECT CAST(COALESCE((SELECT value FROM memory_config WHERE key = 'reflection_parse_failures'), '0') AS INTEGER)",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let new_count = consecutive_failures + 1;
+            let _ = conn.execute(
+                "INSERT INTO memory_config(key, value) VALUES('reflection_parse_failures', ?1) \
+                 ON CONFLICT(key) DO UPDATE SET value = ?1",
+                rusqlite::params![new_count.to_string()],
+            );
+            if new_count >= 3 {
+                let ids: Vec<String> = unconsolidated.iter().map(|e| e.id.clone()).collect();
+                let _ = crate::memory::store::episodic::mark_consolidated(&conn, &ids);
+                let _ = conn.execute(
+                    "DELETE FROM memory_config WHERE key = 'reflection_parse_failures'",
+                    [],
+                );
+            }
             return Ok(ReflectionReport::default());
         };
+        // Reset failure counter on successful parse
+        {
+            let conn = self.db.lock().unwrap();
+            let _ = conn.execute(
+                "DELETE FROM memory_config WHERE key = 'reflection_parse_failures'",
+                [],
+            );
+        }
 
         let mut report = ReflectionReport::default();
         let ids: Vec<String> = unconsolidated.iter().map(|event| event.id.clone()).collect();

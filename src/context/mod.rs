@@ -632,6 +632,12 @@ fn gather_instruction_file_contents(base_dir: &std::path::Path) -> Vec<(String, 
         }
 
         if candidate.is_file() {
+            // Skip files larger than 1MB to avoid memory pressure from giant instruction files.
+            if let Ok(meta) = std::fs::metadata(&candidate) {
+                if meta.len() > 1_048_576 {
+                    continue;
+                }
+            }
             if let Ok(raw) = std::fs::read_to_string(&candidate) {
                 let trimmed = raw.trim();
                 if !trimmed.is_empty() {
@@ -657,6 +663,11 @@ fn gather_instruction_file_contents(base_dir: &std::path::Path) -> Vec<(String, 
             }
             files.sort();
             for path in files {
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if meta.len() > 1_048_576 {
+                        continue;
+                    }
+                }
                 if let Ok(raw) = std::fs::read_to_string(&path) {
                     let trimmed = raw.trim();
                     if !trimmed.is_empty() {

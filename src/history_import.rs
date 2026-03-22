@@ -18,7 +18,7 @@ enum Shell {
     Bash,
     Zsh,
     Fish,
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg(windows)]
     PowerShell,
 }
 
@@ -82,6 +82,7 @@ fn import_session_info(path: &Path, shell: &Shell) -> (String, String, String) {
         Shell::Bash => "bash",
         Shell::Zsh => "zsh",
         Shell::Fish => "fish",
+        #[cfg(windows)]
         Shell::PowerShell => "powershell",
     };
 
@@ -129,6 +130,7 @@ pub fn import_if_needed(db: &crate::db::Db) {
                 Shell::Bash => parse_bash(path, file_mtime),
                 Shell::Zsh => parse_zsh(path, file_mtime),
                 Shell::Fish => parse_fish(path, file_mtime),
+                #[cfg(windows)]
                 Shell::PowerShell => parse_powershell(path, file_mtime),
             };
             if entries.is_empty() {
@@ -414,6 +416,7 @@ fn parse_fish(path: &Path, _file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<
     results
 }
 
+#[cfg(windows)]
 fn parse_powershell(path: &Path, file_mtime: DateTime<Utc>) -> Vec<(String, DateTime<Utc>)> {
     let content = match std::fs::read_to_string(path) {
         Ok(s) => s,

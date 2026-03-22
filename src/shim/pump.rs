@@ -896,10 +896,8 @@ fn handle_io(
         pending_pty_write.drain(0..drain_amount);
     }
 
-    if pty_poll.revents().contains(PollFlags::HUP) {
-        return true;
-    }
-
+    // Do NOT return early on HUP — there may still be unread data in the PTY
+    // buffer. Rely on read() returning 0 to signal EOF instead.
     false
 }
 
