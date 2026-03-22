@@ -361,7 +361,9 @@ async fn handle_remote_stream(
 
         RemoteRequest::SessionHistory { session_id, limit } => {
             let db = crate::db::Db::open()?;
-            let commands = db.recent_commands_with_summaries(&session_id, limit as usize)?;
+            // Cap limit to prevent unbounded queries from remote clients
+            let capped_limit = (limit as usize).min(500);
+            let commands = db.recent_commands_with_summaries(&session_id, capped_limit)?;
             let entries = commands
                 .into_iter()
                 .map(|c| nsh_proto::SessionHistoryEntry {

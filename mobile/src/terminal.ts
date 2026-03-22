@@ -36,19 +36,14 @@ export async function initTerminal(containerId: string, sessionId: string) {
 
   fitAddon.fit();
 
-  // Use resume if we previously attached to this session, otherwise fresh attach.
-  // Resume consumes the replay buffer so we don't miss output during detach.
-  let initialScreen: number[];
-  if (attachedSessions.has(sessionId)) {
-    try {
-      initialScreen = await invoke('resume_session', { sessionId });
-    } catch {
-      // Resume failed (e.g. session restarted); fall back to fresh attach
-      initialScreen = await invoke('attach_session', { sessionId });
-    }
-  } else {
-    initialScreen = await invoke('attach_session', { sessionId });
-  }
+  // Always use attach_session from initTerminal since it provides a full screen
+  // snapshot. resume_session only sends delta replay, which would show an empty
+  // terminal after disposeTerminal() tears down xterm state.
+  // The resume path is available via the Tauri command for future use when the
+  // terminal stays alive across reconnections (e.g., app backgrounding).
+  const initialScreen: number[] = await invoke('attach_session', {
+    sessionId,
+  });
   attachedSessions.add(sessionId);
   if (initialScreen.length > 0) {
     term.write(new Uint8Array(initialScreen));

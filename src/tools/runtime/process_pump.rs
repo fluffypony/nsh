@@ -97,8 +97,15 @@ where
                                         let _ = std::io::stderr().write_all(redacted.as_bytes());
                                         let _ = std::io::stderr().flush();
                                     }
-                                    // Save incomplete trailing bytes for next iteration
-                                    utf8_remainder = full_chunk[valid_up_to..].to_vec();
+                                    if e.error_len().is_some() {
+                                        // Genuinely invalid byte (not incomplete) — skip it
+                                        // and keep the rest for next iteration
+                                        let skip = valid_up_to + e.error_len().unwrap();
+                                        utf8_remainder = full_chunk[skip..].to_vec();
+                                    } else {
+                                        // Incomplete trailing bytes — buffer for next read
+                                        utf8_remainder = full_chunk[valid_up_to..].to_vec();
+                                    }
                                 }
                             }
                         }
