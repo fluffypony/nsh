@@ -550,7 +550,7 @@ Main config: `~/.nsh/config.toml`
 
 Project-local overrides: `.nsh.toml` or `.nsh/config.toml` (restricted to `context` and `display` sections).
 
-### Full default configuration
+### Default configuration reference
 
 ```toml
 [provider]
@@ -588,6 +588,7 @@ project_files_limit = 100
 git_commits = 10
 retention_days = 1095
 max_output_storage_bytes = 65536
+max_output_context_chars = 5000
 scrollback_rate_limit_bps = 10485760
 scrollback_pause_seconds = 2
 include_other_tty = true
@@ -656,9 +657,14 @@ mode = "prefill"  # prefill | confirm | autorun
 allow_unsafe_autorun = false
 max_tool_iterations = 50
 confirm_intermediate_steps = false
+tool_timeout_seconds = 60
+max_query_duration_seconds = 300
 
 [memory]
-# incognito = true  # pause memory recording
+enabled = true
+# incognito = false  # pause memory recording
+fade_after_days = 30
+expire_after_days = 90
 
 [remote]
 # enabled = true
@@ -681,6 +687,8 @@ These cannot be modified by the AI via `manage_config`:
 - `tools.sensitive_file_access`
 - `tools.run_command_allowlist`
 - `redaction.enabled` / `redaction.disable_builtin`
+- `memory.enabled` / `memory.incognito` / `memory.ignore_paths`
+- `remote.enabled` / `remote.allowed_keys`
 - Any `api_key`, `api_key_cmd`, or `base_url` field
 
 ---
