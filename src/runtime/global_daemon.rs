@@ -2801,7 +2801,8 @@ mod tests {
         let handler = std::thread::spawn(move || {
             let sessions =
                 std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-            handle_global_connection(server, write_tx, read_tx, sessions);
+            let state_bus = std::sync::Arc::new(crate::runtime::state_bus::StateBus::new());
+            handle_global_connection(server, write_tx, read_tx, sessions, state_bus);
         });
 
         // Send request as length-prefixed frame

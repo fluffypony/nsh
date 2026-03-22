@@ -20,10 +20,10 @@ pub fn find_merge_candidate(
 
     for (id, existing_summary) in &rows {
         let similarity = strsim::jaro_winkler(new_summary, existing_summary);
-        // Require both summaries to be reasonably long (>30 chars) before
-        // considering them duplicates — short summaries like "Ran `ls` (exit 0)"
+        // Require both summaries to exceed a minimum length before
+        // considering them duplicates — very short summaries like "Ran `ls` (exit 0)"
         // produce false-positive matches at the 0.85 threshold.
-        if similarity > 0.85 && existing_summary.len() > 30 && new_summary.len() > 30 {
+        if similarity > 0.85 && existing_summary.len() > 12 && new_summary.len() > 12 {
             return Ok(Some(id.clone()));
         }
     }
