@@ -9,6 +9,8 @@ let term: Terminal;
 let fitAddon: FitAddon;
 let terminalDataUnlisten: (() => void) | null = null;
 let resizeObserver: ResizeObserver | null = null;
+/** Track which sessions have been attached at least once (for resume vs attach). */
+const attachedSessions = new Set<string>();
 
 export async function initTerminal(containerId: string, sessionId: string) {
   const container = document.getElementById(containerId)!;
@@ -34,10 +36,20 @@ export async function initTerminal(containerId: string, sessionId: string) {
 
   fitAddon.fit();
 
-  // Attach to session and get initial screen
-  const initialScreen: number[] = await invoke('attach_session', {
-    sessionId,
-  });
+  // Use resume if we previously attached to this session, otherwise fresh attach.
+  // Resume consumes the replay buffer so we don't miss output during detach.
+  let initialScreen: number[];
+  if (attachedSessions.has(sessionId)) {
+    try {
+      initialScreen = await invoke('resume_session', { sessionId });
+    } catch {
+      // Resume failed (e.g. session restarted); fall back to fresh attach
+      initialScreen = await invoke('attach_session', { sessionId });
+    }
+  } else {
+    initialScreen = await invoke('attach_session', { sessionId });
+  }
+  attachedSessions.add(sessionId);
   if (initialScreen.length > 0) {
     term.write(new Uint8Array(initialScreen));
   }

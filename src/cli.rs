@@ -183,6 +183,13 @@ pub enum Commands {
     #[command(name = "mcp-serve", hide = true)]
     McpServe,
 
+    /// Parse a pending command JSON file and print a specific field
+    #[command(name = "parse-pending-json", hide = true)]
+    ParsePendingJson {
+        /// Field to extract: "command", "autorun", or "pending"
+        field: String,
+    },
+
     /// Internal: run the global nsh database daemon
     #[command(name = "nshd", hide = true)]
     Nshd,

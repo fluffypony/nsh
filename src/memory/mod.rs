@@ -500,13 +500,13 @@ mod tests {
         )
         .unwrap();
 
-        // Test ResourceInsert
+        // Test ResourceInsert (file_hash required when file_path is set)
         mem.apply_op(
             &conn,
             &MemoryOp::ResourceInsert {
                 resource_type: "file".into(),
                 file_path: Some("/tmp/test".into()),
-                file_hash: None,
+                file_hash: Some("abc123".into()),
                 title: "test file".into(),
                 summary: "test".into(),
                 content: None,

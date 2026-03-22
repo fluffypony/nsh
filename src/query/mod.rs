@@ -302,9 +302,17 @@ async fn initialize_query_session<'a>(
     session_id: &'a str,
     opts: QueryOptions,
 ) -> anyhow::Result<QuerySession<'a>> {
-    let cancelled = Arc::new(AtomicBool::new(false));
-    #[cfg(unix)]
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&cancelled)).ok();
+    // Use a single global AtomicBool for SIGINT to avoid registering a new
+    // signal handler on every query invocation (which leaks memory).
+    static SIGINT_FLAG: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
+    let cancelled = Arc::clone(SIGINT_FLAG.get_or_init(|| {
+        let flag = Arc::new(AtomicBool::new(false));
+        #[cfg(unix)]
+        signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&flag)).ok();
+        flag
+    }));
+    // Reset the flag for this new query session
+    cancelled.store(false, std::sync::atomic::Ordering::SeqCst);
 
     let boundary = crate::security::generate_boundary();
     let query = normalize_query_input(query);

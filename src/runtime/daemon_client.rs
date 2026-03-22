@@ -430,6 +430,8 @@ mod tests {
             let handler = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 let payload = nsh_proto::sync_framing::read_frame(&mut stream).unwrap();
+                // Deserialize MessagePack into DaemonRequest, then convert to JSON Value
+                // for test assertions (MessagePack tagged enums don't round-trip via Value).
                 let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
                 handle_request(request, &mut stream);
             });

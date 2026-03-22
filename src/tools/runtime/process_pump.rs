@@ -68,15 +68,39 @@ where
         if let Some(pipe) = pipe {
             let mut reader = BufReader::new(pipe);
             let mut buf = [0u8; 4096];
+            // Buffer for incomplete trailing UTF-8 bytes across read() calls
+            let mut utf8_remainder: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         if echo_output {
-                            let chunk = String::from_utf8_lossy(&buf[..n]);
-                            let redacted = crate::redact::redact_secrets(&chunk, &redaction);
-                            let _ = std::io::stderr().write_all(redacted.as_bytes());
-                            let _ = std::io::stderr().flush();
+                            // Prepend any leftover bytes from previous chunk
+                            let mut full_chunk = std::mem::take(&mut utf8_remainder);
+                            full_chunk.extend_from_slice(&buf[..n]);
+                            // Find the last valid UTF-8 boundary
+                            match std::str::from_utf8(&full_chunk) {
+                                Ok(valid) => {
+                                    let redacted =
+                                        crate::redact::redact_secrets(valid, &redaction);
+                                    let _ = std::io::stderr().write_all(redacted.as_bytes());
+                                    let _ = std::io::stderr().flush();
+                                }
+                                Err(e) => {
+                                    let valid_up_to = e.valid_up_to();
+                                    if valid_up_to > 0 {
+                                        // SAFETY: from_utf8 confirmed valid up to this index
+                                        let valid =
+                                            unsafe { std::str::from_utf8_unchecked(&full_chunk[..valid_up_to]) };
+                                        let redacted =
+                                            crate::redact::redact_secrets(valid, &redaction);
+                                        let _ = std::io::stderr().write_all(redacted.as_bytes());
+                                        let _ = std::io::stderr().flush();
+                                    }
+                                    // Save incomplete trailing bytes for next iteration
+                                    utf8_remainder = full_chunk[valid_up_to..].to_vec();
+                                }
+                            }
                         }
                         accumulated.extend_from_slice(&buf[..n]);
                         *last_output
@@ -85,6 +109,13 @@ where
                     }
                     Err(_) => break,
                 }
+            }
+            // Flush any remaining bytes
+            if echo_output && !utf8_remainder.is_empty() {
+                let chunk = String::from_utf8_lossy(&utf8_remainder);
+                let redacted = crate::redact::redact_secrets(&chunk, &redaction);
+                let _ = std::io::stderr().write_all(redacted.as_bytes());
+                let _ = std::io::stderr().flush();
             }
         }
         String::from_utf8_lossy(&accumulated).into_owned()

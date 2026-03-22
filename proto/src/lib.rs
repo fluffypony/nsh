@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// ALPN identifier for the nsh remote protocol.
-/// Bumped from nsh/remote/0 (JSON) to nsh/remote/1 (MessagePack).
+/// Bumped from nsh/remote/0 to nsh/remote/1 (reduced MAX_FRAME_SIZE, SessionHistory, etc.).
 pub const ALPN: &[u8] = b"nsh/remote/1";
 
 /// Messages sent from the mobile app to the daemon over QUIC.
@@ -146,7 +146,7 @@ pub mod framing {
         w: &mut W,
         msg: &impl serde::Serialize,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let data = rmp_serde::to_vec_named(msg)?;
+        let data = serde_json::to_vec(msg)?;
         write_frame(w, &data).await?;
         Ok(())
     }
@@ -155,7 +155,7 @@ pub mod framing {
         r: &mut R,
     ) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
         let data = read_frame(r).await?;
-        Ok(rmp_serde::from_slice(&data)?)
+        Ok(serde_json::from_slice(&data)?)
     }
 }
 
@@ -189,14 +189,14 @@ pub mod sync_framing {
     }
 
     pub fn write_message<W: Write>(w: &mut W, msg: &impl serde::Serialize) -> io::Result<()> {
-        let data = rmp_serde::to_vec_named(msg)
+        let data = serde_json::to_vec(msg)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         write_frame(w, &data)
     }
 
     pub fn read_message<T: serde::de::DeserializeOwned, R: Read>(r: &mut R) -> io::Result<T> {
         let data = read_frame(r)?;
-        rmp_serde::from_slice(&data)
+        serde_json::from_slice(&data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }

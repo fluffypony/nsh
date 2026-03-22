@@ -28,9 +28,14 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceItem> {
 }
 
 pub fn store(conn: &Connection, resource: &ResourceWrite<'_>) -> anyhow::Result<String> {
-    if let Some(file_path) = resource.file_path
-        && let Some(file_hash) = resource.file_hash.map(str::trim).filter(|value| !value.is_empty())
-    {
+    if let Some(file_path) = resource.file_path {
+        // When file_path is set, require file_hash to enable dedup via upsert_by_path.
+        // Without a hash, insert() would create duplicates for the same path.
+        let file_hash = resource
+            .file_hash
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("file_hash required when file_path is set"))?;
         return upsert_by_path(
             conn,
             &ResourceWrite {

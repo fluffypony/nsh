@@ -30,3 +30,20 @@ export async function sendQuery(
 ): Promise<string> {
   return await invoke('send_query', { sessionId, query, think });
 }
+
+export interface SessionHistoryEntry {
+  command: string;
+  cwd: string | null;
+  exit_code: number | null;
+  started_at: string;
+  duration_ms: number | null;
+  summary: string | null;
+  output_preview: string | null;
+}
+
+export async function getSessionHistory(
+  sessionId: string,
+  limit: number = 50,
+): Promise<SessionHistoryEntry[]> {
+  return await invoke('get_session_history', { sessionId, limit });
+}

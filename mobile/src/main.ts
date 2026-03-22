@@ -1,4 +1,5 @@
-import { connectToDaemon, listSessions } from './sessions';
+import { connectToDaemon, listSessions, getSessionHistory } from './sessions';
+import type { SessionHistoryEntry } from './sessions';
 import { initTerminal, disposeTerminal } from './terminal';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -6,6 +7,8 @@ import { sendNotification } from '@tauri-apps/plugin-notification';
 
 // App entry point — renders based on current state
 let currentView: 'pair' | 'sessions' | 'terminal' = 'pair';
+/** Persisted sessionId of the currently viewed terminal (survives view transitions). */
+let activeSessionId: string | null = null;
 
 function parseConnectionPayload(input: string): {
   nodeId: string;
@@ -110,16 +113,28 @@ async function renderSessionsView() {
         <span class="session-detail">${s.shell} (${s.tty})</span>
         ${s.last_cwd ? `<span class="session-cwd">${s.last_cwd}</span>` : ''}
         ${s.git_branch ? `<span class="session-branch">${s.git_branch}</span>` : ''}
+        <button class="history-btn" data-id="${s.session_id}">History</button>
       </div>
     `,
       )
       .join('');
 
-    // Attach click handlers to session cards
+    // Attach click handlers to session cards (open terminal)
     listEl.querySelectorAll('.session-card').forEach((card) => {
-      card.addEventListener('click', () => {
+      card.addEventListener('click', (e) => {
+        // Don't trigger if the history button was clicked
+        if ((e.target as HTMLElement).classList.contains('history-btn')) return;
         const sessionId = card.getAttribute('data-id')!;
         renderTerminalView(sessionId);
+      });
+    });
+
+    // Attach click handlers to history buttons
+    listEl.querySelectorAll('.history-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sessionId = (btn as HTMLElement).getAttribute('data-id')!;
+        renderHistoryView(sessionId);
       });
     });
   } catch (e) {
@@ -129,6 +144,7 @@ async function renderSessionsView() {
 
 function renderTerminalView(sessionId: string) {
   currentView = 'terminal';
+  activeSessionId = sessionId;
   const app = document.getElementById('app')!;
   app.innerHTML = `
     <div class="terminal-view">
@@ -161,4 +177,55 @@ function renderTerminalView(sessionId: string) {
   });
 
   initTerminal('terminal-container', sessionId);
+}
+
+async function renderHistoryView(sessionId: string) {
+  const app = document.getElementById('app')!;
+  app.innerHTML = `
+    <div class="history-view">
+      <div class="history-toolbar">
+        <button id="history-back-btn">← Back</button>
+        <span>History: ${sessionId}</span>
+      </div>
+      <div id="history-list">Loading...</div>
+    </div>
+  `;
+
+  document.getElementById('history-back-btn')!.addEventListener('click', () => {
+    renderSessionsView();
+  });
+
+  try {
+    const entries: SessionHistoryEntry[] = await getSessionHistory(sessionId);
+    const listEl = document.getElementById('history-list')!;
+    if (entries.length === 0) {
+      listEl.innerHTML = '<p>No command history.</p>';
+      return;
+    }
+    listEl.innerHTML = entries
+      .map(
+        (e) => `
+      <div class="history-entry ${e.exit_code !== null && e.exit_code !== 0 ? 'history-error' : ''}">
+        <code class="history-command">${escapeHtml(e.command)}</code>
+        <div class="history-meta">
+          ${e.exit_code !== null ? `<span class="history-exit">exit ${e.exit_code}</span>` : ''}
+          ${e.cwd ? `<span class="history-cwd">${escapeHtml(e.cwd)}</span>` : ''}
+          <span class="history-time">${e.started_at}</span>
+          ${e.duration_ms !== null ? `<span class="history-duration">${e.duration_ms}ms</span>` : ''}
+        </div>
+        ${e.summary ? `<div class="history-summary">${escapeHtml(e.summary)}</div>` : ''}
+        ${e.output_preview ? `<pre class="history-output">${escapeHtml(e.output_preview)}</pre>` : ''}
+      </div>
+    `,
+      )
+      .join('');
+  } catch (e) {
+    document.getElementById('history-list')!.innerHTML = `<p>Error: ${e}</p>`;
+  }
+}
+
+function escapeHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }

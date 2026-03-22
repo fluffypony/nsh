@@ -306,7 +306,7 @@ mod tests {
                 &crate::memory::store::resource::ResourceWrite {
                     resource_type: "file",
                     file_path: Some("/home/user/project/Cargo.toml"),
-                    file_hash: None,
+                    file_hash: Some("abc123hash"),
                     title: "Cargo.toml",
                     summary: "Rust project manifest",
                     content: Some("[package]\nname = \"nsh\""),
@@ -440,7 +440,7 @@ mod tests {
                     .apply_op(&crate::memory::types::MemoryOp::ResourceInsert {
                         resource_type: "file".into(),
                         file_path: Some(format!("/home/user/project/config{i}.toml")),
-                        file_hash: None,
+                        file_hash: Some(format!("hash{i}")),
                         title: format!("config{i}.toml"),
                         summary: "deploy configuration file".into(),
                         content: Some("y".repeat(2000)),

@@ -264,10 +264,10 @@ function __nsh_check_pending --on-event fish_prompt
         set -l raw (command cat $payload_file)
         command rm -f $payload_file
         if test -n "$raw"
-            set -l cmd (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)
-            set -l autorun (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)
+            set -l cmd (printf '%s' "$raw" | command nsh parse-pending-json command 2>/dev/null)
+            set -l autorun (printf '%s' "$raw" | command nsh parse-pending-json autorun 2>/dev/null)
             or set autorun "false"
-            set -l pending (printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('pending',False))" 2>/dev/null)
+            set -l pending (printf '%s' "$raw" | command nsh parse-pending-json pending 2>/dev/null)
             or set pending "false"
             if test -z "$cmd"; return; end
             set -g __nsh_pending_cmd $cmd

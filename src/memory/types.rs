@@ -618,14 +618,8 @@ pub struct SearchResult {
 }
 
 // ── Detected Secret ──
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub struct DetectedSecret {
-    pub label: String,
-    pub value: String,
-    pub position: usize,
-}
+// The canonical DetectedSecret type is defined in crate::redact::DetectedSecret.
+// Secret detection uses crate::redact::detect_secrets_for_vault().
 
 #[cfg(test)]
 mod tests {

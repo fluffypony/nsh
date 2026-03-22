@@ -148,16 +148,21 @@ async fn run_iroh_endpoint(secret_key: iroh::SecretKey) -> anyhow::Result<()> {
             interval.tick().await;
             if let Ok(sessions) = list_active_sessions() {
                 for session in &sessions {
+                    // Truncate string fields to ensure the datagram fits
+                    // within the ~1200 byte QUIC max datagram size.
+                    let truncate = |s: Option<String>, max: usize| -> Option<String> {
+                        s.map(|v| if v.len() > max { v[..max].to_string() } else { v })
+                    };
                     let update = nsh_proto::StatePush::SessionActivity {
                         session_id: session.session_id.clone(),
-                        last_cwd: session.last_cwd.clone(),
-                        git_branch: session.git_branch.clone(),
-                        running_command: session.running_command.clone(),
+                        last_cwd: truncate(session.last_cwd.clone(), 200),
+                        git_branch: truncate(session.git_branch.clone(), 100),
+                        running_command: truncate(session.running_command.clone(), 200),
                     };
-                    if let Ok(bytes) = serde_json::to_vec(&update)
-                        && bytes.len() < 1200
-                    {
-                        broadcast_datagram(&bytes);
+                    if let Ok(bytes) = serde_json::to_vec(&update) {
+                        if bytes.len() < 1200 {
+                            broadcast_datagram(&bytes);
+                        }
                     }
                 }
             }
@@ -308,11 +313,7 @@ async fn handle_remote_stream(
             query,
             ..
         } => {
-            // Validate session_id format (prevent path traversal)
-            if !session_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            {
+            if !validate_session_id(&session_id) {
                 let err = RemoteResponse::QueryError {
                     message: "invalid session_id".into(),
                 };
@@ -322,20 +323,58 @@ async fn handle_remote_stream(
                 return Ok(());
             }
 
-            // Forward the query to the daemon for execution
+            // The full query pipeline requires terminal context, tool execution loop,
+            // and streaming responses — it cannot be forwarded through a simple RPC.
+            // Fall back to history search as a best-effort response for now.
             let request = crate::daemon::DaemonRequest::SearchHistory {
                 query: query.clone(),
-                limit: 5,
+                limit: 10,
             };
             let result = crate::daemon_client::send_to_global(&request);
             let response = match result {
                 Ok(resp) => RemoteResponse::QueryComplete {
-                    response: serde_json::to_string(&resp).unwrap_or_default(),
+                    response: format!(
+                        "Note: Remote query executes history search only (full LLM query pipeline \
+                         not yet available over remote). Results:\n{}",
+                        serde_json::to_string_pretty(&resp).unwrap_or_default()
+                    ),
                 },
                 Err(e) => RemoteResponse::QueryError {
                     message: e.to_string(),
                 },
             };
+            nsh_proto::framing::write_message(&mut send, &response)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
+        RemoteRequest::SessionHistory { ref session_id, .. }
+            if !validate_session_id(session_id) =>
+        {
+            let err = RemoteResponse::Error {
+                message: "invalid session_id format".into(),
+            };
+            nsh_proto::framing::write_message(&mut send, &err)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
+
+        RemoteRequest::SessionHistory { session_id, limit } => {
+            let db = crate::db::Db::open()?;
+            let commands = db.recent_commands_with_summaries(&session_id, limit as usize)?;
+            let entries = commands
+                .into_iter()
+                .map(|c| nsh_proto::SessionHistoryEntry {
+                    command: c.command,
+                    cwd: c.cwd,
+                    exit_code: c.exit_code,
+                    started_at: c.started_at,
+                    duration_ms: c.duration_ms,
+                    summary: c.summary,
+                    output_preview: c.output.map(|o| crate::util::truncate(&o, 200)),
+                })
+                .collect();
+            let response = RemoteResponse::SessionHistory { entries };
             nsh_proto::framing::write_message(&mut send, &response)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -385,7 +424,7 @@ async fn bridge_to_session(
     // Read handshake response (length-prefixed frame)
     let mut unix_read = unix_read;
     let handshake_resp_bytes = nsh_proto::framing::read_frame(&mut unix_read).await?;
-    let handshake_resp: serde_json::Value = rmp_serde::from_slice(&handshake_resp_bytes)
+    let handshake_resp: serde_json::Value = serde_json::from_slice(&handshake_resp_bytes)
         .map_err(|e| anyhow::anyhow!("handshake response decode: {e}"))?;
 
     // Extract snapshot (attach) or resumed flag and send to mobile
@@ -624,8 +663,17 @@ fn detect_running_command(shell_pid: i64) -> Option<String> {
     }
 }
 
+/// Cached DB handle for the remote endpoint thread (avoids opening a new
+/// connection on every 5-second polling call and every ListSessions request).
+static REMOTE_DB: std::sync::LazyLock<std::sync::Mutex<Option<crate::db::Db>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
 fn list_active_sessions() -> anyhow::Result<Vec<RemoteSessionInfo>> {
-    let db = crate::db::Db::open()?;
+    let mut db_guard = REMOTE_DB.lock().unwrap_or_else(|e| e.into_inner());
+    if db_guard.is_none() {
+        *db_guard = Some(crate::db::Db::open()?);
+    }
+    let db = db_guard.as_ref().unwrap();
     let nsh_dir = crate::config::Config::nsh_dir();
     let mut stmt = db.conn.prepare(
         "SELECT s.id, s.tty, s.shell, s.pid, s.label,

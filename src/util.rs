@@ -135,7 +135,10 @@ pub(crate) fn check_peer_uid(stream: &std::os::unix::net::UnixStream, log_reject
     {
         if log_rejection {
             tracing::warn!(
-                "Peer UID check not implemented for this platform, rejecting for safety"
+                "Peer UID check not implemented for this platform ({}). \
+                 All daemon connections will be rejected. \
+                 Supported platforms: Linux, macOS, FreeBSD.",
+                std::env::consts::OS,
             );
         }
         return false;

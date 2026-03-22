@@ -405,10 +405,10 @@ __nsh_check_pending() {
         command rm -f "$payload_file"
         if [[ -n "$raw" ]]; then
             local cmd autorun pending
-            cmd="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('command',''))" 2>/dev/null)"
-            autorun="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('autorun',False))" 2>/dev/null)" || \
+            cmd="$(printf '%s' "$raw" | command nsh parse-pending-json command 2>/dev/null)"
+            autorun="$(printf '%s' "$raw" | command nsh parse-pending-json autorun 2>/dev/null)" || \
                 autorun="false"
-            pending="$(printf '%s' "$raw" | command python3 -c "import sys,json; print(json.load(sys.stdin).get('pending',False))" 2>/dev/null)" || \
+            pending="$(printf '%s' "$raw" | command nsh parse-pending-json pending 2>/dev/null)" || \
                 pending="false"
             if [[ -z "$cmd" ]]; then return; fi
             __NSH_PENDING_CMD="$cmd"

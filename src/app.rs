@@ -153,6 +153,20 @@ async fn async_main(cli: Cli) -> anyhow::Result<()> {
         Commands::DaemonRead { action } => handle_daemon_read_command(action)?,
         Commands::HistoryImportRun => handle_history_import_run_command(),
         Commands::McpServe => crate::mcp_server::run_mcp_server()?,
+        Commands::ParsePendingJson { field } => {
+            // Read JSON from stdin and print the requested field.
+            // Replaces the python3 dependency in shell hooks.
+            let mut input = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&input) {
+                match parsed.get(&field) {
+                    Some(serde_json::Value::String(s)) => print!("{s}"),
+                    Some(serde_json::Value::Bool(b)) => print!("{b}"),
+                    Some(v) => print!("{v}"),
+                    None => {} // field not found, print nothing
+                }
+            }
+        }
         #[cfg(feature = "remote")]
         Commands::Remote { action } => remote::handle_remote_command(action)?,
     }

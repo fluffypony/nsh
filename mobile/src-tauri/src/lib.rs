@@ -51,6 +51,7 @@ pub fn run() {
             resize_terminal,
             detach_session,
             send_query,
+            get_session_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -76,12 +77,19 @@ async fn connect_to_daemon(
     let endpoint = ep_lock.as_ref().unwrap();
     let node_id: iroh::EndpointId = node_id.parse().map_err(|e: iroh::KeyParsingError| e.to_string())?;
 
-    let connection = if let Some(ref relay) = relay_url {
-        let relay_parsed: url::Url = relay.parse().map_err(|e: url::ParseError| e.to_string())?;
+    // Default to the iroh relay when no relay URL is provided, so that
+    // connections behind NAT still work via relay-assisted hole-punching.
+    let default_relay: url::Url = "https://relay.iroh.network"
+        .parse()
+        .expect("valid default relay URL");
+    let connection = {
+        let relay_parsed = if let Some(ref relay) = relay_url {
+            relay.parse::<url::Url>().map_err(|e: url::ParseError| e.to_string())?
+        } else {
+            default_relay
+        };
         let addr = iroh::endpoint::NodeAddr::new(node_id).with_relay_url(relay_parsed);
         endpoint.connect(addr, nsh_proto::ALPN).await
-    } else {
-        endpoint.connect(node_id, nsh_proto::ALPN).await
     }
     .map_err(|e| e.to_string())?;
 
@@ -371,26 +379,59 @@ async fn send_query(
 }
 
 #[tauri::command]
+async fn get_session_history(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    limit: u64,
+) -> Result<Vec<nsh_proto::SessionHistoryEntry>, String> {
+    let conn = state.active_connection.lock().await;
+    let conn = conn.as_ref().ok_or("not connected")?;
+    let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+
+    let req = nsh_proto::RemoteRequest::SessionHistory { session_id, limit };
+    nsh_proto::framing::write_message(&mut send, &req)
+        .await
+        .map_err(|e| e.to_string())?;
+    send.finish().map_err(|e| e.to_string())?;
+
+    let resp: nsh_proto::RemoteResponse = nsh_proto::framing::read_message(&mut recv)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    match resp {
+        nsh_proto::RemoteResponse::SessionHistory { entries } => Ok(entries),
+        nsh_proto::RemoteResponse::Error { message } => Err(message),
+        _ => Err("unexpected response".into()),
+    }
+}
+
+#[tauri::command]
 async fn detach_session(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    // Abort reader task BEFORE clearing active_send to avoid races
+    if let Some(handle) = state.reader_task.lock().await.take() {
+        handle.abort();
+    }
     let mut send_lock = state.active_send.lock().await;
     if let Some(send) = send_lock.as_mut() {
         let req = nsh_proto::RemoteRequest::Detach;
         let _ = nsh_proto::framing::write_message(send, &req).await;
     }
     *send_lock = None;
+    // Keep last_seq_map intact across detach/resume so sequence numbers track correctly
     *state.active_session_id.lock().await = None;
     Ok(())
 }
 
 // SECURITY: File-based key storage is development-only.
 // Production builds MUST use tauri-plugin-stronghold (iOS Keychain / Android Keystore).
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "insecure-dev-keys")))]
 compile_error!(
     "Production builds must use secure key storage (tauri-plugin-stronghold \
      for iOS Keychain / Android Keystore). Replace load_or_generate_mobile_key \
-     with a Stronghold-backed implementation before shipping."
+     with a Stronghold-backed implementation before shipping. \
+     Pass --features insecure-dev-keys for development release builds."
 );
 
 fn load_or_generate_mobile_key(app: &tauri::App) -> anyhow::Result<iroh::SecretKey> {
