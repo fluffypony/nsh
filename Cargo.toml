@@ -99,6 +99,7 @@ scopeguard = "1"
 
 # IPC framing (always available for daemon↔shim protocol)
 nsh-proto = { path = "proto" }
+rmp-serde = "1"
 
 # Remote access
 iroh = { version = "0.97", optional = true }

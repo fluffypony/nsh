@@ -2642,10 +2642,13 @@ fn handle_sidecar_requests_inline(req: &DaemonRequest) -> Option<DaemonResponse>
         }
         #[cfg(feature = "remote")]
         DaemonRequest::SubscribeEvents { .. } => {
-            // Event subscription is now available via the StateBus.
-            // Clients should use the bus subscriber API rather than this
-            // request/response RPC path. Return OK to indicate support.
-            Some(DaemonResponse::ok())
+            // Event subscription via the StateBus is available to in-process
+            // subscribers. The RPC path cannot stream events over a
+            // request/response socket; callers should use the QUIC push
+            // channel or in-process bus.subscribe() instead.
+            Some(DaemonResponse::error(
+                "event subscription is not available over RPC; use QUIC push channel or in-process StateBus",
+            ))
         }
         _ => None,
     }

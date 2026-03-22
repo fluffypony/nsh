@@ -102,7 +102,7 @@ fn execute_tool(
     db: &crate::db::Db,
 ) -> serde_json::Value {
     let result = match name {
-        "search_history" => execute_search_history(input, db),
+        "search_history" => execute_search_history(input, db, config),
         "search_memory" => execute_search_memory(input, db),
         "read_file" => execute_read_file(input),
         "grep_file" => execute_grep_file(input),
@@ -125,21 +125,32 @@ fn execute_tool(
     }
 }
 
-fn execute_search_history(input: &serde_json::Value, db: &crate::db::Db) -> Result<String, String> {
+fn execute_search_history(
+    input: &serde_json::Value,
+    db: &crate::db::Db,
+    config: &Config,
+) -> Result<String, String> {
     let query = input["query"].as_str().unwrap_or("");
     let limit = input["limit"].as_u64().unwrap_or(20) as usize;
     let results = db.search_history(query, limit).map_err(|e| e.to_string())?;
     if results.is_empty() {
         return Ok("No matching commands found.".to_string());
     }
+    let redact_config = &config.redaction;
     let mut out = String::new();
     for cmd in &results {
+        // Redact secrets from command and output before exposing via MCP
+        let redacted_cmd = crate::redact::redact_secrets(&cmd.command, redact_config);
+        let redacted_cwd = cmd
+            .cwd
+            .as_deref()
+            .map(|c| crate::redact::redact_secrets(c, redact_config));
         out.push_str(&format!(
             "[{}] {} (exit: {})\n  cwd: {}\n",
             cmd.started_at,
-            cmd.command,
+            redacted_cmd,
             cmd.exit_code.unwrap_or(0),
-            cmd.cwd.as_deref().unwrap_or("?"),
+            redacted_cwd.as_deref().unwrap_or("?"),
         ));
     }
     Ok(out)

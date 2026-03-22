@@ -385,7 +385,8 @@ async fn bridge_to_session(
     // Read handshake response (length-prefixed frame)
     let mut unix_read = unix_read;
     let handshake_resp_bytes = nsh_proto::framing::read_frame(&mut unix_read).await?;
-    let handshake_resp: serde_json::Value = serde_json::from_slice(&handshake_resp_bytes)?;
+    let handshake_resp: serde_json::Value = rmp_serde::from_slice(&handshake_resp_bytes)
+        .map_err(|e| anyhow::anyhow!("handshake response decode: {e}"))?;
 
     // Extract snapshot (attach) or resumed flag and send to mobile
     let snapshot = handshake_resp["data"]["snapshot"]

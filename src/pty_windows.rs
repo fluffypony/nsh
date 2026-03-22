@@ -126,9 +126,13 @@ fn run_conpty_shell(
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
     si.lpAttributeList = attr_list;
 
-    // Encode shell path as wide string
-    let shell_wide: Vec<u16> = shell.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut cmd_line = shell_wide;
+    // Encode shell path as wide string, quoting to handle paths with spaces
+    let quoted_shell = if shell.contains(' ') && !shell.starts_with('"') {
+        format!("\"{shell}\"")
+    } else {
+        shell.to_string()
+    };
+    let mut cmd_line: Vec<u16> = quoted_shell.encode_utf16().chain(std::iter::once(0)).collect();
 
     // Create the child process
     let mut pi: PROCESS_INFORMATION = unsafe { zeroed() };
