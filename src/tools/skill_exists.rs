@@ -1,14 +1,18 @@
-#[cfg(test)]
 pub fn execute(input: &serde_json::Value) -> anyhow::Result<String> {
     let name = input["name"].as_str().unwrap_or("");
-    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        anyhow::bail!("skill_exists: provide a valid skill name (alphanumeric + underscores)");
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        anyhow::bail!(
+            "skill_exists: provide a valid skill name (alphanumeric + underscores/hyphens)"
+        );
     }
     let skills = crate::skills::load_skills();
     let found = skills.iter().find(|s| s.name == name);
     if let Some(s) = found {
-        let home = dirs::home_dir().unwrap_or_default();
-        let base = home.join(".nsh").join("skills");
+        let base = crate::config::Config::nsh_dir().join("skills");
         let toml = base.join(format!("{name}.toml"));
         let md = base.join(format!("{name}.md"));
         let mut status = format!("Installed: skill_{}", s.name);
@@ -39,5 +43,10 @@ mod tests {
     #[test]
     fn test_invalid_name() {
         assert!(execute(&json!({"name":"bad name"})).is_err());
+    }
+
+    #[test]
+    fn test_empty_name() {
+        assert!(execute(&json!({"name":""})).is_err());
     }
 }

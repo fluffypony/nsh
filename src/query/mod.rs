@@ -1056,6 +1056,22 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                         let result = tools::install_skill::execute_outcome(input);
                         push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
                     }
+                    "skill_exists" => {
+                        let result = crate::tools::skill_exists::execute(input);
+                        let outcome = result.map(crate::tools::ToolInvocationOutcome::success);
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, outcome, boundary, config);
+                    }
+                    "uninstall_skill" => {
+                        let result = crate::tools::uninstall_skill::execute(input);
+                        let outcome = result.map(|msg| {
+                            if msg == "Uninstall declined" || msg.starts_with("No skill files") {
+                                crate::tools::ToolInvocationOutcome::failure(msg)
+                            } else {
+                                crate::tools::ToolInvocationOutcome::success(msg)
+                            }
+                        });
+                        push_outcome_tool_result(&mut tool_results, id.clone(), name, outcome, boundary, config);
+                    }
                     "install_mcp_server" => {
                         let result = tools::install_mcp::execute_outcome(input, config);
                         push_outcome_tool_result(&mut tool_results, id.clone(), name, result, boundary, config);
@@ -1787,6 +1803,14 @@ fn describe_tool_action(name: &str, input: &serde_json::Value) -> String {
                 format!("installing skill: {name}")
             }
         }
+        "skill_exists" => {
+            let name = input["name"].as_str().unwrap_or("...");
+            format!("checking skill: {name}")
+        }
+        "uninstall_skill" => {
+            let name = input["name"].as_str().unwrap_or("...");
+            format!("uninstalling skill: {name}")
+        }
         "install_mcp_server" => {
             let name = input["name"].as_str().unwrap_or("...");
             format!("installing MCP server: {name}")
@@ -1870,6 +1894,8 @@ fn validate_tool_input(name: &str, input: &serde_json::Value) -> Result<(), Stri
         "man_page" => &["command"],
         "manage_config" => &["action", "key"],
         "install_mcp_server" => &["name"],
+        "skill_exists" => &["name"],
+        "uninstall_skill" => &["name"],
         "search_memory" => &["memory_type", "query"],
         "core_memory_append" => &["label", "content"],
         "core_memory_rewrite" => &["label", "content"],
