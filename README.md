@@ -598,6 +598,41 @@ cargo make release-matrix   # build for all supported targets
 cargo make sync-site-install # copy install scripts -> ../nsh-site/
 ```
 
+### Mobile App
+
+The mobile app lives in `mobile/` and uses Tauri 2 with a vanilla TypeScript + xterm frontend.
+
+#### Prerequisites
+
+```bash
+cargo install tauri-cli
+cd mobile && npm install
+```
+
+iOS builds require Xcode and the iOS SDK. Android builds require the Android SDK and NDK.
+
+#### Development (desktop window)
+
+```bash
+npm run tauri dev
+```
+
+#### iOS
+
+```bash
+npm run tauri ios init      # one-time setup
+npm run tauri ios dev       # run on simulator
+npm run tauri ios build     # release build
+```
+
+#### Android
+
+```bash
+npm run tauri android init  # one-time setup
+npm run tauri android dev   # run on emulator
+npm run tauri android build # release build
+```
+
 ### Cross-Compilation
 
 ```bash
@@ -682,14 +717,9 @@ Contributions are welcome! Please read the [Contributing Guide](CONTRIBUTING.md)
 
 ---
 
-## License
-
-BSD 3-Clause - see [LICENSE](LICENSE).
 ### Sidecar Management
 
 The local CLIProxyAPI sidecar is managed by the daemon and used to route subscription providers through a local OpenAI-compatible endpoint.
-
-Common operations:
 
 ```
 nsh cliproxy ensure        # start the sidecar if not running
@@ -699,3 +729,9 @@ nsh cliproxy check-updates # trigger an immediate update check
 ```
 
 The daemon also checks for sidecar updates hourly and restarts it if an update is applied.
+
+---
+
+## License
+
+BSD 3-Clause - see [LICENSE](LICENSE).
