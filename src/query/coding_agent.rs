@@ -227,6 +227,7 @@ pub async fn run_coding_agent(request: CodingAgentRequest<'_>) -> anyhow::Result
             max_tokens: 32768,
             stream: true,
             extra_body: None,
+            response_format: None,
         };
         let request = provider.prepare_request(request);
 

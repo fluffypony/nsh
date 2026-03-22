@@ -328,6 +328,7 @@ mod tests {
             max_tokens: 1024,
             stream: false,
             extra_body: None,
+            response_format: None,
         }
     }
 

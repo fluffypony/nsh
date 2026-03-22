@@ -58,6 +58,7 @@ pub async fn generate_llm_summary(
         max_tokens: 256,
         stream: false,
         extra_body: None,
+        response_format: None,
     };
     let response = provider.complete(request).await?;
     let text = crate::provider::message_text_content(&response);

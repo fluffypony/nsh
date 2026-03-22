@@ -73,6 +73,8 @@ pub struct ChatRequest {
     pub max_tokens: u32,
     pub stream: bool,
     pub extra_body: Option<serde_json::Value>,
+    /// Provider-native JSON Schema enforcement for structured output.
+    pub response_format: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -608,6 +610,7 @@ mod tests {
             max_tokens: 1,
             stream: false,
             extra_body: Some(json!({"existing": true})),
+            response_format: None,
         };
 
         let out = with_transport_hint(

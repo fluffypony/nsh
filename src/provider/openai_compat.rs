@@ -74,6 +74,21 @@ impl OpenAICompatProvider {
         }
 
         if !tools.is_empty() {
+            // When the model supports structured output, add "strict": true to
+            // each tool's function definition for provider-native schema enforcement.
+            if caps.supports_structured_output {
+                for tool in &mut tools {
+                    if let Some(func) = tool.get_mut("function") {
+                        func["strict"] = json!(true);
+                        // OpenAI strict mode requires additionalProperties: false
+                        if let Some(params) = func.get_mut("parameters") {
+                            if params.get("additionalProperties").is_none() {
+                                params["additionalProperties"] = json!(false);
+                            }
+                        }
+                    }
+                }
+            }
             if anthropic && let Some(last) = tools.last_mut() {
                 last["cache_control"] = json!({"type": "ephemeral"});
             }
@@ -108,6 +123,11 @@ impl OpenAICompatProvider {
             // Provide a hint via extra_body if caller passed a tools array; noop otherwise
             // This is intentionally non-fatal and may be ignored by endpoints that don't support it.
             // body["tools"] may already exist; do not mutate structure significantly here.
+        }
+
+        // Apply provider-native response_format if present
+        if let Some(ref rf) = request.response_format {
+            body["response_format"] = rf.clone();
         }
 
         if let Some(serde_json::Value::Object(map)) = &request.extra_body {
@@ -779,6 +799,7 @@ mod tests {
             max_tokens: 1024,
             stream: false,
             extra_body,
+            response_format: None,
         }
     }
 

@@ -209,6 +209,7 @@ async fn extract_readme_for_goal(
         max_tokens: 2000,
         stream: false,
         extra_body: None,
+        response_format: None,
     };
 
     let response = provider.complete(request).await?;

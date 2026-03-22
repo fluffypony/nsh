@@ -336,6 +336,7 @@ mod tests {
             max_tokens: 256,
             stream: false,
             extra_body: None,
+            response_format: None,
         };
         let out = extract_with_retry(&provider, req, &required, 2)
             .await
@@ -369,6 +370,7 @@ mod tests {
             max_tokens: 128,
             stream: false,
             extra_body: None,
+            response_format: None,
         };
         let err = extract_with_retry(&provider, req, &required, 1)
             .await

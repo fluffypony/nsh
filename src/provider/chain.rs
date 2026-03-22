@@ -173,6 +173,7 @@ mod tests {
             max_tokens: 100,
             stream: true,
             extra_body: None,
+            response_format: None,
         }
     }
 
@@ -748,6 +749,7 @@ mod tests {
                 "_transport_base_url": crate::provider::bootstrap::cliproxy_base_url(),
                 "_transport_strip_provider_prefix": true
             })),
+            response_format: None,
         };
 
         let effective = effective_model_name_for_request("anthropic/claude-sonnet-4.6", &request);
@@ -765,6 +767,7 @@ mod tests {
             max_tokens: 1,
             stream: false,
             extra_body: None,
+            response_format: None,
         };
 
         let effective = effective_model_name_for_request("anthropic/claude-sonnet-4.6", &request);

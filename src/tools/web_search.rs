@@ -53,6 +53,7 @@ fn build_request(query: &str, config: &Config) -> anyhow::Result<ChatRequest> {
         max_tokens: 1024,
         stream: false,
         extra_body: Some(json!({ "web_search_options": {} })),
+        response_format: None,
     })
 }
 

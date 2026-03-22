@@ -221,6 +221,7 @@ impl<'a> QuerySession<'a> {
             max_tokens: 4096,
             stream: true,
             extra_body,
+            response_format: None,
         }
     }
 
@@ -753,8 +754,27 @@ async fn normalize_iteration_response(
         tool_choice: crate::provider::ToolChoice::None,
         max_tokens: 1024,
         stream: false,
-        extra_body: if caps.supports_json_mode {
-            Some(serde_json::json!({"response_format": {"type": "json_object"}}))
+        extra_body: None,
+        response_format: if caps.supports_structured_output {
+            // Use provider-native JSON Schema enforcement for stronger guarantees
+            Some(serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "tool_call",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "input": {"type": "object"}
+                        },
+                        "required": ["tool", "input"],
+                        "additionalProperties": false
+                    }
+                }
+            }))
+        } else if caps.supports_json_mode {
+            Some(serde_json::json!({"type": "json_object"}))
         } else {
             None
         },

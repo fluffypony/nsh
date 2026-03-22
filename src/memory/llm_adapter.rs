@@ -43,6 +43,7 @@ impl MemoryLlmClient for ProviderLlmClient {
             max_tokens: 4096,
             stream: false,
             extra_body: None,
+            response_format: None,
         };
         let response = provider.complete(request).await?;
         let mut text = String::new();
