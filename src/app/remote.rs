@@ -302,8 +302,10 @@ fn handle_connect(
         .build()?;
 
     rt.block_on(async {
-        // Use ephemeral key so this works without any nsh setup on the client machine
-        let key = iroh::SecretKey::generate(&mut rand::rng());
+        // Use persistent key so the endpoint ID stays stable across runs.
+        // The user must pair this key with the remote host first (nsh remote pair on the
+        // server adds the client's endpoint ID to allowed_keys).
+        let key = crate::remote_key::load_or_create_secret_key()?;
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
             .secret_key(key)
             .bind()

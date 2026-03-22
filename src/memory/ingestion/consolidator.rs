@@ -23,7 +23,12 @@ pub fn find_merge_candidate(
         // Require both summaries to exceed a minimum length before
         // considering them duplicates — very short summaries like "Ran `ls` (exit 0)"
         // produce false-positive matches at the 0.85 threshold.
-        if similarity > 0.85 && existing_summary.chars().count() > 30 && new_summary.chars().count() > 30 {
+        // Exact matches always merge. For fuzzy matches, require both
+        // summaries to exceed 20 chars to avoid false positives on short
+        // structurally-similar summaries like "Ran `ls` (exit 0)" vs "Ran `cd` (exit 0)".
+        let is_exact = (similarity - 1.0).abs() < f64::EPSILON;
+        let long_enough = existing_summary.chars().count() > 20 && new_summary.chars().count() > 20;
+        if similarity > 0.85 && (is_exact || long_enough) {
             return Ok(Some(id.clone()));
         }
     }

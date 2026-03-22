@@ -358,7 +358,17 @@ async fn handle_remote_stream(
                         }
                         result.push_str(&stderr);
                     }
-                    RemoteResponse::QueryComplete { response: result }
+                    if out.status.success() {
+                        RemoteResponse::QueryComplete { response: result }
+                    } else {
+                        RemoteResponse::QueryError {
+                            message: if result.is_empty() {
+                                format!("query exited with {}", out.status)
+                            } else {
+                                result
+                            },
+                        }
+                    }
                 }
                 Err(e) => RemoteResponse::QueryError {
                     message: e.to_string(),
