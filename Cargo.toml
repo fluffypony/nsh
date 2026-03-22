@@ -43,7 +43,7 @@ toml = "1"
 toml_edit = "0.25"
 
 # Database
-rusqlite = { version = "0.38", features = ["bundled", "modern_sqlite", "functions"] }
+rusqlite = { version = "0.39", features = ["bundled", "modern_sqlite", "functions"] }
 
 # Terminal
 crossterm = "0.29"
@@ -105,7 +105,7 @@ rmp-serde = "1"
 iroh = { version = "0.97", optional = true }
 iroh-docs = { version = "0.97", optional = true }
 qrcode = { version = "0.14", optional = true }
-mdns-sd = { version = "0.11", optional = true }
+mdns-sd = { version = "0.18", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["termios", "pty", "process", "pipe", "event", "stdio", "fs"] }
