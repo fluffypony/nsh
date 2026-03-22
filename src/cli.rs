@@ -179,6 +179,10 @@ pub enum Commands {
     #[command(hide = true)]
     HistoryImportRun,
 
+    /// Run nsh as an MCP server over stdio
+    #[command(name = "mcp-serve", hide = true)]
+    McpServe,
+
     /// Internal: run the global nsh database daemon
     #[command(name = "nshd", hide = true)]
     Nshd,

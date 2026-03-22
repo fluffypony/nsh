@@ -16,6 +16,7 @@ pub(crate) mod fast_cwd;
 pub(crate) mod history_import;
 pub(crate) mod json_extract;
 pub(crate) mod mcp;
+pub(crate) mod mcp_server;
 pub(crate) mod memory;
 pub(crate) mod model_defaults;
 pub mod provider;
