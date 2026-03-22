@@ -198,6 +198,13 @@ fn execute(
         result.push_str("\n... (results truncated due to size)");
     }
 
+    if requested_limit > MAX_SEARCH_RESULTS {
+        result = format!(
+            "[Note: limit capped at {} (requested {})]\n{}",
+            MAX_SEARCH_RESULTS, requested_limit, result
+        );
+    }
+
     Ok(crate::redact::redact_secrets(&result, &config.redaction))
 }
 

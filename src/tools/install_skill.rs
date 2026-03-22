@@ -166,7 +166,9 @@ fn parse_manual_request(input: &serde_json::Value) -> anyhow::Result<ManualSkill
 fn install_repo_skill(request: &RepoInstallRequest) -> anyhow::Result<String> {
     let repo_url = request.repo_url.as_str();
     let skills_dir = crate::config::Config::nsh_dir().join("skills");
-    let repo_name = repo_url
+    // Strip query parameters before extracting repo name
+    let clean_url = repo_url.split('?').next().unwrap_or(repo_url);
+    let repo_name = clean_url
         .trim_end_matches('/')
         .rsplit('/')
         .next()

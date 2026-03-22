@@ -1014,6 +1014,17 @@ pub struct ModelCapabilities {
     pub supports_structured_output: bool,
 }
 
+/// Word-boundary-aware model name matching to avoid false positives
+/// (e.g. "o1" matching "proto1" or "google/gemini-pro1").
+fn model_segment_matches(model: &str, target: &str) -> bool {
+    model == target
+        || model.starts_with(&format!("{target}-"))
+        || model.starts_with(&format!("{target}/"))
+        || model.contains(&format!("/{target}-"))
+        || model.contains(&format!("/{target}"))
+        || model.ends_with(&format!("-{target}"))
+}
+
 /// Best-effort capability detection by provider+model id.
 /// This is heuristic and intentionally conservative; callers should still handle fallbacks.
 pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
@@ -1035,7 +1046,7 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
     }
 
     // OpenAI native web search support
-    if p == "openai" && !m.contains("codex") && (m == "gpt-5.2" || m.contains("gpt-5-search")) {
+    if p == "openai" && !m.contains("codex") && m.starts_with("gpt-5") {
         caps.supports_web_search = true;
     }
     // Perplexity/Sonar models support web search natively
@@ -1045,7 +1056,11 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
 
     // OpenAI gpt-4o+ and gpt-5+ support strict JSON Schema response_format
     if (p == "openai" || p == "openrouter")
-        && (m.contains("gpt-4o") || m.contains("gpt-5") || m.contains("o1") || m.contains("o3") || m.contains("o4"))
+        && (model_segment_matches(&m, "gpt-4o")
+            || m.contains("gpt-5")
+            || model_segment_matches(&m, "o1")
+            || model_segment_matches(&m, "o3")
+            || model_segment_matches(&m, "o4"))
         && !m.contains("codex")
     {
         caps.supports_structured_output = true;

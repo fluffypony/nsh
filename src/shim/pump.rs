@@ -411,17 +411,21 @@ impl ReplayBuffer {
 
     pub fn push(&mut self, bytes: Vec<u8>) -> u64 {
         if bytes.is_empty() {
-            return self.next_seq;
+            return self.next_seq.saturating_sub(1);
         }
+        let byte_len = bytes.len();
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.current_bytes += bytes.len();
+        self.current_bytes += byte_len;
         self.buffer.push_back((seq, bytes));
-        while self.current_bytes > self.max_bytes && !self.buffer.is_empty() {
+
+        // Keep at least the most recent frame even if it exceeds capacity
+        while self.current_bytes > self.max_bytes && self.buffer.len() > 1 {
             if let Some((_, old)) = self.buffer.pop_front() {
                 self.current_bytes -= old.len();
             }
         }
+
         seq
     }
 
@@ -493,10 +497,14 @@ impl PtyRemoteState {
     /// client had resized the PTY, re-syncs the PTY to the local terminal's current size.
     pub fn cleanup_on_disconnect(&self, peer_id: Option<&str>) {
         // Only clear lease if the disconnecting peer owns it
-        if let Ok(mut lease) = self.control_lease.lock()
-            && (peer_id.is_none() || lease.as_deref() == peer_id)
-        {
-            *lease = None;
+        if let Ok(mut lease) = self.control_lease.lock() {
+            match (peer_id, lease.as_deref()) {
+                (Some(pid), Some(holder)) if pid == holder => {
+                    *lease = None;
+                }
+                (None, _) => {} // Don't clear unknown peer's lease
+                _ => {}
+            }
         }
         // When the last client disconnects and a remote resize happened,
         // re-sync PTY size from the real terminal (stdin) to undo remote resize.

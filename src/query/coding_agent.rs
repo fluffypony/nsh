@@ -1074,6 +1074,13 @@ fn is_dev_command_allowed(command: &str) -> bool {
                 return false;
             }
 
+            if bin == "find" {
+                // Block find with execution flags that could run arbitrary commands
+                if parts.clone().any(|a| matches!(a, "-exec" | "-execdir" | "-delete" | "-ok")) {
+                    return false;
+                }
+            }
+
             if bin == "git" {
                 let Some(sub) = parts.next() else {
                     // `git` with no subcommand just shows help

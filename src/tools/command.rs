@@ -740,6 +740,11 @@ fn cleanup_cd_target_phrase(raw: &str) -> String {
         return trimmed.to_string();
     }
 
+    // ~user/path syntax — don't strip any part of it
+    if trimmed.starts_with('~') && !trimmed.starts_with("~/") && trimmed != "~" {
+        return trimmed.to_string();
+    }
+
     const FILLER_WORDS: &[&str] = &[
         "to",
         "into",

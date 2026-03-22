@@ -626,12 +626,12 @@ pub fn assess_memory_tool_call(
             if caption.is_empty() {
                 return Err("retrieve_secret requires a non-empty caption_query".into());
             }
-            // Require evidence that the user explicitly asked for a secret/credential
-            let user_requested = _conversation.iter().any(|msg| {
-                if !matches!(msg.role, crate::provider::Role::User) {
-                    return false;
-                }
-                msg.content.iter().any(|block| {
+            // Require evidence that the user explicitly asked for a secret/credential.
+            // Only check the most recent user message to avoid prompt injection via
+            // earlier conversation context.
+            let user_requested = _conversation.iter().rev()
+                .find(|msg| matches!(msg.role, crate::provider::Role::User))
+                .is_some_and(|msg| msg.content.iter().any(|block| {
                     if let crate::provider::ContentBlock::Text { text } = block {
                         let lower = text.to_lowercase();
                         lower.contains("secret")
@@ -647,8 +647,7 @@ pub fn assess_memory_tool_call(
                     } else {
                         false
                     }
-                })
-            });
+                }));
             if !user_requested {
                 return Err(
                     "retrieve_secret can only be called when the user explicitly requests \

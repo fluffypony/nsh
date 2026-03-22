@@ -996,6 +996,9 @@ async fn run_agent_tool_loop(session: &mut QuerySession<'_>) -> anyhow::Result<(
                     }
                 }
 
+                // Tool call passed validation; reset the repeat guard
+                loop_state.repeat_guard.reset();
+
                 match name.as_str() {
                     "command" => match tools::command::invoke(input, &public_tool_ctx) {
                         Err(e) => {
@@ -2151,6 +2154,11 @@ struct RepeatGuard {
 }
 
 impl RepeatGuard {
+    fn reset(&mut self) {
+        self.last_tool_signature = None;
+        self.repeat_fail_count = 0;
+    }
+
     fn note_invalid(&mut self, name: &str, input: &serde_json::Value) -> bool {
         // Pending commands are part of multi-step workflows; don't penalize repetition
         // but don't reset the counter either, to prevent infinite loops.

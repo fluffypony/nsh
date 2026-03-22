@@ -23,7 +23,7 @@ pub fn find_merge_candidate(
         // Require both summaries to exceed a minimum length before
         // considering them duplicates — very short summaries like "Ran `ls` (exit 0)"
         // produce false-positive matches at the 0.85 threshold.
-        if similarity > 0.85 && existing_summary.len() > 12 && new_summary.len() > 12 {
+        if similarity > 0.85 && existing_summary.chars().count() > 30 && new_summary.chars().count() > 30 {
             return Ok(Some(id.clone()));
         }
     }

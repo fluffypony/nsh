@@ -17,7 +17,10 @@ pub fn apply_thinking_mode(body: &mut serde_json::Value, model: &str, think: boo
 
 /// Select the effective model name to use when "thinking" mode is enabled.
 pub fn thinking_model_name(model: &str, think: bool) -> String {
-    if think && model.starts_with("google/gemini-2.5") && !model.ends_with(":thinking") {
+    if think
+        && (model.starts_with("google/gemini-2.5") || model.starts_with("google/gemini-3"))
+        && !model.ends_with(":thinking")
+    {
         format!("{model}:thinking")
     } else {
         model.to_string()

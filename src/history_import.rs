@@ -58,7 +58,9 @@ pub fn clear_import_lock() {
 fn extract_tty_from_path(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let suffix = name.strip_prefix(".zsh_history_")?;
-    if !suffix.is_empty() && (suffix.starts_with("ttys") || suffix.starts_with("pts")) {
+    if !suffix.is_empty()
+        && (suffix.starts_with("ttys") || suffix.starts_with("pts") || suffix.starts_with("tty"))
+    {
         Some(format!("/dev/{suffix}"))
     } else {
         None
