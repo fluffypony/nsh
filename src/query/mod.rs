@@ -2145,13 +2145,13 @@ struct RepeatGuard {
 impl RepeatGuard {
     fn note_invalid(&mut self, name: &str, input: &serde_json::Value) -> bool {
         // Pending commands are part of multi-step workflows; don't penalize repetition
+        // but don't reset the counter either, to prevent infinite loops.
         if name == "command"
             && input
                 .get("pending")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         {
-            self.repeat_fail_count = 0;
             return false;
         }
         use sha2::Digest;

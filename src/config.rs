@@ -1225,7 +1225,17 @@ impl Config {
                 }
             }
             let content = std::fs::read_to_string(&path)?;
-            toml::from_str(&content)?
+            match toml::from_str(&content) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "nsh: warning: config parse error in {}: {e}\n\
+                         Using default config. Fix with: nsh config edit",
+                        path.display()
+                    );
+                    toml::Value::Table(toml::map::Map::new())
+                }
+            }
         } else {
             tracing::debug!("No config at {}, using defaults", path.display());
             toml::Value::Table(toml::map::Map::new())

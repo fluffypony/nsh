@@ -168,6 +168,36 @@ pub fn validate_keyword_presence(ops: Vec<MemoryOp>) -> Vec<MemoryOp> {
                 summary,
                 steps,
             },
+            MemoryOp::ResourceInsert {
+                resource_type,
+                file_path,
+                file_hash,
+                title,
+                summary,
+                content,
+                search_keywords,
+            } => MemoryOp::ResourceInsert {
+                resource_type,
+                file_path,
+                file_hash,
+                search_keywords: ensure_keywords(search_keywords, &summary),
+                title,
+                summary,
+                content,
+            },
+            MemoryOp::KnowledgeInsert {
+                entry_type,
+                caption,
+                secret_value,
+                sensitivity,
+                search_keywords,
+            } => MemoryOp::KnowledgeInsert {
+                entry_type,
+                search_keywords: ensure_keywords(search_keywords, &caption),
+                caption,
+                secret_value,
+                sensitivity,
+            },
             other => other,
         })
         .collect()

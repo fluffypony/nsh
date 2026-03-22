@@ -24,6 +24,23 @@ pub enum RemoteRequest {
         #[serde(default)]
         private: bool,
     },
+    /// Fetch command history for a session.
+    SessionHistory {
+        session_id: String,
+        limit: u64,
+    },
+}
+
+/// A single command history entry returned by SessionHistory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionHistoryEntry {
+    pub command: String,
+    pub cwd: Option<String>,
+    pub exit_code: Option<i32>,
+    pub started_at: String,
+    pub duration_ms: Option<i64>,
+    pub summary: Option<String>,
+    pub output_preview: Option<String>,
 }
 
 /// Messages sent from the daemon to the mobile app over QUIC.
@@ -53,6 +70,9 @@ pub enum RemoteResponse {
     },
     QueryError {
         message: String,
+    },
+    SessionHistory {
+        entries: Vec<SessionHistoryEntry>,
     },
 }
 
