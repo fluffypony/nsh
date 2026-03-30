@@ -266,11 +266,31 @@ fn try_make_strict_compliant(schema: &mut serde_json::Value) -> bool {
         return true; // non-object leaf — nothing to enforce
     };
 
-    let is_object = obj.get("type").and_then(|t| t.as_str()) == Some("object");
-    let is_array = obj.get("type").and_then(|t| t.as_str()) == Some("array");
+    // Detect type as either a string or a type-union array (e.g., ["object", "null"])
+    let type_includes = |target: &str| -> bool {
+        match obj.get("type") {
+            Some(serde_json::Value::String(s)) => s == target,
+            Some(serde_json::Value::Array(arr)) => {
+                arr.iter().any(|v| v.as_str() == Some(target))
+            }
+            _ => false,
+        }
+    };
+    let is_object = type_includes("object");
+    let is_array = type_includes("array");
+
+    // Reject schemas with composition or dynamic keywords — incompatible with strict mode
+    if obj.contains_key("oneOf")
+        || obj.contains_key("anyOf")
+        || obj.contains_key("allOf")
+        || obj.contains_key("$ref")
+        || obj.contains_key("patternProperties")
+    {
+        return false;
+    }
 
     // Non-object, non-array JSON objects: only valid if they have an explicit type or enum.
-    // Composition schemas (oneOf/anyOf/allOf), $ref, or empty {} are incompatible.
+    // Empty {} or untyped schemas are incompatible.
     if !is_object && !is_array {
         if obj.contains_key("type") || obj.contains_key("enum") {
             return true;
@@ -712,6 +732,44 @@ mod tests {
     fn strict_normalization_skips_ref_schemas() {
         let mut schema = json!({"$ref": "#/definitions/Foo"});
         assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_skips_typed_composition_schemas() {
+        // Schema with type AND oneOf — still incompatible
+        let mut schema = json!({
+            "type": "object",
+            "oneOf": [
+                {"properties": {"a": {"type": "string"}}, "required": ["a"]},
+                {"properties": {"b": {"type": "integer"}}, "required": ["b"]}
+            ]
+        });
+        assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_skips_pattern_properties() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "patternProperties": {"^x-": {"type": "string"}},
+            "required": ["name"]
+        });
+        assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_handles_type_union_array() {
+        // type expressed as ["object", "null"] — should still be detected as object
+        let mut schema = json!({
+            "type": ["object", "null"],
+            "properties": {
+                "key": {"type": "string"}
+            },
+            "required": ["key"]
+        });
+        assert!(try_make_strict_compliant(&mut schema));
+        assert_eq!(schema["additionalProperties"], json!(false));
     }
 
     #[test]
