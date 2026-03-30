@@ -9,7 +9,7 @@ pub struct ToolDefinition {
 }
 
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
-    let mut defs = vec![
+    let defs = vec![
         ToolDefinition {
             name: "command".into(),
             description: "Generate a shell command for the user to \
@@ -511,9 +511,13 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                              'context.history_limit')"
                     },
                     "value": {
+                        "type": "string",
                         "description":
-                            "Value to set (string, number, boolean, \
-                             or array). Required for action='set'."
+                            "Value to set. For strings, pass directly. \
+                             For numbers/booleans/arrays, pass as a \
+                             JSON-encoded string (e.g. \"true\", \"42\", \
+                             \"[\\\"a\\\",\\\"b\\\"]\"). \
+                             Required for action='set'."
                     }
                 },
                 "required": ["action", "key"]
@@ -839,23 +843,6 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
     ];
-
-    for def in &mut defs {
-        if let Some(props) = def
-            .parameters
-            .get_mut("properties")
-            .and_then(|properties| properties.as_object_mut())
-            && !props.contains_key("expected_timeout_seconds")
-        {
-            props.insert(
-                    "expected_timeout_seconds".to_string(),
-                    serde_json::json!({
-                        "type": "integer",
-                        "description": "Expected maximum duration in seconds. If exceeded, the user will be asked whether to continue waiting. Default varies by tool."
-                    }),
-                );
-        }
-    }
 
     defs
 }

@@ -1012,6 +1012,9 @@ pub struct ModelCapabilities {
     /// Provider-native JSON Schema enforcement (`response_format.type = "json_schema"`).
     /// True for OpenAI gpt-4o+, gpt-5+, Gemini gemini-3+. False for Anthropic.
     pub supports_structured_output: bool,
+    /// Whether to attempt strict-mode normalization on tool schemas.
+    /// Decoupled from `supports_structured_output` (which gates `response_format`).
+    pub supports_strict_tool_schemas: bool,
 }
 
 /// Word-boundary-aware model name matching to avoid false positives
@@ -1037,6 +1040,7 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
         supports_web_search: false,
         supports_json_mode: true,
         supports_structured_output: false,
+        supports_strict_tool_schemas: false,
     };
 
     // Codex-like models often omit standard tool-calling
@@ -1064,11 +1068,13 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
         && !m.contains("codex")
     {
         caps.supports_structured_output = true;
+        caps.supports_strict_tool_schemas = true;
     }
 
     // Gemini 2+ models support structured output
     if m.contains("gemini-2") || m.contains("gemini-3") {
         caps.supports_structured_output = true;
+        caps.supports_strict_tool_schemas = true;
     }
 
     // Anthropic supports tools, but not OpenAI JSON mode flag or structured output

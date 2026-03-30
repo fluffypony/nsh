@@ -138,13 +138,23 @@ fn parse_request(input: &serde_json::Value) -> anyhow::Result<ManageConfigReques
         .ok_or_else(|| anyhow::anyhow!("manage_config: 'key' is required"))?;
 
     match action {
-        "set" => Ok(ManageConfigRequest::Set {
-            key: key.to_string(),
-            value: input
+        "set" => {
+            let raw = input
                 .get("value")
                 .cloned()
-                .ok_or_else(|| anyhow::anyhow!("manage_config: 'value' is required for set"))?,
-        }),
+                .ok_or_else(|| anyhow::anyhow!("manage_config: 'value' is required for set"))?;
+            // When strict mode is active, the LLM sends all values as strings.
+            // Try to parse as JSON to recover native types (numbers, booleans, arrays).
+            let value = if let Some(s) = raw.as_str() {
+                serde_json::from_str(s).unwrap_or(raw)
+            } else {
+                raw
+            };
+            Ok(ManageConfigRequest::Set {
+                key: key.to_string(),
+                value,
+            })
+        }
         "remove" => Ok(ManageConfigRequest::Remove {
             key: key.to_string(),
         }),

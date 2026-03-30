@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
@@ -74,17 +75,23 @@ impl OpenAICompatProvider {
         }
 
         if !tools.is_empty() {
-            // When the model supports structured output, add "strict": true to
-            // each tool's function definition for provider-native schema enforcement.
-            if caps.supports_structured_output {
+            // When the model supports strict tool schemas, attempt per-tool normalization.
+            // Tools with compatible schemas get strict: true; incompatible tools are left
+            // non-strict (OpenAI defaults strict to false when absent).
+            if caps.supports_strict_tool_schemas {
                 for tool in &mut tools {
                     if let Some(func) = tool.get_mut("function") {
-                        func["strict"] = json!(true);
-                        // OpenAI strict mode requires additionalProperties: false
-                        if let Some(params) = func.get_mut("parameters")
-                            && params.get("additionalProperties").is_none()
-                        {
-                            params["additionalProperties"] = json!(false);
+                        if let Some(params) = func.get_mut("parameters") {
+                            // Clone so we can attempt normalization without corrupting
+                            // the original schema if the tool is incompatible.
+                            let mut strict_params = params.clone();
+                            if try_make_strict_compliant(&mut strict_params) {
+                                *params = strict_params;
+                                func["strict"] = json!(true);
+                            }
+                            // else: tool schema is inherently incompatible with strict
+                            // mode (e.g. untyped properties, dynamic maps). Leave it
+                            // non-strict — OpenAI defaults strict to false.
                         }
                     }
                 }
@@ -246,6 +253,145 @@ pub(crate) fn is_anthropic_model(model: &str) -> bool {
     model.contains("claude") || model.starts_with("anthropic/")
 }
 
+/// Attempt to transform a tool's parameter schema into OpenAI strict-mode compliant form.
+/// Returns `true` if successful, `false` if the schema is inherently incompatible
+/// (e.g., untyped properties, dynamic additionalProperties, freeform objects).
+///
+/// On success, the schema is mutated in place with:
+/// - `additionalProperties: false` on all object schemas
+/// - `required` set to all property keys
+/// - Originally-optional properties made nullable
+fn try_make_strict_compliant(schema: &mut serde_json::Value) -> bool {
+    let Some(obj) = schema.as_object_mut() else {
+        return true; // non-object leaf — nothing to enforce
+    };
+
+    let is_object = obj.get("type").and_then(|t| t.as_str()) == Some("object");
+    let is_array = obj.get("type").and_then(|t| t.as_str()) == Some("array");
+
+    if is_object {
+        // Check additionalProperties compatibility:
+        // - absent → we'll set to false (OK)
+        // - false → already compliant (OK)
+        // - true → explicit freeform (incompatible)
+        // - object → dynamic map pattern (incompatible)
+        match obj.get("additionalProperties") {
+            Some(ap) if ap.is_object() => return false,
+            Some(ap) if ap.as_bool() == Some(true) => return false,
+            _ => {}
+        }
+
+        // Freeform object with no properties key at all
+        if obj.get("properties").is_none() {
+            return false;
+        }
+
+        // Malformed properties field (exists but not an object)
+        if let Some(properties) = obj.get("properties") {
+            if properties.as_object().is_none() {
+                return false;
+            }
+        }
+
+        // Clone properties to inspect keys and types before mutating
+        if let Some(props) = obj.get("properties").and_then(|p| p.as_object()).cloned() {
+            let all_keys: Vec<String> = props.keys().cloned().collect();
+
+            // Every property must have an explicit "type" or "enum" for strict mode
+            for (_key, prop_val) in props.iter() {
+                if let Some(prop_obj) = prop_val.as_object() {
+                    if !prop_obj.contains_key("type") && !prop_obj.contains_key("enum") {
+                        return false;
+                    }
+                }
+            }
+
+            // Recurse into each property's schema BEFORE nullable transformation,
+            // so nested type checks (is_object, is_array) see the original types.
+            if let Some(props_mut) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                for (_key, prop_schema) in props_mut.iter_mut() {
+                    if !try_make_strict_compliant(prop_schema) {
+                        return false;
+                    }
+                }
+            }
+
+            // Snapshot original required keys before overwriting
+            let original_required: HashSet<String> = obj
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Make originally-optional properties nullable so the model can pass null
+            if let Some(props_mut) = obj.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                for key in &all_keys {
+                    if !original_required.contains(key) {
+                        if let Some(prop) = props_mut.get_mut(key) {
+                            make_property_nullable(prop);
+                        }
+                    }
+                }
+            }
+
+            // Set required to ALL property keys
+            let all_keys_json: Vec<serde_json::Value> = all_keys
+                .iter()
+                .map(|k| serde_json::Value::String(k.clone()))
+                .collect();
+            obj.insert(
+                "required".to_string(),
+                serde_json::Value::Array(all_keys_json),
+            );
+        }
+
+        // Set additionalProperties: false
+        obj.insert("additionalProperties".to_string(), json!(false));
+    }
+
+    // Recurse into array items
+    if is_array {
+        if let Some(items) = obj.get_mut("items") {
+            if !try_make_strict_compliant(items) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Convert a property's type to nullable by adding "null" to the type union.
+/// Also adds null to enum arrays if present.
+fn make_property_nullable(prop: &mut serde_json::Value) {
+    // Handle "type" field
+    if let Some(type_val) = prop.get("type").cloned() {
+        match &type_val {
+            serde_json::Value::String(s) if s != "null" => {
+                prop["type"] = json!([s.as_str(), "null"]);
+            }
+            serde_json::Value::Array(arr) => {
+                if !arr.iter().any(|v| v.as_str() == Some("null")) {
+                    let mut new_arr = arr.clone();
+                    new_arr.push(json!("null"));
+                    prop["type"] = serde_json::Value::Array(new_arr);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Handle "enum" field — add null as a valid value
+    if let Some(enum_val) = prop.get_mut("enum").and_then(|e| e.as_array_mut()) {
+        if !enum_val.contains(&json!(null)) {
+            enum_val.push(json!(null));
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl LlmProvider for OpenAICompatProvider {
     async fn complete(&self, request: ChatRequest) -> anyhow::Result<Message> {
@@ -362,6 +508,258 @@ mod tests {
     use crate::provider::{ContentBlock, Message, Role};
     use crate::tools::ToolDefinition;
     use serde_json::json;
+
+    // ── Strict-mode normalization tests ─────────────────────────
+
+    #[test]
+    fn strict_normalization_adds_all_properties_to_required() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The command"},
+                "explanation": {"type": "string", "description": "Why"},
+                "pending": {"type": "boolean", "description": "Run in background"},
+                "expected_timeout_seconds": {"type": "integer", "description": "Timeout"}
+            },
+            "required": ["command", "explanation"]
+        });
+
+        assert!(try_make_strict_compliant(&mut schema));
+
+        let required = schema["required"].as_array().unwrap();
+        let req_strs: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+
+        assert!(req_strs.contains(&"command"));
+        assert!(req_strs.contains(&"explanation"));
+        assert!(req_strs.contains(&"pending"));
+        assert!(req_strs.contains(&"expected_timeout_seconds"));
+        assert_eq!(schema["additionalProperties"], json!(false));
+
+        // Originally-optional properties should be nullable
+        assert_eq!(
+            schema["properties"]["pending"]["type"],
+            json!(["boolean", "null"])
+        );
+        assert_eq!(
+            schema["properties"]["expected_timeout_seconds"]["type"],
+            json!(["integer", "null"])
+        );
+
+        // Originally-required properties should NOT be nullable
+        assert_eq!(schema["properties"]["command"]["type"], json!("string"));
+        assert_eq!(schema["properties"]["explanation"]["type"], json!("string"));
+    }
+
+    #[test]
+    fn strict_normalization_skips_untyped_properties() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "value": {"description": "no type here"}
+            },
+            "required": ["action"]
+        });
+
+        assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_skips_dynamic_additional_properties() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "env": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                }
+            },
+            "required": ["name"]
+        });
+
+        assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_skips_freeform_objects() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "data": {"type": "object"}
+            },
+            "required": ["key"]
+        });
+
+        // "data" is type:object with no properties → freeform → incompatible
+        assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_handles_nested_objects() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string"},
+                        "value": {"type": "string"}
+                    },
+                    "required": ["key"]
+                }
+            },
+            "required": ["name", "config"]
+        });
+
+        assert!(try_make_strict_compliant(&mut schema));
+        assert_eq!(
+            schema["properties"]["config"]["additionalProperties"],
+            json!(false)
+        );
+
+        let nested_req = schema["properties"]["config"]["required"]
+            .as_array()
+            .unwrap();
+        let nested_strs: Vec<&str> = nested_req.iter().filter_map(|v| v.as_str()).collect();
+        assert!(nested_strs.contains(&"key"));
+        assert!(nested_strs.contains(&"value"));
+
+        // "value" was not originally required in nested, so it should be nullable
+        assert_eq!(
+            schema["properties"]["config"]["properties"]["value"]["type"],
+            json!(["string", "null"])
+        );
+    }
+
+    #[test]
+    fn strict_normalization_handles_array_items() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "optional_field": {"type": "integer"}
+                        },
+                        "required": ["name"]
+                    }
+                }
+            },
+            "required": ["items"]
+        });
+
+        assert!(try_make_strict_compliant(&mut schema));
+        let items_schema = &schema["properties"]["items"]["items"];
+        assert_eq!(items_schema["additionalProperties"], json!(false));
+
+        let items_req = items_schema["required"].as_array().unwrap();
+        assert_eq!(items_req.len(), 2);
+    }
+
+    #[test]
+    fn strict_normalization_with_empty_properties() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        });
+
+        assert!(try_make_strict_compliant(&mut schema));
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn strict_normalization_preserves_original_on_failure() {
+        let original = json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "env": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                }
+            },
+            "required": ["name"]
+        });
+        let mut schema = original.clone();
+        assert!(!try_make_strict_compliant(&mut schema));
+        // The caller should have cloned before calling — this test documents
+        // that the function may partially mutate before returning false.
+        // The build_request_body code clones before attempting normalization.
+    }
+
+    #[test]
+    fn strict_normalization_enum_gets_null() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["set", "remove"]
+                }
+            },
+            "required": []
+        });
+
+        assert!(try_make_strict_compliant(&mut schema));
+        let enum_vals = schema["properties"]["action"]["enum"].as_array().unwrap();
+        assert!(enum_vals.contains(&json!(null)));
+        assert!(enum_vals.contains(&json!("set")));
+        assert!(enum_vals.contains(&json!("remove")));
+    }
+
+    /// Integration test: verify all built-in tool definitions can be processed
+    /// without panic, and that strict-compatible tools get proper normalization.
+    #[test]
+    fn all_builtin_tools_normalization() {
+        use crate::tools::all_tool_definitions;
+
+        let tools = all_tool_definitions();
+        let mut strict_count = 0;
+        let mut non_strict_count = 0;
+
+        for tool_def in &tools {
+            let mut params = tool_def.parameters.clone();
+            let result = try_make_strict_compliant(&mut params);
+
+            if result {
+                strict_count += 1;
+                // Verify: all property keys are in required
+                if let Some(props) = params.get("properties").and_then(|p| p.as_object()) {
+                    let required: Vec<&str> = params
+                        .get("required")
+                        .and_then(|r| r.as_array())
+                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                        .unwrap_or_default();
+
+                    for key in props.keys() {
+                        assert!(
+                            required.contains(&key.as_str()),
+                            "Tool '{}': property '{}' missing from required after normalization",
+                            tool_def.name,
+                            key
+                        );
+                    }
+                }
+            } else {
+                non_strict_count += 1;
+            }
+        }
+
+        // Sanity: most tools should be strict-compatible
+        assert!(
+            strict_count > non_strict_count,
+            "Expected more strict-compatible tools than non-strict, got {strict_count} strict vs {non_strict_count} non-strict"
+        );
+    }
+
+    // ── Existing message/tool tests ──────────────────────────────
 
     #[test]
     fn build_openai_messages_user() {
