@@ -1015,6 +1015,9 @@ pub struct ModelCapabilities {
     /// Whether to attempt strict-mode normalization on tool schemas.
     /// Decoupled from `supports_structured_output` (which gates `response_format`).
     pub supports_strict_tool_schemas: bool,
+    /// Use `max_completion_tokens` instead of `max_tokens` in the request body.
+    /// Required for OpenAI o-series and gpt-5+ models which reject `max_tokens`.
+    pub uses_max_completion_tokens: bool,
 }
 
 /// Word-boundary-aware model name matching to avoid false positives
@@ -1041,6 +1044,7 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
         supports_json_mode: true,
         supports_structured_output: false,
         supports_strict_tool_schemas: false,
+        uses_max_completion_tokens: false,
     };
 
     // Codex-like models often omit standard tool-calling
@@ -1075,6 +1079,16 @@ pub fn model_capabilities(provider: &str, model: &str) -> ModelCapabilities {
     if m.contains("gemini-2") || m.contains("gemini-3") {
         caps.supports_structured_output = true;
         caps.supports_strict_tool_schemas = true;
+    }
+
+    // OpenAI o-series and gpt-5+ reject `max_tokens`; require `max_completion_tokens`
+    if (p == "openai" || p == "openrouter")
+        && (m.contains("gpt-5")
+            || model_segment_matches(&m, "o1")
+            || model_segment_matches(&m, "o3")
+            || model_segment_matches(&m, "o4"))
+    {
+        caps.uses_max_completion_tokens = true;
     }
 
     // Anthropic supports tools, but not OpenAI JSON mode flag or structured output

@@ -59,16 +59,22 @@ impl OpenAICompatProvider {
             build_openai_messages(&request.messages, &request.system)
         };
         let mut tools = build_openai_tools(&request.tools);
+        let caps = crate::config::model_capabilities(&self.debug_provider_name, &model);
 
         let mut body = json!({
             "model": model,
             "messages": messages,
-            "max_tokens": request.max_tokens,
             "stream": request.stream,
         });
 
+        // o-series and gpt-5+ reject `max_tokens`; require `max_completion_tokens`
+        if caps.uses_max_completion_tokens {
+            body["max_completion_tokens"] = json!(request.max_tokens);
+        } else {
+            body["max_tokens"] = json!(request.max_tokens);
+        }
+
         // Some models (e.g., codex-only) may not support tool/function calling — strip tools
-        let caps = crate::config::model_capabilities(&self.debug_provider_name, &model);
         let model_is_codex_like = model.contains("codex");
         if model_is_codex_like || !caps.supports_tool_calling {
             tools.clear();
@@ -913,12 +919,18 @@ mod tests {
             non_strict_names
         );
 
-        let body = json!({
+        // gpt-5+ and o-series require max_completion_tokens instead of max_tokens
+        let caps = crate::config::model_capabilities("openai", model);
+        let mut body = json!({
             "model": model,
             "messages": [{"role": "user", "content": "Say hello"}],
             "tools": tools,
-            "max_tokens": 16,
         });
+        if caps.uses_max_completion_tokens {
+            body["max_completion_tokens"] = json!(128);
+        } else {
+            body["max_tokens"] = json!(16);
+        }
 
         let client = reqwest::Client::new();
         let resp = client
@@ -1357,6 +1369,19 @@ mod tests {
     #[test]
     fn is_retryable_401_false() {
         assert!(!is_retryable(reqwest::StatusCode::UNAUTHORIZED));
+    }
+
+    fn make_openai_provider() -> OpenAICompatProvider {
+        OpenAICompatProvider::new(OpenAICompatProviderConfig {
+            api_key: Zeroizing::new("test-key".into()),
+            base_url: "https://api.openai.com/v1".into(),
+            strip_provider_prefix: false,
+            fallback_model: None,
+            extra_headers: vec![],
+            timeout_seconds: 30,
+            debug_provider_name: "openai".into(),
+        })
+        .unwrap()
     }
 
     fn make_provider() -> OpenAICompatProvider {
@@ -2233,6 +2258,37 @@ mod tests {
         req.max_tokens = 4096;
         let body = provider.build_request_body(&req);
         assert_eq!(body["max_tokens"], 4096);
+        assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn build_request_body_gpt5_uses_max_completion_tokens() {
+        let provider = make_openai_provider();
+        let mut req = make_chat_request("gpt-5", "", vec![], vec![], ToolChoice::Auto, None);
+        req.max_tokens = 4096;
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn build_request_body_o3_uses_max_completion_tokens() {
+        let provider = make_openai_provider();
+        let mut req = make_chat_request("o3", "", vec![], vec![], ToolChoice::Auto, None);
+        req.max_tokens = 2048;
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["max_completion_tokens"], 2048);
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn build_request_body_gpt4o_still_uses_max_tokens() {
+        let provider = make_openai_provider();
+        let mut req = make_chat_request("gpt-4o", "", vec![], vec![], ToolChoice::Auto, None);
+        req.max_tokens = 1024;
+        let body = provider.build_request_body(&req);
+        assert_eq!(body["max_tokens"], 1024);
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]
