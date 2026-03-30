@@ -269,6 +269,15 @@ fn try_make_strict_compliant(schema: &mut serde_json::Value) -> bool {
     let is_object = obj.get("type").and_then(|t| t.as_str()) == Some("object");
     let is_array = obj.get("type").and_then(|t| t.as_str()) == Some("array");
 
+    // Non-object, non-array JSON objects: only valid if they have an explicit type or enum.
+    // Composition schemas (oneOf/anyOf/allOf), $ref, or empty {} are incompatible.
+    if !is_object && !is_array {
+        if obj.contains_key("type") || obj.contains_key("enum") {
+            return true;
+        }
+        return false;
+    }
+
     if is_object {
         // Check additionalProperties compatibility:
         // - absent → we'll set to false (OK)
@@ -672,6 +681,37 @@ mod tests {
 
         assert!(try_make_strict_compliant(&mut schema));
         assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn strict_normalization_skips_empty_root_schema() {
+        let mut schema = json!({});
+        assert!(!try_make_strict_compliant(&mut schema));
+    }
+
+    #[test]
+    fn strict_normalization_skips_composition_schemas() {
+        let mut schema = json!({
+            "oneOf": [
+                {"type": "string"},
+                {"type": "integer"}
+            ]
+        });
+        assert!(!try_make_strict_compliant(&mut schema));
+
+        let mut schema2 = json!({
+            "anyOf": [
+                {"type": "string"},
+                {"type": "null"}
+            ]
+        });
+        assert!(!try_make_strict_compliant(&mut schema2));
+    }
+
+    #[test]
+    fn strict_normalization_skips_ref_schemas() {
+        let mut schema = json!({"$ref": "#/definitions/Foo"});
+        assert!(!try_make_strict_compliant(&mut schema));
     }
 
     #[test]

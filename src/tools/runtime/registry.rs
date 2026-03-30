@@ -276,6 +276,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "query": {
                         "type": "string",
                         "description": "Search query"
+                    },
+                    "expected_timeout_seconds": {
+                        "type": "integer",
+                        "description": "Expected maximum duration in seconds. Default: 30.",
+                        "default": 30
                     }
                 },
                 "required": ["query"]
@@ -313,6 +318,11 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "depth": {
                         "type": "integer",
                         "description": "For fetch_tree: max directory depth (default 2, max 5)"
+                    },
+                    "expected_timeout_seconds": {
+                        "type": "integer",
+                        "description": "Expected maximum duration in seconds. Default: 30.",
+                        "default": 30
                     }
                 },
                 "required": ["action", "repo"]

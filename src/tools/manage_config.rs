@@ -145,6 +145,9 @@ fn parse_request(input: &serde_json::Value) -> anyhow::Result<ManageConfigReques
                 .ok_or_else(|| anyhow::anyhow!("manage_config: 'value' is required for set"))?;
             // When strict mode is active, the LLM sends all values as strings.
             // Try to parse as JSON to recover native types (numbers, booleans, arrays).
+            // Trade-off: a string value of literally "true" or "42" would be coerced to
+            // bool/number, but nsh config string fields (model names, paths, URLs) never
+            // collide with JSON primitives, and TOML deserialization catches type mismatches.
             let value = if let Some(s) = raw.as_str() {
                 serde_json::from_str(s).unwrap_or(raw)
             } else {
