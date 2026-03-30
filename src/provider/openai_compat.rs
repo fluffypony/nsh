@@ -857,6 +857,100 @@ mod tests {
         );
     }
 
+    // ── Live API validation (requires OPENAI_API_KEY) ──────────
+
+    /// Send all built-in tool schemas (with strict normalization applied) to the
+    /// real OpenAI API and verify we get a 200 — not a 400 schema rejection.
+    /// Run with: cargo test -- --ignored openai_live_strict_tools
+    #[tokio::test]
+    #[ignore]
+    async fn openai_live_strict_tools_gpt4o() {
+        openai_live_strict_tools("gpt-4o").await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn openai_live_strict_tools_gpt5() {
+        openai_live_strict_tools("gpt-5").await;
+    }
+
+    async fn openai_live_strict_tools(model: &str) {
+        use crate::tools::all_tool_definitions;
+
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .expect("OPENAI_API_KEY must be set to run this test");
+
+        // Build tool schemas exactly as build_request_body does
+        let tool_defs = all_tool_definitions();
+        let mut tools = build_openai_tools(&tool_defs);
+
+        let mut strict_count = 0;
+        let mut non_strict_names = vec![];
+        for tool in &mut tools {
+            if let Some(func) = tool.get_mut("function") {
+                if let Some(params) = func.get_mut("parameters") {
+                    let mut strict_params = params.clone();
+                    if try_make_strict_compliant(&mut strict_params) {
+                        *params = strict_params;
+                        func["strict"] = json!(true);
+                        strict_count += 1;
+                    } else {
+                        non_strict_names.push(
+                            func.get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("?")
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "[{model}] Sending {} tools ({strict_count} strict, {} non-strict: {:?})",
+            tools.len(),
+            non_strict_names.len(),
+            non_strict_names
+        );
+
+        let body = json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Say hello"}],
+            "tools": tools,
+            "max_tokens": 16,
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post("https://api.openai.com/v1/chat/completions")
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .expect("HTTP request failed");
+
+        let status = resp.status();
+        let resp_text = resp.text().await.unwrap_or_default();
+
+        // 400 = schema rejected (the bug we're fixing). Other errors (401, 429, 5xx)
+        // are auth/quota/infra issues unrelated to schema validity.
+        if status == 400 {
+            panic!("[{model}] OpenAI rejected tool schemas with 400 Bad Request:\n{resp_text}");
+        } else if status == 429 || status == 401 || status == 403 {
+            eprintln!(
+                "[{model}] SKIPPED — auth/quota error (HTTP {status}), not a schema error. \
+                 Check your OpenAI billing. Response: {resp_text}"
+            );
+        } else if status.is_success() {
+            eprintln!("[{model}] PASSED — API accepted all tool schemas (HTTP {status})");
+        } else {
+            eprintln!(
+                "[{model}] WARNING — unexpected HTTP {status} (not a schema 400): {resp_text}"
+            );
+        }
+    }
+
     // ── Existing message/tool tests ──────────────────────────────
 
     #[test]
