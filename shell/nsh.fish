@@ -217,10 +217,10 @@ function __nsh_postexec --on-event fish_postexec
     set -l notice_file "$HOME/.nsh/update_notice"
     if test -f $notice_file; and not set -q _NSH_RELOADING
         # Atomically claim notice and guard against stale (>5 min)
-        set -l _claimed "/tmp/.nsh_update_claimed."$$
+        set -l _claimed "/tmp/.nsh_update_claimed.$fish_pid"
         if command mv -f $notice_file $_claimed 2>/dev/null
             set -l now (date +%s)
-            set -l mtime (stat -f %m $_claimed 2>/dev/null; or echo 0)
+            set -l mtime (stat -c %Y -- $_claimed 2>/dev/null; or stat -f %m -- $_claimed 2>/dev/null; or echo 0)
             set -l age (math "$now - $mtime")
             if test $age -le 300
                 set -gx _NSH_RELOADING 1
@@ -284,7 +284,8 @@ function __nsh_check_pending --on-event fish_prompt
     end
     # Time-based hook check (~60s cooldown)
     set -l now (date +%s)
-    if test (math "$now - ${__nsh_last_hook_check:=0}") -ge 60
+    set -q __nsh_last_hook_check; or set -g __nsh_last_hook_check 0
+    if test (math "$now - $__nsh_last_hook_check") -ge 60
         set -g __nsh_last_hook_check $now
         set -l _disk_hook_hash (command nsh init fish --hash 2>/dev/null)
         if test -n "$_disk_hook_hash" -a "$_disk_hook_hash" != "$NSH_HOOK_HASH"; and not set -q _NSH_RELOADING
@@ -319,19 +320,19 @@ set -g __nsh_cmd_counter 0
 __nsh_load_suppressed_exit_codes
 
 function nsh_query --wraps='nsh query --'
-    builtin history add -- "? $argv" 2>/dev/null
+    builtin history append -- "? $argv" 2>/dev/null
     __nsh_clear_pending_command
     __nsh_query_ignore_exit_code $argv; and return 0
     command nsh query -- $argv
 end
 function nsh_query_think --wraps='nsh query --think --'
-    builtin history add -- "?? $argv" 2>/dev/null
+    builtin history append -- "?? $argv" 2>/dev/null
     __nsh_clear_pending_command
     __nsh_query_ignore_exit_code $argv; and return 0
     command nsh query --think -- $argv
 end
 function nsh_query_private --wraps='nsh query --private --'
-    builtin history add -- "?! $argv" 2>/dev/null
+    builtin history append -- "?! $argv" 2>/dev/null
     __nsh_clear_pending_command
     __nsh_query_ignore_exit_code $argv; and return 0
     command nsh query --private -- $argv
