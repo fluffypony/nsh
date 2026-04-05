@@ -341,7 +341,7 @@ __nsh_precmd() {
         local _claimed="/tmp/.nsh_update_claimed.$$"
         if command mv -f "$notice_file" "$_claimed" 2>/dev/null; then
             # Ignore stale notices older than 5 minutes
-            local _age=$(( EPOCHSECONDS - $(stat -f %m "$_claimed" 2>/dev/null || echo 0) ))
+            local _age=$(( EPOCHSECONDS - $(stat -c %Y "$_claimed" 2>/dev/null || stat -f %m "$_claimed" 2>/dev/null || echo 0) ))
             if (( _age <= 300 )); then
                 # Reload hooks in-process without wrapping
                 _NSH_RELOADING=1
