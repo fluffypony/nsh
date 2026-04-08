@@ -66,6 +66,12 @@ fn resolve_core() -> Option<std::path::PathBuf> {
         if p.is_file() { Some(p) } else { None }
     };
 
+    // Canonicalize to dedupe candidates that resolve to the same file via symlinks
+    // or relative/absolute variants. Falls back to the original path on error.
+    let canon = |p: &std::path::Path| -> std::path::PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
+
     // Primary managed location: Config::nsh_dir()/bin/nsh-core
     let managed_dir = nsh::config::Config::nsh_dir().join("bin");
     let managed_core = find_core(&managed_dir);
@@ -76,57 +82,76 @@ fn resolve_core() -> Option<std::path::PathBuf> {
         .and_then(|e| e.parent().map(|d| d.to_path_buf()))
         .and_then(|d| find_core(&d));
 
-    // If both exist and are different paths, prefer the newer one and sync to managed location
-    let core_path = match (&managed_core, &sibling_core) {
-        (Some(managed), Some(sibling)) if managed != sibling => {
-            let managed_mtime = std::fs::metadata(managed).and_then(|m| m.modified()).ok();
-            let sibling_mtime = std::fs::metadata(sibling).and_then(|m| m.modified()).ok();
+    // PATH lookup: picks up a fresh nsh-core the user has installed in $PATH
+    // even when it is not the sibling of the running shim (e.g. the shim is
+    // stale in one dir but a rebuilt nsh-core lives elsewhere in PATH).
+    // Filter out matches that resolve to the running shim itself to avoid recursion.
+    let current_exe_canon = std::env::current_exe().ok().map(|p| canon(&p));
+    let path_core = which::which(core_name)
+        .ok()
+        .filter(|p| current_exe_canon.as_ref().map(|c| canon(p) != *c).unwrap_or(true));
 
-            match (managed_mtime, sibling_mtime) {
-                (Some(m_t), Some(s_t)) if s_t > m_t => {
-                    // Sibling is newer (cargo install case) — sync to managed
-                    let _ = std::fs::create_dir_all(&managed_dir);
-                    let tmp = managed.with_extension("tmp");
-                    let synced = std::fs::copy(sibling, &tmp).is_ok() && {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let _ = std::fs::set_permissions(
-                                &tmp,
-                                std::fs::Permissions::from_mode(0o755),
-                            );
-                        }
-                        std::fs::rename(&tmp, managed).is_ok()
-                    };
-                    // If sync succeeded, use managed; otherwise use sibling directly
-                    if synced {
-                        managed.clone()
-                    } else {
-                        sibling.clone()
-                    }
+    // Collect non-managed candidates, deduplicating by canonicalized path
+    // so sibling and PATH pointing at the same binary are not double-counted.
+    let mut non_managed: Vec<std::path::PathBuf> = Vec::new();
+    let mut seen: Vec<std::path::PathBuf> = Vec::new();
+    for candidate in [sibling_core.clone(), path_core.clone()]
+        .into_iter()
+        .flatten()
+    {
+        let c = canon(&candidate);
+        if seen.iter().any(|s| *s == c) {
+            continue;
+        }
+        seen.push(c);
+        non_managed.push(candidate);
+    }
+    // Exclude any non-managed candidate whose canonical path equals the managed
+    // path (i.e. managed IS the sibling/PATH entry — nothing to sync).
+    if let Some(managed) = managed_core.as_ref() {
+        let managed_canon = canon(managed);
+        non_managed.retain(|p| canon(p) != managed_canon);
+    }
+
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+
+    // Pick the non-managed candidate with the newest mtime.
+    let newest_non_managed: Option<std::path::PathBuf> = non_managed
+        .into_iter()
+        .max_by_key(|p| mtime(p).unwrap_or(std::time::UNIX_EPOCH));
+
+    let sync_to_managed = |src: &std::path::Path| -> Option<std::path::PathBuf> {
+        let _ = std::fs::create_dir_all(&managed_dir);
+        let dest = managed_dir.join(core_name);
+        let tmp = dest.with_extension("tmp");
+        let ok = std::fs::copy(src, &tmp).is_ok() && {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ =
+                    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+            }
+            std::fs::rename(&tmp, &dest).is_ok()
+        };
+        if ok { Some(dest) } else { None }
+    };
+
+    let core_path = match (managed_core.as_ref(), newest_non_managed.as_ref()) {
+        (Some(managed), Some(candidate)) => {
+            // Only replace managed when a non-managed candidate is STRICTLY newer.
+            // This preserves self-update semantics: a freshly self-updated managed
+            // binary with the same mtime as the sibling will not be clobbered.
+            match (mtime(managed), mtime(candidate)) {
+                (Some(m_t), Some(c_t)) if c_t > m_t => {
+                    sync_to_managed(candidate).unwrap_or_else(|| candidate.clone())
                 }
-                _ => managed.clone(), // Managed is newer or same (self-update case)
+                _ => managed.clone(),
             }
         }
-        (Some(managed), _) => managed.clone(),
-        (None, Some(sibling)) => {
-            // No managed core yet — install sibling as managed
-            let _ = std::fs::create_dir_all(&managed_dir);
-            let managed_path = managed_dir.join(core_name);
-            let tmp = managed_path.with_extension("tmp");
-            let installed = std::fs::copy(sibling, &tmp).is_ok() && {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
-                }
-                std::fs::rename(&tmp, &managed_path).is_ok()
-            };
-            if installed {
-                managed_path
-            } else {
-                sibling.clone()
-            }
+        (Some(managed), None) => managed.clone(),
+        (None, Some(candidate)) => {
+            // No managed core yet — install the freshest non-managed candidate.
+            sync_to_managed(candidate).unwrap_or_else(|| candidate.clone())
         }
         (None, None) => return None,
     };
@@ -247,11 +272,181 @@ mod tests {
             return;
         }
 
+        // Isolate PATH so `which::which("nsh-core")` can't pick up a candidate
+        // outside the test's control.
+        let isolated_path = home.path().join("emptybin");
+        std::fs::create_dir_all(&isolated_path).unwrap();
+        let _path_guard = EnvVarGuard::set("PATH", &isolated_path);
+
         let managed_dir = home.path().join(".nsh").join("bin");
         let managed_core = managed_dir.join("nsh-core");
         std::fs::create_dir_all(&managed_dir).unwrap();
         std::fs::write(&managed_core, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&managed_core, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
 
         assert_eq!(resolve_core(), Some(managed_core));
+    }
+
+    fn make_fake_core(path: &std::path::Path) {
+        std::fs::write(path, b"#!/bin/sh\necho fake\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    // Sets a file's atime/mtime to a chosen absolute SystemTime, used to build
+    // well-defined "older" and "newer" fixtures independent of wall-clock races.
+    fn set_mtime(path: &std::path::Path, t: std::time::SystemTime) {
+        let secs = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as libc::time_t;
+        let tv = [
+            libc::timeval {
+                tv_sec: secs,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: secs,
+                tv_usec: 0,
+            },
+        ];
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: utimes is a standard POSIX call; tv is a valid 2-element array
+        // of timeval (access time then modification time); c is a valid path CStr.
+        let rc = unsafe { libc::utimes(c.as_ptr(), tv.as_ptr()) };
+        assert_eq!(rc, 0, "utimes failed for {}", path.display());
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_core_picks_path_candidate_when_strictly_newer_than_managed() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+
+        // Skip if an unrelated sibling exists — we can't remove it.
+        let sibling_core = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("nsh-core");
+        if sibling_core.exists() {
+            return;
+        }
+
+        // Old managed binary.
+        let managed_dir = home.path().join(".nsh").join("bin");
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        let managed_core = managed_dir.join("nsh-core");
+        make_fake_core(&managed_core);
+        set_mtime(
+            &managed_core,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+        );
+
+        // Fresh PATH candidate in an isolated bin dir.
+        let path_dir = home.path().join("freshbin");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        let path_core = path_dir.join("nsh-core");
+        make_fake_core(&path_core);
+        set_mtime(
+            &path_core,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000),
+        );
+
+        let _path_guard = EnvVarGuard::set("PATH", &path_dir);
+
+        // Expect: sync PATH → managed, return managed path.
+        let resolved = resolve_core().expect("resolve should find a core");
+        assert_eq!(resolved, managed_core);
+        // Managed should have been refreshed from the PATH candidate.
+        let managed_bytes = std::fs::read(&managed_core).unwrap();
+        let path_bytes = std::fs::read(&path_core).unwrap();
+        assert_eq!(managed_bytes, path_bytes, "managed should be synced from PATH");
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_core_keeps_managed_when_path_candidate_is_not_strictly_newer() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+
+        let sibling_core = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("nsh-core");
+        if sibling_core.exists() {
+            return;
+        }
+
+        let managed_dir = home.path().join(".nsh").join("bin");
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        let managed_core = managed_dir.join("nsh-core");
+        std::fs::write(&managed_core, b"managed-content").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&managed_core, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        set_mtime(
+            &managed_core,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000),
+        );
+
+        let path_dir = home.path().join("staleb");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        let path_core = path_dir.join("nsh-core");
+        std::fs::write(&path_core, b"path-content").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path_core, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        set_mtime(
+            &path_core,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+        );
+
+        let _path_guard = EnvVarGuard::set("PATH", &path_dir);
+
+        let resolved = resolve_core().expect("resolve should find a core");
+        assert_eq!(resolved, managed_core);
+        // Managed content should be untouched (self-update semantics preserved).
+        assert_eq!(std::fs::read(&managed_core).unwrap(), b"managed-content");
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_core_installs_path_candidate_when_no_managed() {
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+
+        let sibling_core = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("nsh-core");
+        if sibling_core.exists() {
+            return;
+        }
+
+        let path_dir = home.path().join("freshbin2");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        let path_core = path_dir.join("nsh-core");
+        make_fake_core(&path_core);
+
+        let _path_guard = EnvVarGuard::set("PATH", &path_dir);
+
+        let resolved = resolve_core().expect("resolve should find a core via PATH");
+        let expected_managed = home.path().join(".nsh").join("bin").join("nsh-core");
+        assert_eq!(resolved, expected_managed);
+        assert!(expected_managed.exists(), "PATH candidate should be copied to managed");
     }
 }

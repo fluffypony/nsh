@@ -4,7 +4,18 @@ use super::daemon_runtime::{
 
 pub(super) fn handle_status_command() -> anyhow::Result<()> {
     let session_id = std::env::var("NSH_SESSION_ID").unwrap_or_else(|_| "(not set)".into());
-    let config = crate::config::Config::load().unwrap_or_default();
+    let config_path = crate::config::Config::path();
+    let config = match crate::config::Config::load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!(
+                "nsh: warning: failed to load config at {}: {err}\n\
+                 falling back to defaults — provider/model shown below may not match your file",
+                config_path.display()
+            );
+            crate::config::Config::default()
+        }
+    };
     let build_version = env!("NSH_BUILD_VERSION");
     let pty_active = std::env::var("NSH_TTY").is_ok();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".into());
@@ -105,6 +116,12 @@ pub(super) fn handle_status_command() -> anyhow::Result<()> {
     }
     eprintln!("  Provider:   {}", config.provider.default);
     eprintln!("  Model:      {}", config.provider.model);
+    let config_exists = if config_path.exists() {
+        "exists"
+    } else {
+        "MISSING"
+    };
+    eprintln!("  Config:     {} ({config_exists})", config_path.display());
     eprintln!("  DB path:    {}", db_path.display());
     eprintln!("  DB size:    {db_size_str}");
 
