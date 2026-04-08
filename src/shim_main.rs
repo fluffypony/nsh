@@ -72,24 +72,33 @@ fn resolve_core() -> Option<std::path::PathBuf> {
         std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
     };
 
+    // Any candidate that canonicalizes to the running shim itself must be
+    // discarded — exec'ing ourselves as nsh-core would infinite-loop.
+    let current_exe_canon = std::env::current_exe().ok().map(|p| canon(&p));
+    let is_self = |p: &std::path::Path| -> bool {
+        current_exe_canon
+            .as_ref()
+            .map(|c| canon(p) == *c)
+            .unwrap_or(false)
+    };
+
     // Primary managed location: Config::nsh_dir()/bin/nsh-core
     let managed_dir = nsh::config::Config::nsh_dir().join("bin");
-    let managed_core = find_core(&managed_dir);
+    let managed_core = find_core(&managed_dir).filter(|p| !is_self(p));
 
-    // Sibling to current exe (cargo install puts nsh + nsh-core in the same dir)
+    // Sibling to current exe (cargo install puts nsh + nsh-core in the same dir).
+    // Guard against the unusual case where the shim binary is itself named
+    // "nsh-core" or is symlinked/copied to a sibling path.
     let sibling_core = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.to_path_buf()))
-        .and_then(|d| find_core(&d));
+        .and_then(|d| find_core(&d))
+        .filter(|p| !is_self(p));
 
     // PATH lookup: picks up a fresh nsh-core the user has installed in $PATH
     // even when it is not the sibling of the running shim (e.g. the shim is
     // stale in one dir but a rebuilt nsh-core lives elsewhere in PATH).
-    // Filter out matches that resolve to the running shim itself to avoid recursion.
-    let current_exe_canon = std::env::current_exe().ok().map(|p| canon(&p));
-    let path_core = which::which(core_name)
-        .ok()
-        .filter(|p| current_exe_canon.as_ref().map(|c| canon(p) != *c).unwrap_or(true));
+    let path_core = which::which(core_name).ok().filter(|p| !is_self(p));
 
     // Collect non-managed candidates, deduplicating by canonicalized path
     // so sibling and PATH pointing at the same binary are not double-counted.
@@ -421,6 +430,52 @@ mod tests {
         assert_eq!(resolved, managed_core);
         // Managed content should be untouched (self-update semantics preserved).
         assert_eq!(std::fs::read(&managed_core).unwrap(), b"managed-content");
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_core_rejects_self_as_sibling_or_path_or_managed() {
+        // If a candidate (sibling, PATH, or managed) canonicalizes to the
+        // running shim binary itself — which can happen via a symlink named
+        // `nsh-core` pointing at the shim — resolve_core must NOT select it;
+        // exec'ing ourselves as nsh-core would infinite-loop.
+        let (home, _home_guard, _xdg_config_guard, _xdg_data_guard) = temp_home_env();
+        let current_exe = std::env::current_exe().unwrap();
+        let current_exe_canon = std::fs::canonicalize(&current_exe).unwrap();
+
+        // Managed: symlink to current_exe.
+        let managed_dir = home.path().join(".nsh").join("bin");
+        std::fs::create_dir_all(&managed_dir).unwrap();
+        let managed_self = managed_dir.join("nsh-core");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&current_exe, &managed_self).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&managed_self).unwrap(),
+            current_exe_canon,
+            "precondition: symlink should canonicalize to current_exe"
+        );
+
+        // PATH: another symlink to current_exe in an isolated bin dir.
+        let path_dir = home.path().join("self_on_path");
+        std::fs::create_dir_all(&path_dir).unwrap();
+        let path_self = path_dir.join("nsh-core");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&current_exe, &path_self).unwrap();
+        let _path_guard = EnvVarGuard::set("PATH", &path_dir);
+
+        // With only self-aliases available, resolve_core must NOT return any
+        // path that canonicalizes to the running shim. (It may return None or
+        // a pre-existing real sibling nsh-core in the cargo target dir —
+        // either is acceptable here; the invariant is no self-recursion.)
+        let resolved = resolve_core();
+        if let Some(p) = resolved.as_ref()
+            && let Ok(canon) = std::fs::canonicalize(p)
+        {
+            assert_ne!(
+                canon, current_exe_canon,
+                "resolve_core must never return a path that canonicalizes to the running shim"
+            );
+        }
     }
 
     #[test]
