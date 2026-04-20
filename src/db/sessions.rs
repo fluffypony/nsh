@@ -14,10 +14,24 @@ impl Db {
         let now = chrono::Utc::now().to_rfc3339();
         let hostname = super::gethostname();
         let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        // UPSERT rather than INSERT OR IGNORE so that a placeholder row
+        // (created by insert_conversation/insert_command to avoid an FK
+        // violation during the shell-startup race) is upgraded with the
+        // real tty/shell/pid when the async CreateSession eventually lands.
+        // The CASE guards protect existing real values from being clobbered
+        // by a later placeholder call.
         self.conn.execute(
-            "INSERT OR IGNORE INTO sessions \
+            "INSERT INTO sessions \
              (id, tty, shell, pid, started_at, hostname, username, last_heartbeat) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(id) DO UPDATE SET \
+               tty = CASE WHEN excluded.tty != '' THEN excluded.tty ELSE sessions.tty END, \
+               shell = CASE WHEN excluded.shell != '' THEN excluded.shell ELSE sessions.shell END, \
+               pid = CASE WHEN excluded.pid > 0 THEN excluded.pid ELSE sessions.pid END, \
+               hostname = CASE WHEN excluded.hostname IS NOT NULL AND excluded.hostname != '' \
+                               THEN excluded.hostname ELSE sessions.hostname END, \
+               username = CASE WHEN excluded.username != '' THEN excluded.username ELSE sessions.username END, \
+               last_heartbeat = excluded.last_heartbeat",
             params![id, tty, shell, pid, now, hostname, username, now],
         )?;
         Ok(())

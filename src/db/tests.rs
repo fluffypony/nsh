@@ -198,6 +198,85 @@ use rusqlite::params;
     }
 
     #[test]
+    fn test_insert_conversation_before_session_creates_placeholder_and_later_create_session_upgrades_it()
+     {
+        // Regression: the shell hook starts the session asynchronously, so a
+        // `?` query issued immediately after shell startup can reach the
+        // daemon before CreateSession and hit the conversations→sessions
+        // foreign key. insert_conversation must tolerate that race, and a
+        // later create_session with real tty/shell/pid must upgrade the
+        // placeholder row rather than be ignored.
+        let db = test_db();
+
+        db.insert_conversation(
+            "race-session",
+            "pre-session query",
+            "chat",
+            "pre-session response",
+            None,
+            false,
+            false,
+        )
+        .expect("insert_conversation should succeed without pre-existing session");
+
+        let placeholder: (String, String, i64) = db
+            .conn
+            .query_row(
+                "SELECT tty, shell, pid FROM sessions WHERE id = ?",
+                rusqlite::params!["race-session"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(placeholder, (String::new(), String::new(), 0));
+
+        db.create_session("race-session", "/dev/ttys012", "zsh", 45176)
+            .unwrap();
+
+        let upgraded: (String, String, i64) = db
+            .conn
+            .query_row(
+                "SELECT tty, shell, pid FROM sessions WHERE id = ?",
+                rusqlite::params!["race-session"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            upgraded,
+            ("/dev/ttys012".to_string(), "zsh".to_string(), 45176)
+        );
+
+        let convos = db.get_conversations("race-session", 10).unwrap();
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].query, "pre-session query");
+    }
+
+    #[test]
+    fn test_create_session_does_not_clobber_real_metadata_with_placeholder() {
+        // A later insert_conversation path MUST NOT erase the tty/shell/pid
+        // that a real CreateSession already wrote.
+        let db = test_db();
+        db.create_session("s1", "/dev/ttys001", "zsh", 99999)
+            .unwrap();
+
+        // Simulate a second create_session call coming through with empty
+        // placeholder metadata (e.g., a defensive helper). The guards should
+        // keep the real values.
+        db.create_session("s1", "", "", 0).unwrap();
+
+        let (tty, shell, pid): (String, String, i64) = db
+            .conn
+            .query_row(
+                "SELECT tty, shell, pid FROM sessions WHERE id = ?",
+                rusqlite::params!["s1"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(tty, "/dev/ttys001");
+        assert_eq!(shell, "zsh");
+        assert_eq!(pid, 99999);
+    }
+
+    #[test]
     fn test_insert_and_get_conversations() {
         let db = test_db();
         db.create_session("s1", "/dev/pts/0", "zsh", 1234).unwrap();

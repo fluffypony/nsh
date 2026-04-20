@@ -16,6 +16,20 @@ impl Db {
         pending: bool,
     ) -> rusqlite::Result<i64> {
         let now = chrono::Utc::now().to_rfc3339();
+
+        // Defensive placeholder upsert: the shell hook launches
+        // `nsh session start` asynchronously, so a `?` query issued in the
+        // first moments of a new shell can race ahead of the CreateSession
+        // write and trip the conversations→sessions foreign key. Mirrors the
+        // pattern used by insert_command. Real tty/shell/pid land later via
+        // Db::create_session's UPSERT.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sessions \
+             (id, tty, shell, pid, started_at, last_heartbeat) \
+             VALUES (?, '', '', 0, ?, ?)",
+            params![session_id, now, now],
+        )?;
+
         self.conn.execute(
             "INSERT INTO conversations \
              (session_id, query, response_type, response, explanation, executed, pending, created_at) \
