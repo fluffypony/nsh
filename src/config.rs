@@ -418,6 +418,7 @@ pub struct ProviderConfig {
     #[deprecated(note = "use [web_search].model instead")]
     pub web_search_model: String,
     pub openrouter: Option<ProviderAuth>,
+    pub requesty: Option<ProviderAuth>,
     pub anthropic: Option<ProviderAuth>,
     pub openai: Option<ProviderAuth>,
     pub ollama: Option<ProviderAuth>,
@@ -447,6 +448,7 @@ impl Default for ProviderConfig {
             fallback_model: Some(model_defaults::DEFAULT_FALLBACK_MODEL.into()),
             web_search_model: model_defaults::DEFAULT_WEB_SEARCH_MODEL.into(),
             openrouter: Some(ProviderAuth::default()),
+            requesty: None,
             anthropic: None,
             openai: None,
             ollama: None,
@@ -502,6 +504,7 @@ impl ProviderAuth {
         }
         let env_var = match provider_name {
             "openrouter" => "OPENROUTER_API_KEY",
+            "requesty" => "REQUESTY_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
             "openai" => "OPENAI_API_KEY",
             "gemini" => "GEMINI_API_KEY",
@@ -1486,6 +1489,7 @@ fn append_provider_section(x: &mut String, config: &Config) {
     x.push_str("    <configured_providers>\n");
     for (name, auth) in [
         ("openrouter", &config.provider.openrouter),
+        ("requesty", &config.provider.requesty),
         ("anthropic", &config.provider.anthropic),
         ("openai", &config.provider.openai),
         ("ollama", &config.provider.ollama),
@@ -2644,6 +2648,30 @@ base_url = "https://oai.example.com"
 
         assert!(config.provider.ollama.is_none());
         assert!(config.provider.gemini.is_none());
+    }
+
+    #[test]
+    fn test_requesty_provider_config_parses() {
+        let toml_str = r#"
+[provider]
+default = "requesty"
+model = "openai/gpt-4o-mini"
+
+[provider.requesty]
+api_key_cmd = "printf requesty-provider-key"
+base_url = "https://router.requesty.ai/v1"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.default, "requesty");
+        assert_eq!(config.provider.model, "openai/gpt-4o-mini");
+
+        let rq = config.provider.requesty.unwrap();
+        assert!(rq.api_key.is_none());
+        assert_eq!(
+            rq.api_key_cmd.as_deref(),
+            Some("printf requesty-provider-key")
+        );
+        assert_eq!(rq.base_url.as_deref(), Some("https://router.requesty.ai/v1"));
     }
 
     #[test]

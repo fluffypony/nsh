@@ -427,7 +427,19 @@ api_key = "sk-or-v1-..."
 # or: api_key_cmd = "op read 'op://Vault/OpenRouter/credential'"
 ```
 
-Environment variable fallback is supported: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+Or use [Requesty](https://requesty.ai) as your provider:
+
+```toml
+[provider]
+default = "requesty"
+model = "openai/gpt-4o-mini"
+
+[provider.requesty]
+api_key = "rqsty-sk-..."
+# or: api_key_cmd = "op read 'op://Vault/Requesty/credential'"
+```
+
+Environment variable fallback is supported: `OPENROUTER_API_KEY`, `REQUESTY_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
 
 ### 2. Enable shell integration
 
@@ -564,6 +576,11 @@ timeout_seconds = 120
 # api_key = "..."
 # api_key_cmd = "..."
 # base_url = "https://openrouter.ai/api/v1"
+
+[provider.requesty]
+# api_key = "rqsty-sk-..."
+# api_key_cmd = "..."
+# base_url = "https://router.requesty.ai/v1"
 
 [provider.anthropic]
 # api_key = "..."

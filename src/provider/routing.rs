@@ -31,6 +31,11 @@ pub fn resolve_openai_compat_config(
                 &config.provider,
             )?));
         }
+        "requesty" => {
+            return Ok(Some(super::requesty::build_requesty_compat_config(
+                &config.provider,
+            )?));
+        }
         "openai" => {
             return Ok(Some(super::openai::build_openai_compat_config(
                 &config.provider,
@@ -174,6 +179,23 @@ mod tests {
         let resolved =
             resolve_openai_compat_config("unknown-provider", &cfg).expect("resolve should succeed");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_openai_compat_config_requesty_uses_default_base_url() {
+        let mut config = crate::config::Config::default();
+        config.provider.requesty = Some(crate::config::ProviderAuth {
+            api_key: Some("rqsty-sk-test".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let cfg = cfg_from(config);
+
+        let resolved = resolve_openai_compat_config("requesty", &cfg)
+            .expect("resolve should succeed")
+            .expect("config should resolve");
+        assert_eq!(resolved.base_url, "https://router.requesty.ai/v1");
+        assert_eq!(resolved.debug_provider_name, "requesty");
     }
 
     #[test]

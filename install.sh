@@ -266,6 +266,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
         echo ""
         info "nsh needs an LLM provider API key."
         echo "  Get an OpenRouter key at: https://openrouter.ai/keys"
+        echo "  Or a Requesty key at:     https://requesty.ai"
         echo ""
         printf "  Enter your API key (or press Enter to skip): "
         read -r api_key
@@ -276,6 +277,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     if [[ "$api_key" == sk-ant-* ]]; then
         PROVIDER="anthropic"
         MODEL="claude-sonnet-4-20250514"
+    elif [[ "$api_key" == rqsty-sk-* ]]; then
+        PROVIDER="requesty"
+        MODEL="openai/gpt-4o-mini"
     elif [[ "$api_key" == sk-* ]] && [[ "$api_key" != sk-or-* ]]; then
         PROVIDER="openai"
         MODEL="gpt-4.1-nano"
