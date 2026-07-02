@@ -5,6 +5,7 @@ pub mod openai;
 pub mod openai_compat;
 pub mod openrouter;
 pub mod policy;
+pub mod requesty;
 pub mod routing;
 
 use serde::{Deserialize, Serialize};
