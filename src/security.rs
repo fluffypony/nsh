@@ -29,7 +29,10 @@ const SENSITIVE_DIRS_ABSOLUTE_WINDOWS: &[&str] = &[r"C:\Windows", r"C:\Windows\S
 /// Used by read-path validation. Does not include Windows-specific paths
 /// since read access to system directories is not blocked on Windows.
 pub fn sensitive_dirs_read(home: &std::path::Path) -> Vec<PathBuf> {
-    SENSITIVE_DIR_SUFFIXES.iter().map(|s| home.join(s)).collect()
+    SENSITIVE_DIR_SUFFIXES
+        .iter()
+        .map(|s| home.join(s))
+        .collect()
 }
 
 /// Return the full list of sensitive directories for the given `home`.
@@ -37,7 +40,10 @@ pub fn sensitive_dirs_read(home: &std::path::Path) -> Vec<PathBuf> {
 /// Includes Windows-specific absolute paths so write-side validation stays
 /// complete on all platforms.
 pub fn sensitive_dirs_write(home: &std::path::Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = SENSITIVE_DIR_SUFFIXES.iter().map(|s| home.join(s)).collect();
+    let mut dirs: Vec<PathBuf> = SENSITIVE_DIR_SUFFIXES
+        .iter()
+        .map(|s| home.join(s))
+        .collect();
     for s in SENSITIVE_DIR_SUFFIXES_WINDOWS {
         dirs.push(home.join(s));
     }
@@ -271,6 +277,13 @@ fn is_dangerous_target(arg: &str) -> bool {
         return true;
     }
 
+    // Environment-variable spellings of the home directory. `rm -rf $HOME`
+    // reaches the shell as an expansion, but the classifier only ever sees the
+    // literal token, so these must be matched as dangerous alongside `~`.
+    if matches!(arg, "$HOME" | "${HOME}" | "$HOME/*" | "${HOME}/*") {
+        return true;
+    }
+
     let critical_paths = [
         "/", "/*", "~", "~/*", "*", "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot",
         "/home", "/dev", "/sys", "/proc",
@@ -289,15 +302,148 @@ fn is_dangerous_target(arg: &str) -> bool {
     false
 }
 
+/// True for a `KEY=value` shell environment-assignment token (e.g. `FOO=1`),
+/// which precedes the actual program in `FOO=1 rm -rf /`.
+fn is_env_assignment(tok: &str) -> bool {
+    match tok.split_once('=') {
+        Some((key, _)) => {
+            !key.is_empty()
+                && key
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// Detect a redirection (`>` / `>>`) whose target is a block/char device or a
+/// critical path. Common safe sinks (`/dev/null`, `/dev/stdout`, `/dev/stderr`,
+/// `/dev/tty`, `/dev/fd/*`) are excluded so ordinary `> /dev/null` stays Safe.
+fn check_dangerous_redirect(cmd: &str) -> Option<&'static str> {
+    let bytes = cmd.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        // Track quote state so a `>` inside a quoted string (e.g.
+        // `echo "a > /etc/passwd"`) is not mistaken for a redirection.
+        if c == b'\\' && !in_single {
+            i += 2;
+            continue;
+        }
+        if c == b'\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if c == b'"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if c == b'>' && !in_single && !in_double {
+            let mut j = i + 1;
+            while j < bytes.len() && matches!(bytes[j], b'>' | b' ' | b'\t') {
+                j += 1;
+            }
+            let start = j;
+            while j < bytes.len()
+                && !matches!(
+                    bytes[j],
+                    b' ' | b'\t' | b'|' | b';' | b'&' | b'<' | b'>' | b'(' | b')' | b'\n'
+                )
+            {
+                j += 1;
+            }
+            if start < j {
+                let target = cmd[start..j].trim_matches(|c| c == '"' || c == '\'');
+                let safe_dev = matches!(
+                    target,
+                    "/dev/null" | "/dev/stdout" | "/dev/stderr" | "/dev/tty"
+                ) || target.starts_with("/dev/fd/");
+                let under_critical = [
+                    "/etc/", "/usr/", "/bin/", "/sbin/", "/lib/", "/boot/", "/sys/", "/proc/",
+                ]
+                .iter()
+                .any(|p| target.starts_with(p));
+                if (target.starts_with("/dev/") && !safe_dev)
+                    || under_critical
+                    || is_dangerous_target(target)
+                {
+                    return Some("redirect overwrites a device or critical path");
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
 fn assess_single_command(argv: &[&str]) -> (RiskLevel, Option<&'static str>) {
     if argv.is_empty() {
         return (RiskLevel::Safe, None);
     }
 
-    let program = argv[0].rsplit('/').next().unwrap_or(argv[0]).to_lowercase();
-    let rest = &argv[1..];
+    // Skip leading `VAR=value` environment-assignment prefixes. The shell runs
+    // `FOO=1 rm -rf /` as `rm`, but without this the program token would be
+    // `foo=1`, which falls through to the Safe default and defeats the whole
+    // classifier. The `env` wrapper below re-enters here, so this also covers
+    // `env FOO=1 rm -rf /`.
+    let mut start = 0;
+    while start < argv.len() && is_env_assignment(argv[start]) {
+        start += 1;
+    }
+    if start >= argv.len() {
+        return (RiskLevel::Safe, None);
+    }
+
+    let program = argv[start]
+        .rsplit('/')
+        .next()
+        .unwrap_or(argv[start])
+        .to_lowercase();
+    let rest = &argv[start + 1..];
 
     match program.as_str() {
+        // Inline-code interpreters. Every execution sink runs commands through
+        // `sh -c <string>`, so `bash -c 'rm -rf /'` reaches the shell whole. Judge
+        // it by its payload, not by the harmless-looking `bash`.
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => {
+            if let Some(i) = rest.iter().position(|a| *a == "-c")
+                && let Some(script) = rest.get(i + 1)
+            {
+                return assess_command(script);
+            }
+            (RiskLevel::Elevated, Some("nested shell invocation"))
+        }
+        "python" | "python2" | "python3" | "perl" | "ruby" | "node" | "deno" | "php" => {
+            if rest
+                .iter()
+                .any(|a| *a == "-c" || *a == "-e" || *a == "--eval")
+            {
+                (RiskLevel::Elevated, Some("inline interpreter code"))
+            } else {
+                (RiskLevel::Safe, None)
+            }
+        }
+        // `find / -delete` and `find / -exec rm ...` unlink the tree; neither had
+        // an arm, so both were Safe.
+        "find" => {
+            if rest
+                .iter()
+                .any(|a| *a == "-delete" || *a == "-exec" || *a == "-execdir")
+            {
+                (RiskLevel::Dangerous, Some("find with destructive action"))
+            } else {
+                (RiskLevel::Safe, None)
+            }
+        }
+        "truncate" => (RiskLevel::Elevated, Some("file truncation")),
         "cmd.exe" | "cmd" | "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh" => {
             (RiskLevel::Elevated, Some("windows shell invocation"))
         }
@@ -496,8 +642,19 @@ pub fn assess_command(cmd: &str) -> (RiskLevel, Option<&'static str>) {
         update(risk, Some(reason));
     }
 
-    if cmd.contains(":(){ :|:& };:") {
+    // Fork bomb, matched whitespace-insensitively: the canonical `:(){:|:&};:`
+    // has no interior spaces and slipped past the exact-literal check.
+    let despaced: String = cmd.chars().filter(|c| !c.is_whitespace()).collect();
+    if despaced.contains(":(){:|:&};:") {
         return (RiskLevel::Dangerous, Some("fork bomb"));
+    }
+
+    // Redirection is applied by `sh -c`, but `>` is a plain token to the
+    // classifier, so `cat /dev/urandom > /dev/sda` and `: > /etc/passwd` looked
+    // Safe. Scan the raw string for a redirect onto a device node or a critical
+    // path.
+    if let Some(reason) = check_dangerous_redirect(cmd) {
+        update(RiskLevel::Dangerous, Some(reason));
     }
 
     let operator_parts = split_on_shell_operators(cmd);
@@ -609,7 +766,6 @@ pub fn secure_nsh_directory() {
 #[cfg(not(unix))]
 pub fn secure_nsh_directory() {}
 
-
 /// Validate memory tool inputs for security.
 ///
 /// - `retrieve_secret`: should only be called when there's evidence of explicit user request
@@ -629,25 +785,29 @@ pub fn assess_memory_tool_call(
             // Require evidence that the user explicitly asked for a secret/credential.
             // Only check the most recent user message to avoid prompt injection via
             // earlier conversation context.
-            let user_requested = _conversation.iter().rev()
+            let user_requested = _conversation
+                .iter()
+                .rev()
                 .find(|msg| matches!(msg.role, crate::provider::Role::User))
-                .is_some_and(|msg| msg.content.iter().any(|block| {
-                    if let crate::provider::ContentBlock::Text { text } = block {
-                        let lower = text.to_lowercase();
-                        lower.contains("secret")
-                            || lower.contains("credential")
-                            || lower.contains("password")
-                            || lower.contains("api key")
-                            || lower.contains("api_key")
-                            || lower.contains("token")
-                            || lower.contains("retrieve")
-                            || lower.contains("vault")
-                            || lower.contains("decrypt")
-                            || lower.contains("show me the key")
-                    } else {
-                        false
-                    }
-                }));
+                .is_some_and(|msg| {
+                    msg.content.iter().any(|block| {
+                        if let crate::provider::ContentBlock::Text { text } = block {
+                            let lower = text.to_lowercase();
+                            lower.contains("secret")
+                                || lower.contains("credential")
+                                || lower.contains("password")
+                                || lower.contains("api key")
+                                || lower.contains("api_key")
+                                || lower.contains("token")
+                                || lower.contains("retrieve")
+                                || lower.contains("vault")
+                                || lower.contains("decrypt")
+                                || lower.contains("show me the key")
+                        } else {
+                            false
+                        }
+                    })
+                });
             if !user_requested {
                 return Err(
                     "retrieve_secret can only be called when the user explicitly requests \
@@ -1660,5 +1820,102 @@ mod tests {
         let result = assess_memory_tool_call("retrieve_secret", &input, &msgs);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("non-empty"));
+    }
+
+    // --- sh -c bypasses: the classifier tokenizes with shell_words but every
+    // sink runs the raw string through `sh -c`. Constructs the tokenizer
+    // flattens but the shell interprets must not classify as Safe. ---
+
+    #[test]
+    fn test_interpreter_dash_c_wrapping_is_assessed_by_payload() {
+        assert_eq!(assess_command("bash -c 'rm -rf /'").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("sh -c \"rm -rf /\"").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("zsh -c 'rm -rf ~'").0, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_bare_interpreter_is_elevated() {
+        assert_eq!(assess_command("bash").0, RiskLevel::Elevated);
+    }
+
+    #[test]
+    fn test_benign_interpreter_payload_stays_safe() {
+        assert_eq!(assess_command("bash -c 'ls -la'").0, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_python_inline_code_is_elevated() {
+        assert_eq!(
+            assess_command("python3 -c \"import shutil; shutil.rmtree('/')\"").0,
+            RiskLevel::Elevated
+        );
+    }
+
+    #[test]
+    fn test_env_assignment_prefix_does_not_hide_program() {
+        assert_eq!(assess_command("FOO=1 rm -rf /").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("A=1 B=2 rm -rf /").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("env FOO=1 rm -rf /").0, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_redirect_to_device_is_dangerous() {
+        assert_eq!(
+            assess_command("cat /dev/urandom > /dev/sda").0,
+            RiskLevel::Dangerous
+        );
+        assert_eq!(assess_command(": > /etc/passwd").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("echo x >/dev/sda").0, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_redirect_to_safe_device_stays_safe() {
+        assert_eq!(assess_command("echo hi > /dev/null").0, RiskLevel::Safe);
+        assert_eq!(assess_command("ls 2>/dev/null").0, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_quoted_redirect_char_is_not_a_redirect() {
+        // A `>` inside a quoted string is literal text, not a redirection.
+        assert_eq!(
+            assess_command("echo \"see docs > /etc/passwd for details\"").0,
+            RiskLevel::Safe
+        );
+        assert_eq!(
+            assess_command("echo 'write x > /dev/sda'").0,
+            RiskLevel::Safe
+        );
+        assert_eq!(assess_command("grep '>' file.txt").0, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_find_destructive_actions_are_dangerous() {
+        assert_eq!(assess_command("find / -delete").0, RiskLevel::Dangerous);
+        assert_eq!(
+            assess_command("find / -exec rm -rf {} +").0,
+            RiskLevel::Dangerous
+        );
+        assert_eq!(assess_command("find . -name '*.log'").0, RiskLevel::Safe);
+    }
+
+    #[test]
+    fn test_truncate_is_elevated() {
+        assert_eq!(
+            assess_command("truncate -s 0 /etc/passwd").0,
+            RiskLevel::Elevated
+        );
+    }
+
+    #[test]
+    fn test_rm_rf_home_env_var_is_dangerous() {
+        assert_eq!(assess_command("rm -rf $HOME").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("rm -rf \"$HOME\"").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command("rm -rf ${HOME}").0, RiskLevel::Dangerous);
+    }
+
+    #[test]
+    fn test_fork_bomb_without_spaces_is_dangerous() {
+        assert_eq!(assess_command(":(){:|:&};:").0, RiskLevel::Dangerous);
+        assert_eq!(assess_command(":(){ :|:& };:").0, RiskLevel::Dangerous);
     }
 }
