@@ -7,6 +7,7 @@ pub mod openrouter;
 pub mod policy;
 pub mod requesty;
 pub mod routing;
+pub mod uberllm;
 
 use serde::{Deserialize, Serialize};
 

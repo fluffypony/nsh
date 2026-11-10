@@ -267,6 +267,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
         info "nsh needs an LLM provider API key."
         echo "  Get an OpenRouter key at: https://openrouter.ai/keys"
         echo "  Or a Requesty key at:     https://requesty.ai"
+        echo "  Or an UberLLM key at:     https://uberllm.dev/signup"
         echo ""
         printf "  Enter your API key (or press Enter to skip): "
         read -r api_key
@@ -280,6 +281,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     elif [[ "$api_key" == rqsty-sk-* ]]; then
         PROVIDER="requesty"
         MODEL="openai/gpt-4o-mini"
+    elif [[ "$api_key" == ull_* ]]; then
+        PROVIDER="uberllm"
+        MODEL="google/gemini-3-flash-preview"
     elif [[ "$api_key" == sk-* ]] && [[ "$api_key" != sk-or-* ]]; then
         PROVIDER="openai"
         MODEL="gpt-4.1-nano"
