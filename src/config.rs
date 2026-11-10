@@ -419,6 +419,7 @@ pub struct ProviderConfig {
     pub web_search_model: String,
     pub openrouter: Option<ProviderAuth>,
     pub requesty: Option<ProviderAuth>,
+    pub uberllm: Option<ProviderAuth>,
     pub anthropic: Option<ProviderAuth>,
     pub openai: Option<ProviderAuth>,
     pub ollama: Option<ProviderAuth>,
@@ -449,6 +450,7 @@ impl Default for ProviderConfig {
             web_search_model: model_defaults::DEFAULT_WEB_SEARCH_MODEL.into(),
             openrouter: Some(ProviderAuth::default()),
             requesty: None,
+            uberllm: None,
             anthropic: None,
             openai: None,
             ollama: None,
@@ -505,6 +507,7 @@ impl ProviderAuth {
         let env_var = match provider_name {
             "openrouter" => "OPENROUTER_API_KEY",
             "requesty" => "REQUESTY_API_KEY",
+            "uberllm" => "UBERLLM_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
             "openai" => "OPENAI_API_KEY",
             "gemini" => "GEMINI_API_KEY",
@@ -1490,6 +1493,7 @@ fn append_provider_section(x: &mut String, config: &Config) {
     for (name, auth) in [
         ("openrouter", &config.provider.openrouter),
         ("requesty", &config.provider.requesty),
+        ("uberllm", &config.provider.uberllm),
         ("anthropic", &config.provider.anthropic),
         ("openai", &config.provider.openai),
         ("ollama", &config.provider.ollama),
@@ -2672,6 +2676,30 @@ base_url = "https://router.requesty.ai/v1"
             Some("printf requesty-provider-key")
         );
         assert_eq!(rq.base_url.as_deref(), Some("https://router.requesty.ai/v1"));
+    }
+
+    #[test]
+    fn test_uberllm_provider_config_parses() {
+        let toml_str = r#"
+[provider]
+default = "uberllm"
+model = "google/gemini-3-flash-preview"
+
+[provider.uberllm]
+api_key_cmd = "printf uberllm-provider-key"
+base_url = "https://api.uberllm.dev/v1"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.provider.default, "uberllm");
+        assert_eq!(config.provider.model, "google/gemini-3-flash-preview");
+
+        let ul = config.provider.uberllm.unwrap();
+        assert!(ul.api_key.is_none());
+        assert_eq!(
+            ul.api_key_cmd.as_deref(),
+            Some("printf uberllm-provider-key")
+        );
+        assert_eq!(ul.base_url.as_deref(), Some("https://api.uberllm.dev/v1"));
     }
 
     #[test]

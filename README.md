@@ -439,7 +439,19 @@ api_key = "rqsty-sk-..."
 # or: api_key_cmd = "op read 'op://Vault/Requesty/credential'"
 ```
 
-Environment variable fallback is supported: `OPENROUTER_API_KEY`, `REQUESTY_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
+Or use [UberLLM](https://uberllm.dev) as your provider (model ids: `https://api.uberllm.dev/v1/models`):
+
+```toml
+[provider]
+default = "uberllm"
+model = "google/gemini-3-flash-preview"
+
+[provider.uberllm]
+api_key = "ull_..."
+# or: api_key_cmd = "op read 'op://Vault/UberLLM/credential'"
+```
+
+Environment variable fallback is supported: `OPENROUTER_API_KEY`, `REQUESTY_API_KEY`, `UBERLLM_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`.
 
 ### 2. Enable shell integration
 
@@ -581,6 +593,11 @@ timeout_seconds = 120
 # api_key = "rqsty-sk-..."
 # api_key_cmd = "..."
 # base_url = "https://router.requesty.ai/v1"
+
+[provider.uberllm]
+# api_key = "ull_..."
+# api_key_cmd = "..."
+# base_url = "https://api.uberllm.dev/v1"
 
 [provider.anthropic]
 # api_key = "..."

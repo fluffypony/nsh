@@ -36,6 +36,11 @@ pub fn resolve_openai_compat_config(
                 &config.provider,
             )?));
         }
+        "uberllm" => {
+            return Ok(Some(super::uberllm::build_uberllm_compat_config(
+                &config.provider,
+            )?));
+        }
         "openai" => {
             return Ok(Some(super::openai::build_openai_compat_config(
                 &config.provider,
@@ -196,6 +201,23 @@ mod tests {
             .expect("config should resolve");
         assert_eq!(resolved.base_url, "https://router.requesty.ai/v1");
         assert_eq!(resolved.debug_provider_name, "requesty");
+    }
+
+    #[test]
+    fn resolve_openai_compat_config_uberllm_uses_default_base_url() {
+        let mut config = crate::config::Config::default();
+        config.provider.uberllm = Some(crate::config::ProviderAuth {
+            api_key: Some("ull_test".into()),
+            api_key_cmd: None,
+            base_url: None,
+        });
+        let cfg = cfg_from(config);
+
+        let resolved = resolve_openai_compat_config("uberllm", &cfg)
+            .expect("resolve should succeed")
+            .expect("config should resolve");
+        assert_eq!(resolved.base_url, "https://api.uberllm.dev/v1");
+        assert_eq!(resolved.debug_provider_name, "uberllm");
     }
 
     #[test]
